@@ -54,8 +54,8 @@
  * non-withdrawable deposit into withdrawable winnings.
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
-import { applyMovementWithin, consumeLocksWithin } from './wallets.core.js';
-import { postHouseTakesWithin } from './treasury.js';
+import { applyMovementWithin, consumeLocksWithin, BALANCE_FIELDS } from './wallets.core.js';
+import { postHouseResultsWithin } from './treasury.js';
 import { recordTurnoverWithin, unlockIfNothingOutstandingWithin } from './promo.js';
 import { moneyOperations } from '../../backend/services/metrics.service.js';
 import { MONEY_PATHS } from '../moneyPaths.js';
@@ -623,25 +623,27 @@ export const winBet = (args) => settle(args, { name: 'win', ...TRANSITIONS.win }
 export const loseBet = (args) => settle(args, { name: 'lose', ...TRANSITIONS.lose });
 
 /**
- * PENDING → LOST for a page of bets, in ONE transaction and a fixed number of
- * statements (owner, 2026-10-10: settlement time is the risk at scale, and a
- * lost bet credits nothing, so batching it changes no amount).
+ * PENDING → LOST, or PENDING → WON, for a page of bets in ONE transaction and a
+ * fixed number of statements (owner, 2026-10-10: settlement time is the risk
+ * at scale; "compile the round's movements into one query").
  *
- * Every row a single `loseBet` writes is written here, with the same keys and
- * the same values: the guarded `bets` UPDATE, a `bet_transitions` row
- * (`<betId>_lose`), one wallet_ledger DEBIT of lockedBalance (`<betId>_lose`),
- * and one house movement USER_FLOAT → HOUSE_RESERVE under that same key. Only
- * the statements differ: one per table for the page instead of one per bet.
- * Replaying a page writes nothing new (every key is UNIQUE), and a bet a
- * single `loseBet` already settled is answered as it would answer it.
+ * Every row a single `loseBet` / `winBet` writes is written here, with the
+ * same keys and the same values: the guarded `bets` UPDATE (with each bet's
+ * payout and fee), a `bet_transitions` row (`<betId>_<lose|win>`), the
+ * wallet_ledger DEBIT of lockedBalance under that key and, for a paid win, the
+ * CREDIT of the payout (`<betId>_payout`), and one house movement under the
+ * first key. Only the statements differ: one per table for the page instead
+ * of one per bet. Replaying a page writes nothing new (every key is UNIQUE),
+ * and a bet a single settlement already settled is answered as that would.
  *
  * ── When the page is NOT batched ─────────────────────────────────────────
  * Anything the fixed statements cannot answer bet by bet goes to
- * `loseEachWithin`, the single settlement per bet behind a savepoint in one
- * transaction: a GENERAL cycle (its stake counts as turnover, `promo.js`), a
- * bet not PENDING or not the named player's, slices that do not add up, a key
- * already written, a wallet that cannot cover its locks. Those are refusals or
- * replays, and each is then answered for the bet that caused it.
+ * `settleEachWithin`, the single settlement per bet behind a savepoint in one
+ * transaction: a GENERAL cycle (its stake counts as turnover and its payout is
+ * promotional, `promo.js`), a bet not PENDING or not the named player's,
+ * slices that do not add up, a key already written, a wallet that cannot
+ * cover its locks, a treasury refusal. Those are refusals or replays, and each
+ * is then answered for the bet that caused it.
  *
  * ── Lock order ─────────────────────────────────────────────────────────────
  * Every wallet the page touches is locked FIRST, sorted by user id, then the
@@ -649,13 +651,14 @@ export const loseBet = (args) => settle(args, { name: 'lose', ...TRANSITIONS.los
  * concurrent withdrawal (wallet, then treasury) cannot deadlock against it.
  *
  * Answers `{ ok, batched, results }` with one result per bet in the order
- * given, each what `loseBet` would answer. `ok: false` means the transaction
- * itself failed and nothing committed; the caller settles the page bet by bet.
+ * given, each what the single settlement would answer. `ok: false` means the
+ * transaction itself failed and nothing committed; the caller settles the page
+ * bet by bet.
  */
-export async function loseBets(bets, { actor = null, reason = null } = {}) {
-  const spec = { name: 'lose', ...TRANSITIONS.lose };
+async function settleBets(bets, { actor = null, reason = null } = {}, spec) {
   if (!Array.isArray(bets) || !bets.length) return { ok: true, batched: true, results: [] };
   for (const b of bets) validateSettlement(b, spec);
+  const metric = `BET_${spec.name.toUpperCase()}`;
 
   const attempt = async (batch) => {
     const pool = await getPool();
@@ -666,11 +669,11 @@ export async function loseBets(bets, { actor = null, reason = null } = {}) {
       await client.query('BEGIN');
       const locked = await lockPageWithin(client, bets);
       const results = batch
-        ? await loseAllWithin(client, bets, locked, { actor, reason }, spec)
-        : await loseEachWithin(client, bets, locked, { actor, reason }, spec);
+        ? await settleAllWithin(client, bets, locked, { actor, reason }, spec)
+        : await settleEachWithin(client, bets, locked, { actor, reason }, spec);
       if (!results) { await client.query('ROLLBACK'); return null; }
       await client.query('COMMIT');
-      for (const r of results) count('BET_LOSE', !r.ok ? (r.reason ?? 'error') : r.idempotent ? 'idempotent' : 'applied');
+      for (const r of results) count(metric, !r.ok ? (r.reason ?? 'error') : r.idempotent ? 'idempotent' : 'applied');
       return { ok: true, batched: batch, results };
     } catch (error) {
       failure = error;
@@ -704,13 +707,16 @@ async function lockPageWithin(client, bets) {
 
 /**
  * The page in fixed statements, or `null` when any bet in it needs the
- * single path (see `loseBets`). Nothing is written before every bet passed.
+ * single path (see `settleBets`). Nothing is written before every bet passed.
  */
-async function loseAllWithin(client, bets, locked, { actor, reason }, spec) {
-  const stakes = [];
+async function settleAllWithin(client, bets, locked, { actor, reason }, spec) {
+  const page = [];
+  const seen = new Set();
   for (const b of bets) {
-    const row = locked.get(String(b.betId));
-    if (!row || row.audience !== 'VIP') return null;
+    const bid = String(b.betId);
+    const row = locked.get(bid);
+    if (!row || row.audience !== 'VIP' || seen.has(bid)) return null;
+    seen.add(bid);
     const { bet } = row;
     // The owner comes from the row (trap 2).
     if (bet.userId !== String(b.userId) || bet.status !== spec.expect) return null;
@@ -718,9 +724,9 @@ async function loseAllWithin(client, bets, locked, { actor, reason }, spec) {
     if (!fundsMatchAudience(b.slices, row.audience)) return null;
     const parts = {};
     for (const sl of b.slices) parts[sl.field] = (parts[sl.field] ?? 0) + sl.amountPaise;
-    stakes.push({ bet, parts });
+    page.push({ bet, parts, payoutPaise: b.payoutPaise ?? 0, platformFeePaise: b.platformFeePaise ?? 0 });
   }
-  const ids = stakes.map((s) => s.bet.betId);
+  const ids = page.map((x) => x.bet.betId);
   const keys = ids.map((id) => `${id}_${spec.name}`);
 
   const { rows: done } = await client.query(
@@ -728,11 +734,12 @@ async function loseAllWithin(client, bets, locked, { actor, reason }, spec) {
   if (done.length) return null;
 
   const moved = await client.query(
-    `UPDATE bets SET status = $2, payout_paise = 0, platform_fee_paise = 0,
-                     settled_at = now(), updated_at = now()
-      WHERE bet_id = ANY($1::text[]) AND status = $3
-      RETURNING bet_id, updated_at`,
-    [ids, spec.to, spec.expect],
+    `UPDATE bets b SET status = $4, payout_paise = v.payout, platform_fee_paise = v.fee,
+                       settled_at = now(), updated_at = now()
+       FROM unnest($1::text[], $2::bigint[], $3::bigint[]) AS v(bet_id, payout, fee)
+      WHERE b.bet_id = v.bet_id AND b.status = $5
+      RETURNING b.bet_id, b.updated_at`,
+    [ids, page.map((x) => x.payoutPaise), page.map((x) => x.platformFeePaise), spec.to, spec.expect],
   );
   if (moved.rowCount !== ids.length) return null;
   const updatedAt = new Map(moved.rows.map((r) => [r.bet_id, r.updated_at]));
@@ -744,24 +751,32 @@ async function loseAllWithin(client, bets, locked, { actor, reason }, spec) {
     [keys, ids, spec.expect, spec.to, actor, reason],
   );
 
-  const wallet = await consumeLocksWithin(client, stakes.map((s, i) => ({
-    uid: s.bet.userId, txId: keys[i], stakePaise: s.bet.stakePaise, parts: s.parts,
-    reason: reason || `Bet ${s.bet.betId} ${spec.to.toLowerCase()} — stake consumed`, refId: s.bet.betId,
+  const verb = spec.to.toLowerCase();
+  const wallet = await consumeLocksWithin(client, page.map((x, i) => ({
+    uid: x.bet.userId, txId: keys[i], stakePaise: x.bet.stakePaise, parts: x.parts,
+    reason: reason || `Bet ${x.bet.betId} ${verb} — stake consumed`, refId: x.bet.betId,
+    // A VIP win pays into winnings (a GENERAL cycle never reaches here).
+    credit: x.payoutPaise > 0
+      ? { field: 'winningsBalance', amountPaise: x.payoutPaise, txId: `${x.bet.betId}_payout`, reason: reason || `Bet ${x.bet.betId} payout` }
+      : null,
   })));
   if (!wallet.ok) return null;
 
-  const house = await postHouseTakesWithin({
-    client, operation: `BET_${spec.to}`, actor, refModel: 'Bet',
-    stakes: stakes.map((s, i) => ({
-      movementId: keys[i], amountPaise: s.bet.stakePaise, refId: s.bet.betId,
-      reason: reason || `Bet ${s.bet.betId} ${spec.to.toLowerCase()}`,
-    })),
-  });
+  // The house is the other side of what each wallet gained or lost. A bet whose
+  // payout exactly returns its stake moves no value and posts nothing, as in
+  // `postCounterparty`.
+  const results = page
+    .map((x, i) => ({
+      movementId: keys[i], userDeltaPaise: x.payoutPaise - x.bet.stakePaise, refId: x.bet.betId,
+      reason: reason || `Bet ${x.bet.betId} ${verb}`,
+    }))
+    .filter((r) => r.userDeltaPaise !== 0);
+  const house = await postHouseResultsWithin({ client, operation: `BET_${spec.to}`, actor, refModel: 'Bet', results });
   if (!house.ok) return null;
 
-  return stakes.map(({ bet }) => ({
+  return page.map(({ bet, payoutPaise, platformFeePaise }) => ({
     ok: true, idempotent: false,
-    bet: { ...bet, status: spec.to, payoutPaise: 0, platformFeePaise: 0, updatedAt: updatedAt.get(bet.betId) },
+    bet: { ...bet, status: spec.to, payoutPaise, platformFeePaise, updatedAt: updatedAt.get(bet.betId) },
     balances: null,
   }));
 }
@@ -770,7 +785,7 @@ async function loseAllWithin(client, bets, locked, { actor, reason }, spec) {
  * The page bet by bet in one transaction: each bet the single settlement
  * (`settleWithin`) behind its own savepoint, so a refusal rolls back alone.
  */
-async function loseEachWithin(client, bets, locked, { actor, reason }, spec) {
+async function settleEachWithin(client, bets, locked, { actor, reason }, spec) {
   const results = [];
   for (const b of bets) {
     const bid = String(b.betId);
@@ -782,20 +797,30 @@ async function loseEachWithin(client, bets, locked, { actor, reason }, spec) {
       results.push({ ok: false, reason: 'wrong_owner' });
       continue;
     }
-    await client.query('SAVEPOINT bet_lose');
+    await client.query('SAVEPOINT bet_settle');
     let value;
     try {
-      const out = await settleWithin({ client, uid, bid, bet }, { ...b, actor, reason }, spec);
-      await client.query(out.commit ? 'RELEASE SAVEPOINT bet_lose' : 'ROLLBACK TO SAVEPOINT bet_lose');
+      const out = await settleWithin({ client, uid, bid, bet: locked.get(bid)?.settled ?? bet }, { ...b, actor, reason }, spec);
+      await client.query(out.commit ? 'RELEASE SAVEPOINT bet_settle' : 'ROLLBACK TO SAVEPOINT bet_settle');
+      if (out.commit && locked.has(bid)) locked.get(bid).settled = out.value.bet;
       value = out.value;
     } catch (error) {
-      await client.query('ROLLBACK TO SAVEPOINT bet_lose');
+      await client.query('ROLLBACK TO SAVEPOINT bet_settle');
       value = { ok: false, reason: error.message };
     }
     results.push(value);
   }
   return results;
 }
+
+/** A page of losing bets (`settleBets`). */
+export const loseBets = (bets, opts) => settleBets(bets, opts, { name: 'lose', ...TRANSITIONS.lose });
+
+/**
+ * A page of winning bets (`settleBets`), each carrying the `payoutPaise` and
+ * `platformFeePaise` `winBet` would be given for it.
+ */
+export const winBets = (bets, opts) => settleBets(bets, opts, { name: 'win', ...TRANSITIONS.win });
 
 /** PENDING → VOID. The cycle was cancelled; the stake goes back. */
 export const voidBet = (args) => settle(args, { name: 'void', ...TRANSITIONS.void });
@@ -837,7 +862,12 @@ export const refundBet = (args) => settle(args, { name: 'refund', ...TRANSITIONS
  * provenance, so there is no stake to consume and `settle` would refuse them.
  */
 export async function listSettleableBets(cycleId, { side = null, limit = 1000, after = 0 } = {}) {
-  const params = [String(cycleId), Number(after) || 0];
+  // Each stake row's key is `<betId>_stake_<field>`, so the slices are read by
+  // their exact keys through the UNIQUE index on tx_id. The pattern match this
+  // replaced (`tx_id LIKE …`) could use no index and read the whole ledger per
+  // bet, which made a 10,000-bet round's settlement spend most of its time
+  // here (measured 2026-10-10, loadtest/settlement-time.mjs).
+  const params = [String(cycleId), Number(after) || 0, BALANCE_FIELDS.map((f) => `_stake_${f}`)];
   let sideClause = '';
   if (side === 'WINNING' || side === 'LOSING') {
     // The winning side is the cycle's own `winner`, read in the statement, so a
@@ -853,8 +883,8 @@ export async function listSettleableBets(cycleId, { side = null, limit = 1000, a
               (SELECT jsonb_agg(jsonb_build_object(
                         'field', l.field, 'amountPaise', ABS(l.amount_paise)))
                  FROM wallet_ledger l
-                WHERE l.ref_id = b.bet_id
-                  AND l.tx_id LIKE b.bet_id || '_stake_%'
+                WHERE l.tx_id IN (SELECT b.bet_id || k FROM unnest($3::text[]) AS k)
+                  AND l.ref_id = b.bet_id
                   AND l.tx_type = 'DEBIT'),
               '[]'::jsonb) AS slices
        FROM bets b

@@ -345,66 +345,88 @@ export async function postHouseSettlement({ client, movementId, userDeltaPaise, 
 }
 
 /**
- * Many lost stakes taken by the house, inside the caller's transaction, in a
+ * Many game results on the house's side, inside the caller's transaction, in a
  * fixed number of statements however many there are.
  *
- * Each stake is its OWN movement, exactly the one `postHouseSettlement` posts
- * for a single lost bet (USER_FLOAT → HOUSE_RESERVE, keyed by `movementId`,
- * entries `<movementId>:<account>`), so the books cannot tell a batched loss
- * from a single one. The entries chain each account's balance through the
- * movements in the order given; the two accounts are then set once to where
- * the chain ends. Every conservation trigger sees what it would have seen
- * from the movements one by one.
+ * Each result is its OWN movement, exactly the one `postHouseSettlement` posts
+ * for a single settled bet, under the same key (`movementId`, entries
+ * `<movementId>:<account>` in account order): a lost stake (negative
+ * `userDeltaPaise`) USER_FLOAT → HOUSE_RESERVE; a win (positive) from
+ * HOUSE_RESERVE as far as it reaches and the rest from TOKEN_SUPPLY, inside
+ * the supply ceiling. The entries chain each account's balance through the
+ * movements in the order given, each movement reading the reserve its
+ * predecessor left, and every account is then set once to where its chain
+ * ends. So the books cannot tell a batch from the same movements one by one.
  *
  * @param {object} args
  * @param {object} args.client        the caller's transaction
- * @param {Array<{movementId: string, amountPaise: number, refId: string, reason?: string}>} args.stakes
- *                                    each a positive number of paise
+ * @param {Array<{movementId: string, userDeltaPaise: number, refId: string, reason?: string}>} args.results
+ *                                    each a non-zero signed number of paise
  * @returns {Promise<{ok: true} | {ok: false, reason: string}>} a refusal or a
  *   replayed key leaves the transaction for the caller to roll back
  */
-export async function postHouseTakesWithin({ client, stakes, operation, actor = null, refModel = null }) {
-  if (!client) throw new Error('postHouseTakesWithin runs inside the caller\'s transaction: pass its client');
-  if (!operation) throw new Error('postHouseTakesWithin requires an operation');
-  if (!stakes.length) return { ok: true };
-  for (const s of stakes) {
-    if (!s.movementId) throw new Error('every house take needs a movementId (idempotency key)');
-    if (!Number.isInteger(s.amountPaise) || s.amountPaise <= 0) {
-      throw new TypeError(`house take ${s.movementId}: amountPaise must be a positive integer, got ${s.amountPaise}`);
+export async function postHouseResultsWithin({ client, results, operation, actor = null, refModel = null }) {
+  if (!client) throw new Error('postHouseResultsWithin runs inside the caller\'s transaction: pass its client');
+  if (!operation) throw new Error('postHouseResultsWithin requires an operation');
+  if (!results.length) return { ok: true };
+  for (const r of results) {
+    if (!r.movementId) throw new Error('every house result needs a movementId (idempotency key)');
+    if (!Number.isInteger(r.userDeltaPaise) || r.userDeltaPaise === 0) {
+      throw new TypeError(`house result ${r.movementId}: userDeltaPaise must be a non-zero integer, got ${r.userDeltaPaise}`);
     }
   }
 
-  // The same accounts, locked the same way and in the same order as postMovement.
-  const accounts = [ACCOUNTS.HOUSE_RESERVE, ACCOUNTS.USER_FLOAT].sort();
+  // The accounts any of these movements can touch, locked the way postMovement
+  // locks them: created if missing, then in one ordered statement.
+  const accounts = [ACCOUNTS.HOUSE_RESERVE, ACCOUNTS.TOKEN_SUPPLY, ACCOUNTS.USER_FLOAT].sort();
   await client.query(
     `INSERT INTO treasury_accounts (account) SELECT unnest($1::text[]) ON CONFLICT (account) DO NOTHING`, [accounts]);
   const locked = await client.query(
     `SELECT account, balance_paise FROM treasury_accounts
       WHERE account = ANY($1) ORDER BY account FOR UPDATE`, [accounts]);
   const balance = Object.fromEntries(locked.rows.map((r) => [r.account, toPaise(r.balance_paise)]));
-
-  // USER_FLOAT only falls here, so its last balance is its lowest: one check
-  // is every movement's check.
-  const total = stakes.reduce((t, s) => t + s.amountPaise, 0);
-  if (balance[ACCOUNTS.USER_FLOAT] - total < 0) {
-    return { ok: false, reason: 'account_short', account: ACCOUNTS.USER_FLOAT };
-  }
+  const touched = new Set();
 
   const cols = { tx: [], movement: [], account: [], amount: [], before: [], after: [], ref: [], reason: [] };
-  for (const s of stakes) {
-    const legs = { [ACCOUNTS.HOUSE_RESERVE]: s.amountPaise, [ACCOUNTS.USER_FLOAT]: 0 - s.amountPaise };
+  let releases = false;
+  for (const r of results) {
+    const d = r.userDeltaPaise;
+    let legs;
+    if (d < 0) {
+      legs = { [ACCOUNTS.USER_FLOAT]: d, [ACCOUNTS.HOUSE_RESERVE]: 0 - d };
+    } else {
+      const fromReserve = Math.min(balance[ACCOUNTS.HOUSE_RESERVE], d);
+      legs = {
+        [ACCOUNTS.HOUSE_RESERVE]: 0 - fromReserve,
+        [ACCOUNTS.TOKEN_SUPPLY]: fromReserve - d,
+        [ACCOUNTS.USER_FLOAT]: d,
+      };
+      if (legs[ACCOUNTS.TOKEN_SUPPLY] < 0) releases = true;
+    }
     for (const account of accounts) {
+      const delta = legs[account];
+      if (!delta) continue;
       const before = balance[account];
-      balance[account] = before + legs[account];
-      cols.tx.push(`${s.movementId}:${account}`);
-      cols.movement.push(s.movementId);
+      balance[account] = before + delta;
+      // The checks postMovement makes per movement, made per movement here.
+      if (account !== ACCOUNTS.TOKEN_SUPPLY && balance[account] < 0) {
+        return { ok: false, reason: 'account_short', account };
+      }
+      touched.add(account);
+      cols.tx.push(`${r.movementId}:${account}`);
+      cols.movement.push(r.movementId);
       cols.account.push(account);
-      cols.amount.push(legs[account]);
+      cols.amount.push(delta);
       cols.before.push(before);
       cols.after.push(balance[account]);
-      cols.ref.push(s.refId ? String(s.refId) : null);
-      cols.reason.push(s.reason ?? null);
+      cols.ref.push(r.refId ? String(r.refId) : null);
+      cols.reason.push(r.reason ?? null);
     }
+  }
+  // TOKEN_SUPPLY only falls in a batch of results, so its last balance is its
+  // most released: one ceiling check is every movement's check.
+  if (releases && 0 - balance[ACCOUNTS.TOKEN_SUPPLY] > await supplyPaise(client)) {
+    return { ok: false, reason: 'supply_cap_exceeded' };
   }
 
   try {
@@ -423,11 +445,12 @@ export async function postHouseTakesWithin({ client, stakes, operation, actor = 
     if (error.code === '23505') return { ok: false, reason: 'treasury_already_posted' };
     throw error;
   }
+  const moved = [...touched].sort();
   await client.query(
     `UPDATE treasury_accounts t SET balance_paise = b.after, updated_at = now()
        FROM unnest($1::text[], $2::bigint[]) AS b(account, after)
       WHERE t.account = b.account`,
-    [accounts, accounts.map((a) => balance[a])],
+    [moved, moved.map((a) => balance[a])],
   );
   return { ok: true };
 }

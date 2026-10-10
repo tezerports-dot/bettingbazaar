@@ -316,6 +316,25 @@ class GameEngine {
     }
 
     /**
+     * One page of one side, in one transaction (`bets.loseBets` /
+     * `bets.winBets`); if that transaction itself fails (nothing committed),
+     * the same page bet by bet, so a refusal is reported against the bet that
+     * caused it. One result per bet, in order.
+     */
+    async settlePage(cycle, side, args, how) {
+        const paged = await (side === 'win' ? db.bets.winBets(args, how) : db.bets.loseBets(args, how))
+            .catch((e) => ({ ok: false, reason: e.message }));
+        if (paged.ok) return paged.results;
+        console.warn(`[Engine] batched ${side} settlement on ${cycle.cycleId} failed (${paged.reason}); settling the page bet by bet`);
+        const one = side === 'win' ? db.bets.winBet : db.bets.loseBet;
+        const results = [];
+        for (const a of args) {
+            results.push(await one({ ...a, ...how }).catch((e) => ({ ok: false, reason: e.message })));
+        }
+        return results;
+    }
+
+    /**
      * The losing side: each stake is consumed and the bet stamped, a PAGE of
      * bets per transaction in a fixed number of statements (`bets.loseBets`,
      * which writes the rows single settlements write and falls back to them
@@ -336,21 +355,7 @@ class GameEngine {
 
             const args = batch.map((bet) => ({ betId: bet.betId, userId: bet.userId, slices: bet.slices }));
             const how = { actor: 'settlement', reason: 'Lost bet — cycle result' };
-            // The page in one transaction; if that transaction itself fails
-            // (nothing committed), the same page bet by bet, so a refusal is
-            // reported against the bet that caused it.
-            let results;
-            const paged = await db.bets.loseBets(args, how)
-                .catch((e) => ({ ok: false, reason: e.message }));
-            if (paged.ok) {
-                results = paged.results;
-            } else {
-                console.warn(`[Engine] batched loss settlement on ${cycle.cycleId} failed (${paged.reason}); settling the page bet by bet`);
-                results = [];
-                for (const a of args) {
-                    results.push(await db.bets.loseBet({ ...a, ...how }).catch((e) => ({ ok: false, reason: e.message })));
-                }
-            }
+            const results = await this.settlePage(cycle, 'lose', args, how);
 
             let settledAny = false;
             batch.forEach((bet, i) => {
@@ -366,14 +371,17 @@ class GameEngine {
     }
 
     /**
-     * The winning side: stake consumed and payout credited, in ONE transaction
-     * per bet, under one wallet lock.
+     * The winning side: stake consumed and payout credited, a PAGE of bets per
+     * transaction in a fixed number of statements (`bets.winBets`), each bet
+     * still its own ledger rows and its own house movement.
      *
      * ── Per bet, not per user ──────────────────────────────────────────────
      * The payout is computed per BET because the fee is, and because a settled
      * bet with no ledger row has to be structurally unrepresentable. Grouping by
      * user and paying a summed amount would make one refused bet inside a group
-     * either block the whole group or silently pay for bets that were refused.
+     * either block the whole group or silently pay for bets that were refused;
+     * a page the batch cannot settle whole falls back to the single settlement
+     * per bet, so a refusal stays the refused bet's.
      */
     async settleWinningBets(cycle, ctx) {
         const { winningsFeePercent, payoutMultiplier, refusals, winnerPayouts, betsPerWinner } = ctx;
@@ -385,8 +393,13 @@ class GameEngine {
             });
             if (!batch.length) break;
 
-            let settledAny = false;
-            for (const bet of batch) {
+            const how = {
+                actor: 'settlement',
+                reason: winningsFeePercent > 0
+                    ? `Cycle win payout (${payoutMultiplier}x minus ${winningsFeePercent}% platform fee)`
+                    : `Cycle win payout (${payoutMultiplier}x)`,
+            };
+            const args = batch.map((bet) => {
                 // `computeWinningsPayout` returns { gross, fee, net, … } and has
                 // NO `payout` key. Reading `p.payout ?? 0` pays ZERO while still
                 // charging the fee — trap 1. It is `net`.
@@ -395,19 +408,19 @@ class GameEngine {
                     feePercent: winningsFeePercent,
                     multiplier: payoutMultiplier,
                 });
-
-                const r = await db.bets.winBet({
+                return {
                     betId: bet.betId, userId: bet.userId, slices: bet.slices,
                     payoutPaise: p.netMinor, platformFeePaise: p.feeMinor,
-                    actor: 'settlement',
-                    reason: winningsFeePercent > 0
-                        ? `Cycle win payout (${payoutMultiplier}x minus ${winningsFeePercent}% platform fee)`
-                        : `Cycle win payout (${payoutMultiplier}x)`,
-                }).catch((e) => ({ ok: false, reason: e.message }));
+                };
+            });
+            const results = await this.settlePage(cycle, 'win', args, how);
 
+            let settledAny = false;
+            batch.forEach((bet, i) => {
+                const r = results[i];
                 if (!r.ok) {
                     refusals.push({ betId: bet.betId, userId: bet.userId, outcome: 'WON', reason: r.reason });
-                    continue;
+                    return;
                 }
                 settledAny = true;
 
@@ -416,11 +429,11 @@ class GameEngine {
                 // rows — see the header.
                 const before = paidPerUser.get(bet.userId) ?? { payoutPaise: 0, stakePaise: 0 };
                 paidPerUser.set(bet.userId, {
-                    payoutPaise: before.payoutPaise + p.netMinor,
+                    payoutPaise: before.payoutPaise + args[i].payoutPaise,
                     stakePaise: before.stakePaise + bet.stakePaise,
                 });
                 betsPerWinner.set(bet.userId, (betsPerWinner.get(bet.userId) ?? 0) + 1);
-            }
+            });
 
             if (!settledAny) break;
         }

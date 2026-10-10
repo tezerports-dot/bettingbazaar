@@ -24,16 +24,16 @@ const MUTATIONS = [
     id: 'M15', file: 'database/repositories/bets.core.js', config: PG,
     test: 'database/tests/betSettlementPg.test.js',
     why: 'the settling UPDATE does not write the fee',
-    from: `      \`UPDATE bets SET status = $2, payout_paise = $3, platform_fee_paise = $5,
-                       settled_at = now(), updated_at = now()
-        WHERE bet_id = $1 AND status = $4
-        RETURNING updated_at\`,
-      [ctx.bid, spec.to, payoutPaise, spec.expect, platformFeePaise],`,
-    to: `      \`UPDATE bets SET status = $2, payout_paise = $3,
-                       settled_at = now(), updated_at = now()
-        WHERE bet_id = $1 AND status = $4
-        RETURNING updated_at\`,
-      [ctx.bid, spec.to, payoutPaise, spec.expect],`,
+    from: `    \`UPDATE bets SET status = $2, payout_paise = $3, platform_fee_paise = $5,
+                     settled_at = now(), updated_at = now()
+      WHERE bet_id = $1 AND status = $4
+      RETURNING updated_at\`,
+    [ctx.bid, spec.to, payoutPaise, spec.expect, platformFeePaise],`,
+    to: `    \`UPDATE bets SET status = $2, payout_paise = $3,
+                     settled_at = now(), updated_at = now()
+      WHERE bet_id = $1 AND status = $4
+      RETURNING updated_at\`,
+    [ctx.bid, spec.to, payoutPaise, spec.expect],`,
   },
   {
     id: 'M16', file: 'database/repositories/bets.core.js', config: PG,
@@ -3234,7 +3234,7 @@ const MUTATIONS = [
     test: 'database/tests/promoPg.test.js',
     why: 'a returned General stake is counted as turnover, so a cancelled round brings the unlock closer',
     from: `if (spec.returnsStake) await unlockIfNothingOutstandingWithin(ctx, \`promo_unlock_rest_\${ctx.bid}\`);
-      else await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });`,
+    else await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });`,
     to: `await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });`,
   },
   {
@@ -3296,38 +3296,59 @@ const MUTATIONS = [
   },
   {
     id: 'MLB1', file: 'database/repositories/wallets.core.js', config: PG,
-    test: 'database/tests/loseBetsBatchPg.test.js',
-    why: 'a player with two lost stakes in one page gets ledger rows that do not chain: the first row claims the balance the second left',
-    from: `    after.set(s.uid, balanceAfter[i] + s.stakePaise);`,
-    to: `    after.set(s.uid, balanceAfter[i]);`,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: 'a player with two settled stakes in one page gets ledger rows that do not chain: the first row claims the balance the second left',
+    from: `    after.set(\`\${s.uid}|\${LOCK}\`, lockAfter + s.stakePaise);`,
+    to: `    after.set(\`\${s.uid}|\${LOCK}\`, lockAfter);`,
   },
   {
     id: 'MLB2', file: 'database/repositories/wallets.core.js', config: PG,
-    test: 'database/tests/loseBetsBatchPg.test.js',
-    why: 'a batched loss leaves the deposit part of the lock counted, so a later return would put deposit money back that was already lost',
-    from: `            \${FIELD_COLUMN.lockedDepositAmount} = w.\${FIELD_COLUMN.lockedDepositAmount} - d.dep,`,
-    to: `            \${FIELD_COLUMN.lockedDepositAmount} = w.\${FIELD_COLUMN.lockedDepositAmount},`,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: 'a batched settlement leaves the deposit part of the lock counted, so a later return would put deposit money back that was already spent',
+    from: `    add(s.uid, DEP, 0 - (s.parts.depositBalance ?? 0));`,
+    to: `    add(s.uid, DEP, 0);`,
   },
   {
     id: 'MLB3', file: 'database/repositories/bets.core.js', config: PG,
-    test: 'database/tests/loseBetsBatchPg.test.js',
-    why: "a GENERAL cycle's losses are batched, so the lost promotional stakes never count as turnover",
-    from: `    if (!row || row.audience !== 'VIP') return null;`,
-    to: `    if (!row) return null;`,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: 'a GENERAL cycle is batched, so its lost stakes never count as turnover and its wins pay into withdrawable winnings',
+    from: `    if (!row || row.audience !== 'VIP' || seen.has(bid)) return null;`,
+    to: `    if (!row || seen.has(bid)) return null;`,
   },
   {
     id: 'MLB4', file: 'database/repositories/bets.core.js', config: PG,
-    test: 'database/tests/loseBetsBatchPg.test.js',
-    why: "the batch takes the owner from the caller, so a bet named under another player is consumed out of that player's lock",
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: "the batch takes the owner from the caller, so a bet named under another player is settled out of that player's lock",
     from: `    if (bet.userId !== String(b.userId) || bet.status !== spec.expect) return null;`,
     to: `    if (bet.status !== spec.expect) return null;`,
   },
   {
     id: 'MLB5', file: 'database/repositories/treasury.js', config: PG,
-    test: 'database/tests/loseBetsBatchPg.test.js',
+    test: 'database/tests/settleBetsBatchPg.test.js',
     why: "the house's entries are written but its balances are not, so HOUSE_RESERVE and USER_FLOAT stop matching their entries",
-    from: `    [accounts, accounts.map((a) => balance[a])],`,
-    to: `    [accounts, accounts.map((a) => balance[a] - balance[a] + Number(locked.rows.find((r) => r.account === a).balance_paise))],`,
+    from: `    [moved, moved.map((a) => balance[a])],`,
+    to: `    [moved, moved.map((a) => Number(locked.rows.find((r) => r.account === a).balance_paise))],`,
+  },
+  {
+    id: 'MLB6', file: 'database/repositories/treasury.js', config: PG,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: 'every win in a page reads the reserve as it stood before the page, so two wins spend the same reserve tokens',
+    from: `      const fromReserve = Math.min(balance[ACCOUNTS.HOUSE_RESERVE], d);`,
+    to: `      const fromReserve = Math.min(Number(locked.rows.find((x) => x.account === ACCOUNTS.HOUSE_RESERVE).balance_paise), d);`,
+  },
+  {
+    id: 'MLB7', file: 'database/repositories/wallets.core.js', config: PG,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: "a batched win's payout row records the balance before the payout as the balance after it",
+    from: `      after.set(ck, after.get(ck) - s.credit.amountPaise);`,
+    to: `      after.set(ck, after.get(ck));`,
+  },
+  {
+    id: 'MLB8', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: 'a batched win pays into the deposit, so winnings that should be withdrawable are not',
+    from: `      ? { field: 'winningsBalance', amountPaise: x.payoutPaise,`,
+    to: `      ? { field: 'depositBalance', amountPaise: x.payoutPaise,`,
   },
 ];
 

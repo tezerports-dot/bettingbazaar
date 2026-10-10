@@ -1,20 +1,24 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * Lost bets settled a page at a time (`bets.loseBets`), against a real
- * PostgreSQL (owner, 2026-10-10).
+ * Bets settled a page at a time (`bets.loseBets`, `bets.winBets`), against a
+ * real PostgreSQL (owner, 2026-10-10).
  *
  * The batch exists to make a round settle faster, never to settle it
- * differently. So the first test settles the same bets twice over, once with
- * `loseBet` one at a time and once as a page, and asserts every row each path
- * wrote is the same row: the wallets, the wallet ledger, the treasury entries,
- * the transitions, the bets. The rest pin the edges where the page must fall
- * back to the single settlement: a replay, a bet the page cannot batch, a
- * GENERAL cycle, and a single settlement racing the page for the same bet.
+ * differently. So the equivalence tests settle the same bets twice over, once
+ * with `loseBet` / `winBet` one at a time and once as a page, and assert every
+ * row each path wrote is the same row: the wallets, the wallet ledger, the
+ * treasury entries, the transitions, the bets. For wins the house reserve is
+ * set to the same small figure before each world, so the payouts run it dry
+ * part way through the page and the rest comes from the platform's holding,
+ * exactly as one by one. The rest pin the edges where the page must fall back
+ * to the single settlement: a replay, a bet the page cannot batch, a GENERAL
+ * cycle, and a single settlement racing the page for the same bet.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { applyDeltaPaise, getBalancesPaise } from '../repositories/wallets.core.js';
-import { placeBet, loseBet, loseBets } from '../repositories/bets.core.js';
+import { placeBet, loseBet, loseBets, winBet, winBets } from '../repositories/bets.core.js';
+import { postMovement } from '../repositories/treasury.js';
 import * as promo from '../repositories/promo.js';
 import { ensureCycle } from '../repositories/markets.js';
 import { TEST_FUNDING } from './_funding.js';
@@ -62,11 +66,12 @@ async function cycle(audience = 'VIP') {
 }
 
 /** Everything a settlement of `betIds` wrote, with the keys mapped to bet order. */
-async function written(betIds) {
-  const keys = betIds.map((b) => `${b}_lose`);
+async function written(betIds, verb = 'lose') {
+  const keys = betIds.map((b) => `${b}_${verb}`);
+  const ledgerKeys = verb === 'win' ? [...keys, ...betIds.map((b) => `${b}_payout`)] : keys;
   const ledger = (await pgQuery(
     `SELECT tx_id, field, amount_paise, balance_before_paise, balance_after_paise, tx_type, description, ref_id
-       FROM wallet_ledger WHERE tx_id = ANY($1) ORDER BY id`, [keys])).rows;
+       FROM wallet_ledger WHERE tx_id = ANY($1) ORDER BY id`, [ledgerKeys])).rows;
   const entries = (await pgQuery(
     `SELECT tx_id, movement_id, account, amount_paise, balance_before_paise, balance_after_paise,
             operation, actor, reason, ref_model, ref_id, correlation_id
@@ -85,6 +90,25 @@ async function written(betIds) {
 }
 
 const ACTOR = { actor: 'settlement', reason: 'Lost bet — cycle result' };
+const WIN = { actor: 'settlement', reason: 'Cycle win payout (2x minus 1% platform fee)' };
+
+/**
+ * Put HOUSE_RESERVE at exactly `paise`, moving the difference to or from the
+ * platform's holding; answers the move, so the test can put it back.
+ */
+async function setReserve(paise, key) {
+  const { rows } = await pgQuery(`SELECT balance_paise FROM treasury_accounts WHERE account = 'HOUSE_RESERVE'`);
+  const now = Number(rows[0]?.balance_paise ?? 0);
+  const d = paise - now;
+  if (d) {
+    const r = await postMovement({
+      movementId: key, operation: 'TEST_RESERVE_SET', reason: 'test: reserve at a known figure',
+      legs: { HOUSE_RESERVE: d, TOKEN_SUPPLY: 0 - d },
+    });
+    expect(r.ok).toBe(true);
+  }
+  return d;
+}
 
 describePg('lost bets settled a page at a time', () => {
   beforeAll(async () => { await applySchema(); });
@@ -213,4 +237,95 @@ describePg('lost bets settled a page at a time', () => {
     const lockedAfter = (await getBalancesPaise(u)).lockedBalance + (await getBalancesPaise(v)).lockedBalance;
     expect(lockedBefore - lockedAfter).toBe(15_000);
   });
+
+  it('pays winners exactly as single settlements pay them, running the reserve dry part way', async () => {
+    // Stakes of ₹50, ₹45, ₹25 (MIXED and a deposit-only one). Payouts: a 2x
+    // win, a win whose payout only returns the stake (no house movement), and
+    // a win smaller than its stake (the house takes the difference).
+    const build = async () => {
+      const c = await cycle();
+      const p1 = await player();
+      const p2 = await player();
+      const one = [{ field: 'depositBalance', amountPaise: 2_500 }];
+      const bets = [
+        { ...(await bet(p1, c)), payoutPaise: 9_900, platformFeePaise: 100 },
+        { ...(await bet(p2, c)), payoutPaise: 5_000, platformFeePaise: 0 },
+        { ...(await bet(p1, c, one)), payoutPaise: 2_000, platformFeePaise: 3_000 },
+        { ...(await bet(p2, c)), payoutPaise: 9_900, platformFeePaise: 100 },
+      ];
+      return { players: [p1, p2], bets };
+    };
+    const A = await build();
+    const B = await build();
+    let parked = 0;
+    try {
+      // ₹60 in the reserve: the first win's ₹49 comes out of it, the fourth
+      // win's ₹49 finds ₹11 plus the ₹25 the third bet's house share left,
+      // and the rest is released from the platform's holding.
+      parked += await setReserve(6_000, next('res'));
+      for (const b of A.bets) expect((await winBet({ ...b, ...WIN })).ok).toBe(true);
+      parked += await setReserve(6_000, next('res'));
+      const page = await winBets(B.bets, WIN);
+      expect(page.ok).toBe(true);
+      expect(page.batched).toBe(true);
+      expect(page.results.map((r) => [r.ok, r.idempotent, r.bet.status, r.bet.payoutPaise]))
+        .toEqual(B.bets.map((b) => [true, false, 'WON', b.payoutPaise]));
+    } finally {
+      await setReserve((await pgQuery(`SELECT balance_paise FROM treasury_accounts WHERE account = 'HOUSE_RESERVE'`)).rows[0].balance_paise - parked, next('res'));
+    }
+
+    for (let i = 0; i < 2; i += 1) {
+      expect(await getBalancesPaise(B.players[i])).toEqual(await getBalancesPaise(A.players[i]));
+    }
+    const a = await written(A.bets.map((b) => b.betId), 'win');
+    const b = await written(B.bets.map((x) => x.betId), 'win');
+    expect(b.ledger).toEqual(a.ledger);
+    expect(b.transitions).toEqual(a.transitions);
+    expect(b.bets).toEqual(a.bets);
+    // The reserve stood at the same figure before each world, so its entries
+    // match to the paisa; the holding and the float are compared as amounts.
+    const reserve = (rows) => rows.filter((e) => e.account === 'HOUSE_RESERVE');
+    expect(reserve(b.entries)).toEqual(reserve(a.entries));
+    const shape = (rows) => rows.map(({ balance_before_paise: _b, balance_after_paise: _a, ...rest }) => rest);
+    expect(shape(b.entries)).toEqual(shape(a.entries));
+    // Three movements (the stake-returning win posts none); the 2x wins touch
+    // TOKEN_SUPPLY once the reserve is dry.
+    expect(new Set(b.entries.map((e) => e.movement_id))).toEqual(new Set(['#0_win', '#2_win', '#3_win']));
+    expect(b.entries.some((e) => e.account === 'TOKEN_SUPPLY')).toBe(true);
+    for (const account of ['HOUSE_RESERVE', 'TOKEN_SUPPLY', 'USER_FLOAT']) {
+      const rows = b.entries.filter((e) => e.account === account);
+      for (let i = 1; i < rows.length; i += 1) {
+        expect(rows[i].balance_before_paise).toBe(rows[i - 1].balance_after_paise);
+      }
+    }
+  });
+
+  it('a replayed page of wins pays nothing twice', async () => {
+    const c = await cycle();
+    const u = await player();
+    const bets = [{ ...(await bet(u, c)), payoutPaise: 9_900, platformFeePaise: 100 }];
+    expect((await winBets(bets, WIN)).batched).toBe(true);
+    const wallet = await getBalancesPaise(u);
+    const before = await written([bets[0].betId], 'win');
+    const again = await winBets(bets, WIN);
+    expect(again.results.map((r) => [r.ok, r.idempotent])).toEqual([[true, true]]);
+    expect(await getBalancesPaise(u)).toEqual(wallet);
+    expect(await written([bets[0].betId], 'win')).toEqual(before);
+  });
+
+  it('a GENERAL page of wins is paid bet by bet, into the GENERAL balance', async () => {
+    const u = next('gw');
+    await pgQuery(`INSERT INTO users (user_id, username, mobile) VALUES ($1, $1, $2)`,
+      [u, `7${String(Date.now() + seq).slice(-9)}`]);
+    await promo.creditReferralBonus({ userId: u, amountPaise: 10_000, earningId: `${u}-e1` });
+    const c = await cycle('GENERAL');
+    const b = { ...(await bet(u, c, [{ field: 'promoBalance', amountPaise: 2_000 }])), payoutPaise: 3_960, platformFeePaise: 40 };
+    const page = await winBets([b], WIN);
+    expect(page.batched).toBe(false);
+    expect(page.results[0].ok).toBe(true);
+    const bal = await getBalancesPaise(u);
+    expect(bal.promoBalance).toBe(10_000 - 2_000 + 3_960);
+    expect(bal.winningsBalance).toBe(0);
+  });
 });
+
