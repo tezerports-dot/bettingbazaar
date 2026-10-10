@@ -40,8 +40,7 @@
 import React, { useCallback, useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { getBackend } from '../services/backend.service';
-import { apiUrl } from '../services/apiUrl';
-import { secureFetch } from '../services/secureTransport';
+import { support } from '../services/api';
 import ScreenShell, { card } from '../redesign/Screen';
 
 const backend = getBackend();
@@ -60,11 +59,6 @@ interface SupportLinks {
   helpCenterUrl: string; termsUrl: string; privacyUrl: string;
 }
 interface ChatMsg { me: boolean; t: string; who?: string; assistant?: boolean; }
-
-const authHeaders = () => {
-  const token = localStorage.getItem('auth_token') || '';
-  return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-};
 
 const render = (messages: any[]): ChatMsg[] =>
   messages.map((m) => ({ me: m.senderType === 'USER', t: m.content, who: m.senderType === 'USER' ? 'You' : 'Support' }));
@@ -89,12 +83,10 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   /** Load the newest open ticket so a returning player continues the thread. */
   const loadThread = useCallback(async () => {
     try {
-      const r = await secureFetch(apiUrl('/api/support/tickets'), { headers: authHeaders() });
-      const d = await r.json();
+      const d = await support.tickets();
       const open = (d?.tickets || []).find((t: any) => t.status !== 'CLOSED');
       if (!open) { setLoading(false); return; }
-      const t = await secureFetch(apiUrl(`/api/support/tickets/${open.ticketId}`), { headers: authHeaders() });
-      const td = await t.json();
+      const td = await support.ticket(open.ticketId);
       if (td?.success) { setTicket(td.ticket); setMsgs(render(td.messages || [])); }
     } catch { /* the panel still lets them open a new ticket */ }
     finally { setLoading(false); }
@@ -107,8 +99,7 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
    */
   const loadAssistant = useCallback(async () => {
     try {
-      const r = await secureFetch(apiUrl('/api/support/status'));
-      const d = await r.json();
+      const d = await support.assistantStatus();
       setAssistantOn(Boolean(d?.success && d?.enabled));
     } catch { setAssistantOn(false); }
   }, []);
@@ -123,20 +114,13 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
    */
   const openOrReply = async (t: string) => {
     if (!ticket) {
-      const r = await secureFetch(apiUrl('/api/support/tickets'), {
-        method: 'POST', headers: authHeaders(),
-        // The subject is the first line of what they wrote, so an agent sees
-        // the problem in the queue rather than a placeholder.
-        body: JSON.stringify({ subject: t.slice(0, 120), message: t }),
-      });
-      const d = await r.json();
+      // The subject is the first line of what they wrote, so an agent sees
+      // the problem in the queue rather than a placeholder.
+      const d = await support.openTicket(t.slice(0, 120), t);
       if (!d?.success) throw new Error(d?.message || 'Could not open a ticket');
       setTicket(d.ticket);
     } else {
-      const r = await secureFetch(apiUrl(`/api/support/tickets/${ticket.ticketId}/reply`), {
-        method: 'POST', headers: authHeaders(), body: JSON.stringify({ content: t }),
-      });
-      const d = await r.json();
+      const d = await support.reply(ticket.ticketId, t);
       if (!d?.success) throw new Error(d?.message || 'Could not send your message');
     }
   };
@@ -166,14 +150,11 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
    */
   const askAssistant = async (t: string): Promise<boolean> => {
     try {
-      const r = await secureFetch(apiUrl('/api/support/ask'), {
-        method: 'POST', headers: authHeaders(), body: JSON.stringify({ query: t }),
-      });
-      const d = await r.json();
+      const d = await support.ask(t);
       // `grounded: false` means nothing in the knowledge base matched, and the
       // server returns a canned "contact support" line for it. Showing that as
       // an answer would be the fake reply this panel exists to have removed.
-      if (!r.ok || !d?.success || !d?.grounded || !String(d?.answer || '').trim()) return false;
+      if (!d?.success || !d?.grounded || !String(d?.answer || '').trim()) return false;
       setMsgs(prev => [...prev, { me: false, t: String(d.answer).trim(), who: 'Assistant', assistant: true }]);
       return true;
     } catch { return false; }

@@ -30,7 +30,7 @@
  * drift.
  */
 import React, { useState } from 'react';
-import apiClient from '../services/apiClient';
+import { payments } from '../services/api';
 
 export interface UsdtChainOption { chain: string; label: string }
 
@@ -135,7 +135,7 @@ export const UsdtBuyPanel: React.FC<{
     if (!amountOk || !chain) return;
     setBusy(true); setError('');
     try {
-      await apiClient.post('/api/payment/usdt/deposit/create', { usdtAmount: usdt, usdtChain: chain });
+      await payments.createUsdtBuy(usdt, chain);
       onChanged?.();
     } catch (e: any) {
       setError(e?.message || 'Could not start a USDT purchase');
@@ -146,7 +146,7 @@ export const UsdtBuyPanel: React.FC<{
     if (!order || !txId.trim() || txError) return;
     setBusy(true); setError('');
     try {
-      await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, { utrNumber: txId.trim() });
+      await payments.markPaid(order.orderId, txId.trim());
       onChanged?.();
     } catch (e: any) {
       // Said in full. "This transaction ID has already been used for another

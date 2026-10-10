@@ -11,8 +11,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useGameProviders } from '../services/GameProviderContext';
 import ScreenShell, { card } from '../redesign/Screen';
-import { apiUrl } from '../services/apiUrl';
-import { secureFetch } from '../services/secureTransport';
+import { games as gamesApi } from '../services/api';
 
 interface RegistryGame {
   slug: string; name: string; providerKey: string; categorySlug: string;
@@ -64,8 +63,8 @@ const CasinoPage: React.FC = () => {
     (async () => {
       try {
         const [g, c] = await Promise.all([
-          secureFetch(apiUrl('/api/game/games')).then(r => r.json()),
-          secureFetch(apiUrl('/api/game/categories')).then(r => r.json()),
+          gamesApi.catalogue(),
+          gamesApi.categories(),
         ]);
         if (g.success) setGames(g.games || []);
         if (c.success) setCategories((c.categories || []).filter((x: RegistryCategory) => !NON_CASINO.has(x.slug)));
@@ -80,12 +79,10 @@ const CasinoPage: React.FC = () => {
   const launch = useCallback(async (game: RegistryGame) => {
     setLaunching(game.slug);
     try {
-      const token = localStorage.getItem('auth_token') || '';
-      const r = await secureFetch(apiUrl('/api/game/launch'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ providerKey: game.providerKey, gameId: game.externalGameId, gameName: game.name }) });
-      const data = await r.json();
+      const data = await gamesApi.launch({ providerKey: game.providerKey, gameId: game.externalGameId, gameName: game.name });
       if (data.success && data.launchUrl) { setGameUrl(data.launchUrl); setActiveGameName(game.name); }
       else alert(data.message || 'Could not launch game');
-    } catch { alert('Launch failed'); } finally { setLaunching(null); }
+    } catch (e: any) { alert(e?.message || 'Launch failed'); } finally { setLaunching(null); }
   }, []);
 
   if (gameUrl) return (

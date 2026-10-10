@@ -19,7 +19,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-vi.mock('../services/apiUrl', () => ({ apiUrl: (p: string) => `https://api.test${p}` }));
+// apiClient waits for a validated origin; here it is ready and fixed.
+vi.mock('../services/originFailover', async (orig) => ({
+  ...(await orig<typeof import('../services/originFailover')>()),
+  whenEndpointReady: async () => 'https://api.test', currentOrigin: () => 'https://api.test', failoverAvailable: () => false,
+}));
 const { default: AnnouncementBanner } = await import('./AnnouncementBanner');
 
 const announcement = (over: Record<string, unknown> = {}) => ({
@@ -43,12 +47,12 @@ describe('AnnouncementBanner', () => {
     expect((fetch as any).mock.calls[0][0]).toBe('https://api.test/api/announcements');
   });
 
-  it('sends no credentials — the people who most need a service notice cannot sign in', async () => {
+  it('needs no credentials — the people who most need a service notice cannot sign in', async () => {
     (fetch as any).mockReturnValue(reply([announcement()]));
     render(<AnnouncementBanner />);
     await screen.findByText('Buying is paused');
-    // One argument: no headers, no token. The route takes none.
-    expect((fetch as any).mock.calls[0].length).toBe(1);
+    // Signed out: no token is sent, and the notice still renders. The route takes none.
+    expect((fetch as any).mock.calls[0][1]?.headers?.Authorization).toBeUndefined();
   });
 
   it('shows the highest-priority one only, not a stack', async () => {

@@ -10,7 +10,11 @@
  *   ✓ 401 handling with automatic redirect to login
  *   ✓ Request deduplication (prevents duplicate in-flight calls)
  *   ✓ Retry with exponential backoff (network errors only)
+ *   ✓ Last-good fallback for public display reads (`staleOnError`)
  *   ✓ Typed response helpers
+ *
+ * Screens never import this file: they call the per-domain functions in
+ * `services/api/`, which own every path (lint `no-restricted-imports`).
  */
 
 declare global {
@@ -68,6 +72,45 @@ function dedupKey(method: string, url: string, body?: unknown): string {
   return `${method}:${url}:${JSON.stringify(body ?? '')}`;
 }
 
+// ── Last-good fallback ────────────────────────────────────────────────────────
+/**
+ * A GET asked with `staleOnError` keeps its last successful answer, and hands
+ * it back when the next attempt fails in transport (after the retries above)
+ * or with a 5xx. That keeps the board list, the rules text, the game catalogue
+ * and the like on screen through a dropped connection instead of an empty page.
+ *
+ * Only for PUBLIC display content: the same for every viewer, so it is stored
+ * per path, not per account, and survives a reload. Never for a balance, an
+ * order or anything a money decision reads (CLAUDE.md §9): the server is the
+ * only answer to those, and a stale one would be a claim we cannot back.
+ *
+ * Staleness window (§6): an answer older than FALLBACK_MAX_AGE_MS is not used.
+ * A 4xx is an answer, not an outage, and always reaches the caller.
+ */
+const FALLBACK_PREFIX = 'bb_api_fallback:';
+const FALLBACK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function rememberGood(path: string, data: unknown): void {
+  try { localStorage.setItem(FALLBACK_PREFIX + path, JSON.stringify({ ts: Date.now(), data })); }
+  catch { /* storage full or private mode: the fallback is best-effort */ }
+}
+
+function lastGood(path: string): { data: unknown } | null {
+  try {
+    const raw = localStorage.getItem(FALLBACK_PREFIX + path);
+    if (!raw) return null;
+    const { ts, data } = JSON.parse(raw);
+    if (typeof ts !== 'number' || Date.now() - ts > FALLBACK_MAX_AGE_MS) return null;
+    return { data };
+  } catch { return null; }
+}
+
+/** A transport failure (no status) or a server failure (5xx); never a 4xx. */
+function isOutage(err: unknown): boolean {
+  const status = (err as { status?: unknown })?.status;
+  return typeof status !== 'number' || status >= 500;
+}
+
 // ── Token helpers ─────────────────────────────────────────────────────────────
 function getToken(): string | null {
   // Prefer HttpOnly cookie (set by server) — no JS access needed.
@@ -86,6 +129,26 @@ export function setToken(token: string | null): void {
 }
 
 // ── Core fetch wrapper ────────────────────────────────────────────────────────
+export interface GetOptions {
+  signal?: AbortSignal;
+  /** Public display content only: fall back to the last good answer on an outage. */
+  staleOnError?: boolean;
+}
+
+async function apiGet(path: string, options: GetOptions): Promise<unknown> {
+  const { staleOnError, signal } = options;
+  if (!staleOnError) return apiFetch('GET', path, undefined, { signal });
+  try {
+    const data = await apiFetch('GET', path, undefined, { signal });
+    rememberGood(path, data);
+    return data;
+  } catch (err: unknown) {
+    const kept = isOutage(err) ? lastGood(path) : null;
+    if (kept) return kept.data;
+    throw err;
+  }
+}
+
 async function apiFetch(
   method: string,
   path: string,
@@ -162,8 +225,8 @@ async function performFetch(
 
 // ── Public helpers ────────────────────────────────────────────────────────────
 export const apiClient = {
-  get:    <T = unknown>(path: string, signal?: AbortSignal) =>
-            apiFetch('GET',    path, undefined, { signal }) as Promise<T>,
+  get:    <T = unknown>(path: string, options: GetOptions = {}) =>
+            apiGet(path, options) as Promise<T>,
   post:   <T = unknown>(path: string, body?: unknown) =>
             apiFetch('POST',   path, body) as Promise<T>,
   put:    <T = unknown>(path: string, body?: unknown) =>

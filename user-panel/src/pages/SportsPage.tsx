@@ -12,8 +12,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useGameProviders } from '../services/GameProviderContext';
 import ScreenShell, { card } from '../redesign/Screen';
-import { apiUrl } from '../services/apiUrl';
-import { secureFetch } from '../services/secureTransport';
+import { games as gamesApi } from '../services/api';
 
 const SPORTS = [
   { name: 'Cricket', icon: '🏏', markets: '400+', live: true }, { name: 'Football', icon: '⚽', markets: '800+', live: true },
@@ -39,12 +38,10 @@ const SportsPage: React.FC = () => {
     if (!provider) return;
     setLaunching(true);
     try {
-      const token = localStorage.getItem('auth_token') || '';
-      const r = await secureFetch(apiUrl('/api/game/launch'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ providerKey: provider.key, gameId: sportName || 'sportsbook', gameName: sportName || 'Sportsbook' }) });
-      const d = await r.json();
+      const d = await gamesApi.launch({ providerKey: provider.key, gameId: sportName || 'sportsbook', gameName: sportName || 'Sportsbook' });
       if (d.success && d.launchUrl) setSbUrl(d.launchUrl);
       else alert(d.message || 'Could not launch sportsbook');
-    } catch { alert('Launch failed'); } finally { setLaunching(false); }
+    } catch (e: any) { alert(e?.message || 'Launch failed'); } finally { setLaunching(false); }
   }, [provider]);
 
   if (sbUrl) return (

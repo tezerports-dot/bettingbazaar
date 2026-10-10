@@ -29,7 +29,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { CycleType, GameState, User, Bet, BettingSide, GameCycle, PlayProfile, Board } from '../types';
 import { analyticsWindowFor } from '../constants';
-import apiClient from './apiClient';
+import { platform } from './api';
 import { getBackend, setCdnBaseUrl } from './backend.service';
 import { decodeCyclePhase, decodeCycleResult } from './realtimeProtocol';
 import type { SignInStep } from './backend.interface';
@@ -294,7 +294,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   // event names a board this list does not hold yet (one created since).
   const loadBoards = useCallback(async () => {
     try {
-      const res: any = await apiClient.get('/api/v1/boards');
+      const res: any = await platform.boards();
       const list: Board[] = Array.isArray(res?.boards) ? res.boards : [];
       boardsRef.current = list;
       setBoards(list);

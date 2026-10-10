@@ -64,6 +64,20 @@ export default defineConfig([
     },
   },
   {
+    // Screens never name an endpoint or touch the transport: every read and
+    // write goes through the per-domain functions in services/api/ (CLAUDE.md
+    // §2, "Which endpoint a player screen calls"), so retries, failover and the
+    // last-good fallback are decided in one place, not per component.
+    files: ['src/pages/**/*.{ts,tsx}', 'src/components/**/*.{ts,tsx}', 'src/redesign/**/*.{ts,tsx}'],
+    ignores: ['src/**/*.test.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [
+        { group: ['**/services/apiClient', '**/services/secureTransport'],
+          message: 'Call a function from services/api instead; add one there if none fits.' },
+      ] }],
+    },
+  },
+  {
     files: ['*.config.{js,ts}', 'scripts/**'],
     languageOptions: { globals: globals.node },
   },

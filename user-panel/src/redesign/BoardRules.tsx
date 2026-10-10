@@ -11,7 +11,7 @@
  * BOARD_RULES_EVENT). Accepting is `POST /api/user/board-rules/accept`.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import apiClient from '../services/apiClient';
+import { platform, player } from '../services/api';
 
 export interface BoardRulesText {
   version: number;
@@ -28,7 +28,7 @@ export function useBoardRulesText() {
   const load = useCallback(async () => {
     setError('');
     try {
-      const res: any = await apiClient.get('/api/v1/board-rules');
+      const res: any = await platform.boardRules();
       if (res?.success) setRules({ version: res.version, sections: res.sections });
       else throw new Error(res?.message);
     } catch (e: any) {
@@ -60,7 +60,7 @@ export const BoardRulesModal: React.FC<{ isAuthenticated: boolean }> = ({ isAuth
   useEffect(() => {
     if (!isAuthenticated) { setOpen(false); return; }
     let live = true;
-    apiClient.get('/api/user/board-rules')
+    player.boardRulesAcceptance()
       .then((res: any) => { if (live && res?.success && res.acceptedVersion < res.version) setOpen(true); })
       .catch(() => { /* the bet route still asks, and its refusal opens this */ });
     return () => { live = false; };
@@ -79,7 +79,7 @@ export const BoardRulesModal: React.FC<{ isAuthenticated: boolean }> = ({ isAuth
     setSaving(true);
     setError('');
     try {
-      const res: any = await apiClient.post('/api/user/board-rules/accept', { version: rules.version });
+      const res: any = await player.acceptBoardRules(rules.version);
       if (!res?.success) throw new Error(res?.message);
       setOpen(false);
     } catch (e: any) {

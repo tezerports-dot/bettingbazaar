@@ -18,7 +18,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 
 const API = 'https://api.test';
-vi.mock('../services/apiUrl', () => ({ apiUrl: (p: string) => `${API}${p}` }));
+// apiClient waits for a validated origin; here it is ready and fixed.
+vi.mock('../services/originFailover', async (orig) => ({
+  ...(await orig<typeof import('../services/originFailover')>()),
+  whenEndpointReady: async () => API, currentOrigin: () => API, failoverAvailable: () => false,
+}));
 vi.mock('../services/backend.service', () => ({
   getBackend: () => ({ getSupportLinks: () => Promise.resolve({ links: { telegram: 'bb_support' } }) }),
 }));
