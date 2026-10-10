@@ -85,6 +85,9 @@ describePg('a stream’s opening', () => {
       const titles = res.body.content.map((c) => c.title);
       expect(titles).toContain(`${tag}-live`);
       expect(titles).not.toContain(`${tag}-draft`);
+      // Each screen's frame, from the server's one list, beside the cards.
+      const { PROMO_DEVICES } = await import('#db/spec/promoDevices.js');
+      expect(res.body.devices).toEqual(JSON.parse(JSON.stringify(PROMO_DEVICES)));
     } finally {
       await content.deletePromo(live.promoId);
       await content.deletePromo(draft.promoId);
