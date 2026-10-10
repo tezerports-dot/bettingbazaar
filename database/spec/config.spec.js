@@ -314,7 +314,8 @@ export const SYSTEM_CONFIG_SPEC = group({
     resultCelebration:   b(true),
     // The General wallet's unlock progress as a bar.
     bonusProgress:       b(true),
-    // The row of published HOME promo cards (Admin › Content Slides).
+    // The published HOME promo cards (Admin › Page Slides): the board's side
+    // columns on a laptop, below the game on a phone or tablet.
     promoCards:          b(true),
   }),
 

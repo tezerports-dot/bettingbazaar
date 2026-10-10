@@ -7,6 +7,7 @@ import contentService from './content.service.js';
 import { generatePresignedUploadUrl } from '../../services/cdn.service.js';
 import { db } from '#db';
 import { assertCdnAssetUrl } from '../../shared/storedUrl.js';
+import { promoLinkUrl } from './promoLink.js';
 import { serverError, respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
@@ -288,8 +289,12 @@ router.post('/promo', authenticate, hasPermission('canManageContent'), async (re
       catch (e) { return res.status(400).json({ success: false, message: e.message }); }
     }
 
+    let linkUrl = null;
+    try { linkUrl = promoLinkUrl(req.body.linkUrl); }
+    catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+
     const promo = await db.content.upsertPromo({
-      title, description,
+      title, description, linkUrl,
       location: String(location || 'HOME').toUpperCase(),
       mediaType: media, fileUrl: safeFileUrl,
       priority: Number(priority) || 0,
@@ -316,6 +321,10 @@ router.put('/promo/:id', authenticate, hasPermission('canManageContent'), async 
       try {
         patch.fileUrl = String(fileUrl ?? '').trim() ? assertCdnAssetUrl(fileUrl, 'slide image') : null;
       } catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    }
+    if (req.body.linkUrl !== undefined) {
+      try { patch.linkUrl = promoLinkUrl(req.body.linkUrl); }
+      catch (e) { return res.status(400).json({ success: false, message: e.message }); }
     }
     if (priority !== undefined)    patch.priority = Number(priority) || 0;
     if (location !== undefined)    patch.location = String(location).toUpperCase();

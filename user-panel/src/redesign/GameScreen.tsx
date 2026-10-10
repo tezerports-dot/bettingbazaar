@@ -29,7 +29,8 @@ import VsStrip from './VsStrip';
 import { getAssetUrl } from '../services/backend.service';
 import { canPlaceBet } from '../GAME_CORE';
 import { BoardRulesModal } from './BoardRules';
-import { PromoCardsRow, ResultCelebration, TONE_COLOR, timerTone, UrgencyChips } from './BoardExtras';
+import { ResultCelebration, TONE_COLOR, timerTone, UrgencyChips, useHomeCards } from './BoardExtras';
+import { CitiesArt, HowToPlayArt, PromoCard } from './BoardArt';
 
 // UI-only chip face palette (GOVERNANCE §10 — presentation, not validation).
 const CHIP_STYLES = [
@@ -71,7 +72,6 @@ const GameScreen: React.FC = () => {
   const [selectedChip, setSelectedChip] = useState<number | null>(null);
   const [manualInput, setManualInput] = useState('');
   const analyticsRef = useRef<HTMLElement | null>(null);
-  const showAnalytics = () => analyticsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   // Re-render the countdown every second (endTime is authoritative).
   const [, tick] = useState(0);
@@ -143,13 +143,20 @@ const GameScreen: React.FC = () => {
 
   const panelWinners = useMemo(() => winnersByType[cycleType] ?? [], [winnersByType, cycleType]);
 
+  // Admin › Page Slides › Home promo cards: beside the game when the side
+  // columns show (the right column first, where the roadmap was); on a phone
+  // or tablet they are the shell's carousel under the header. The roadmap
+  // went: the analytics under the board carry the same results.
+  const homeCards = useHomeCards(extras.promoCards && desktop);
+  const rightCards = homeCards.filter((_, i) => i % 2 === 0);
+  const leftCards = homeCards.filter((_, i) => i % 2 === 1);
+
   const Ag = useMemo(
     () => analyticsFor(winnersByType[cycleType] ?? [], currentBoard),
     [winnersByType, cycleType, currentBoard],
   );
   const seqGame = Ag.seq;
   const stripBeads = seqGame.slice(0, mobile ? 14 : 26).map(bead);
-  const roadmapBeads = [...seqGame.slice(0, 60)].reverse().map(bead);
 
   // Effective bet amount from chip or manual entry.
   const manualNum = parseInt(manualInput, 10);
@@ -290,26 +297,14 @@ const GameScreen: React.FC = () => {
           ? <div className="bb-skel" style={{ width: 110, height: 26, borderRadius: 7, background: 'var(--surface3)' }} />
           : <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 24, color: 'var(--gold-ink)' }}>₹{fmt(total)}</div>}
       </div>
+      {leftCards.map((c, i) => <PromoCard key={c.promoId ?? c.id ?? i} card={c} />)}
+      <CitiesArt />
     </aside>
   );
 
   const rightPanel = (
     <aside className="bb-noscroll" style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
-      <div style={sectionCard}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <span style={labelCap}>Roadmap</span>
-          <button onClick={showAnalytics} style={{ fontSize: 9, fontWeight: 800, color: 'var(--gold-ink)', background: 'none', border: '1px solid var(--line2)', borderRadius: 999, padding: '3px 10px', cursor: 'pointer' }}>FULL ANALYSIS</button>
-        </div>
-        {roadmapBeads.length === 0 ? (
-          // Real results only (analytics.ts no longer pads a thin window), so a
-          // board with no settled cycles genuinely has nothing to plot.
-          <div style={{ fontSize: 10, color: 'var(--text3)', padding: '10px 0', textAlign: 'center' }}>No results on this board yet.</div>
-        ) : (
-          <div className="bb-noscroll" style={{ display: 'grid', gridAutoFlow: 'column', gridTemplateRows: 'repeat(6,18px)', gap: 4, overflowX: 'auto', paddingBottom: 4 }}>
-            {roadmapBeads.map((b, i) => <span key={i} style={{ width: 18, height: 18, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 8, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{b.ch}</span>)}
-          </div>
-        )}
-      </div>
+      {rightCards[0] && <PromoCard card={rightCards[0]} />}
       <div style={sectionCard}>
         <span style={labelCap}>My open bets · this cycle</span>
         {(myBetDelhi > 0 || myBetBombay > 0) ? (
@@ -332,6 +327,8 @@ const GameScreen: React.FC = () => {
           </div>
         )}
       </div>
+      {rightCards.slice(1).map((c, i) => <PromoCard key={c.promoId ?? c.id ?? i} card={c} />)}
+      <HowToPlayArt />
     </aside>
   );
 
@@ -340,7 +337,6 @@ const GameScreen: React.FC = () => {
       {desktop && leftPanel}
 
       <section style={{ minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-        {extras.promoCards && <PromoCardsRow />}
         {/* Cycle control */}
         <div style={{ flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 4px 10px' }}>
           <div style={{ display: 'flex', background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 999, padding: 3, gap: 3, boxShadow: 'var(--shadow-sm)' }}>

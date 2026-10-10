@@ -15,13 +15,14 @@
  */
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import { useGame, spendableBalance } from '../services/GameContext';
+import { useGame, spendableBalance, useBoardExtras } from '../services/GameContext';
 import { useGameProviders } from '../services/GameProviderContext';
 import { useTheme } from './ThemeContext';
 import { useViewport } from './useViewport';
 import { fmt } from './format';
 import AuthModal from '../components/Modals/AuthModal';
 import NotificationBell from '../components/Layout/NotificationBell';
+import { PromoCarousel, useHomeCards } from './BoardExtras';
 import ShareModal from '../components/Modals/ShareModal';
 import AnnouncementBanner from '../components/AnnouncementBanner';
 import { useHeaderLogo } from '../services/brandAssets';
@@ -189,6 +190,11 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
     [anyCasino, anyCrash, anySports],
   );
   const isActive = (path: string) => (path === '/' ? location.pathname === '/' : location.pathname.startsWith(path));
+  const onBoard = location.pathname === '/';
+  // Admin › Page Slides › Home promo cards, for the phone carousel; read only
+  // where it shows (Admin › Player Screen's switch, the board, not a laptop).
+  const extras = useBoardExtras();
+  const homeCards = useHomeCards(extras.promoCards && onBoard && !desktop);
 
   const iconSize = compact ? 34 : 40;
   const iconBtn: React.CSSProperties = {
@@ -363,35 +369,39 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             cannot get in.
           */}
           <AnnouncementBanner />
-          <div className="bb-noscroll" style={{
-            flex: 'none', display: 'flex', gap: 10, padding: '8px 14px', overflowX: 'auto',
-            background: 'color-mix(in srgb, var(--bg) 55%, transparent)', borderBottom: '1px solid var(--line)',
+          {/* Phone and tablet, on the board: the promo carousel straight under
+              the header (owner, 2026-10-10). A laptop shows the same cards in
+              the board's side columns instead. */}
+          {onBoard && !desktop && <PromoCarousel cards={homeCards} />}
+          {/*
+            The games, as slim buttons that slide sideways (owner, 2026-10-10:
+            "like stake does with casino, sports"), so the board keeps its
+            room. One per category that has somewhere to go.
+          */}
+          <nav aria-label="Games" className="bb-noscroll" style={{
+            flex: 'none', display: 'flex', gap: 8, padding: '8px 14px', overflowX: 'auto',
+            borderBottom: '1px solid var(--line)', scrollSnapType: 'x proximity',
           }}>
             {liveCategories.map(cat => {
               const active = isActive(cat.path);
               return (
                 <button key={cat.path} onClick={() => go(cat.path)}
-                  // Which category you are IN, said out loud. It was a border
-                  // colour and a glow and nothing else, so a screen reader read
-                  // four identical buttons. `aria-current="page"` because these
-                  // navigate — they are not a toggle.
+                  // Which category you are IN, said out loud. `aria-current="page"`
+                  // because these navigate — they are not a toggle.
                   aria-current={active ? 'page' : undefined}
+                  title={cat.sub}
                   style={{
-                  flex: 'none', width: 158, height: 60, borderRadius: 14, padding: '0 14px', display: 'flex',
-                  alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer',
-                  background: active ? 'linear-gradient(135deg,var(--surface2),var(--surface3))' : 'var(--surface)',
+                  flex: 'none', height: 36, borderRadius: 999, padding: '0 14px 0 10px', display: 'flex',
+                  alignItems: 'center', gap: 7, cursor: 'pointer', scrollSnapAlign: 'start', whiteSpace: 'nowrap',
+                  background: active ? `color-mix(in srgb, ${cat.accent} 16%, var(--surface))` : 'var(--surface)',
                   border: `1.5px solid ${active ? cat.accent : 'var(--line)'}`,
-                  boxShadow: active ? `0 0 18px -4px ${cat.accent}` : 'var(--shadow-sm)', position: 'relative', overflow: 'hidden',
                 }}>
-                  <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.15, textAlign: 'left', minWidth: 0 }}>
-                    <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 12, letterSpacing: '.03em', color: cat.accent, whiteSpace: 'nowrap' }}>{cat.title}</span>
-                    <span style={{ fontSize: 9, fontWeight: 600, color: 'var(--text2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 96 }}>{cat.sub}</span>
-                  </span>
-                  <span style={{ fontSize: 26, lineHeight: 1, filter: `drop-shadow(0 0 8px ${cat.accent})` }}>{cat.icon}</span>
+                  <span aria-hidden="true" style={{ fontSize: 16, lineHeight: 1 }}>{cat.icon}</span>
+                  <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 12, letterSpacing: '.03em', color: active ? cat.accent : 'var(--text)' }}>{cat.title}</span>
                 </button>
               );
             })}
-          </div>
+          </nav>
 
           <div key={location.pathname} className="bb-rise" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
             {children}

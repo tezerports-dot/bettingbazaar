@@ -7,15 +7,17 @@
  *   • `UrgencyChips`      — LIVE pill, timer tone, "Closing 0:09" chip
  *   • `ResultCelebration` — the winning side large, and this player's own
  *                            payout counting up (from their `payout_success`)
- *   • `PromoCardsRow`     — the published HOME cards (Admin › Page Slides)
+ *   • `useHomeCards`      — the published HOME cards (Admin › Page Slides),
+ *                            beside the game on a laptop (`BoardArt.tsx`),
+ *                            in `PromoCarousel` under the header on a phone
  *   • `UnlockBar`         — the General wallet's unlock progress
  *
  * None of them shows a figure the platform does not already send this player.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { MY_PAYOUT_EVENT } from '../services/GameContext';
-import { getAssetUrl, getBackend } from '../services/backend.service';
-import type { PromoContent } from '../types';
+import { getBackend } from '../services/backend.service';
+import { PromoCard, type HomeCard } from './BoardArt';
 import { fmt } from './format';
 
 // ── Timer tone ───────────────────────────────────────────────────────────────
@@ -133,28 +135,65 @@ export const ResultCelebration: React.FC<{ result: { cycleId?: string; winner?: 
   );
 };
 
-// ── Promo cards row ──────────────────────────────────────────────────────────
-/** The published HOME cards, most important first; nothing at all when none. */
-export const PromoCardsRow: React.FC = () => {
-  const [cards, setCards] = useState<PromoContent[] | null>(null);
-  const alive = useRef(true);
+// ── Promo cards ──────────────────────────────────────────────────────────────
+/** The published HOME cards with an image, most important first; [] when off. */
+export function useHomeCards(enabled: boolean): HomeCard[] {
+  const [cards, setCards] = useState<HomeCard[]>([]);
   useEffect(() => {
-    alive.current = true;
-    getBackend().getPublicContent('HOME').then(c => { if (alive.current) setCards(c.filter(x => x.fileUrl)); }).catch(() => { if (alive.current) setCards([]); });
-    return () => { alive.current = false; };
-  }, []);
-  if (!cards || cards.length === 0) return null;
+    if (!enabled) { setCards([]); return; }
+    let alive = true;
+    getBackend().getPublicContent('HOME')
+      .then(c => { if (alive) setCards((c as unknown as HomeCard[]).filter(x => x.fileUrl)); })
+      .catch(() => { if (alive) setCards([]); });
+    return () => { alive = false; };
+  }, [enabled]);
+  return cards;
+}
+
+/**
+ * Phone and tablet: the cards as a carousel right under the header (owner,
+ * 2026-10-10: "dont crop the promo size", "slides through those left right
+ * easily"). Each card is shown whole at its own proportions, one per view
+ * with the next peeking in, snapping as it is swiped; the dots say where you
+ * are and take you to a card.
+ */
+export const PromoCarousel: React.FC<{ cards: HomeCard[] }> = ({ cards }) => {
+  const track = useRef<HTMLDivElement | null>(null);
+  const [at, setAt] = useState(0);
+  if (cards.length === 0) return null;
+  const onScroll = () => {
+    const el = track.current;
+    if (!el || !el.firstElementChild) return;
+    const w = (el.firstElementChild as HTMLElement).offsetWidth + 10;
+    setAt(Math.max(0, Math.min(cards.length - 1, Math.round(el.scrollLeft / w))));
+  };
+  const goTo = (i: number) => {
+    const el = track.current;
+    const card = el?.children[i] as HTMLElement | undefined;
+    if (el && card) el.scrollTo({ left: card.offsetLeft - el.offsetLeft - 14, behavior: 'smooth' });
+  };
+  const one = cards.length === 1;
   return (
-    <div role="list" aria-label="Promotions" className="bb-noscroll" style={{ display: 'flex', gap: 10, overflowX: 'auto', padding: '2px 2px 10px', scrollSnapType: 'x mandatory' }}>
-      {cards.map(c => (
-        <div role="listitem" key={c.id} style={{ flex: '0 0 auto', width: 'min(78%, 300px)', scrollSnapAlign: 'start', position: 'relative', borderRadius: 14, overflow: 'hidden', border: '1px solid var(--line)', background: 'var(--surface)' }}>
-          <img src={getAssetUrl(c.fileUrl)} alt={c.title || 'Promotion'} loading="lazy" style={{ display: 'block', width: '100%', aspectRatio: '16 / 7', objectFit: 'cover' }} />
-          <span style={{ position: 'absolute', top: 8, left: 8, padding: '2px 8px', borderRadius: 999, background: 'rgba(0,0,0,.6)', color: '#fff', fontSize: 9, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase' }}>
-            {c.title || 'Promotion'}
-          </span>
+    <section aria-label="Promotions" style={{ flex: 'none', padding: '10px 0 4px' }}>
+      <div ref={track} onScroll={onScroll} className="bb-noscroll" style={{
+        display: 'flex', gap: 10, overflowX: 'auto', padding: '0 14px', alignItems: 'flex-start',
+        scrollSnapType: 'x mandatory', scrollPaddingInline: 14, overscrollBehaviorX: 'contain', WebkitOverflowScrolling: 'touch',
+      }}>
+        {cards.map((c, i) => (
+          <div key={c.promoId ?? c.id ?? i} style={{ flex: `0 0 ${one ? '100%' : '88%'}`, maxWidth: 560, scrollSnapAlign: 'start' }}>
+            <PromoCard card={c} whole />
+          </div>
+        ))}
+      </div>
+      {!one && (
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginTop: 8 }}>
+          {cards.map((c, i) => (
+            <button key={c.promoId ?? c.id ?? i} type="button" onClick={() => goTo(i)} aria-label={`Promotion ${i + 1} of ${cards.length}`} aria-current={i === at ? 'true' : undefined}
+              style={{ width: i === at ? 18 : 6, height: 6, padding: 0, border: 'none', borderRadius: 999, cursor: 'pointer', background: i === at ? 'var(--gold)' : 'var(--line2)', transition: 'width .2s' }} />
+          ))}
         </div>
-      ))}
-    </div>
+      )}
+    </section>
   );
 };
 

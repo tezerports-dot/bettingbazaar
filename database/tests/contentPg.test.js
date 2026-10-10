@@ -132,6 +132,19 @@ describe('content', () => {
     expect((await listLivePromos('HOME')).map((p) => p.title)).toEqual(['high', 'low']);
   });
 
+  it('carries a card\'s link to the player, and changes or clears it on edit', async () => {
+    const p = await upsertPromo({ title: 'refer', location: 'HOME', fileUrl: 'u', linkUrl: '/referrals', status: 'PUBLISHED', isActive: true });
+    expect((await listLivePromos('HOME'))[0].linkUrl).toBe('/referrals');
+    expect((await updatePromo(p.promoId, { linkUrl: 'https://t.me/x' })).linkUrl).toBe('https://t.me/x');
+    expect((await updatePromo(p.promoId, { linkUrl: null })).linkUrl).toBeNull();
+  });
+
+  it.each(['javascript:alert(1)', 'http://example.com', '//evil.example', 'referrals'])(
+    'the row refuses a card link %s, whoever writes it', async (link) => {
+      await expect(upsertPromo({ title: 'bad', location: 'HOME', fileUrl: 'u', linkUrl: link }))
+        .rejects.toThrow(/promo_link_known/);
+    });
+
   // ── The image library ─────────────────────────────────────────────────────
   it('refuses to delete an image something still points at', async () => {
     const image = await addImage({ url: 'https://cdn/logo.png', title: 'Logo', category: 'logo' });

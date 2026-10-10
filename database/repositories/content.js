@@ -113,31 +113,32 @@ const toPromo = (r) => (r ? {
   promoId: r.promo_id, _id: r.promo_id,
   title: r.title, description: r.description,
   type: r.kind, location: r.location, mediaType: r.media_type,
-  fileUrl: r.file_url, priority: r.priority, status: r.status,
+  fileUrl: r.file_url, linkUrl: r.link_url ?? null, priority: r.priority, status: r.status,
   isActive: r.is_active, createdBy: r.created_by,
   createdAt: r.created_at, updatedAt: r.updated_at,
 } : null);
 
 export async function upsertPromo({
   promoId = null, title = '', description = '', kind = 'BANNER', location = 'HOME',
-  mediaType = 'IMAGE', fileUrl = null, priority = 0, status = 'DRAFT',
+  mediaType = 'IMAGE', fileUrl = null, linkUrl = null, priority = 0, status = 'DRAFT',
   isActive = false, createdBy = null,
 }) {
   const id = String(promoId || newId());
   const { rows } = await pgQuery(
     `INSERT INTO promo_content (promo_id, title, description, kind, location,
-       media_type, file_url, priority, status, is_active, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       media_type, file_url, priority, status, is_active, created_by, link_url)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
      ON CONFLICT (promo_id) DO UPDATE SET
        title = EXCLUDED.title, description = EXCLUDED.description,
        kind = EXCLUDED.kind, location = EXCLUDED.location,
        media_type = EXCLUDED.media_type, file_url = EXCLUDED.file_url,
+       link_url = EXCLUDED.link_url,
        priority = EXCLUDED.priority, status = EXCLUDED.status,
        is_active = EXCLUDED.is_active, updated_at = now()
      RETURNING *`,
     [id, String(title), String(description), String(kind), String(location),
       String(mediaType), fileUrl, Number(priority) || 0, String(status),
-      Boolean(isActive), createdBy], 'promo_upsert',
+      Boolean(isActive), createdBy, linkUrl || null], 'promo_upsert',
   );
   return toPromo(rows[0]);
 }
@@ -181,7 +182,7 @@ export async function listPromos({ location = null, status = null, limit = 100 }
 export async function updatePromo(promoId, patch = {}) {
   const COLUMN = {
     title: 'title', description: 'description', kind: 'kind', type: 'kind',
-    location: 'location', mediaType: 'media_type', fileUrl: 'file_url',
+    location: 'location', mediaType: 'media_type', fileUrl: 'file_url', linkUrl: 'link_url',
     priority: 'priority', status: 'status', isActive: 'is_active',
   };
   const sets = []; const params = [String(promoId)];

@@ -1580,6 +1580,13 @@ CREATE TABLE IF NOT EXISTS promo_content (
 );
 CREATE INDEX IF NOT EXISTS promo_content_live_idx
   ON promo_content (location, priority DESC) WHERE status = 'PUBLISHED' AND is_active;
+-- Where a tapped card goes (owner, 2026-10-10): a page of the player app
+-- ('/referrals') or an https link; NULL = not clickable. Nothing else, so a
+-- card cannot carry a javascript: or plain-http link.
+ALTER TABLE promo_content ADD COLUMN IF NOT EXISTS link_url TEXT;
+ALTER TABLE promo_content DROP CONSTRAINT IF EXISTS promo_link_known;
+ALTER TABLE promo_content ADD CONSTRAINT promo_link_known CHECK (
+  link_url IS NULL OR link_url ~ '^/[A-Za-z0-9/_-]*$' OR link_url ~ '^https://[^\s]+$');
 
 CREATE TABLE IF NOT EXISTS faqs (
   faq_id       TEXT PRIMARY KEY,

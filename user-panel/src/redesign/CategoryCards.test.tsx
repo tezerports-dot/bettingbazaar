@@ -55,6 +55,8 @@ vi.mock('../services/GameContext', () => ({
     isOnline: true, logout: vi.fn(), setAudience: () => {},
   }),
   spendableBalance: () => 0,
+  useBoardExtras: () => ({ urgencyChips: true, closingWarnSeconds: 10, resultCelebration: true, bonusProgress: true, promoCards: false }),
+  MY_PAYOUT_EVENT: 'bb:my-payout',
 }));
 vi.mock('./ThemeContext', () => ({
   useTheme: () => ({ theme: 'dark', setTheme: vi.fn(), toggle: vi.fn() }),

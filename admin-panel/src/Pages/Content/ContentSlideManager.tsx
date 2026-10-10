@@ -5,16 +5,17 @@
  * Admin page to manage full-screen image slides for:
  *   - TRICKS_PAGE  → user Promo / Tips & Tricks page
  *   - RULES_PAGE   → user Rules / How to Play page
- *   - HOME         → the promo cards row on the player's Home, above the board
- *                    (owner, 2026-10-10; shown while Admin › Player Screen's
- *                    "Promo cards row" is on). The title is the card's label.
+ *   - HOME         → promo cards in the board's side columns (laptop) and below
+ *                    the game (phone, tablet) (owner, 2026-10-10; shown while
+ *                    Admin › Player Screen's "Promo cards" is on). The title is
+ *                    the card's label; `linkUrl` is where a tap goes.
  *
  * Each slide = one PromoContent document with:
  *   location : TRICKS_PAGE | RULES_PAGE | HOME
  *   fileUrl  : CDN URL of the image
  *   title    : caption shown below image (optional)
  *   priority : sort order (higher = shown first)
- *   status   : ACTIVE | INACTIVE
+ *   status   : PUBLISHED | DRAFT (ACTIVE is read as PUBLISHED)
  *
  * Admin can:
  *   1. Upload images directly (presigned S3 URL flow)
@@ -42,10 +43,16 @@ interface Slide {
   title?: string;
   fileUrl?: string;
   priority: number;
-  status: 'ACTIVE' | 'INACTIVE';
+  // The server answers its own vocabulary (`PUBLISHED`/`DRAFT`/`ARCHIVED`,
+  // content.admin.routes.js `PROMO_STATUS`); `ACTIVE` is accepted as PUBLISHED.
+  status: 'PUBLISHED' | 'DRAFT' | 'ARCHIVED' | 'ACTIVE';
+  /** Home cards: where a tap goes (an app page like /referrals, or https). */
+  linkUrl?: string | null;
   location: Location;
   createdAt: string;
 }
+
+const isLive = (slide: Slide) => slide.status === 'PUBLISHED' || slide.status === 'ACTIVE';
 
 const TABS: { key: Location; label: string; icon: React.ReactNode }[] = [
   { key: 'TRICKS_PAGE', label: 'Tips & Tricks', icon: <Lightbulb size={15} /> },
@@ -61,7 +68,7 @@ export const ContentSlideManager: React.FC = () => {
   const [confirmDel, setConfirmDel] = useState<Slide | null>(null);
 
   // Form state
-  const [form, setForm] = useState({ title: '', fileUrl: '', priority: 0, urlMode: true });
+  const [form, setForm] = useState({ title: '', fileUrl: '', linkUrl: '', priority: 0, urlMode: true });
   const [uploading, setUploading]   = useState(false);
   const [saving, setSaving]         = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -119,22 +126,25 @@ export const ContentSlideManager: React.FC = () => {
         location:  activeTab,
         mediaType: 'IMAGE',
         priority:  form.priority,
-        status:    'ACTIVE',
+        status:    'PUBLISHED',
+        ...(activeTab === 'HOME' ? { linkUrl: form.linkUrl.trim() } : {}),
       });
       toast.success('Slide added');
       setShowAdd(false);
-      setForm({ title: '', fileUrl: '', priority: 0, urlMode: true });
+      setForm({ title: '', fileUrl: '', linkUrl: '', priority: 0, urlMode: true });
       loadSlides();
-    } catch { toast.error('Failed to save slide'); }
+    } catch (e: any) { toast.error(e?.response?.data?.message || 'Failed to save slide'); }
     finally { setSaving(false); }
   };
 
   const toggleStatus = async (slide: Slide) => {
-    const newStatus = slide.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+    // Hiding sends DRAFT: the server has no INACTIVE, and answered the old
+    // toggle with 400 "Unknown promo status", so a slide could not be hidden.
+    const newStatus = isLive(slide) ? 'DRAFT' : 'PUBLISHED';
     try {
       await api.put(`/api/admin/promo/${slide._id}`, { status: newStatus });
       setSlides(prev => prev.map(s => s._id === slide._id ? { ...s, status: newStatus } : s));
-      toast.success(newStatus === 'ACTIVE' ? 'Slide published' : 'Slide hidden');
+      toast.success(newStatus === 'PUBLISHED' ? 'Slide published' : 'Slide hidden');
     } catch { toast.error('Failed to update status'); }
   };
 
@@ -182,9 +192,9 @@ export const ContentSlideManager: React.FC = () => {
 
       {/* Slide count info */}
       <div className="text-xs text-gray-500">
-        {slides.filter(s => s.status === 'ACTIVE').length} active slide(s) •&nbsp;
-        {slides.filter(s => s.status === 'INACTIVE').length} hidden —&nbsp;
-        users see active slides in swipeable full-screen view
+        {slides.filter(isLive).length} active slide(s) •&nbsp;
+        {slides.filter(s => !isLive(s)).length} hidden —&nbsp;
+        {activeTab === 'HOME' ? 'players see active cards beside the game' : 'users see active slides in swipeable full-screen view'}
       </div>
 
       {/* Grid */}
@@ -206,7 +216,7 @@ export const ContentSlideManager: React.FC = () => {
             <div
               key={slide._id}
               className={`relative rounded-xl overflow-hidden border transition-all
-                ${slide.status === 'ACTIVE'
+                ${isLive(slide)
                   ? 'border-gold-500/40 shadow-[0_0_12px_rgba(var(--gold-rgb),0.15)]'
                   : 'border-dark-600 opacity-50 grayscale'}`}
             >
@@ -231,6 +241,9 @@ export const ContentSlideManager: React.FC = () => {
                 {slide.title && (
                   <p className="text-white text-xs font-medium truncate">{slide.title}</p>
                 )}
+                {slide.linkUrl && (
+                  <p className="text-[10px] text-gold-400 truncate">→ {slide.linkUrl}</p>
+                )}
                 <div className="flex items-center justify-between">
                   {/* Priority arrows */}
                   <div className="flex gap-0.5">
@@ -253,10 +266,11 @@ export const ContentSlideManager: React.FC = () => {
                   <div className="flex gap-0.5">
                     <button
                       onClick={() => toggleStatus(slide)}
-                      className={`p-1 rounded-sm ${slide.status === 'ACTIVE' ? 'bg-green-600/60 hover:bg-green-600' : 'bg-gray-600/60 hover:bg-gray-600'}`}
-                      title={slide.status === 'ACTIVE' ? 'Hide from users' : 'Publish'}
+                      className={`p-1 rounded-sm ${isLive(slide) ? 'bg-green-600/60 hover:bg-green-600' : 'bg-gray-600/60 hover:bg-gray-600'}`}
+                      title={isLive(slide) ? 'Hide from users' : 'Publish'}
+                      aria-label={isLive(slide) ? 'Hide from users' : 'Publish'}
                     >
-                      {slide.status === 'ACTIVE' ? <Eye size={10} /> : <EyeOff size={10} />}
+                      {isLive(slide) ? <Eye size={10} /> : <EyeOff size={10} />}
                     </button>
                     <button
                       onClick={() => setConfirmDel(slide)}
@@ -276,7 +290,7 @@ export const ContentSlideManager: React.FC = () => {
 
       {/* Add Slide Modal */}
       {showAdd && (
-        <Modal isOpen onClose={() => { setShowAdd(false); setForm({ title: '', fileUrl: '', priority: 0, urlMode: true }); }} title="Add Slide">
+        <Modal isOpen onClose={() => { setShowAdd(false); setForm({ title: '', fileUrl: '', linkUrl: '', priority: 0, urlMode: true }); }} title="Add Slide">
           <div className="space-y-4">
             <p className="text-xs text-gray-400">
               Adding to: <span className="text-white font-medium">{TABS.find(t => t.key === activeTab)?.label}</span>
@@ -359,6 +373,23 @@ export const ContentSlideManager: React.FC = () => {
                 className="input"
               />
             </div>
+
+            {activeTab === 'HOME' && (
+              <div>
+                <label className="label" htmlFor="card-link">Opens when tapped (optional)</label>
+                <input id="card-link"
+                  type="text"
+                  value={form.linkUrl}
+                  onChange={e => setForm(f => ({ ...f, linkUrl: e.target.value }))}
+                  placeholder="/referrals or https://t.me/yourchannel"
+                  className="input"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  A page of the app (/referrals, /wallet, /promo) or a full https:// link, which opens in a new tab.
+                  Empty = the card is not clickable. The card shows in the board's side columns on laptops and below the game on phones.
+                </p>
+              </div>
+            )}
 
             <div>
               <label className="label" htmlFor="priority-higher-shown-first">Priority (higher = shown first)</label>

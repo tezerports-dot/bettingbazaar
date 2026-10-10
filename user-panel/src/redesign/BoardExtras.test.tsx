@@ -6,7 +6,7 @@
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
-import { LATE_PAYOUT_MS, ResultCelebration, UnlockBar, UrgencyChips, timerTone, unlockProgress } from './BoardExtras';
+import { LATE_PAYOUT_MS, PromoCarousel, ResultCelebration, UnlockBar, UrgencyChips, timerTone, unlockProgress } from './BoardExtras';
 import { MY_PAYOUT_EVENT } from '../services/GameContext';
 
 describe('timerTone', () => {
@@ -93,5 +93,30 @@ describe('unlock progress', () => {
     render(<UnlockBar grants={[{ requiredTurnover: 250, turnover: 50 }]} />);
     expect(screen.getByRole('progressbar', { name: 'Bonus unlock' })).toHaveAttribute('aria-valuenow', '20');
     expect(screen.getByText(/₹50 of ₹250 played · 20%/)).toBeInTheDocument();
+  });
+});
+
+describe('PromoCarousel (phone, under the header)', () => {
+  const cards = [
+    { promoId: 'a', title: 'Refer & Earn', fileUrl: 'https://cdn.example/a.png', linkUrl: '/referrals' },
+    { promoId: 'b', title: 'Channel', fileUrl: 'https://cdn.example/b.png', linkUrl: 'https://t.me/x' },
+  ];
+  it('shows every card whole, never cropped, each opening its own link', () => {
+    render(<PromoCarousel cards={cards} />);
+    for (const img of screen.getAllByRole('img')) {
+      expect(img.style.objectFit).toBe('');
+      expect(img.style.height).toBe('auto');
+    }
+    expect(screen.getByRole('link', { name: 'Refer & Earn' })).toHaveAttribute('href', '#/referrals');
+    expect(screen.getByRole('link', { name: 'Channel' })).toHaveAttribute('target', '_blank');
+  });
+  it('has a dot per card, the first marked as current', () => {
+    render(<PromoCarousel cards={cards} />);
+    expect(screen.getByRole('button', { name: 'Promotion 1 of 2' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('button', { name: 'Promotion 2 of 2' })).not.toHaveAttribute('aria-current');
+  });
+  it('shows nothing with no cards', () => {
+    const { container } = render(<PromoCarousel cards={[]} />);
+    expect(container).toBeEmptyDOMElement();
   });
 });

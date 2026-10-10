@@ -38,8 +38,8 @@ const SWITCHES: { key: Exclude<keyof BoardExtras, 'closingWarnSeconds'>; label: 
     what: 'The winning side in large type and, for a player who won, their own payout counting up.' },
   { key: 'bonusProgress', label: 'Bonus unlock bar', where: 'Wallet › General wallet',
     what: "How much of the referral bonus's play requirement is done, as a bar." },
-  { key: 'promoCards', label: 'Promo cards row', where: 'Home, above the board',
-    what: 'The cards published under Content › Page Slides › Home cards. With none published, nothing shows.' },
+  { key: 'promoCards', label: 'Promo cards', where: "Board side columns (laptop); below the game (phone, tablet)",
+    what: 'The cards published under Content › Page Slides › Home promo cards, each opening its own link. Off, or with none published, the side columns show the built-in artwork instead.' },
 ];
 
 export const PlayerScreenSettings: React.FC = () => {
