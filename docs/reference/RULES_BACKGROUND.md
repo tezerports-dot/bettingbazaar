@@ -1593,6 +1593,18 @@ responses are the SSE ones (`sseManager.service.js` and `sse.routes.js`, both
 covered by the one filter); `backup.service.js`'s stream is an upload to S3,
 not a response. One instance, one place, fixed.
 
+**2026-10-10: the streams are compressed again, and still flushed in one
+place.** `middleware/eventStreamCompression.js` gives each stream its own gzip
+context created with `flush: Z_SYNC_FLUSH`, so the compressor pushes out every
+write itself and no write site calls anything. Not `res.flush()`: that is a
+FULL flush, which discards the shared context, and measured 67% smaller where
+the sync flush measured 88-90%. On a running server, 60 events over 200 s of
+the public stream: 56,301 bytes plain, 5,335 on the wire, every event
+delivered as sent (curl with `Accept-Encoding: gzip, deflate, br`). MessagePack
+was measured first and rejected: SSE is text, so it must be base64'd, which
+made the stream 4% LARGER than JSON. `eventStreamCompression.test.js` asks as
+a browser does and fails if an event waits, or if a full flush returns.
+
 **S38 capped this platform at 30 authenticated requests a second, and every
 tier was green.** Token verification ran on tweetnacl's pure-JS Ed25519.
 MEASURED, 1,000 verifications of a real token on this container:
