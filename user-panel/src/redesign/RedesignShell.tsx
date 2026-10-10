@@ -209,10 +209,6 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
       flex: 'none', width: railOpen ? 232 : 68, transition: 'width .18s ease', overflowY: 'auto', overflowX: 'hidden',
       background: 'var(--surface)', borderRight: '1px solid var(--line)', display: 'flex', flexDirection: 'column', padding: '10px 10px 14px',
     }}>
-      <button type="button" onClick={toggleRail} aria-label={railOpen ? 'Collapse menu' : 'Expand menu'} aria-expanded={railOpen} style={{
-        alignSelf: railOpen ? 'flex-end' : 'center', width: 36, height: 36, borderRadius: 10, border: '1px solid var(--line)',
-        background: 'var(--surface2)', color: 'var(--text2)', cursor: 'pointer', fontSize: 14, marginBottom: 6,
-      }}>{railOpen ? '«' : '»'}</button>
       {MENU_SECTIONS.map(sec => (
         <div key={sec.title} style={{ marginTop: 6 }}>
           {railOpen
@@ -236,6 +232,15 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
         </div>
       ))}
       <div style={{ flex: 1 }} />
+      {isAuthenticated && (
+        <button type="button" onClick={() => { logout(); navigate('/'); }} title={railOpen ? undefined : 'Sign Out'} aria-label={railOpen ? undefined : 'Sign Out'} style={{
+          width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: railOpen ? '9px 10px' : '9px 0', justifyContent: railOpen ? 'flex-start' : 'center',
+          border: 'none', borderRadius: 10, cursor: 'pointer', textAlign: 'left', marginTop: 12, background: 'transparent', color: 'var(--red)',
+        }}>
+          <span aria-hidden="true" style={{ width: 30, height: 30, flex: 'none', borderRadius: 9, background: 'color-mix(in srgb,var(--red) 8%,transparent)', border: '1px solid color-mix(in srgb,var(--red) 35%,transparent)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>🚪</span>
+          {railOpen && <span style={{ fontSize: 13, fontWeight: 700 }}>Sign Out</span>}
+        </button>
+      )}
       {!isAuthenticated && railOpen && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
           <button type="button" onClick={() => openAuth('login')} style={{ padding: 10, borderRadius: 11, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>Sign In</button>
@@ -256,7 +261,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
           phone it grew under the buttons on both sides.
         */}
         <header style={{
-          flex: 'none', height: 60, display: 'grid', gridTemplateColumns: 'auto minmax(0,1fr) auto', alignItems: 'center',
+          flex: 'none', height: 60, display: 'grid', gridTemplateColumns: laptop ? 'auto auto minmax(0,1fr) auto' : 'auto minmax(0,1fr) auto', alignItems: 'center',
           gap: compact ? 8 : 12, padding: compact ? '0 10px' : '0 14px', background: 'color-mix(in srgb, var(--bg) 82%, transparent)', backdropFilter: 'blur(14px)',
           borderBottom: '1px solid var(--line)', position: 'relative', zIndex: 60,
         }}>
@@ -277,6 +282,15 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             working — the drawer's own Sign In button has always called it. Only
             this button was wired to the wrong half.
           */}
+          {/* A laptop's menu is the side rail, so its one menu button sits on
+              the same (left) side and folds the rail (owner, 2026-10-10). */}
+          {laptop && (
+            <button onClick={toggleRail} aria-label={railOpen ? 'Collapse menu' : 'Expand menu'} aria-expanded={railOpen} style={{ ...iconBtn, color: 'var(--text)' }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
+                <line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="20" y2="17" />
+              </svg>
+            </button>
+          )}
           <button onClick={() => (isAuthenticated ? go('/wallet') : openAuth('login'))} style={{
             display: 'flex', alignItems: 'center', gap: compact ? 6 : 9, background: 'var(--pill)', border: '1px solid var(--pill-line)',
             padding: compact ? '6px 10px 6px 6px' : '7px 13px 7px 8px', borderRadius: 999, cursor: 'pointer', boxShadow: 'var(--shadow-sm)',
@@ -321,11 +335,15 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
                 {theme === 'dark' ? '☀️' : '🌙'}
               </button>
             )}
-            <button onClick={openMenu} aria-label="Menu" style={{ ...iconBtn, color: 'var(--text)' }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
-                <line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="20" y2="17" />
-              </svg>
-            </button>
+            {laptop
+              ? <NotificationBell isAuthenticated={isAuthenticated} />
+              : (
+                <button onClick={openMenu} aria-label="Menu" style={{ ...iconBtn, color: 'var(--text)' }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
+                    <line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="20" y2="17" />
+                  </svg>
+                </button>
+              )}
           </div>
         </header>
 
