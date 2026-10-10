@@ -9,18 +9,39 @@
 // (`GET /api/v1/boards`): boards are rows an admin creates (owner, 2026-10-08),
 // so a table keyed by board would miss every board created after it.
 
-/** The chip ladder's multiples of the board's minimum stake. */
-const CHIP_MULTIPLES = [1, 3, 9, 27, 81];
+/**
+ * The quick-bet chip ladder (owner, 2026-10-10): 10 · 30 · 90 · 270 · 810 on
+ * every board, and a 10× switch that scales the whole ladder up or down a
+ * step at a time (100 … 8,100, then 1,000 … 81,000).
+ */
+export const CHIP_LADDER = [10, 30, 90, 270, 810];
+export const CHIP_SCALE_STEP = 10;
 
 /**
- * Quick-bet chips for a board (§11: UI only; the server holds the stake to the
- * board's bounds): its minimum and 3×, 9×, 27×, 81× it, none above its maximum.
- * A ₹10 board gets 10 / 30 / 90 / 270 / 810, a ₹100 board 100 … 8,100 — the
- * ladders the original boards had.
+ * The scales a board can show (§11: UI only; the server holds every stake to
+ * the board's bounds). A scale is a power of `CHIP_SCALE_STEP`: the lowest is
+ * the first whose bottom chip reaches the board's minimum stake, the highest
+ * the last whose bottom chip is still within its maximum. A ₹10 board opens at
+ * 10 … 810; a ₹100 board at 100 … 8,100 and cannot go below it.
  */
-export function chipsFor(board?: { minBet: number; maxBet: number } | null): number[] {
-  if (!board || !(board.minBet > 0)) return [];
-  return CHIP_MULTIPLES.map((m) => board.minBet * m).filter((v) => v <= board.maxBet);
+export function chipScales(board?: { minBet: number; maxBet: number } | null): { min: number; max: number } | null {
+  if (!board || !(board.minBet > 0) || !(board.maxBet >= board.minBet)) return null;
+  let min = 0;
+  while (CHIP_LADDER[0] * CHIP_SCALE_STEP ** min < board.minBet) min++;
+  let max = min;
+  while (CHIP_LADDER[0] * CHIP_SCALE_STEP ** (max + 1) <= board.maxBet) max++;
+  return { min, max };
+}
+
+/**
+ * Quick-bet chips for a board at a scale (default: its lowest): the ladder
+ * times `CHIP_SCALE_STEP ** scale`, none outside the board's stake bounds.
+ */
+export function chipsFor(board?: { minBet: number; maxBet: number } | null, scale?: number): number[] {
+  const range = chipScales(board);
+  if (!board || !range) return [];
+  const k = Math.max(range.min, Math.min(range.max, scale ?? range.min));
+  return CHIP_LADDER.map((v) => v * CHIP_SCALE_STEP ** k).filter((v) => v >= board.minBet && v <= board.maxBet);
 }
 
 // ANALYTICS_WINDOW — how many past results a board's streak analytics cover,
@@ -36,7 +57,7 @@ export function chipsFor(board?: { minBet: number; maxBet: number } | null): num
 // four years of a board that produces one result a day.
 //
 // Read through `analyticsWindowFor` by `redesign/analytics.ts`, `GameContext`
-// (the per-board cap when merging history), `AnalyticsDrawer` and
+// (the per-board cap when merging history), `AnalyticsPanel` and
 // `HistoryPage`. The server enforces its own ceiling independently
 // (backend/domains/markets/cycleHistory.service.js).
 export const ANALYTICS_WINDOW = Object.freeze({ INTERVAL: 1440, DAILY: 30 });

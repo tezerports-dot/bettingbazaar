@@ -24,7 +24,7 @@ import AuthModal from '../components/Modals/AuthModal';
 import NotificationBell from '../components/Layout/NotificationBell';
 import ShareModal from '../components/Modals/ShareModal';
 import AnnouncementBanner from '../components/AnnouncementBanner';
-import { brandLogo } from '../services/brandAssets';
+import { useHeaderLogo } from '../services/brandAssets';
 import { ProfileSwitch, usePlayProfile } from './ProfileSwitch';
 
 interface ShellContextValue {
@@ -119,7 +119,11 @@ const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '';
 const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { user, isAuthenticated, logout, setAudience } = useGame();
   const { theme, toggleTheme } = useTheme();
-  const { desktop } = useViewport();
+  const { desktop, vw } = useViewport();
+  // A phone narrower than this cannot hold the wallet pill, the wordmark and
+  // four 40px buttons on one row, so the buttons shrink and the theme switch
+  // moves into the menu (where it is always offered too).
+  const compact = vw < 420;
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -128,7 +132,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [logoFailed, setLogoFailed] = useState(false);
 
-  const logoSrc = brandLogo('logo-header.png');
+  const logoSrc = useHeaderLogo();
   // ── DELIBERATELY deposit + winnings, and NOT the reserve ──────────────────
   // This pill is smaller than the total on the wallet screen, on purpose. The
   // reserve is not freely spendable — only `betReservePercent` of a stake may
@@ -170,8 +174,9 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   );
   const isActive = (path: string) => (path === '/' ? location.pathname === '/' : location.pathname.startsWith(path));
 
+  const iconSize = compact ? 34 : 40;
   const iconBtn: React.CSSProperties = {
-    width: 40, height: 40, borderRadius: 12, border: '1px solid var(--line)',
+    flex: 'none', width: iconSize, height: iconSize, borderRadius: 12, border: '1px solid var(--line)',
     background: 'var(--surface2)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
   };
 
@@ -179,9 +184,15 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
     <ShellContext.Provider value={ctx}>
       <div className="bb-app" data-theme={theme}>
         {/* ░░ TOP BAR ░░ */}
+        {/*
+          Three columns, not an absolutely-centred logo: the wordmark gets
+          exactly the room the pill and the buttons leave, and scales down
+          into it. Centred over the whole bar it was sized in pixels, so on a
+          phone it grew under the buttons on both sides.
+        */}
         <header style={{
-          flex: 'none', height: 60, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
-          padding: '0 14px', background: 'color-mix(in srgb, var(--bg) 82%, transparent)', backdropFilter: 'blur(14px)',
+          flex: 'none', height: 60, display: 'grid', gridTemplateColumns: 'auto minmax(0,1fr) auto', alignItems: 'center',
+          gap: compact ? 8 : 12, padding: compact ? '0 10px' : '0 14px', background: 'color-mix(in srgb, var(--bg) 82%, transparent)', backdropFilter: 'blur(14px)',
           borderBottom: '1px solid var(--line)', position: 'relative', zIndex: 60,
         }}>
           {/*
@@ -202,16 +213,18 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             this button was wired to the wrong half.
           */}
           <button onClick={() => (isAuthenticated ? go('/wallet') : openAuth('login'))} style={{
-            display: 'flex', alignItems: 'center', gap: 9, background: 'var(--pill)', border: '1px solid var(--pill-line)',
-            padding: '7px 13px 7px 8px', borderRadius: 999, cursor: 'pointer', boxShadow: 'var(--shadow-sm)',
+            display: 'flex', alignItems: 'center', gap: compact ? 6 : 9, background: 'var(--pill)', border: '1px solid var(--pill-line)',
+            padding: compact ? '6px 10px 6px 6px' : '7px 13px 7px 8px', borderRadius: 999, cursor: 'pointer', boxShadow: 'var(--shadow-sm)',
           }}>
-            <span style={{
-              flex: 'none', width: 26, height: 26, borderRadius: '50%',
-              background: 'linear-gradient(to bottom right,var(--gold2),var(--gold))', display: 'flex', alignItems: 'center',
-              justifyContent: 'center', color: '#1a1200', fontWeight: 900, fontSize: 13, border: '1px solid rgba(255,255,255,.2)',
-            }}>₹</span>
+            {!compact && (
+              <span style={{
+                flex: 'none', width: 26, height: 26, borderRadius: '50%',
+                background: 'linear-gradient(to bottom right,var(--gold2),var(--gold))', display: 'flex', alignItems: 'center',
+                justifyContent: 'center', color: '#1a1200', fontWeight: 900, fontSize: 13, border: '1px solid rgba(255,255,255,.2)',
+              }}>₹</span>
+            )}
             <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.05, textAlign: 'left' }}>
-              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)', letterSpacing: '.01em' }}>
+              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: compact ? 13 : 15, color: 'var(--text)', letterSpacing: '.01em', whiteSpace: 'nowrap' }}>
                 {totalBal !== null ? `₹${fmt(totalBal)}` : 'Sign in'}
               </span>
               <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--green)' }}>
@@ -220,23 +233,23 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             </span>
           </button>
 
-          <button onClick={() => go('/')} style={{
-            position: 'absolute', left: '50%', transform: 'translateX(-50%)', background: 'none', border: 'none',
-            cursor: 'pointer', height: '100%', display: 'flex', alignItems: 'center', padding: '0 10px',
+          <button onClick={() => go('/')} aria-label="Home" style={{
+            minWidth: 0, width: '100%', height: '100%', background: 'none', border: 'none', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
           }}>
             {!logoFailed ? (
               <img src={logoSrc} alt="Betting Bazaar" onError={() => setLogoFailed(true)} style={{
-                height: desktop ? 46 : 40, width: 'auto', maxWidth: desktop ? 320 : 240, objectFit: 'contain',
-                filter: 'drop-shadow(0 2px 8px var(--glow))',
+                display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: desktop ? 44 : 36,
+                objectFit: 'contain', filter: 'drop-shadow(0 2px 8px var(--glow))',
               }} />
             ) : (
-              <span className="font-grotesk" style={{ color: 'var(--gold-ink)', fontWeight: 700, fontSize: 20, letterSpacing: '.14em' }}>
+              <span className="font-grotesk" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--gold-ink)', fontWeight: 700, fontSize: compact ? 15 : 20, letterSpacing: '.14em' }}>
                 BETTING&nbsp;BAZAAR
               </span>
             )}
           </button>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: compact ? 6 : 8 }}>
             {/*
               The notification inbox. `notify()` has been persisting rows on
               real events all along — an admin blocking an account writes the
@@ -256,9 +269,11 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             */}
             {general && <ProfileSwitch general={general} choose={choose} error={profileError} />}
             <NotificationBell isAuthenticated={isAuthenticated} />
-            <button onClick={toggleTheme} aria-label="Toggle theme" style={{ ...iconBtn, color: 'var(--gold-ink)', fontSize: 17 }}>
-              {theme === 'dark' ? '☀️' : '🌙'}
-            </button>
+            {!compact && (
+              <button onClick={toggleTheme} aria-label="Toggle theme" style={{ ...iconBtn, color: 'var(--gold-ink)', fontSize: 17 }}>
+                {theme === 'dark' ? '☀️' : '🌙'}
+              </button>
+            )}
             <button onClick={openMenu} aria-label="Menu" style={{ ...iconBtn, color: 'var(--text)' }}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
                 <line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="20" y2="17" />
@@ -378,6 +393,9 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
                 ))}
               </nav>
               <div style={{ flex: 'none', padding: '12px 16px 14px', borderTop: '1px solid var(--line)' }}>
+                <button onClick={toggleTheme} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 10, marginBottom: 10, borderRadius: 12, border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text)', cursor: 'pointer', fontWeight: 700, fontSize: 12 }}>
+                  <span aria-hidden="true">{theme === 'dark' ? '☀️' : '🌙'}</span>{theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                </button>
                 {!isAuthenticated ? (
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={() => openAuth('login')} style={{ flex: 1, padding: 11, borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>Sign In</button>

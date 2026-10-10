@@ -26,12 +26,12 @@ import toast from 'react-hot-toast';
  * deliberately does NOT go through it — a presigned URL rejects an unexpected
  * Authorization header.
  */
-async function uploadBrandingImage(file: File): Promise<string> {
+async function uploadBrandingImage(file: File, category: string): Promise<string> {
   const { data: presign } = await api.post('/api/admin/branding/upload-url', {
     fileName: file.name,
     contentType: file.type,
     fileSize: file.size,
-    category: 'logo',
+    category,
   });
   if (!presign?.uploadUrl) throw new Error(presign?.message || 'Could not get an upload URL');
 
@@ -45,7 +45,7 @@ async function uploadBrandingImage(file: File): Promise<string> {
   await api.post('/api/admin/branding/confirm-upload', {
     fileKey: presign.fileKey,
     cdnUrl: presign.cdnUrl,
-    category: 'logo',
+    category,
     title: file.name,
     fileSize: file.size,
   });
@@ -74,7 +74,11 @@ const CdnUrlField: React.FC<{ id: string; name: string; label: string; hint?: st
     if (!file) return;
     setUploading(true);
     try {
-      onChange(await uploadBrandingImage(file));
+      // Only the Main Logo field uploads as 'logo': the server makes a 'logo'
+      // upload the live logo at once. Every field used to send 'logo', so
+      // uploading a bet-card background or a banner silently replaced the
+      // logo in all three panels.
+      onChange(await uploadBrandingImage(file, name === 'logo' ? 'logo' : 'image'));
       setError(false);
       toast.success('Image uploaded');
     } catch (err: unknown) {

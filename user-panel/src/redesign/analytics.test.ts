@@ -15,7 +15,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { analyticsFor, computeAnalytics, MIN_SAMPLE, Side } from './analytics';
-import { ANALYTICS_WINDOW, analyticsWindowFor, chipsFor } from '../constants';
+import { ANALYTICS_WINDOW, analyticsWindowFor, chipScales, chipsFor } from '../constants';
 import { canPlaceBet, BET_SUBMIT_MARGIN_MS } from '../GAME_CORE';
 
 const run = (n: number, side: Side): Side[] => Array.from({ length: n }, () => side);
@@ -126,10 +126,25 @@ describe('client betting cutoff', () => {
 });
 
 describe('chips', () => {
-  it('ladders from the board\'s minimum, never above its maximum', () => {
+  it('is the 10 · 30 · 90 · 270 · 810 ladder at the board\'s lowest scale', () => {
     expect(chipsFor({ minBet: 10, maxBet: 100000 })).toEqual([10, 30, 90, 270, 810]);
     expect(chipsFor({ minBet: 100, maxBet: 500000 })).toEqual([100, 300, 900, 2700, 8100]);
-    expect(chipsFor({ minBet: 50, maxBet: 500 })).toEqual([50, 150, 450]);
+    expect(chipsFor({ minBet: 50, maxBet: 500 })).toEqual([100, 300]);
     expect(chipsFor(undefined)).toEqual([]);
+  });
+
+  it('scales by 10× steps, within the board\'s bounds', () => {
+    const board = { minBet: 10, maxBet: 100000 };
+    expect(chipScales(board)).toEqual({ min: 0, max: 4 });
+    expect(chipsFor(board, 1)).toEqual([100, 300, 900, 2700, 8100]);
+    expect(chipsFor(board, 2)).toEqual([1000, 3000, 9000, 27000, 81000]);
+    // Above the maximum, the chips that would exceed it are dropped.
+    expect(chipsFor(board, 4)).toEqual([100000]);
+    // A scale outside the range is held to it.
+    expect(chipsFor(board, 9)).toEqual([100000]);
+    expect(chipsFor(board, -3)).toEqual([10, 30, 90, 270, 810]);
+    // A ₹100 board cannot scale down to 10.
+    expect(chipScales({ minBet: 100, maxBet: 500000 })).toEqual({ min: 1, max: 4 });
+    expect(chipScales({ minBet: 0, maxBet: 10 })).toBeNull();
   });
 });
