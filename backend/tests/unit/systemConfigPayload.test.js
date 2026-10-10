@@ -177,7 +177,7 @@ describe('the settlement rail, and the amounts it allows', () => {
 });
 
 // The player screen's extras (Admin › Player Screen, owner 2026-10-10).
-import { SYSTEM_CONFIG_SPEC } from '../../../database/spec/config.spec.js';
+import { SYSTEM_CONFIG_SPEC } from '#db/spec/config.spec.js';
 
 describe('boardExtras — the player screen switches', () => {
   const declared = SYSTEM_CONFIG_SPEC.fields.boardExtras.fields;
