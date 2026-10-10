@@ -149,21 +149,47 @@ let lastWarning = '';
  * document that fails is logged and never served: the app would refuse it.
  */
 export async function servedGatewayDocument({ now = Date.now() } = {}) {
+  const read = await readGatewayDocument({ now });
+  return read.payload ? read.text : null;
+}
+
+/**
+ * What the admin is shown under Settings › API Host: whether the document is
+ * served, and if so its version, how many hosts it names and when it expires;
+ * if not, why. The hosts themselves are not listed: the screen answers "is it
+ * working and when does it lapse", and the document is the record of what it holds.
+ *
+ *   { state: 'NOT_CONFIGURED' }
+ *   { state: 'SERVING', version, issuedAt, expiresAt, hostCount }
+ *   { state: 'NOT_SERVING', code, message }
+ */
+export async function gatewayDocumentStatus({ now = Date.now() } = {}) {
+  const read = await readGatewayDocument({ now });
+  if (read.payload) {
+    const { version, issuedAt, expiresAt, hosts } = read.payload;
+    return { state: 'SERVING', version, issuedAt, expiresAt, hostCount: hosts.length };
+  }
+  if (read.error) return { state: 'NOT_SERVING', code: read.error.code || 'ERROR', message: read.error.message };
+  return { state: 'NOT_CONFIGURED' };
+}
+
+/** The one read both answers share: `{ text, payload }`, `{ error }`, or `{}` when nothing is configured. */
+async function readGatewayDocument({ now }) {
   const file = process.env.GATEWAY_CONFIG_FILE || '';
   const key = process.env.GATEWAY_CONFIG_PUBLIC_KEY || '';
-  if (!file || !key) return null;
+  if (!file || !key) return {};
   try {
     const { mtimeMs } = await stat(file);
     if (!(cache.file === file && cache.mtimeMs === mtimeMs && now - cache.at < GATEWAY_CACHE_MS)) {
       cache = { at: now, file, mtimeMs, text: (await readFile(file, 'utf8')).trim() };
     }
-    verifyGatewayDocument(cache.text, key, { now });
+    const payload = verifyGatewayDocument(cache.text, key, { now });
     lastWarning = '';
-    return cache.text;
+    return { text: cache.text, payload };
   } catch (err) {
     const warning = `[gatewayConfig] not serving ${file}: ${err.code || 'ERROR'} ${err.message}`;
     if (warning !== lastWarning) console.warn(warning);   // once per cause, not per request
     lastWarning = warning;
-    return null;
+    return { error: err };
   }
 }

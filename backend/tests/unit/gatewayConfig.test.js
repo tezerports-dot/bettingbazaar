@@ -23,7 +23,7 @@ import express from 'express';
 import request from 'supertest';
 import {
   GATEWAY_CLOCK_SKEW_MS, GATEWAY_FORMAT, GATEWAY_MAX_HOSTS, GATEWAY_MAX_LIFETIME_DAYS, checkGatewayPayload, rawPublicKey, signGatewayPayload,
-  verifyGatewayDocument, servedGatewayDocument,
+  verifyGatewayDocument, servedGatewayDocument, gatewayDocumentStatus,
 } from '../../domains/configuration/gatewayConfig.js';
 import { main } from '../../../scripts/gateway-config.mjs';
 
@@ -246,5 +246,19 @@ describe('GET /api/v1/client/gateway-config', () => {
     serve(signGatewayPayload(payload(farFuture), privateKey), 'other-key.json');
     process.env.GATEWAY_CONFIG_PUBLIC_KEY = other;
     expect(await servedGatewayDocument()).toBeNull();
+  });
+
+  // The admin's line under Settings › API Host reads the same verification the route serves by.
+  it('reports its state to the admin: none, serving, or refused with the reason', async () => {
+    delete process.env.GATEWAY_CONFIG_FILE;
+    expect(await gatewayDocumentStatus()).toEqual({ state: 'NOT_CONFIGURED' });
+
+    serve(signGatewayPayload(payload(farFuture), privateKey), 'status-ok.json');
+    expect(await gatewayDocumentStatus()).toEqual({
+      state: 'SERVING', version: 3, issuedAt: farFuture.issuedAt, expiresAt: farFuture.expiresAt, hostCount: 2,
+    });
+
+    serve(signGatewayPayload(payload({ issuedAt: '2020-01-01T00:00:00.000Z', expiresAt: '2020-02-01T00:00:00.000Z' }), privateKey), 'status-expired.json');
+    expect(await gatewayDocumentStatus()).toMatchObject({ state: 'NOT_SERVING', code: 'GATEWAY_EXPIRED' });
   });
 });
