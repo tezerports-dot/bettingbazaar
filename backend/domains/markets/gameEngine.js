@@ -316,8 +316,11 @@ class GameEngine {
     }
 
     /**
-     * The losing side: each stake is consumed and the bet stamped, in ONE
-     * transaction per bet.
+     * The losing side: each stake is consumed and the bet stamped, a PAGE of
+     * bets per transaction in a fixed number of statements (`bets.loseBets`,
+     * which writes the rows single settlements write and falls back to them
+     * for a page it cannot batch). A losing bet credits nothing, so batching
+     * it changes no amount, only what the round costs (owner, 2026-10-10).
      *
      * Paged by row id rather than pulled in full, so a cycle with a hundred
      * thousand bets does not need all of them in memory at once. Each page is
@@ -331,16 +334,29 @@ class GameEngine {
             });
             if (!batch.length) return;
 
-            let settledAny = false;
-            for (const bet of batch) {
-                const r = await db.bets.loseBet({
-                    betId: bet.betId, userId: bet.userId, slices: bet.slices,
-                    actor: 'settlement', reason: 'Lost bet — cycle result',
-                }).catch((e) => ({ ok: false, reason: e.message }));
-
-                if (r.ok) { settledAny = true; continue; }
-                refusals.push({ betId: bet.betId, userId: bet.userId, outcome: 'LOST', reason: r.reason });
+            const args = batch.map((bet) => ({ betId: bet.betId, userId: bet.userId, slices: bet.slices }));
+            const how = { actor: 'settlement', reason: 'Lost bet — cycle result' };
+            // The page in one transaction; if that transaction itself fails
+            // (nothing committed), the same page bet by bet, so a refusal is
+            // reported against the bet that caused it.
+            let results;
+            const paged = await db.bets.loseBets(args, how)
+                .catch((e) => ({ ok: false, reason: e.message }));
+            if (paged.ok) {
+                results = paged.results;
+            } else {
+                console.warn(`[Engine] batched loss settlement on ${cycle.cycleId} failed (${paged.reason}); settling the page bet by bet`);
+                results = [];
+                for (const a of args) {
+                    results.push(await db.bets.loseBet({ ...a, ...how }).catch((e) => ({ ok: false, reason: e.message })));
+                }
             }
+
+            let settledAny = false;
+            batch.forEach((bet, i) => {
+                if (results[i].ok) { settledAny = true; return; }
+                refusals.push({ betId: bet.betId, userId: bet.userId, outcome: 'LOST', reason: results[i].reason });
+            });
 
             // Nothing in this page moved, so the next read returns the same page.
             // Stopping is what turns a refused batch into a reported failure

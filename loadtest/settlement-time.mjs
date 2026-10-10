@@ -6,8 +6,9 @@
  * socket … Ledger writes are NOT moved to a queue")
  *
  * Settlement does not burst thousands of writes at once: the engine settles
- * one cycle at a time, one bet per transaction, in sequence (gameEngine.js),
- * and every bet locks the house-reserve row. So the risk at scale is not
+ * one cycle at a time, in sequence (gameEngine.js), the losing side a page
+ * per transaction and the winning side a bet per transaction, and every
+ * settlement locks the house-reserve row. So the risk at scale is not
  * contention, it is DURATION: a 1-minute board whose round takes longer than a
  * minute to settle falls further behind every round. This measures that
  * duration on the real engine and the real money path, nothing mocked but the

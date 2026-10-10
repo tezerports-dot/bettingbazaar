@@ -3294,6 +3294,41 @@ const MUTATIONS = [
     from: `     OR NEW.id_prefix IS DISTINCT FROM OLD.id_prefix THEN`,
     to: `     THEN`,
   },
+  {
+    id: 'MLB1', file: 'database/repositories/wallets.core.js', config: PG,
+    test: 'database/tests/loseBetsBatchPg.test.js',
+    why: 'a player with two lost stakes in one page gets ledger rows that do not chain: the first row claims the balance the second left',
+    from: `    after.set(s.uid, balanceAfter[i] + s.stakePaise);`,
+    to: `    after.set(s.uid, balanceAfter[i]);`,
+  },
+  {
+    id: 'MLB2', file: 'database/repositories/wallets.core.js', config: PG,
+    test: 'database/tests/loseBetsBatchPg.test.js',
+    why: 'a batched loss leaves the deposit part of the lock counted, so a later return would put deposit money back that was already lost',
+    from: `            \${FIELD_COLUMN.lockedDepositAmount} = w.\${FIELD_COLUMN.lockedDepositAmount} - d.dep,`,
+    to: `            \${FIELD_COLUMN.lockedDepositAmount} = w.\${FIELD_COLUMN.lockedDepositAmount},`,
+  },
+  {
+    id: 'MLB3', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/loseBetsBatchPg.test.js',
+    why: "a GENERAL cycle's losses are batched, so the lost promotional stakes never count as turnover",
+    from: `    if (!row || row.audience !== 'VIP') return null;`,
+    to: `    if (!row) return null;`,
+  },
+  {
+    id: 'MLB4', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/loseBetsBatchPg.test.js',
+    why: "the batch takes the owner from the caller, so a bet named under another player is consumed out of that player's lock",
+    from: `    if (bet.userId !== String(b.userId) || bet.status !== spec.expect) return null;`,
+    to: `    if (bet.status !== spec.expect) return null;`,
+  },
+  {
+    id: 'MLB5', file: 'database/repositories/treasury.js', config: PG,
+    test: 'database/tests/loseBetsBatchPg.test.js',
+    why: "the house's entries are written but its balances are not, so HOUSE_RESERVE and USER_FLOAT stop matching their entries",
+    from: `    [accounts, accounts.map((a) => balance[a])],`,
+    to: `    [accounts, accounts.map((a) => balance[a] - balance[a] + Number(locked.rows.find((r) => r.account === a).balance_paise))],`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

@@ -54,7 +54,8 @@
  * non-withdrawable deposit into withdrawable winnings.
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
-import { applyMovementWithin } from './wallets.core.js';
+import { applyMovementWithin, consumeLocksWithin } from './wallets.core.js';
+import { postHouseTakesWithin } from './treasury.js';
 import { recordTurnoverWithin, unlockIfNothingOutstandingWithin } from './promo.js';
 import { moneyOperations } from '../../backend/services/metrics.service.js';
 import { MONEY_PATHS } from '../moneyPaths.js';
@@ -439,10 +440,15 @@ export async function placeBet({
  * "stake consumed" and "winnings paid" separately rather than netting them into
  * one number nobody can audit.
  */
-async function settle(
-  { betId, userId, slices, payoutPaise = 0, platformFeePaise = 0, actor = null, reason = null },
-  spec,
-) {
+async function settle(args, spec) {
+  validateSettlement(args, spec);
+  const result = await withBetLock(args.userId, args.betId, (ctx) => settleWithin(ctx, args, spec));
+  count(`BET_${spec.name.toUpperCase()}`, !result.ok ? (result.reason ?? 'error') : result.idempotent ? 'idempotent' : 'applied');
+  return result;
+}
+
+/** The argument checks every settlement makes before it opens a transaction. */
+function validateSettlement({ betId, payoutPaise = 0, platformFeePaise = 0 }, spec) {
   if (!betId) throw new Error(`${spec.name}Bet requires a betId`);
   if (!Number.isInteger(payoutPaise) || payoutPaise < 0) {
     throw new TypeError(`${spec.name}Bet: payoutPaise must be a non-negative integer, got ${payoutPaise}`);
@@ -454,121 +460,127 @@ async function settle(
   if (!Number.isInteger(platformFeePaise) || platformFeePaise < 0) {
     throw new TypeError(`${spec.name}Bet: platformFeePaise must be a non-negative integer, got ${platformFeePaise}`);
   }
+}
 
-  const result = await withBetLock(userId, betId, async (ctx) => {
-    const bet = ctx.bet;
-    if (!bet) return { commit: false, value: { ok: false, reason: 'not_found' } };
-    if (bet.status === spec.to) {
-      return { commit: false, value: { ok: true, idempotent: true, bet } };
-    }
-    if (bet.status !== spec.expect) {
-      return {
-        commit: false,
-        value: { ok: false, reason: 'invalid_transition', status: bet.status, expected: spec.expect },
-      };
-    }
-
-    // The guard is in the WHERE clause, not in the check above: between reading
-    // the row and writing it another transaction could have moved it, and only
-    // the database can settle that race. The read gives a good error message;
-    // the WHERE gives correctness.
-    const moved = await ctx.client.query(
-      `UPDATE bets SET status = $2, payout_paise = $3, platform_fee_paise = $5,
-                       settled_at = now(), updated_at = now()
-        WHERE bet_id = $1 AND status = $4
-        RETURNING updated_at`,
-      [ctx.bid, spec.to, payoutPaise, spec.expect, platformFeePaise],
-    );
-    if (!moved.rowCount) {
-      return { commit: false, value: { ok: false, reason: 'invalid_transition', status: bet.status, expected: spec.expect } };
-    }
-
-    if (!await recordTransition(ctx.client, ctx.bid, {
-      txId: `${ctx.bid}_${spec.name}`, from: spec.expect, to: spec.to, actor, reason,
-    })) {
-      return { commit: false, value: { ok: true, idempotent: true, bet } };
-    }
-
-    // The stake leaves `lockedBalance` either way. Where it goes is the whole
-    // difference between the transitions: back to the pockets it came from, or
-    // consumed.
-    const stakeSlices = requireSlices(slices, bet);
-    const legs = spec.returnsStake
-      ? stakeLegs(stakeSlices, false)
-      : consumeLegs(stakeSlices);
-
-    const ledger = spec.returnsStake
-      ? stakeSlices.map((s) => ({
-          txId: `${ctx.bid}_${spec.name}_${s.field}`,
-          field: s.field, amountPaise: s.amountPaise, type: 'CREDIT',
-          reason: reason || `Bet ${ctx.bid} ${spec.to.toLowerCase()} — stake returned`,
-          refId: ctx.bid,
-        }))
-      : [{
-          txId: `${ctx.bid}_${spec.name}`,
-          field: 'lockedBalance', amountPaise: 0 - bet.stakePaise, type: 'DEBIT',
-          reason: reason || `Bet ${ctx.bid} ${spec.to.toLowerCase()} — stake consumed`,
-          refId: ctx.bid,
-        }];
-
-    // A winning payout is a SEPARATE credit with its own ledger row, so the
-    // books distinguish "the stake was consumed" from "the house paid out".
-    // Netting them would make a won bet look like a smaller loss.
-    //
-    // A GENERAL cycle pays back into the GENERAL balance, never winnings: the
-    // promotional money becomes withdrawable only when its turnover is met.
-    const audience = await audienceOfCycle(ctx.client, bet.cycleId);
-    const payoutField = audience === 'GENERAL' ? 'promoBalance' : 'winningsBalance';
-    if (payoutPaise > 0) {
-      legs.push({ field: payoutField, deltaPaise: payoutPaise });
-      ledger.push({
-        txId: `${ctx.bid}_payout`,
-        field: payoutField, amountPaise: payoutPaise, type: 'CREDIT',
-        reason: reason || `Bet ${ctx.bid} payout`, refId: ctx.bid,
-      });
-    }
-
-    // The house is the other side of what the player's wallet gains or loses
-    // (stake consumed, payout credited), posted in THIS transaction: a lost
-    // stake to HOUSE_RESERVE, a win from it — and past what the house holds,
-    // from the platform's own (`treasury.postHouseSettlement`). A void or a
-    // refund only moves the stake between the player's own pockets.
-    const movement = await applyMovementWithin(ctx, {
-      legs, ledger,
-      counterparty: {
-        house: true, operation: `BET_${spec.to}`, actor, reason: reason || `Bet ${ctx.bid} ${spec.to.toLowerCase()}`,
-        refModel: 'Bet', refId: ctx.bid,
-      },
-    });
-    if (movement.idempotent) {
-      return { commit: false, value: { ok: false, reason: 'inconsistent_idempotency', betId: ctx.bid } };
-    }
-    if (!movement.ok) {
-      return { commit: false, value: { ok: false, reason: movement.refused ?? 'insufficient', legs } };
-    }
-
-    // A GENERAL stake that was PLAYED (won or lost, not returned) counts
-    // towards the player's turnover, once, keyed by the bet, in this same
-    // transaction: the settlement and the count commit together or not at all.
-    // A returned GENERAL stake counts nothing, but goes the way any GENERAL
-    // money does once no requirement is open.
-    if (audience === 'GENERAL') {
-      if (spec.returnsStake) await unlockIfNothingOutstandingWithin(ctx, `promo_unlock_rest_${ctx.bid}`);
-      else await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });
-    }
-
+/**
+ * The settlement itself, inside a transaction that already holds the player's
+ * wallet lock and the bet row (`ctx.bet`). Answers `{ commit, value }`: the
+ * caller commits (or releases its savepoint) only when `commit` is true.
+ */
+async function settleWithin(
+  ctx,
+  { slices, payoutPaise = 0, platformFeePaise = 0, actor = null, reason = null },
+  spec,
+) {
+  const bet = ctx.bet;
+  if (!bet) return { commit: false, value: { ok: false, reason: 'not_found' } };
+  if (bet.status === spec.to) {
+    return { commit: false, value: { ok: true, idempotent: true, bet } };
+  }
+  if (bet.status !== spec.expect) {
     return {
-      commit: true,
-      value: {
-        ok: true, idempotent: false,
-        bet: { ...bet, status: spec.to, payoutPaise, platformFeePaise, updatedAt: moved.rows[0].updated_at },
-        balances: movement.balancesAfterPaise,
-      },
+      commit: false,
+      value: { ok: false, reason: 'invalid_transition', status: bet.status, expected: spec.expect },
     };
-  });
+  }
 
-  count(`BET_${spec.name.toUpperCase()}`, !result.ok ? (result.reason ?? 'error') : result.idempotent ? 'idempotent' : 'applied');
-  return result;
+  // The guard is in the WHERE clause, not in the check above: between reading
+  // the row and writing it another transaction could have moved it, and only
+  // the database can settle that race. The read gives a good error message;
+  // the WHERE gives correctness.
+  const moved = await ctx.client.query(
+    `UPDATE bets SET status = $2, payout_paise = $3, platform_fee_paise = $5,
+                     settled_at = now(), updated_at = now()
+      WHERE bet_id = $1 AND status = $4
+      RETURNING updated_at`,
+    [ctx.bid, spec.to, payoutPaise, spec.expect, platformFeePaise],
+  );
+  if (!moved.rowCount) {
+    return { commit: false, value: { ok: false, reason: 'invalid_transition', status: bet.status, expected: spec.expect } };
+  }
+
+  if (!await recordTransition(ctx.client, ctx.bid, {
+    txId: `${ctx.bid}_${spec.name}`, from: spec.expect, to: spec.to, actor, reason,
+  })) {
+    return { commit: false, value: { ok: true, idempotent: true, bet } };
+  }
+
+  // The stake leaves `lockedBalance` either way. Where it goes is the whole
+  // difference between the transitions: back to the pockets it came from, or
+  // consumed.
+  const stakeSlices = requireSlices(slices, bet);
+  const legs = spec.returnsStake
+    ? stakeLegs(stakeSlices, false)
+    : consumeLegs(stakeSlices);
+
+  const ledger = spec.returnsStake
+    ? stakeSlices.map((s) => ({
+        txId: `${ctx.bid}_${spec.name}_${s.field}`,
+        field: s.field, amountPaise: s.amountPaise, type: 'CREDIT',
+        reason: reason || `Bet ${ctx.bid} ${spec.to.toLowerCase()} — stake returned`,
+        refId: ctx.bid,
+      }))
+    : [{
+        txId: `${ctx.bid}_${spec.name}`,
+        field: 'lockedBalance', amountPaise: 0 - bet.stakePaise, type: 'DEBIT',
+        reason: reason || `Bet ${ctx.bid} ${spec.to.toLowerCase()} — stake consumed`,
+        refId: ctx.bid,
+      }];
+
+  // A winning payout is a SEPARATE credit with its own ledger row, so the
+  // books distinguish "the stake was consumed" from "the house paid out".
+  // Netting them would make a won bet look like a smaller loss.
+  //
+  // A GENERAL cycle pays back into the GENERAL balance, never winnings: the
+  // promotional money becomes withdrawable only when its turnover is met.
+  const audience = await audienceOfCycle(ctx.client, bet.cycleId);
+  const payoutField = audience === 'GENERAL' ? 'promoBalance' : 'winningsBalance';
+  if (payoutPaise > 0) {
+    legs.push({ field: payoutField, deltaPaise: payoutPaise });
+    ledger.push({
+      txId: `${ctx.bid}_payout`,
+      field: payoutField, amountPaise: payoutPaise, type: 'CREDIT',
+      reason: reason || `Bet ${ctx.bid} payout`, refId: ctx.bid,
+    });
+  }
+
+  // The house is the other side of what the player's wallet gains or loses
+  // (stake consumed, payout credited), posted in THIS transaction: a lost
+  // stake to HOUSE_RESERVE, a win from it — and past what the house holds,
+  // from the platform's own (`treasury.postHouseSettlement`). A void or a
+  // refund only moves the stake between the player's own pockets.
+  const movement = await applyMovementWithin(ctx, {
+    legs, ledger,
+    counterparty: {
+      house: true, operation: `BET_${spec.to}`, actor, reason: reason || `Bet ${ctx.bid} ${spec.to.toLowerCase()}`,
+      refModel: 'Bet', refId: ctx.bid,
+    },
+  });
+  if (movement.idempotent) {
+    return { commit: false, value: { ok: false, reason: 'inconsistent_idempotency', betId: ctx.bid } };
+  }
+  if (!movement.ok) {
+    return { commit: false, value: { ok: false, reason: movement.refused ?? 'insufficient', legs } };
+  }
+
+  // A GENERAL stake that was PLAYED (won or lost, not returned) counts
+  // towards the player's turnover, once, keyed by the bet, in this same
+  // transaction: the settlement and the count commit together or not at all.
+  // A returned GENERAL stake counts nothing, but goes the way any GENERAL
+  // money does once no requirement is open.
+  if (audience === 'GENERAL') {
+    if (spec.returnsStake) await unlockIfNothingOutstandingWithin(ctx, `promo_unlock_rest_${ctx.bid}`);
+    else await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });
+  }
+
+  return {
+    commit: true,
+    value: {
+      ok: true, idempotent: false,
+      bet: { ...bet, status: spec.to, payoutPaise, platformFeePaise, updatedAt: moved.rows[0].updated_at },
+      balances: movement.balancesAfterPaise,
+    },
+  };
 }
 
 /**
@@ -609,6 +621,181 @@ export const winBet = (args) => settle(args, { name: 'win', ...TRANSITIONS.win }
 
 /** PENDING → LOST. The stake is consumed by the house. */
 export const loseBet = (args) => settle(args, { name: 'lose', ...TRANSITIONS.lose });
+
+/**
+ * PENDING → LOST for a page of bets, in ONE transaction and a fixed number of
+ * statements (owner, 2026-10-10: settlement time is the risk at scale, and a
+ * lost bet credits nothing, so batching it changes no amount).
+ *
+ * Every row a single `loseBet` writes is written here, with the same keys and
+ * the same values: the guarded `bets` UPDATE, a `bet_transitions` row
+ * (`<betId>_lose`), one wallet_ledger DEBIT of lockedBalance (`<betId>_lose`),
+ * and one house movement USER_FLOAT → HOUSE_RESERVE under that same key. Only
+ * the statements differ: one per table for the page instead of one per bet.
+ * Replaying a page writes nothing new (every key is UNIQUE), and a bet a
+ * single `loseBet` already settled is answered as it would answer it.
+ *
+ * ── When the page is NOT batched ─────────────────────────────────────────
+ * Anything the fixed statements cannot answer bet by bet goes to
+ * `loseEachWithin`, the single settlement per bet behind a savepoint in one
+ * transaction: a GENERAL cycle (its stake counts as turnover, `promo.js`), a
+ * bet not PENDING or not the named player's, slices that do not add up, a key
+ * already written, a wallet that cannot cover its locks. Those are refusals or
+ * replays, and each is then answered for the bet that caused it.
+ *
+ * ── Lock order ─────────────────────────────────────────────────────────────
+ * Every wallet the page touches is locked FIRST, sorted by user id, then the
+ * bets, then the treasury: the order a single settlement takes them in, so a
+ * concurrent withdrawal (wallet, then treasury) cannot deadlock against it.
+ *
+ * Answers `{ ok, batched, results }` with one result per bet in the order
+ * given, each what `loseBet` would answer. `ok: false` means the transaction
+ * itself failed and nothing committed; the caller settles the page bet by bet.
+ */
+export async function loseBets(bets, { actor = null, reason = null } = {}) {
+  const spec = { name: 'lose', ...TRANSITIONS.lose };
+  if (!Array.isArray(bets) || !bets.length) return { ok: true, batched: true, results: [] };
+  for (const b of bets) validateSettlement(b, spec);
+
+  const attempt = async (batch) => {
+    const pool = await getPool();
+    if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
+    const client = await connectGuarded(pool);
+    let failure = null;
+    try {
+      await client.query('BEGIN');
+      const locked = await lockPageWithin(client, bets);
+      const results = batch
+        ? await loseAllWithin(client, bets, locked, { actor, reason }, spec)
+        : await loseEachWithin(client, bets, locked, { actor, reason }, spec);
+      if (!results) { await client.query('ROLLBACK'); return null; }
+      await client.query('COMMIT');
+      for (const r of results) count('BET_LOSE', !r.ok ? (r.reason ?? 'error') : r.idempotent ? 'idempotent' : 'applied');
+      return { ok: true, batched: batch, results };
+    } catch (error) {
+      failure = error;
+      try { await client.query('ROLLBACK'); } catch { /* already unwound */ }
+      return { ok: false, reason: error.message };
+    } finally {
+      client.release(failure ?? undefined);
+    }
+  };
+
+  // `null` from the batch: something in the page needs answering bet by bet.
+  return (await attempt(true)) ?? attempt(false);
+}
+
+/** Every wallet of the page (sorted), then its bets, locked. The bets by id. */
+async function lockPageWithin(client, bets) {
+  const uids = [...new Set(bets.map((b) => String(b.userId)))].sort();
+  await client.query(
+    `INSERT INTO wallets (user_id) SELECT unnest($1::text[]) ON CONFLICT (user_id) DO NOTHING`, [uids],
+  );
+  await client.query(
+    `SELECT 1 FROM wallets WHERE user_id = ANY($1::text[]) ORDER BY user_id FOR UPDATE`, [uids],
+  );
+  const { rows } = await client.query(
+    `SELECT b.*, c.audience FROM bets b LEFT JOIN cycles c ON c.cycle_id = b.cycle_id
+      WHERE b.bet_id = ANY($1::text[]) ORDER BY b.bet_id FOR UPDATE OF b`,
+    [bets.map((b) => String(b.betId))],
+  );
+  return new Map(rows.map((r) => [r.bet_id, { bet: rowToBet(r), audience: r.audience ?? 'VIP' }]));
+}
+
+/**
+ * The page in fixed statements, or `null` when any bet in it needs the
+ * single path (see `loseBets`). Nothing is written before every bet passed.
+ */
+async function loseAllWithin(client, bets, locked, { actor, reason }, spec) {
+  const stakes = [];
+  for (const b of bets) {
+    const row = locked.get(String(b.betId));
+    if (!row || row.audience !== 'VIP') return null;
+    const { bet } = row;
+    // The owner comes from the row (trap 2).
+    if (bet.userId !== String(b.userId) || bet.status !== spec.expect) return null;
+    if (!Array.isArray(b.slices) || !b.slices.length || sumSlices(b.slices) !== bet.stakePaise) return null;
+    if (!fundsMatchAudience(b.slices, row.audience)) return null;
+    const parts = {};
+    for (const sl of b.slices) parts[sl.field] = (parts[sl.field] ?? 0) + sl.amountPaise;
+    stakes.push({ bet, parts });
+  }
+  const ids = stakes.map((s) => s.bet.betId);
+  const keys = ids.map((id) => `${id}_${spec.name}`);
+
+  const { rows: done } = await client.query(
+    `SELECT 1 FROM bet_transitions WHERE tx_id = ANY($1) LIMIT 1`, [keys]);
+  if (done.length) return null;
+
+  const moved = await client.query(
+    `UPDATE bets SET status = $2, payout_paise = 0, platform_fee_paise = 0,
+                     settled_at = now(), updated_at = now()
+      WHERE bet_id = ANY($1::text[]) AND status = $3
+      RETURNING bet_id, updated_at`,
+    [ids, spec.to, spec.expect],
+  );
+  if (moved.rowCount !== ids.length) return null;
+  const updatedAt = new Map(moved.rows.map((r) => [r.bet_id, r.updated_at]));
+
+  await client.query(
+    `INSERT INTO bet_transitions (tx_id, bet_id, from_status, to_status, actor, reason)
+     SELECT t.tx, t.bet, $3, $4, $5, $6 FROM unnest($1::text[], $2::text[]) WITH ORDINALITY AS t(tx, bet, n)
+      ORDER BY t.n`,
+    [keys, ids, spec.expect, spec.to, actor, reason],
+  );
+
+  const wallet = await consumeLocksWithin(client, stakes.map((s, i) => ({
+    uid: s.bet.userId, txId: keys[i], stakePaise: s.bet.stakePaise, parts: s.parts,
+    reason: reason || `Bet ${s.bet.betId} ${spec.to.toLowerCase()} — stake consumed`, refId: s.bet.betId,
+  })));
+  if (!wallet.ok) return null;
+
+  const house = await postHouseTakesWithin({
+    client, operation: `BET_${spec.to}`, actor, refModel: 'Bet',
+    stakes: stakes.map((s, i) => ({
+      movementId: keys[i], amountPaise: s.bet.stakePaise, refId: s.bet.betId,
+      reason: reason || `Bet ${s.bet.betId} ${spec.to.toLowerCase()}`,
+    })),
+  });
+  if (!house.ok) return null;
+
+  return stakes.map(({ bet }) => ({
+    ok: true, idempotent: false,
+    bet: { ...bet, status: spec.to, payoutPaise: 0, platformFeePaise: 0, updatedAt: updatedAt.get(bet.betId) },
+    balances: null,
+  }));
+}
+
+/**
+ * The page bet by bet in one transaction: each bet the single settlement
+ * (`settleWithin`) behind its own savepoint, so a refusal rolls back alone.
+ */
+async function loseEachWithin(client, bets, locked, { actor, reason }, spec) {
+  const results = [];
+  for (const b of bets) {
+    const bid = String(b.betId);
+    const uid = String(b.userId);
+    const bet = locked.get(bid)?.bet ?? null;
+    // The owner comes from the row (trap 2): a bet named under another player
+    // is refused, not settled out of a wallet this transaction never locked.
+    if (bet && bet.userId !== uid) {
+      results.push({ ok: false, reason: 'wrong_owner' });
+      continue;
+    }
+    await client.query('SAVEPOINT bet_lose');
+    let value;
+    try {
+      const out = await settleWithin({ client, uid, bid, bet }, { ...b, actor, reason }, spec);
+      await client.query(out.commit ? 'RELEASE SAVEPOINT bet_lose' : 'ROLLBACK TO SAVEPOINT bet_lose');
+      value = out.value;
+    } catch (error) {
+      await client.query('ROLLBACK TO SAVEPOINT bet_lose');
+      value = { ok: false, reason: error.message };
+    }
+    results.push(value);
+  }
+  return results;
+}
 
 /** PENDING → VOID. The cycle was cancelled; the stake goes back. */
 export const voidBet = (args) => settle(args, { name: 'void', ...TRANSITIONS.void });

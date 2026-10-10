@@ -119,12 +119,19 @@ says the ceiling is unknown; it should not keep saying that after a run.
 `npm run loadtest:settlement -- --bets 10000 --round-seconds 60` (against a
 `bb_load` database; it truncates the betting, wallet and ledger tables) places
 real bets on one declared cycle and times the real engine settling it. The
-engine settles one bet per transaction, in sequence, and every bet locks the
-house-reserve row, so the number that matters is total duration against the
-round length, not contention. Exit 0 = fits, 2 = falls behind.
+engine settles a cycle in sequence: the losing side a page of 500 bets per
+transaction in a fixed number of statements (`bets.loseBets`), the winning side
+one bet per transaction. Every settlement locks the house-reserve row, so the
+number that matters is total duration against the round length, not
+contention. Exit 0 = fits, 2 = falls behind. Half the harness's bets lose.
 
 First measurement (2026-10-10, 4-core sandbox, PostgreSQL 16, no PgBouncer):
 2,000 bets in 11.6 s and 10,000 bets in 57.6 s, i.e. ~5.8 ms per bet. So
 10,000 bets on a 1-minute board leaves ~2 s of headroom on that machine, and
 the engine settles every board and both audiences through the same loop.
-Re-run it on the production VPS before enabling a high-frequency board (§18.4).
+
+With losing bets batched (same machine, same day): 10,000 bets in 42.3 s
+(4.2 ms per bet averaged over both sides). The 5,000 losing bets now take about
+4 s instead of about 24 s; the winning side, one transaction per bet, is
+almost all of what is left. Re-run it on the production VPS before enabling a
+high-frequency board (§18.4).

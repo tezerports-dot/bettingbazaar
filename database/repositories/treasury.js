@@ -344,6 +344,94 @@ export async function postHouseSettlement({ client, movementId, userDeltaPaise, 
   });
 }
 
+/**
+ * Many lost stakes taken by the house, inside the caller's transaction, in a
+ * fixed number of statements however many there are.
+ *
+ * Each stake is its OWN movement, exactly the one `postHouseSettlement` posts
+ * for a single lost bet (USER_FLOAT → HOUSE_RESERVE, keyed by `movementId`,
+ * entries `<movementId>:<account>`), so the books cannot tell a batched loss
+ * from a single one. The entries chain each account's balance through the
+ * movements in the order given; the two accounts are then set once to where
+ * the chain ends. Every conservation trigger sees what it would have seen
+ * from the movements one by one.
+ *
+ * @param {object} args
+ * @param {object} args.client        the caller's transaction
+ * @param {Array<{movementId: string, amountPaise: number, refId: string, reason?: string}>} args.stakes
+ *                                    each a positive number of paise
+ * @returns {Promise<{ok: true} | {ok: false, reason: string}>} a refusal or a
+ *   replayed key leaves the transaction for the caller to roll back
+ */
+export async function postHouseTakesWithin({ client, stakes, operation, actor = null, refModel = null }) {
+  if (!client) throw new Error('postHouseTakesWithin runs inside the caller\'s transaction: pass its client');
+  if (!operation) throw new Error('postHouseTakesWithin requires an operation');
+  if (!stakes.length) return { ok: true };
+  for (const s of stakes) {
+    if (!s.movementId) throw new Error('every house take needs a movementId (idempotency key)');
+    if (!Number.isInteger(s.amountPaise) || s.amountPaise <= 0) {
+      throw new TypeError(`house take ${s.movementId}: amountPaise must be a positive integer, got ${s.amountPaise}`);
+    }
+  }
+
+  // The same accounts, locked the same way and in the same order as postMovement.
+  const accounts = [ACCOUNTS.HOUSE_RESERVE, ACCOUNTS.USER_FLOAT].sort();
+  await client.query(
+    `INSERT INTO treasury_accounts (account) SELECT unnest($1::text[]) ON CONFLICT (account) DO NOTHING`, [accounts]);
+  const locked = await client.query(
+    `SELECT account, balance_paise FROM treasury_accounts
+      WHERE account = ANY($1) ORDER BY account FOR UPDATE`, [accounts]);
+  const balance = Object.fromEntries(locked.rows.map((r) => [r.account, toPaise(r.balance_paise)]));
+
+  // USER_FLOAT only falls here, so its last balance is its lowest: one check
+  // is every movement's check.
+  const total = stakes.reduce((t, s) => t + s.amountPaise, 0);
+  if (balance[ACCOUNTS.USER_FLOAT] - total < 0) {
+    return { ok: false, reason: 'account_short', account: ACCOUNTS.USER_FLOAT };
+  }
+
+  const cols = { tx: [], movement: [], account: [], amount: [], before: [], after: [], ref: [], reason: [] };
+  for (const s of stakes) {
+    const legs = { [ACCOUNTS.HOUSE_RESERVE]: s.amountPaise, [ACCOUNTS.USER_FLOAT]: 0 - s.amountPaise };
+    for (const account of accounts) {
+      const before = balance[account];
+      balance[account] = before + legs[account];
+      cols.tx.push(`${s.movementId}:${account}`);
+      cols.movement.push(s.movementId);
+      cols.account.push(account);
+      cols.amount.push(legs[account]);
+      cols.before.push(before);
+      cols.after.push(balance[account]);
+      cols.ref.push(s.refId ? String(s.refId) : null);
+      cols.reason.push(s.reason ?? null);
+    }
+  }
+
+  try {
+    await client.query(
+      `INSERT INTO treasury_entries
+         (tx_id, movement_id, account, amount_paise, balance_before_paise, balance_after_paise,
+          operation, actor, reason, ref_model, ref_id)
+       SELECT e.tx, e.movement, e.account, e.amount, e.before, e.after, $9, $10, e.reason, $11, e.ref
+         FROM unnest($1::text[], $2::text[], $3::text[], $4::bigint[], $5::bigint[], $6::bigint[], $7::text[], $8::text[])
+              WITH ORDINALITY AS e(tx, movement, account, amount, before, after, ref, reason, n)
+        ORDER BY e.n`,
+      [cols.tx, cols.movement, cols.account, cols.amount, cols.before, cols.after, cols.ref, cols.reason,
+       operation, actor, refModel],
+    );
+  } catch (error) {
+    if (error.code === '23505') return { ok: false, reason: 'treasury_already_posted' };
+    throw error;
+  }
+  await client.query(
+    `UPDATE treasury_accounts t SET balance_paise = b.after, updated_at = now()
+       FROM unnest($1::text[], $2::bigint[]) AS b(account, after)
+      WHERE t.account = b.account`,
+    [accounts, accounts.map((a) => balance[a])],
+  );
+  return { ok: true };
+}
+
 // ── Proof ────────────────────────────────────────────────────────────────────
 
 /**
