@@ -18,6 +18,7 @@ declare global {
 }
 
 import { currentOrigin, reportOriginUnreachable, failoverAvailable, whenEndpointReady } from './originFailover';
+import { secureFetch } from './secureTransport';
 
 // Resolved per request, not once at module load: when the adopted origin stops
 // answering, originFailover moves to the next trusted one and every subsequent
@@ -122,7 +123,7 @@ async function performFetch(
   const token = getToken();
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const fetchPromise = fetch(url, {
+  const fetchPromise = secureFetch(url, {
     method,
     headers,
     credentials: 'include',

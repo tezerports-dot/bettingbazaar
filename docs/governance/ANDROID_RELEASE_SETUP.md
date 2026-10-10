@@ -247,6 +247,14 @@ you hand it to anyone:
    - Repeat with **Mandatory** ticked: the old version must be blocked.
 7. **Resume:** background the app for a minute and come back. The live cycle
    data resumes.
+8. **Secure DNS:** with the phone on USB and `chrome://inspect` open on a
+   computer, inspect the app's WebView and run
+   `Capacitor.nativePromise('SecureHttp', 'status')` in the console after using
+   the app for a minute. `lastSource` should be `encrypted` and `systemAnswers`
+   0. Then join a network that blocks `1.1.1.1` and `8.8.8.8` (or a hotspot
+   with them blocked): the app must still work, and `lastSource` reads
+   `system` (the fallback, CLAUDE.md §2 *How the player app reaches the
+   network*).
 
 **A debug build can never update to a release build, or the reverse.** They
 are signed with different keys and Android refuses the update. Test updates

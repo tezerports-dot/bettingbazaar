@@ -2,6 +2,7 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { logger } from '../../services/logging.service';
 import { apiUrl } from '../../services/apiUrl';
+import { secureFetch } from '../../services/secureTransport';
 
 interface Props {
   children?: ReactNode;
@@ -27,7 +28,7 @@ const storeCrashReport = (
   panel: 'user' | 'merchant' | 'unknown' = 'unknown',
 ): void => {
   // The adopted, validated origin ('' = same origin) — never a raw build value.
-  fetch(apiUrl('/api/internal/error-report'), {
+  secureFetch(apiUrl('/api/internal/error-report'), {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',

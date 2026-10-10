@@ -48,6 +48,7 @@
 import {
   GATEWAY_MAX_DOCUMENT_BYTES, acceptGatewayDocument, loadStoredGateway, parsePublicKey, signedHosts,
 } from './gatewayConfig';
+import { secureFetch } from './secureTransport';
 
 /** How long a single origin gets to answer the health probe. */
 const PROBE_TIMEOUT_MS = 4000;
@@ -213,7 +214,7 @@ function flushReports(): void {
   if (state !== 'ready' || pending.length === 0) return;
   const events = pending.splice(0, pending.length);
   try {
-    void fetch(`${active}/api/v1/client/endpoint-events`, {
+    void secureFetch(`${active}/api/v1/client/endpoint-events`, {
       method: 'POST', credentials: 'omit', keepalive: true, redirect: 'error',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ events }),
     }).catch(() => { /* telemetry is best-effort */ });
@@ -307,7 +308,7 @@ async function withTimeout<T>(ms: number, run: (signal: AbortSignal) => Promise<
 /** Is this origin reachable? A cheap, idempotent, unauthenticated GET. */
 export async function probe(origin: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
   try {
-    const res = await withTimeout(timeoutMs, (signal) => fetch(`${origin}/health/live`, {
+    const res = await withTimeout(timeoutMs, (signal) => secureFetch(`${origin}/health/live`, {
       method: 'GET', cache: 'no-store', credentials: 'omit', redirect: 'error', signal,
     }));
     return res.ok;
@@ -322,7 +323,7 @@ export async function probe(origin: string, timeoutMs = PROBE_TIMEOUT_MS): Promi
  * refused (a redirect is a second, unvalidated host), and the body is capped.
  */
 export async function discoverOnce(url: string, policy: OriginPolicy): Promise<string> {
-  const res = await withTimeout(DISCOVERY_TIMEOUT_MS, (signal) => fetch(url, {
+  const res = await withTimeout(DISCOVERY_TIMEOUT_MS, (signal) => secureFetch(url, {
     method: 'GET', cache: 'no-store', credentials: 'omit', redirect: 'error',
     referrerPolicy: 'no-referrer', headers: { Accept: 'application/json' }, signal,
   })).catch((e) => { throw new Error(e?.name === 'AbortError' ? 'timeout' : 'unreachable'); });
@@ -347,7 +348,7 @@ export async function refreshGatewayConfig(key: Uint8Array, urls: string[]): Pro
   const before = signedHosts().join(',');
   for (const url of urls) {
     try {
-      const res = await withTimeout(GATEWAY_TIMEOUT_MS, (signal) => fetch(url, {
+      const res = await withTimeout(GATEWAY_TIMEOUT_MS, (signal) => secureFetch(url, {
         method: 'GET', cache: 'no-store', credentials: 'omit', redirect: 'error',
         referrerPolicy: 'no-referrer', headers: { Accept: 'application/json' }, signal,
       }));

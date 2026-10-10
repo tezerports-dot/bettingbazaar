@@ -10,6 +10,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { apiUrl } from './apiUrl';
+import { secureFetch } from './secureTransport';
 
 interface Provider {
   key: string;
@@ -69,7 +70,7 @@ export const GameProviderProvider: React.FC<{ children: React.ReactNode }> = ({ 
         const { data, ts } = JSON.parse(cached);
         if (Date.now() - ts < 5 * 60 * 1000) { setProviders(data); setLoading(false); return; }
       }
-      const r = await window.fetch(apiUrl('/api/game/providers'));
+      const r = await secureFetch(apiUrl('/api/game/providers'));
       const d = await r.json();
       if (d.success) {
         const data: ProviderGroups = d.providers || { casino: [], crash: [], sports: [] };

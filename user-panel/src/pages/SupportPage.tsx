@@ -41,6 +41,7 @@ import React, { useCallback, useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { getBackend } from '../services/backend.service';
 import { apiUrl } from '../services/apiUrl';
+import { secureFetch } from '../services/secureTransport';
 import ScreenShell, { card } from '../redesign/Screen';
 
 const backend = getBackend();
@@ -88,11 +89,11 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   /** Load the newest open ticket so a returning player continues the thread. */
   const loadThread = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl('/api/support/tickets'), { headers: authHeaders() });
+      const r = await secureFetch(apiUrl('/api/support/tickets'), { headers: authHeaders() });
       const d = await r.json();
       const open = (d?.tickets || []).find((t: any) => t.status !== 'CLOSED');
       if (!open) { setLoading(false); return; }
-      const t = await fetch(apiUrl(`/api/support/tickets/${open.ticketId}`), { headers: authHeaders() });
+      const t = await secureFetch(apiUrl(`/api/support/tickets/${open.ticketId}`), { headers: authHeaders() });
       const td = await t.json();
       if (td?.success) { setTicket(td.ticket); setMsgs(render(td.messages || [])); }
     } catch { /* the panel still lets them open a new ticket */ }
@@ -106,7 +107,7 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
    */
   const loadAssistant = useCallback(async () => {
     try {
-      const r = await fetch(apiUrl('/api/support/status'));
+      const r = await secureFetch(apiUrl('/api/support/status'));
       const d = await r.json();
       setAssistantOn(Boolean(d?.success && d?.enabled));
     } catch { setAssistantOn(false); }
@@ -122,7 +123,7 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
    */
   const openOrReply = async (t: string) => {
     if (!ticket) {
-      const r = await fetch(apiUrl('/api/support/tickets'), {
+      const r = await secureFetch(apiUrl('/api/support/tickets'), {
         method: 'POST', headers: authHeaders(),
         // The subject is the first line of what they wrote, so an agent sees
         // the problem in the queue rather than a placeholder.
@@ -132,7 +133,7 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       if (!d?.success) throw new Error(d?.message || 'Could not open a ticket');
       setTicket(d.ticket);
     } else {
-      const r = await fetch(apiUrl(`/api/support/tickets/${ticket.ticketId}/reply`), {
+      const r = await secureFetch(apiUrl(`/api/support/tickets/${ticket.ticketId}/reply`), {
         method: 'POST', headers: authHeaders(), body: JSON.stringify({ content: t }),
       });
       const d = await r.json();
@@ -165,7 +166,7 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
    */
   const askAssistant = async (t: string): Promise<boolean> => {
     try {
-      const r = await fetch(apiUrl('/api/support/ask'), {
+      const r = await secureFetch(apiUrl('/api/support/ask'), {
         method: 'POST', headers: authHeaders(), body: JSON.stringify({ query: t }),
       });
       const d = await r.json();
