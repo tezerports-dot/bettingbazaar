@@ -126,6 +126,20 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   // four 40px buttons on one row, so the buttons shrink and the theme switch
   // moves into the menu (where it is always offered too).
   const compact = vw < 420;
+  // A laptop gets a side rail instead of the bottom tab bar (owner,
+  // 2026-10-10): a wide screen driven by a mouse. A tablet held sideways is
+  // as wide but touch-first, so it keeps the bar under the thumb.
+  const [finePointer] = useState(() => {
+    try { return window.matchMedia('(pointer: fine)').matches; } catch { return true; }
+  });
+  const laptop = desktop && finePointer;
+  const [railOpen, setRailOpen] = useState(() => {
+    try { return localStorage.getItem('bb_rail') !== 'closed'; } catch { return true; }
+  });
+  const toggleRail = () => setRailOpen((o) => {
+    try { localStorage.setItem('bb_rail', o ? 'closed' : 'open'); } catch { /* per-viewer nicety only */ }
+    return !o;
+  });
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -181,6 +195,55 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
     flex: 'none', width: iconSize, height: iconSize, borderRadius: 12, border: '1px solid var(--line)',
     background: 'var(--surface2)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
   };
+
+  /** One handler for a menu entry, from the drawer or the laptop rail. */
+  const pickMenuItem = (it: (typeof MENU_SECTIONS)[number]['items'][number]) => {
+    if ('action' in it && it.action === 'share') { setMenuOpen(false); setShareOpen(true); return; }
+    go(it.path);
+  };
+
+  // ░░ SIDE RAIL (laptop) ░░ The menu's own sections, always in view; it
+  // folds to icons. Phones and tablets keep the bottom tab bar instead.
+  const rail = laptop ? (
+    <nav aria-label="Main menu" className="bb-noscroll" style={{
+      flex: 'none', width: railOpen ? 232 : 68, transition: 'width .18s ease', overflowY: 'auto', overflowX: 'hidden',
+      background: 'var(--surface)', borderRight: '1px solid var(--line)', display: 'flex', flexDirection: 'column', padding: '10px 10px 14px',
+    }}>
+      <button type="button" onClick={toggleRail} aria-label={railOpen ? 'Collapse menu' : 'Expand menu'} aria-expanded={railOpen} style={{
+        alignSelf: railOpen ? 'flex-end' : 'center', width: 36, height: 36, borderRadius: 10, border: '1px solid var(--line)',
+        background: 'var(--surface2)', color: 'var(--text2)', cursor: 'pointer', fontSize: 14, marginBottom: 6,
+      }}>{railOpen ? '«' : '»'}</button>
+      {MENU_SECTIONS.map(sec => (
+        <div key={sec.title} style={{ marginTop: 6 }}>
+          {railOpen
+            ? <div style={{ padding: '8px 10px 4px', fontSize: 9, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--text3)' }}>{sec.title}</div>
+            : <div style={{ height: 1, background: 'var(--line)', margin: '8px 6px' }} />}
+          {sec.items.map(it => {
+            const active = 'action' in it ? false : isActive(it.path);
+            return (
+              <button key={it.path + it.label} type="button" onClick={() => pickMenuItem(it)} title={railOpen ? undefined : it.label}
+                aria-label={railOpen ? undefined : it.label} aria-current={active ? 'page' : undefined} style={{
+                  width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: railOpen ? '9px 10px' : '9px 0',
+                  justifyContent: railOpen ? 'flex-start' : 'center', border: 'none', borderRadius: 10, cursor: 'pointer', textAlign: 'left', marginBottom: 2,
+                  background: active ? 'color-mix(in srgb,var(--gold) 14%,transparent)' : 'transparent',
+                  boxShadow: active ? 'inset 3px 0 0 var(--gold)' : 'none',
+                }}>
+                <span aria-hidden="true" style={{ width: 30, height: 30, flex: 'none', borderRadius: 9, background: 'var(--surface3)', border: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>{it.icon}</span>
+                {railOpen && <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: active ? 'var(--gold-ink)' : 'var(--text)' }}>{it.label}</span>}
+              </button>
+            );
+          })}
+        </div>
+      ))}
+      <div style={{ flex: 1 }} />
+      {!isAuthenticated && railOpen && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+          <button type="button" onClick={() => openAuth('login')} style={{ padding: 10, borderRadius: 11, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>Sign In</button>
+          <button type="button" onClick={() => openAuth('register')} style={{ padding: 10, borderRadius: 11, border: '1px solid var(--line2)', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: 'var(--gold-ink)', background: 'color-mix(in srgb,var(--gold) 8%,transparent)' }}>Register</button>
+        </div>
+      )}
+    </nav>
+  ) : null;
 
   return (
     <ShellContext.Provider value={ctx}>
@@ -266,8 +329,10 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
           </div>
         </header>
 
-        {/* ░░ MAIN + CATEGORY STRIP ░░ */}
-        <main style={{ flex: 1, minHeight: 0, position: 'relative', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+        {/* ░░ RAIL (laptop) + MAIN + CATEGORY STRIP ░░ */}
+        <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        {rail}
+        <main style={{ minWidth: 0, flex: 1, minHeight: 0, position: 'relative', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
           {/*
             What the platform is telling everyone. `announcements` had an admin
             page that writes them and a route that serves them, and no screen
@@ -314,12 +379,13 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             {children}
           </div>
         </main>
+        </div>
 
-        {/* ░░ BOTTOM TAB BAR, every screen size (owner, 2026-10-10) ░░
-            Fixed at the foot of the app on laptops too, so the main places
-            are one tap away; on a wide screen the tabs keep a phone-like
-            width in the middle instead of stretching across it. */}
-        {(
+        {/* ░░ BOTTOM TAB BAR, phones and tablets (owner, 2026-10-10) ░░
+            Fixed at the foot of the app, tablets included, so the main places
+            are one tap away; a tablet held sideways keeps the tabs at a
+            phone-like width in the middle. A laptop has the side rail. */}
+        {!laptop && (
           <nav style={{
             flex: 'none', display: 'flex', justifyContent: 'center', background: 'color-mix(in srgb, var(--bg) 92%, transparent)',
             backdropFilter: 'blur(14px)', borderTop: '1px solid var(--line2)', paddingBottom: 'env(safe-area-inset-bottom)',
@@ -373,10 +439,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
                     {sec.items.map(it => {
                       const active = isActive(it.path);
                       return (
-                        <button key={it.path + it.label} onClick={() => {
-                          if ('action' in it && it.action === 'share') { setMenuOpen(false); setShareOpen(true); return; }
-                          go(it.path);
-                        }} style={{
+                        <button key={it.path + it.label} onClick={() => pickMenuItem(it)} style={{
                           width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '11px 12px', border: 'none',
                           borderRadius: 11, background: active ? 'color-mix(in srgb,var(--gold) 12%,transparent)' : 'transparent',
                           cursor: 'pointer', textAlign: 'left', marginBottom: 2,
