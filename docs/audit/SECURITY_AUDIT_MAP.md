@@ -3606,8 +3606,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 417 |
-| Parameters only (safe by construction) | 270 |
+| `pgQuery` call sites | 418 |
+| Parameters only (safe by construction) | 271 |
 | Interpolating into statement text (each needs a reading) | 141 |
 | Statement text built elsewhere and passed in (each needs a reading) | 6 |
 

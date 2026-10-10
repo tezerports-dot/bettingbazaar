@@ -477,7 +477,7 @@ const GameScreen: React.FC = () => {
                 <ClosingChip open={(isOpen || isMerged) && betOpen} secondsToClose={secondsToClose} warnSeconds={extras.closingWarnSeconds} />
               </div>
             )}
-            {extras.resultCelebration && <ResultCelebration result={isResult ? { cycleId: currentCycle?.id, winner } : null} />}
+            {extras.resultCelebration && <ResultCelebration cycleId={currentCycle?.id} result={isResult ? { cycleId: currentCycle?.id, winner } : null} />}
           </div>
         </div>
 

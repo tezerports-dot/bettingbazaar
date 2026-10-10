@@ -83,7 +83,7 @@ const STREAM_EVENTS = [
   'cycle_snapshot', 'new_cycle', 'cycle_result',
   'cycle_phase', 'celebration', 'fireworks', 'cycle_history',
   'bet_placed', 'system_config', 'branding', 'branding_updated',
-  'user_balance_update', 'user_update', 'payout_success', 'order_update',
+  'user_balance_update', 'user_update', 'round_result', 'payout_success', 'order_update',
 ] as const;
 
 class SSEEventBridge extends EventTarget {

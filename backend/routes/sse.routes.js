@@ -153,7 +153,8 @@ export function initSSERoutes(sseManager, cycleGenerator) {
     //
     // A signed-in player's one live connection: everything the public stream
     // carries, plus the pushes addressed to them (`sseManager.sendToUser`:
-    // user_balance_update, user_update, payout_success, order_update). One
+    // user_balance_update, user_update, round_result, payout_success,
+    // order_update). One
     // connection rather than two, so a player costs the server one stream.
     //
     // Admission is `authenticatePlayer` itself — revocation, challenge token,

@@ -3350,6 +3350,34 @@ const MUTATIONS = [
     from: `      ? { field: 'winningsBalance', amountPaise: x.payoutPaise,`,
     to: `      ? { field: 'depositBalance', amountPaise: x.payoutPaise,`,
   },
+  {
+    id: 'MRR1', file: 'backend/domains/markets/roundResult.service.js', config: PG,
+    test: 'database/tests/roundResultPg.test.js',
+    why: 'the round result pays the losing side, so the pop-up congratulates the player who lost',
+    from: `    if (s.side === winner) {`,
+    to: `    if (s.side !== winner) {`,
+  },
+  {
+    id: 'MRR2', file: 'backend/domains/markets/roundResult.service.js', config: PG,
+    test: 'database/tests/roundResultPg.test.js',
+    why: 'the stake is not summed, so a losing player is told nothing and a winner sees no stake',
+    from: `    r.stakedPaise += s.stakePaise;`,
+    to: `    r.stakedPaise = s.stakePaise;`,
+  },
+  {
+    id: 'MRR3', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/roundResultPg.test.js',
+    why: 'phantom bets are announced, so a synthetic player id is sent a round result',
+    from: `      WHERE cycle_id = $1 AND NOT is_phantom AND status IN ('PENDING', 'WON', 'LOST')`,
+    to: `      WHERE cycle_id = $1 AND status IN ('PENDING', 'WON', 'LOST')`,
+  },
+  {
+    id: 'MRR4', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/roundResultPg.test.js',
+    why: 'only PENDING bets are read, so a round announced after settlement began tells a settled winner nothing',
+    from: `      WHERE cycle_id = $1 AND NOT is_phantom AND status IN ('PENDING', 'WON', 'LOST')`,
+    to: `      WHERE cycle_id = $1 AND NOT is_phantom AND status IN ('PENDING')`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

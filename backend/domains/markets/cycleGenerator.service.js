@@ -14,6 +14,7 @@ import { allBoards, enabledBoards, boardOf, cycleLabel, boardMessages } from './
 import { AUDIENCES } from '#db/repositories/markets.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
 import { emitCyclePhase, emitCycleResult } from '../notification/realtimeEmitters.js';
+import { announceRoundResults } from './roundResult.service.js';
 import { recordRealtimeEvent } from '../../services/metrics.service.js';
 
 /**
@@ -363,6 +364,8 @@ class CycleGenerator {
                 delhiPool:  combinedDelhi,
                 bombayPool: combinedBombay,
             }, this.transports());
+            // Each player's own result, now: settlement can follow seconds later.
+            void announceRoundResults({ cycleId: cycle.cycleId, winner });
 
             // Admin result — full breakdown
             this.emitAdmin('admin_cycle_result', {

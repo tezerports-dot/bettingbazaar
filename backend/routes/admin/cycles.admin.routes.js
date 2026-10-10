@@ -8,6 +8,7 @@ import { allBoards } from '../../domains/markets/cycleTypes.js';
 import { voidCancelledCycle } from '#db/repositories/settlements.js';
 import { sendAlert } from '../../services/alerting.service.js';
 import { emitCyclePhase, emitCycleResult } from '../../domains/notification/realtimeEmitters.js';
+import { announceRoundResults } from '../../domains/markets/roundResult.service.js';
 
 const router = express.Router();
 
@@ -275,6 +276,7 @@ router.post('/manage-cycle', authenticate, hasPermission('canManageCycles'), asy
         if (!result.ok) return refuse(result);
         // Disclosed in the board rules ("exceptional situations"); `f: 1` on the wire.
         emitCycleResult({ cycleId, type: result.cycle.type, audience: result.cycle.audience, winner, forced: true });
+        void announceRoundResults({ cycleId, winner });
         break;
       }
 

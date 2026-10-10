@@ -69,6 +69,15 @@ const backend = getBackend();
 /** Fired on `window` with `{ cycleId, amount, winner }` when this player is paid a win. */
 export const MY_PAYOUT_EVENT = 'bb:my-payout';
 
+/**
+ * Fired on `window`, cancelable, with `{ cycleId, winner, staked, payout }`
+ * (rupees) when this player's result for a round is declared: one per player
+ * per cycle, all their bets summed (`round_result`, owner 2026-10-10). The
+ * board's pop-up calls `preventDefault()` when it is showing that cycle;
+ * otherwise this context says it once as a toast.
+ */
+export const MY_ROUND_EVENT = 'bb:my-round';
+
 interface LiveStats { totalDelhi: number; totalBombay: number; totalPool: number; poolsHidden: boolean; }
 
 /**
@@ -258,6 +267,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const [isGhostMode, setIsGhostMode] = useState(false);
   const [sysConfig, setSysConfig] = useState<SysConfig>(DEFAULT_SYS_CONFIG);
   const [userBets, setUserBets]     = useState<Bet[]>([]);
+  // Cycles this player has already been told the result of (one notice per round).
+  const announcedRef = useRef<Set<string>>(new Set());
   const [history, setHistory]       = useState<string[]>([]);
   const [pastCycles, setPastCycles] = useState<GameCycle[]>([]);
   // The audience whose boards are shown, and the last snapshot of each, so a
@@ -722,9 +733,28 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       if (amount > 0 && data.cycleId) {
         window.dispatchEvent(new CustomEvent(MY_PAYOUT_EVENT, { detail: { cycleId: String(data.cycleId), amount, winner: data.winner ?? null } }));
       }
-      if (amount > 0) {
+      // One notice per round: `round_result` already told this player, so the
+      // credit only moves the balance. A payout whose round was never
+      // announced (the stream was down at the result) still says so once.
+      if (amount > 0 && !announcedRef.current.has(String(data.cycleId))) {
+        announcedRef.current.add(String(data.cycleId));
         addToast(`🏆 You Won ₹${amount.toLocaleString()}! Winnings credited.`, 'success');
       }
+    };
+
+    const handleRoundResult = (data: any) => {
+      const cycleId = data?.cycleId != null ? String(data.cycleId) : '';
+      const staked = Number(data?.stakedPaise) / 100;
+      const payout = Number(data?.payoutPaise) / 100;
+      if (!cycleId || !(staked > 0) || !Number.isFinite(payout) || announcedRef.current.has(cycleId)) return;
+      if (announcedRef.current.size > 200) announcedRef.current.clear();
+      announcedRef.current.add(cycleId);
+      const shown = window.dispatchEvent(new CustomEvent(MY_ROUND_EVENT, {
+        cancelable: true, detail: { cycleId, winner: data.winner ?? null, staked, payout },
+      }));
+      if (!shown) return; // the board's pop-up has it
+      if (payout > 0) addToast(`🏆 You Won ₹${payout.toLocaleString()}!`, 'success');
+      else addToast(`${data.winner === 'DELHI' ? 'Delhi' : 'Bombay'} won. Your ₹${staked.toLocaleString()} bet did not win this round.`, 'info');
     };
 
     const handleCyclePhase = (raw: unknown) => {
@@ -792,6 +822,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       onSSE('celebration',         handleCelebration),
       onSSE('branding_updated',    handleBrandingUpdated),
       onSSE('system_config',       handleSystemConfig),
+      onSSE('round_result',        handleRoundResult),
       onSSE('payout_success',      handlePayoutSuccess),
       onSSE('user_balance_update', handleUserBalanceUpdate),
       // Admin adjust-balance pushes 'user_update' (not 'user_balance_update').

@@ -953,6 +953,27 @@ export async function cyclePayoutTotals(cycleId) {
 }
 
 /**
+ * Every real stake on a cycle, one row per bet, ordered by player: what the
+ * round-result announcement (`markets/roundResult.service.js`) adds up per
+ * player. Per bet, not per player, because the winnings fee is floored per
+ * bet and the announced figure must be the one settlement pays.
+ *
+ * REFUNDED bets are out (their stake came back; they neither won nor lost).
+ * PENDING, WON and LOST are all in, so the answer does not depend on whether
+ * settlement has started.
+ */
+export async function cycleStakesByPlayer(cycleId) {
+  const { rows } = await pgQuery(
+    `SELECT user_id, side, stake_paise
+       FROM bets
+      WHERE cycle_id = $1 AND NOT is_phantom AND status IN ('PENDING', 'WON', 'LOST')
+      ORDER BY user_id`,
+    [String(cycleId)], 'bets_cycle_stakes_by_player',
+  );
+  return rows.map((r) => ({ userId: String(r.user_id), side: r.side, stakePaise: Number(r.stake_paise) }));
+}
+
+/**
  * Stamp a cycle's phantom bets LOST.
  *
  * Phantom bets never win and never move money: they are created with no balance
