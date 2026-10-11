@@ -21,19 +21,19 @@
  * and is the same string helmet would build anyway.
  */
 import helmet from 'helmet';
-import { helmetOptionsFraming } from '../config/security.config.js';
+import { helmetOptionsFraming, helmetOptionsMiniApp, MINI_APP_PATH } from '../config/security.config.js';
 import { providerFrameSources } from '../domains/casino/providerFrameSources.js';
 
 let built = null;
 let builtFrom = null;
 
-/** The helmet instance for the origins in force right now. */
+/** The helmet instances (every page, and the Mini App) for the origins in force right now. */
 function current() {
   const sources = providerFrameSources();
   const key = sources.join(' ');
   if (built && builtFrom === key) return built;
   builtFrom = key;
-  built = helmet(helmetOptionsFraming(sources));
+  built = { page: helmet(helmetOptionsFraming(sources)), miniApp: helmet(helmetOptionsMiniApp(sources)) };
   return built;
 }
 
@@ -45,7 +45,8 @@ function current() {
  * server ends up serving two different policies to two in-flight requests.
  */
 export function securityHeaders(req, res, next) {
-  return current()(req, res, next);
+  const { page, miniApp } = current();
+  return (req.path === MINI_APP_PATH ? miniApp : page)(req, res, next);
 }
 
 /** Test seam: forget the built instance so the next call rebuilds. */

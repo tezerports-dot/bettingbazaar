@@ -24,8 +24,24 @@
  */
 
 // ── Content-Security-Policy — the only non-default helmet section ────────────
+// Two third-party scripts the platform cannot work without, each loaded from
+// its vendor because neither may be self-hosted:
+//   TELEGRAM_SCRIPT  telegram-web-app.js, loaded by mini-app.html. Blocked, the
+//                    Mini App has no `window.Telegram` and nobody can verify a
+//                    mobile, approve a sign-in or reset a password.
+//   CAPTCHA_ORIGIN   Cloudflare Turnstile (services/captcha.ts), a script that
+//                    then opens its own frame. Blocked, the panel sends no
+//                    token and a server with TURNSTILE_SECRET_KEY refuses every
+//                    player signup and login.
+// Both shipped blocked: the Vite dev server sends no CSP, so only a deployed
+// server showed it (2026-10-11).
+export const TELEGRAM_SCRIPT = 'https://telegram.org';
+export const CAPTCHA_ORIGIN = 'https://challenges.cloudflare.com';
+/** Telegram Web opens a Mini App in an iframe from here (mobile uses a WebView). */
+export const TELEGRAM_WEB_ORIGIN = 'https://web.telegram.org';
+
 export const CSP_DIRECTIVES = {
-  defaultSrc: ["'self'"], scriptSrc: ["'self'"],
+  defaultSrc: ["'self'"], scriptSrc: ["'self'", TELEGRAM_SCRIPT, CAPTCHA_ORIGIN],
   styleSrc:   ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
   fontSrc:    ["'self'", "https://fonts.gstatic.com", "data:"],
   imgSrc:     ["'self'", 'data:', 'https:'],
@@ -68,10 +84,30 @@ export function helmetOptionsFraming(frameSrc = []) {
   return {
     ...HELMET_OPTIONS,
     contentSecurityPolicy: {
-      directives: { ...CSP_DIRECTIVES, frameSrc: ["'self'", ...frameSrc] },
+      directives: { ...CSP_DIRECTIVES, frameSrc: ["'self'", CAPTCHA_ORIGIN, ...frameSrc] },
     },
   };
 }
+
+/**
+ * The same policy for the Telegram Mini App page, which Telegram Web frames:
+ * `frame-ancestors` admits Telegram Web, and X-Frame-Options (which cannot name
+ * an origin, and which a browser applies alongside the CSP) is not sent. Every
+ * other page keeps `frame-ancestors 'self'` and SAMEORIGIN.
+ */
+export function helmetOptionsMiniApp(frameSrc = []) {
+  const base = helmetOptionsFraming(frameSrc);
+  return {
+    ...base,
+    frameguard: false,
+    contentSecurityPolicy: {
+      directives: { ...base.contentSecurityPolicy.directives, frameAncestors: ["'self'", TELEGRAM_WEB_ORIGIN] },
+    },
+  };
+}
+
+/** The page `helmetOptionsMiniApp` applies to (user-panel/mini-app.html). */
+export const MINI_APP_PATH = '/mini-app.html';
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
 // The origin check function stays in server.js (it closes over env parsing);

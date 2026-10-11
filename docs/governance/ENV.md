@@ -65,7 +65,12 @@ a redeploy is not an acceptable degradation.
 | Variable | Purpose |
 |---|---|
 | `S3_REGION` | Bucket region. |
-| `CDN_URL` | *(optional)* CDN in front of the bucket for public asset URLs. |
+| `CDN_URL` | **Required in production.** The bucket's public https origin (an R2 `r2.dev` URL or a custom domain), no trailing slash. Every stored upload URL is `${CDN_URL}/<key>`; unset, they were saved as `undefined/<key>`. |
+
+Browsers upload straight to the bucket with a presigned PUT, so the bucket needs a
+CORS rule allowing `PUT` and `GET` from every origin in `ALLOWED_ORIGINS`
+(R2: bucket → Settings → CORS policy), and its endpoint must be one browsers can
+reach — never an internal hostname such as `http://minio:9000`.
 
 ## 3. Money-DB TLS (Postgres)
 

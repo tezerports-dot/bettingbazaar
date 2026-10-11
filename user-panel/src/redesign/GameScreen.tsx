@@ -16,6 +16,7 @@
  * §3: gold/accent hues resolve from brand CSS variables via the theme tokens.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { motion } from 'framer-motion';
 import { useGame } from '../services/GameContext';
 import { BettingSide, GameState } from '../types';
 import { CHIP_SCALE_STEP, chipScales, chipsFor } from '../constants';
@@ -389,7 +390,12 @@ const GameScreen: React.FC = () => {
           <div style={{ flex: 'none', display: 'flex', background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 999, padding: 3, gap: 3, boxShadow: 'var(--shadow-sm)' }}>
             {boards.map(b => ({ t: b.key, l: b.name.toUpperCase() })).map(o => {
               const on = cycleType === o.t;
-              return <button key={o.t} onClick={() => setCycleType(o.t)} style={{ padding: mobile ? '7px 11px' : '7px 15px', whiteSpace: 'nowrap', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 800, letterSpacing: '.06em', background: on ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: on ? '#1a1200' : 'var(--text3)', boxShadow: on ? 'var(--shadow-sm)' : 'none' }}>{o.l}</button>;
+              // The gold pill slides between tabs (one shared layoutId) instead
+              // of jumping, which read as lag on a tap.
+              return <button key={o.t} onClick={() => setCycleType(o.t)} style={{ position: 'relative', padding: mobile ? '7px 11px' : '7px 15px', whiteSpace: 'nowrap', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 800, letterSpacing: '.06em', background: 'transparent', color: on ? '#1a1200' : 'var(--text3)', transition: 'color .2s' }}>
+                {on && <motion.span layoutId="board-tab-pill" transition={{ type: 'spring', stiffness: 500, damping: 38 }} style={{ position: 'absolute', inset: 0, borderRadius: 999, background: 'linear-gradient(180deg,var(--gold2),var(--gold))', boxShadow: 'var(--shadow-sm)' }} />}
+                <span style={{ position: 'relative' }}>{o.l}</span>
+              </button>;
             })}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', lineHeight: 1.1 }}>

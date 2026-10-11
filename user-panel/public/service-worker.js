@@ -22,8 +22,16 @@ const CACHE_FONTS = 'bb-fonts-v1';
 // the app on a white screen for as long as the browser's own timeout.
 const NAV_TIMEOUT_MS = 4000;
 
+// The admin and merchant panels share this origin (served at /admin/ and
+// /merchant/) and so sit inside this worker's scope. Left in, a slow network
+// answered an admin's page load with a cached copy or the PLAYER shell.
+// The Mini App is Telegram's page and is always fetched fresh.
+const OTHER_PANEL = /^\/(admin|merchant)(\/|$)/;
+
 const NEVER_CACHE = (url) =>
   url.pathname.startsWith('/api') ||
+  OTHER_PANEL.test(url.pathname) ||
+  url.pathname === '/mini-app.html' ||
   url.pathname.startsWith('/socket.io') ||
   url.hostname.includes('railway.app') ||
   url.protocol === 'ws:' || url.protocol === 'wss:';

@@ -66,6 +66,14 @@ const SHOTS = join(ROOT, 'backend', 'tests', 'browser', 'screenshots');
 // control to a person holding a phone.
 const PROFILE = process.env.BB_PROFILE || '';
 const PHONE = process.env.BB_VIEWPORT === 'phone';
+// `BB_SERVED=1`: open the panels the SERVER serves (the built bundles at /,
+// /admin/, /merchant/ on BB_BASE), not a Vite dev server per panel. Point
+// BB_BASE at a deployed-shaped server on a real hostname behind HTTPS. The dev
+// servers inject VITE_API_URL and run on 127.0.0.1, so they could not see the
+// three faults that shipped together on 2026-10-11: a production admin bundle
+// that threw at load without VITE_API_URL (a blank page), '/admin/' answered
+// by the player app, and committed 1x1 images shadowing the logo.
+const SERVED = process.env.BB_SERVED === '1';
 const SUFFIX = [PROFILE, PHONE ? 'phone' : ''].filter(Boolean).join('.');
 const MANIFEST = join(ROOT, 'backend', 'tests', 'browser', `controls.manifest${SUFFIX ? `.${SUFFIX}` : ''}.json`);
 
@@ -304,13 +312,16 @@ const manifest = {
 const restoreProviders = await enableGameProviders();
 
 const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ['--no-sandbox'], headless: !process.env.BB_HEADED });
+// A served run is usually a local HTTPS server with its own CA (Caddy's
+// `tls internal`), which the bundled Chromium does not hold.
+const contextTls = SERVED ? { ignoreHTTPSErrors: true } : {};
 
 try {
   for (const { panel, screens, skipped, source } of wanted) {
     const cfg = PANELS[panel];
-    const base = `http://127.0.0.1:${cfg.port}`;
-    const { log } = startVite(panel, cfg.port);
-    if (!await waitFor(`${base}${panel === 'user-panel' ? '/' : `/${panel.split('-')[0]}/`}`, `${panel}'s dev server`)) {
+    const base = SERVED ? API : `http://127.0.0.1:${cfg.port}`;
+    const { log } = SERVED ? { log: [] } : startVite(panel, cfg.port);
+    if (!await waitFor(`${base}${panel === 'user-panel' ? '/' : `/${panel.split('-')[0]}/`}`, SERVED ? `${panel} as the server serves it` : `${panel}'s dev server`)) {
       check('BROWSER', panel, 'the dev server starts', 'listening', log.join('').slice(-400), false);
       continue;
     }
@@ -318,9 +329,9 @@ try {
       `${skipped.length} wildcard route(s) skipped: ${skipped.join(' ') || 'none'}`,
       'derived from the panel router, so a new screen joins this pass without anybody remembering to add it');
 
-    const ctx = await browser.newContext(PHONE
+    const ctx = await browser.newContext({ ...contextTls, ...(PHONE
       ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 }
-      : { viewport: { width: 1440, height: 900 } });
+      : { viewport: { width: 1440, height: 900 } }) });
     await ctx.addInitScript(([k, v, extraKey, extraVal]) => {
       try {
         // Once per tab, the way a real browser holds a session. Re-installed

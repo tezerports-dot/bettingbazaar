@@ -16,6 +16,7 @@
  */
 import React, { Suspense, useEffect, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router';
+import SignInFirst from './redesign/SignInFirst';
 import { HashRouter } from 'react-router';
 import { MotionConfig } from 'framer-motion';
 import { ThemeProvider } from './redesign/ThemeContext';
@@ -294,17 +295,17 @@ const App: React.FC = () => (
                           <Route path="/sports"          element={lazy(<SportsPage />)} />
 
                           {/* Finance */}
-                          <Route path="/wallet"          element={lazy(<WalletPage />)} />
+                          <Route path="/wallet"          element={<SignInFirst what="wallet">{lazy(<WalletPage />)}</SignInFirst>} />
 
                           {/* Referral earnings live HERE, not on the wallet:
                               only the disbursed part reaches the winnings
                               balance, and the rest is a promise. */}
-                          <Route path="/referrals"       element={lazy(<ReferralPage />)} />
+                          <Route path="/referrals"       element={<SignInFirst what="referrals">{lazy(<ReferralPage />)}</SignInFirst>} />
 
                           {/* Account */}
-                          <Route path="/profile"         element={<ProfilePage />} />
-                          <Route path="/history"         element={<HistoryPage />} />
-                          <Route path="/my-bets"         element={<MyBetsPage />} />
+                          <Route path="/profile"         element={<SignInFirst what="profile"><ProfilePage /></SignInFirst>} />
+                          <Route path="/history"         element={<SignInFirst what="game history"><HistoryPage /></SignInFirst>} />
+                          <Route path="/my-bets"         element={<SignInFirst what="bets"><MyBetsPage /></SignInFirst>} />
 
                           {/* Info */}
                           <Route path="/results"         element={<ResultsPage />} />

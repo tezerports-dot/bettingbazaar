@@ -45,9 +45,13 @@ COPY merchant-panel ./merchant-panel
 # --build-arg (deploy/vps/docker-compose.prod.yml reads it from .env).
 ARG VITE_TURNSTILE_SITE_KEY=
 ENV VITE_TURNSTILE_SITE_KEY=$VITE_TURNSTILE_SITE_KEY
+# `sourcemap: 'hidden'` still writes the .map files into dist/, and the
+# runtime serves dist/ as it is, so they would be downloadable by anyone (the
+# whole admin panel's source). They stay on the builder stage only.
 RUN cd user-panel     && npm run build \
  && cd ../admin-panel && npm run build \
- && cd ../merchant-panel && npm run build
+ && cd ../merchant-panel && npm run build \
+ && cd .. && find user-panel/dist admin-panel/dist merchant-panel/dist -name '*.map' -delete
 
 # ── Stage 3: lean runtime — prod deps + backend + built dist only ────────────
 FROM node:22-slim AS runtime
