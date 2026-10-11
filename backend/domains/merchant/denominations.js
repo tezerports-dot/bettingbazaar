@@ -29,6 +29,11 @@
  * account (`PLAYER_PAY_TO_BANK_FIELDS`), and every sell by bank transfer to
  * the player's account. Change it in the same commit as the behaviour.
  *
+ * ── Under merchant accounts (owner, 2026-10-11) ─────────────────────────────
+ * When the admin sends INR to merchant accounts (`inrRoutingMode` MERCHANTS)
+ * every size, 500 to 500,000, is one rail: UPI QR or bank transfer
+ * (`railForSize`, `MERCHANTS_PAYMENT_METHOD`). Agents keep the split above.
+ *
  * ── USDT ────────────────────────────────────────────────────────────────────
  * Buy only, priced in USDT: a whole number of `USDT_BUY_STEP` (100) between the
  * admin's minimum and maximum (`SystemConfig.usdtBuy`, defaults 100 and 10,000).
@@ -45,12 +50,35 @@ export const UPI_BANK_SIZES = Object.freeze([50_000, 100_000, 500_000]);
 /** Every size an INR order may be, ascending. The only legal `buyOrderSizes` / `sellOrderSizes` values. */
 export const ORDER_SIZES = Object.freeze([...CASH_SIZES, ...UPI_BANK_SIZES]);
 
-/** Which rail serves a size: 'CASH', 'UPI_BANK', or null for anything else. */
-export function railForSize(tokens) {
+/**
+ * Who serves INR orders (owner, 2026-10-11): AGENTS (supervisors' teams; the
+ * cash sizes at an ATM) or MERCHANTS (merchant accounts; every size by UPI QR
+ * or bank transfer). The admin's `SystemConfig.inrRoutingMode`; USDT is never
+ * affected.
+ */
+export const INR_ROUTING = Object.freeze({ AGENTS: 'AGENTS', MERCHANTS: 'MERCHANTS' });
+export const INR_ROUTING_MODES = Object.freeze(Object.values(INR_ROUTING));
+
+/** The INR routing mode the config row says, or the schema default. */
+export function inrRoutingOf(cfg) {
+  const mode = cfg?.inrRoutingMode;
+  return INR_ROUTING_MODES.includes(mode) ? mode : INR_ROUTING.AGENTS; // schema default: AGENTS
+}
+
+/**
+ * Which rail serves a size under a routing mode: 'CASH', 'UPI_BANK', or null
+ * for anything that is not a size. Under MERCHANTS every size is UPI_BANK
+ * (a merchant account is paid by UPI QR or bank transfer, never cash at an
+ * ATM); under AGENTS the size decides. The same rule `paymentModeFor` stamps.
+ */
+export function railForSize(tokens, mode) {
+  if (!INR_ROUTING_MODES.includes(mode)) {
+    throw new TypeError(`railForSize: mode must be one of ${INR_ROUTING_MODES.join(', ')}, got ${mode}`);
+  }
   const n = Number(tokens);
-  if (CASH_SIZES.includes(n)) return 'CASH';
-  if (UPI_BANK_SIZES.includes(n)) return 'UPI_BANK';
-  return null;
+  if (!ORDER_SIZES.includes(n)) return null;
+  if (mode === INR_ROUTING.MERCHANTS) return 'UPI_BANK';
+  return CASH_SIZES.includes(n) ? 'CASH' : 'UPI_BANK';
 }
 
 /** The config field holding each direction's sizes on offer. */
@@ -75,7 +103,7 @@ export function offeredSizes(cfg, direction) {
 
 /** The sizes on offer for one direction that a given rail serves. */
 export function offeredSizesFor(cfg, rail, direction) {
-  return offeredSizes(cfg, direction).filter((size) => railForSize(size) === rail);
+  return offeredSizes(cfg, direction).filter((size) => railForSize(size, inrRoutingOf(cfg)) === rail);
 }
 
 /** How a player pays (buy) or is paid (sell) on each rail. See the header. */
@@ -88,6 +116,17 @@ export const RAIL_PAYMENT_METHOD = Object.freeze({
     DEPOSIT: "Bank transfer (IMPS, NEFT or RTGS) to the member's bank account",
     WITHDRAWAL: 'Bank transfer to your bank account',
   }),
+});
+
+/**
+ * How a player pays (buy) or is paid (sell) when INR goes to merchant
+ * accounts: one sentence per direction, no rail (owner, 2026-10-11). A buy is
+ * paid by the UPI QR link or into the bank account the order names
+ * (`playerOrderView.js`); every sell by bank transfer to the player's account.
+ */
+export const MERCHANTS_PAYMENT_METHOD = Object.freeze({
+  DEPOSIT: 'UPI or bank transfer',
+  WITHDRAWAL: 'Bank transfer to your bank account',
 });
 
 /**

@@ -60,8 +60,9 @@ import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate 
 import { getSystemConfig } from '#db/repositories/config.js';
 // Which rail an order runs on, and the per-rail timers and caps.
 import {
-  PAYMENT_MODES, railOf, routingSettings,
+  PAYMENT_MODES, railOf, routingSettings, merchantRoutingSettings, routedToMerchants,
 } from '#db/repositories/teamRouting.js';
+import { inrRoutingOf } from '../merchant/denominations.js';
 // The only shape of an order a player receives.
 import { toPlayerOrderView } from './playerOrderView.js';
 // The mirror of it, pointing the other way: the one shape a MERCHANT receives.
@@ -117,9 +118,24 @@ export function merchantDisplayRef(merchant) {
  * account-holder name. The screen rendered the handle in a copy-to-clipboard
  * row.
  */
-function buildMerchantSnapshot(merchant, expiresAt, order = null) {
+function buildMerchantSnapshot(merchant, expiresAt, order = null, payAccount = null) {
   const merchantRef = merchantDisplayRef(merchant);
+  // ── A merchant-account buy (owner, 2026-10-11) ──────────────────────────
+  // The player pays the payment account routing chose for this order
+  // (`order_states.pay_account_id`), not the merchant's profile: a UPI QR
+  // account's handle and name (the player's link is built from them with the
+  // order's amount, `playerOrderView.js`), and the bank account behind it.
+  const bank = payAccount
+    ? { bankName: payAccount.bankName, accountNo: payAccount.accountNo, ifsc: payAccount.ifsc, accountHolderName: payAccount.holderName }
+    : (merchant.bankDetails ?? {});
   return {
+    // The payment account this buy is paid into, and its kind (null on an
+    // agent's order). `upiPa`/`upiPn` only on a UPI_QR account.
+    payAccountId:   payAccount?.accountId ?? null,
+    payAccountKind: payAccount?.kind ?? null,
+    upiPa:          payAccount?.kind === 'UPI_QR' ? payAccount.upiId : null,
+    upiPn:          payAccount?.kind === 'UPI_QR' ? payAccount.upiName : null,
+
     // ── For the player, through `toPlayerOrderView` ─────────────────────
     // An opaque label, and on an INR bank-transfer buy the member's bank
     // account below (`bankName`…`accountHolder`, owner 2026-10-03). A CASH buy
@@ -148,10 +164,10 @@ function buildMerchantSnapshot(merchant, expiresAt, order = null) {
     // for a USDT one. Both chains are recorded here because a dispute months
     // later is decided from what was true at assignment.
     merchantType:  merchantTypeOf(merchant),
-    bankName:      merchant.bankDetails?.bankName          || '',
-    accountNo:     merchant.bankDetails?.accountNo         || '',
-    ifsc:          merchant.bankDetails?.ifsc              || '',
-    accountHolder: merchant.bankDetails?.accountHolderName || '',
+    bankName:      bank.bankName          || '',
+    accountNo:     bank.accountNo         || '',
+    ifsc:          bank.ifsc              || '',
+    accountHolder: bank.accountHolderName || '',
     usdtAddressTrc20: merchant.usdtAddressTrc20 || '',
     usdtAddressBep20: merchant.usdtAddressBep20 || '',
     snapshotAt:    new Date(),
@@ -179,7 +195,18 @@ function buildMerchantSnapshot(merchant, expiresAt, order = null) {
  * free for waits PENDING_QUEUE and the assignment sweep offers it again.
  */
 async function tryAssignMerchant(order, { alsoBar = [] } = {}) {
-  const settings = routingSettings(await getSystemConfig());
+  const cfg = await getSystemConfig();
+  // ── Agents or merchant accounts (owner, 2026-10-11) ─────────────────────
+  // An INR order still waiting for its first taker follows the admin's switch
+  // (re-railed if its rail differs); the admin's save moves every waiting
+  // order at once, and this keeps the one in hand convergent with it. USDT
+  // carries no `inr_routing` and never moves.
+  const mode = inrRoutingOf(cfg);
+  if (order.inrRouting && order.inrRouting !== mode && order.state === 'PENDING_QUEUE') {
+    if ((await db.orders.rerailWaitingOrders(mode, { orderId: order.orderId })).length) {
+      Object.assign(order, await db.orders.getOrderRecord(order.orderId));
+    }
+  }
   // Who this order may NOT go to: anybody who already refused it, anybody who
   // refused an order from this player before, and — on an admin's reassign —
   // the member it was just taken from.
@@ -187,23 +214,10 @@ async function tryAssignMerchant(order, { alsoBar = [] } = {}) {
     ...await db.orders.merchantsBarredFrom({ orderId: order.orderId, userId: order.userId }),
     ...alsoBar,
   ];
-  const expiresAt = new Date(Date.now() + settings.processingWindowSeconds[railOf(order)] * 1000);
 
-  const assigned = await db.teamRouting.assignToTeam(order, {
-    cap: settings.concurrency[railOf(order)],
-    barredMerchantIds,
-    actor: 'assignment',
-    // Per candidate, because the snapshot names the member — what was true
-    // about them at the moment the order became theirs.
-    buildSet: async (cand) => {
-      const merchant = await db.merchants.getMerchant(cand.merchantId);
-      return {
-        assignedAt: new Date(),
-        expiresAt,
-        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order),
-      };
-    },
-  });
+  const assigned = routedToMerchants(order)
+    ? await assignToMerchantAccount(order, cfg, barredMerchantIds)
+    : await assignToAgents(order, cfg, barredMerchantIds);
   if (!assigned.ok) return false;
 
   // Keep the caller's in-memory copy consistent with what was written, so the
@@ -228,6 +242,47 @@ async function tryAssignMerchant(order, { alsoBar = [] } = {}) {
   });
 
   return true;
+}
+
+/** An order merchant accounts serve: the window and cap are `merchantRouting`'s, per direction. */
+async function assignToMerchantAccount(order, cfg, barredMerchantIds) {
+  const settings = merchantRoutingSettings(cfg);
+  const expiresAt = new Date(Date.now() + settings.processingWindowSeconds[order.type] * 1000);
+  return db.teamRouting.assignToDirect(order, {
+    cap: settings.concurrency[order.type],
+    barredMerchantIds,
+    actor: 'assignment',
+    buildSet: async (cand, payAccount) => {
+      const merchant = await db.merchants.getMerchant(cand.merchantId);
+      return {
+        assignedAt: new Date(),
+        expiresAt,
+        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order, payAccount),
+      };
+    },
+  });
+}
+
+/** An order agents serve: the window and cap are `teamRouting`'s, per rail. */
+async function assignToAgents(order, cfg, barredMerchantIds) {
+  const settings = routingSettings(cfg);
+  const expiresAt = new Date(Date.now() + settings.processingWindowSeconds[railOf(order)] * 1000);
+
+  return db.teamRouting.assignToTeam(order, {
+    cap: settings.concurrency[railOf(order)],
+    barredMerchantIds,
+    actor: 'assignment',
+    // Per candidate, because the snapshot names the member — what was true
+    // about them at the moment the order became theirs.
+    buildSet: async (cand) => {
+      const merchant = await db.merchants.getMerchant(cand.merchantId);
+      return {
+        assignedAt: new Date(),
+        expiresAt,
+        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order),
+      };
+    },
+  });
 }
 
 /**
@@ -1262,9 +1317,11 @@ export async function expireOrders() {
   // An order nobody ever took is expired by the assignment wait — creation
   // sets no deadline, assignment does, so without it such an order waits
   // forever and a withdrawal's stake is locked with nothing to release it.
+  const expiryCfg = await getSystemConfig();
   const expired = await db.orders.findExpiredOrders({
     limit: 500,
-    assignmentWaitSeconds: routingSettings(await getSystemConfig()).assignmentWaitSeconds,
+    assignmentWaitSeconds: routingSettings(expiryCfg).assignmentWaitSeconds,
+    merchantAssignmentWaitSeconds: merchantRoutingSettings(expiryCfg).assignmentWaitSeconds,
   });
   if (expired.length === 0) return 0;
 

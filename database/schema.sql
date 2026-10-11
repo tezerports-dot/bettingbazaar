@@ -2612,9 +2612,24 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- created, and the schema is applied end to end before any row is updated.
 CREATE OR REPLACE FUNCTION bb_forbid_order_mode_change() RETURNS trigger AS $$
 BEGIN
-  IF NEW.payment_mode IS DISTINCT FROM OLD.payment_mode THEN
-    RAISE EXCEPTION 'order % was created on the % rail and cannot be moved to %',
-      OLD.order_id, OLD.payment_mode, NEW.payment_mode;
+  -- ── The one re-rail: an INR order nobody has taken yet ──────────────────
+  -- When an admin switches INR routing between agents and merchant accounts
+  -- (owner, 2026-10-11) an INR order still WAITING for its first taker moves
+  -- to the new mode, and its rail with it: its size is paid by cash at an ATM
+  -- under agents and by UPI or bank under merchants. Only while it is queued,
+  -- held in no pool, on no team and without a cash QR: from the first
+  -- assignment on, the rail and the mode are frozen like everything else here.
+  -- The rail moves only WITH the mode (a rail change on its own is no
+  -- re-rail), and under merchant accounts every size is UPI or bank.
+  IF (NEW.payment_mode IS DISTINCT FROM OLD.payment_mode
+      OR NEW.inr_routing IS DISTINCT FROM OLD.inr_routing)
+     AND NOT (OLD.state = 'PENDING_QUEUE' AND NEW.state = 'PENDING_QUEUE'
+              AND OLD.inr_routing IS NOT NULL AND NEW.inr_routing IS NOT NULL
+              AND NEW.inr_routing IS DISTINCT FROM OLD.inr_routing
+              AND (NEW.inr_routing <> 'MERCHANTS' OR NEW.payment_mode = 'P2P_UPI')
+              AND OLD.team_id IS NULL AND OLD.pool_held_paise = 0 AND OLD.cash_link IS NULL) THEN
+    RAISE EXCEPTION 'order % was created on the % rail (% routing) and cannot be moved to % (%)',
+      OLD.order_id, OLD.payment_mode, OLD.inr_routing, NEW.payment_mode, NEW.inr_routing;
   END IF;
   IF OLD.usdt_chain IS NOT NULL AND NEW.usdt_chain IS DISTINCT FROM OLD.usdt_chain THEN
     RAISE EXCEPTION 'order % is being paid on % and cannot be moved to another chain',
@@ -3429,7 +3444,9 @@ ALTER TABLE merchants ADD CONSTRAINT merchants_supervisor_rail CHECK (
 
 CREATE TABLE IF NOT EXISTS teams (
   team_id       TEXT PRIMARY KEY,
-  supervisor_id TEXT NOT NULL REFERENCES merchants (merchant_id),
+  -- NULL only on a DIRECT team (a merchant account, owner 2026-10-11), which
+  -- has an owner instead: `teams_kind_shape`, DIRECT MERCHANTS below.
+  supervisor_id TEXT REFERENCES merchants (merchant_id),
   name          TEXT NOT NULL,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -3833,7 +3850,9 @@ ALTER TABLE users ADD CONSTRAINT users_bank_details_bank_account_only
 CREATE TABLE IF NOT EXISTS team_commissions (
   commission_id    TEXT PRIMARY KEY,
   team_id          TEXT NOT NULL REFERENCES teams (team_id),
-  supervisor_id    TEXT NOT NULL REFERENCES merchants (merchant_id),
+  -- The team's supervisor; NULL on a DIRECT team, which has none (its owner's
+  -- share names them).
+  supervisor_id    TEXT REFERENCES merchants (merchant_id),
   from_high_paise  BIGINT NOT NULL,
   to_high_paise    BIGINT NOT NULL,
   buys_paise       BIGINT NOT NULL,
@@ -3842,9 +3861,8 @@ CREATE TABLE IF NOT EXISTS team_commissions (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT team_commissions_rises CHECK (from_high_paise >= 0 AND to_high_paise > from_high_paise),
   CONSTRAINT team_commissions_is_matched CHECK (to_high_paise = LEAST(buys_paise, sells_paise)),
-  -- 10% of the rise, rounded down to the paisa; a rise worth nothing is not a row.
-  CONSTRAINT team_commissions_tenth CHECK (
-    commission_paise = (to_high_paise - from_high_paise) / 10 AND commission_paise > 0),
+  -- The percent of the rise is `team_commissions_percent_of_rise`, DIRECT
+  -- MERCHANTS below (the percent became a column, owner 2026-10-11).
   CONSTRAINT team_commissions_from_once UNIQUE (team_id, from_high_paise),
   CONSTRAINT team_commissions_to_once UNIQUE (team_id, to_high_paise)
 );
@@ -3861,7 +3879,7 @@ CREATE TABLE IF NOT EXISTS team_commission_shares (
   share_paise   BIGINT NOT NULL,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (commission_id, merchant_id),
-  CONSTRAINT team_commission_shares_role_known CHECK (role IN ('SUPERVISOR', 'MEMBER')),
+  -- The role list is `team_commission_shares_role_known`, DIRECT MERCHANTS below.
   CONSTRAINT team_commission_shares_nonneg CHECK (share_paise >= 0)
 );
 CREATE INDEX IF NOT EXISTS team_commission_shares_merchant_idx
@@ -4314,3 +4332,341 @@ END $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS users_phantom_access_known ON users;
 CREATE TRIGGER users_phantom_access_known BEFORE INSERT OR UPDATE OF phantom_access ON users
   FOR EACH ROW EXECUTE FUNCTION bb_phantom_access_known();
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- DIRECT MERCHANTS (owner, 2026-10-11 — Phase B of the merchants-and-agents plan)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- A MERCHANT ACCOUNT serves INR orders itself, with no supervisor. It is a
+-- team of kind DIRECT, owned by one merchant, with its own token pool: the
+-- pool, its holds, its spends, its commission and its admin trades are the
+-- team machinery unchanged (teamPools.js, teamCommission.js). An AGENT team
+-- has a supervisor and members; a DIRECT team has an owner and neither.
+-- Whether INR orders go to agents or to merchant accounts is the admin's
+-- `inrRoutingMode` switch, stamped on each INR order as `inr_routing`.
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'AGENT';
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS owner_merchant_id TEXT REFERENCES merchants (merchant_id);
+ALTER TABLE teams ALTER COLUMN supervisor_id DROP NOT NULL;
+ALTER TABLE teams DROP CONSTRAINT IF EXISTS teams_kind_shape;
+ALTER TABLE teams ADD CONSTRAINT teams_kind_shape CHECK (
+     (kind = 'AGENT'  AND supervisor_id IS NOT NULL AND owner_merchant_id IS NULL)
+  OR (kind = 'DIRECT' AND supervisor_id IS NULL AND owner_merchant_id IS NOT NULL));
+-- One merchant account per merchant.
+CREATE UNIQUE INDEX IF NOT EXISTS teams_one_direct_per_owner ON teams (owner_merchant_id)
+  WHERE owner_merchant_id IS NOT NULL;
+
+-- A team is born AGENT or DIRECT and stays it; a DIRECT team keeps its owner.
+-- An owner is neither a supervisor nor a team member, and the reverse: the
+-- three roles are disjoint (extends `team_roles_disjoint`).
+CREATE OR REPLACE FUNCTION bb_direct_team_shape() RETURNS trigger AS $$
+BEGIN
+  IF TG_TABLE_NAME = 'teams' THEN
+    IF TG_OP = 'UPDATE' AND (NEW.kind IS DISTINCT FROM OLD.kind
+                             OR NEW.owner_merchant_id IS DISTINCT FROM OLD.owner_merchant_id) THEN
+      RAISE EXCEPTION 'a team''s kind and owner never change' USING ERRCODE = '23514',
+        CONSTRAINT = 'teams_kind_fixed';
+    END IF;
+    IF NEW.kind = 'DIRECT' AND (
+         EXISTS (SELECT 1 FROM merchants WHERE merchant_id = NEW.owner_merchant_id AND is_supervisor)
+      OR EXISTS (SELECT 1 FROM team_members WHERE merchant_id = NEW.owner_merchant_id)) THEN
+      RAISE EXCEPTION 'a supervisor or team member cannot own a merchant account' USING ERRCODE = '23514',
+        CONSTRAINT = 'team_roles_disjoint';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'team_members' THEN
+    IF EXISTS (SELECT 1 FROM teams WHERE owner_merchant_id = NEW.merchant_id) THEN
+      RAISE EXCEPTION 'a merchant account owner cannot be a team member' USING ERRCODE = '23514',
+        CONSTRAINT = 'team_roles_disjoint';
+    END IF;
+  ELSIF NEW.is_supervisor AND EXISTS (SELECT 1 FROM teams WHERE owner_merchant_id = NEW.merchant_id) THEN
+    RAISE EXCEPTION 'a merchant account owner cannot be a supervisor' USING ERRCODE = '23514',
+      CONSTRAINT = 'team_roles_disjoint';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS teams_direct_shape ON teams;
+CREATE TRIGGER teams_direct_shape BEFORE INSERT OR UPDATE ON teams
+  FOR EACH ROW EXECUTE FUNCTION bb_direct_team_shape();
+DROP TRIGGER IF EXISTS team_members_not_direct_owner ON team_members;
+CREATE TRIGGER team_members_not_direct_owner BEFORE INSERT OR UPDATE ON team_members
+  FOR EACH ROW EXECUTE FUNCTION bb_direct_team_shape();
+DROP TRIGGER IF EXISTS merchants_supervisor_not_direct_owner ON merchants;
+CREATE TRIGGER merchants_supervisor_not_direct_owner BEFORE UPDATE OF is_supervisor ON merchants
+  FOR EACH ROW EXECUTE FUNCTION bb_direct_team_shape();
+
+-- ── Commission: the percent is the admin's, and a row records it ──────────
+-- An AGENT team is paid COMMISSION_PERCENT (10); a merchant account the
+-- admin's `directMerchants.commissionPercent` (default 10). The row carries
+-- the percent it was paid at, and the CHECK holds the sum to it, so every
+-- writer pays exactly that percent of the rise, rounded down to the paisa.
+ALTER TABLE team_commissions ALTER COLUMN supervisor_id DROP NOT NULL;
+ALTER TABLE team_commissions ADD COLUMN IF NOT EXISTS commission_percent SMALLINT NOT NULL DEFAULT 10;
+ALTER TABLE team_commissions DROP CONSTRAINT IF EXISTS team_commissions_tenth;
+ALTER TABLE team_commissions DROP CONSTRAINT IF EXISTS team_commissions_percent_of_rise;
+ALTER TABLE team_commissions ADD CONSTRAINT team_commissions_percent_of_rise CHECK (
+  commission_percent BETWEEN 1 AND 50
+  AND commission_paise = ((to_high_paise - from_high_paise) * commission_percent) / 100
+  AND commission_paise > 0);
+-- A merchant account's whole payment is recorded to its owner: no supervisor share.
+ALTER TABLE team_commission_shares DROP CONSTRAINT IF EXISTS team_commission_shares_role_known;
+ALTER TABLE team_commission_shares ADD CONSTRAINT team_commission_shares_role_known
+  CHECK (role IN ('SUPERVISOR', 'MEMBER', 'OWNER'));
+
+-- ── Sub-members: people who work a merchant account ─────────────────────────
+-- Each is their own login (`users`, account_type MERCHANT, verified in
+-- Telegram like every merchant login, §33), never a `merchants` row. Roles:
+-- DEPOSITS (works buys), WITHDRAWALS (works sells), AUDIT (reads everything,
+-- writes nothing). The owner has every power and is not a row here. Written
+-- only by database/repositories/merchantStaff.js.
+CREATE TABLE IF NOT EXISTS merchant_staff (
+  staff_id    TEXT PRIMARY KEY,
+  merchant_id TEXT NOT NULL REFERENCES merchants (merchant_id),
+  user_id     TEXT NOT NULL UNIQUE REFERENCES users (user_id),
+  name        TEXT NOT NULL,
+  roles       TEXT[] NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'ACTIVE',
+  created_by  TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  removed_at  TIMESTAMPTZ
+);
+ALTER TABLE merchant_staff DROP CONSTRAINT IF EXISTS merchant_staff_roles_known;
+ALTER TABLE merchant_staff ADD CONSTRAINT merchant_staff_roles_known CHECK (
+  cardinality(roles) BETWEEN 1 AND 3
+  AND roles <@ ARRAY['DEPOSITS', 'WITHDRAWALS', 'AUDIT']::text[]);
+ALTER TABLE merchant_staff DROP CONSTRAINT IF EXISTS merchant_staff_status_known;
+ALTER TABLE merchant_staff ADD CONSTRAINT merchant_staff_status_known CHECK (
+  (status = 'ACTIVE' AND removed_at IS NULL) OR (status = 'REMOVED' AND removed_at IS NOT NULL));
+ALTER TABLE merchant_staff DROP CONSTRAINT IF EXISTS merchant_staff_name_not_a_mobile;
+ALTER TABLE merchant_staff ADD CONSTRAINT merchant_staff_name_not_a_mobile CHECK (
+  length(btrim(name)) BETWEEN 1 AND 60 AND NOT bb_text_has_a_mobile(name));
+CREATE INDEX IF NOT EXISTS merchant_staff_merchant_idx ON merchant_staff (merchant_id, status);
+
+-- A sub-member's login is a MERCHANT login that is not itself a merchant,
+-- under a merchant that owns a merchant account. A removed sub-member stays
+-- removed, and nobody moves to another merchant.
+CREATE OR REPLACE FUNCTION bb_merchant_staff_shape() RETURNS trigger AS $$
+BEGIN
+  IF TG_TABLE_NAME = 'merchants' THEN
+    IF NEW.user_id IS NOT NULL AND EXISTS (SELECT 1 FROM merchant_staff WHERE user_id = NEW.user_id) THEN
+      RAISE EXCEPTION 'a sub-member login cannot be a merchant' USING ERRCODE = '23514',
+        CONSTRAINT = 'merchant_staff_login_shape';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'UPDATE' AND (NEW.merchant_id IS DISTINCT FROM OLD.merchant_id
+                           OR NEW.user_id IS DISTINCT FROM OLD.user_id
+                           OR (OLD.status = 'REMOVED' AND NEW.status IS DISTINCT FROM OLD.status)) THEN
+    RAISE EXCEPTION 'a sub-member keeps their merchant and login, and a removal is final'
+      USING ERRCODE = '23514', CONSTRAINT = 'merchant_staff_login_shape';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM users WHERE user_id = NEW.user_id AND account_type = 'MERCHANT')
+     OR EXISTS (SELECT 1 FROM merchants WHERE user_id = NEW.user_id)
+     OR NOT EXISTS (SELECT 1 FROM teams WHERE owner_merchant_id = NEW.merchant_id) THEN
+    RAISE EXCEPTION 'a sub-member is a MERCHANT login that is not a merchant, under a merchant account'
+      USING ERRCODE = '23514', CONSTRAINT = 'merchant_staff_login_shape';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS merchant_staff_shape ON merchant_staff;
+CREATE TRIGGER merchant_staff_shape BEFORE INSERT OR UPDATE ON merchant_staff
+  FOR EACH ROW EXECUTE FUNCTION bb_merchant_staff_shape();
+DROP TRIGGER IF EXISTS merchants_not_staff_login ON merchants;
+CREATE TRIGGER merchants_not_staff_login BEFORE INSERT OR UPDATE OF user_id ON merchants
+  FOR EACH ROW EXECUTE FUNCTION bb_merchant_staff_shape();
+
+-- ── Payment accounts: where a merchant account is paid and pays from ────────
+-- UPI_QR: the static `upi://pay` link of the merchant's UPI QR (the handle `pa`
+-- and name `pn` kept from it), plus the bank account behind it. A UPI handle
+-- reaches players ONLY from here (owner, 2026-10-11; §24), as the link the
+-- player pays, and never one that carries a mobile.
+-- BANK: holder, account number, IFSC and bank name, paid by bank transfer.
+-- Switched per direction; paused or active; removed softly, never deleted (an
+-- order names the account it was paid to or from). Written only by
+-- database/repositories/merchantPaymentAccounts.js.
+CREATE TABLE IF NOT EXISTS merchant_payment_accounts (
+  account_id       TEXT PRIMARY KEY,
+  merchant_id      TEXT NOT NULL REFERENCES merchants (merchant_id),
+  kind             TEXT NOT NULL,
+  label            TEXT NOT NULL,
+  upi_link         TEXT,
+  upi_pa           TEXT,
+  upi_pn           TEXT,
+  holder_name      TEXT NOT NULL,
+  account_no       TEXT NOT NULL,
+  ifsc             TEXT NOT NULL,
+  bank_name        TEXT NOT NULL,
+  accepts_deposits BOOLEAN NOT NULL DEFAULT TRUE,
+  pays_withdrawals BOOLEAN NOT NULL DEFAULT TRUE,
+  status           TEXT NOT NULL DEFAULT 'ACTIVE',
+  last_used_at     TIMESTAMPTZ,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  removed_at       TIMESTAMPTZ
+);
+ALTER TABLE merchant_payment_accounts DROP CONSTRAINT IF EXISTS merchant_payment_accounts_kind_shape;
+ALTER TABLE merchant_payment_accounts ADD CONSTRAINT merchant_payment_accounts_kind_shape CHECK (
+     (kind = 'BANK' AND upi_link IS NULL AND upi_pa IS NULL AND upi_pn IS NULL)
+  OR (kind = 'UPI_QR' AND upi_link LIKE 'upi://pay?%' AND length(upi_link) <= 1024
+      -- The parser's VPA rule (`cashLink.js`); PostgreSQL counts repetitions
+      -- only to 255, so the name part's length is asked separately.
+      AND upi_pa ~ '^[A-Za-z0-9._-]+@[A-Za-z][A-Za-z0-9.-]{1,64}$'
+      AND length(split_part(upi_pa, '@', 1)) BETWEEN 2 AND 256
+      AND length(btrim(upi_pn)) BETWEEN 1 AND 100));
+ALTER TABLE merchant_payment_accounts DROP CONSTRAINT IF EXISTS merchant_payment_accounts_fields_present;
+ALTER TABLE merchant_payment_accounts ADD CONSTRAINT merchant_payment_accounts_fields_present CHECK (
+      length(btrim(label)) BETWEEN 1 AND 60
+  AND length(btrim(holder_name)) BETWEEN 1 AND 100
+  AND account_no ~ '^[0-9]{6,20}$'
+  AND ifsc ~ '^[A-Z]{4}0[A-Z0-9]{6}$'
+  AND length(btrim(bank_name)) BETWEEN 1 AND 100);
+ALTER TABLE merchant_payment_accounts DROP CONSTRAINT IF EXISTS merchant_payment_accounts_status_known;
+ALTER TABLE merchant_payment_accounts ADD CONSTRAINT merchant_payment_accounts_status_known CHECK (
+     (status IN ('ACTIVE', 'PAUSED') AND removed_at IS NULL)
+  OR (status = 'REMOVED' AND removed_at IS NOT NULL));
+-- One live UPI handle, one account: money sent to it reaches one merchant.
+CREATE UNIQUE INDEX IF NOT EXISTS merchant_payment_accounts_one_handle
+  ON merchant_payment_accounts (lower(upi_pa)) WHERE upi_pa IS NOT NULL AND status <> 'REMOVED';
+CREATE INDEX IF NOT EXISTS merchant_payment_accounts_merchant_idx
+  ON merchant_payment_accounts (merchant_id, status);
+
+-- Nothing on an account may be or carry a mobile number (§24): the account
+-- number against the payments banks and the owner's own mobile, the names and
+-- the label as text, and the UPI handle's name part (a handle such as
+-- 98765xxxxx@bank IS a mobile). The owner merchant never changes, and a
+-- removal is final.
+CREATE OR REPLACE FUNCTION bb_payment_account_shape() RETURNS trigger AS $$
+DECLARE own TEXT;
+BEGIN
+  IF TG_OP = 'UPDATE' AND (NEW.merchant_id IS DISTINCT FROM OLD.merchant_id
+                           OR NEW.kind IS DISTINCT FROM OLD.kind
+                           OR (OLD.status = 'REMOVED' AND NEW.status IS DISTINCT FROM OLD.status)) THEN
+    RAISE EXCEPTION 'a payment account keeps its merchant and kind, and a removal is final'
+      USING ERRCODE = '23514', CONSTRAINT = 'merchant_payment_accounts_fixed';
+  END IF;
+  SELECT mobile INTO own FROM merchants WHERE merchant_id = NEW.merchant_id;
+  IF bb_account_number_is_a_mobile(NEW.account_no, NEW.ifsc, own)
+     OR bb_text_has_a_mobile(NEW.holder_name) OR bb_text_has_a_mobile(NEW.bank_name)
+     OR bb_text_has_a_mobile(NEW.label) OR bb_text_has_a_mobile(NEW.upi_pn)
+     OR bb_text_has_a_mobile(split_part(COALESCE(NEW.upi_pa, ''), '@', 1))
+     OR (length(regexp_replace(COALESCE(own, ''), '[^0-9]', '', 'g')) >= 10
+         AND position(right(regexp_replace(own, '[^0-9]', '', 'g'), 10)
+                      IN regexp_replace(COALESCE(NEW.upi_link, ''), '[^0-9]', '', 'g')) > 0) THEN
+    RAISE EXCEPTION 'a payment account may not show a mobile number' USING ERRCODE = '23514',
+      CONSTRAINT = 'merchant_payment_accounts_not_a_mobile';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS merchant_payment_accounts_shape ON merchant_payment_accounts;
+CREATE TRIGGER merchant_payment_accounts_shape BEFORE INSERT OR UPDATE ON merchant_payment_accounts
+  FOR EACH ROW EXECUTE FUNCTION bb_payment_account_shape();
+
+-- Which accounts a sub-member works, and for which duty. An assignment joins
+-- a sub-member and an account of the SAME merchant, for a duty their roles
+-- carry (DEPOSIT needs DEPOSITS, WITHDRAWAL needs WITHDRAWALS). Written only
+-- by merchantStaff.js, which drops an assignment with the role it needed.
+CREATE TABLE IF NOT EXISTS merchant_staff_accounts (
+  staff_id   TEXT NOT NULL REFERENCES merchant_staff (staff_id),
+  account_id TEXT NOT NULL REFERENCES merchant_payment_accounts (account_id),
+  duty       TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (staff_id, account_id, duty),
+  CONSTRAINT merchant_staff_accounts_duty_known CHECK (duty IN ('DEPOSIT', 'WITHDRAWAL'))
+);
+CREATE INDEX IF NOT EXISTS merchant_staff_accounts_account_idx ON merchant_staff_accounts (account_id, duty);
+CREATE OR REPLACE FUNCTION bb_staff_account_shape() RETURNS trigger AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM merchant_staff st JOIN merchant_payment_accounts a ON a.merchant_id = st.merchant_id
+     WHERE st.staff_id = NEW.staff_id AND a.account_id = NEW.account_id
+       AND st.status = 'ACTIVE' AND a.status <> 'REMOVED'
+       AND (CASE NEW.duty WHEN 'DEPOSIT' THEN 'DEPOSITS' ELSE 'WITHDRAWALS' END) = ANY (st.roles)) THEN
+    RAISE EXCEPTION 'a sub-member works only their own merchant''s live accounts, for a duty their role carries'
+      USING ERRCODE = '23514', CONSTRAINT = 'merchant_staff_accounts_shape';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS merchant_staff_accounts_shape ON merchant_staff_accounts;
+CREATE TRIGGER merchant_staff_accounts_shape BEFORE INSERT OR UPDATE ON merchant_staff_accounts
+  FOR EACH ROW EXECUTE FUNCTION bb_staff_account_shape();
+
+-- ── The order: which mode routed it, and which account it was paid through ──
+-- `inr_routing`: AGENTS or MERCHANTS for an INR order, NULL for USDT (always
+-- agents' USDT teams). Stamped at creation from the admin's switch; moves only
+-- with the re-rail of a waiting order (`bb_forbid_order_mode_change`).
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS inr_routing TEXT;
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_inr_routing_known;
+ALTER TABLE order_states ADD CONSTRAINT order_states_inr_routing_known CHECK (
+  inr_routing IS NULL OR inr_routing IN ('AGENTS', 'MERCHANTS'));
+-- `pay_account_id`: the account a merchant-account buy is paid INTO, chosen
+-- at assignment (least recently used). `paid_from_account_id`: the account a
+-- merchant-account sell was paid FROM, named by whoever marked it paid.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS pay_account_id TEXT REFERENCES merchant_payment_accounts (account_id);
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS paid_from_account_id TEXT REFERENCES merchant_payment_accounts (account_id);
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_account_direction;
+ALTER TABLE order_states ADD CONSTRAINT order_states_account_direction CHECK (
+      (pay_account_id IS NULL OR order_type = 'DEPOSIT')
+  AND (paid_from_account_id IS NULL OR order_type = 'WITHDRAWAL'));
+CREATE INDEX IF NOT EXISTS order_states_pay_account_idx ON order_states (pay_account_id) WHERE pay_account_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS order_states_paid_from_idx ON order_states (paid_from_account_id) WHERE paid_from_account_id IS NOT NULL;
+
+-- An order's account is its merchant's. When the order changes hands the
+-- account it was to be paid into goes with the old merchant, in the same
+-- UPDATE, whichever path moved it (as `cash_link`).
+CREATE OR REPLACE FUNCTION bb_order_account_follows_member() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' AND NEW.merchant_id IS DISTINCT FROM OLD.merchant_id THEN
+    NEW.pay_account_id := NULL;
+  END IF;
+  IF NEW.pay_account_id IS NOT NULL AND NOT EXISTS (
+       SELECT 1 FROM merchant_payment_accounts WHERE account_id = NEW.pay_account_id AND merchant_id = NEW.merchant_id) THEN
+    RAISE EXCEPTION 'order % is paid into an account of another merchant', NEW.order_id
+      USING ERRCODE = '23514', CONSTRAINT = 'order_states_account_is_merchants';
+  END IF;
+  IF NEW.paid_from_account_id IS NOT NULL AND NOT EXISTS (
+       SELECT 1 FROM merchant_payment_accounts WHERE account_id = NEW.paid_from_account_id AND merchant_id = NEW.merchant_id) THEN
+    RAISE EXCEPTION 'order % is paid from an account of another merchant', NEW.order_id
+      USING ERRCODE = '23514', CONSTRAINT = 'order_states_account_is_merchants';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER order_states_account_follows_member
+  BEFORE INSERT OR UPDATE ON order_states FOR EACH ROW EXECUTE FUNCTION bb_order_account_follows_member();
+
+-- ── Problems flag a merchant account; they never suspend it ──────────────────
+-- A refusal, an unpaid buy counted against it, or a lost dispute is a PROBLEM,
+-- recorded once per order and kind on the IST day of the database clock. When
+-- a merchant account's problems in one IST day reach the admin's threshold
+-- (`directMerchants.dailyProblemFlagThreshold`, default 5) it is FLAGGED, once
+-- that day. A flag acts on nothing: an admin reads it and may suspend by hand
+-- (owner, 2026-10-11). Written only by database/repositories/merchantProblems.js.
+CREATE TABLE IF NOT EXISTS merchant_problems (
+  id          BIGSERIAL PRIMARY KEY,
+  merchant_id TEXT NOT NULL REFERENCES merchants (merchant_id),
+  kind        TEXT NOT NULL,
+  order_id    TEXT NOT NULL,
+  problem_day DATE NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Kolkata')::date,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT merchant_problems_kind_known CHECK (kind IN ('REFUSAL', 'EXPIRY', 'DISPUTE_LOST')),
+  CONSTRAINT merchant_problems_once UNIQUE (merchant_id, kind, order_id)
+);
+CREATE INDEX IF NOT EXISTS merchant_problems_day_idx ON merchant_problems (merchant_id, problem_day);
+CREATE OR REPLACE TRIGGER merchant_problems_append_only
+  BEFORE UPDATE OR DELETE ON merchant_problems FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+CREATE TABLE IF NOT EXISTS merchant_flags (
+  id            BIGSERIAL PRIMARY KEY,
+  merchant_id   TEXT NOT NULL REFERENCES merchants (merchant_id),
+  flag_day      DATE NOT NULL,
+  problem_count INTEGER NOT NULL,
+  threshold     INTEGER NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT merchant_flags_once_a_day UNIQUE (merchant_id, flag_day),
+  CONSTRAINT merchant_flags_reached CHECK (threshold >= 1 AND problem_count >= threshold)
+);
+CREATE INDEX IF NOT EXISTS merchant_flags_recent_idx ON merchant_flags (flag_day DESC, merchant_id);
+CREATE OR REPLACE TRIGGER merchant_flags_append_only
+  BEFORE UPDATE OR DELETE ON merchant_flags FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();

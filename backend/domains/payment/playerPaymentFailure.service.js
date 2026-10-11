@@ -47,6 +47,8 @@ import { db } from '#db';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { sendAlert } from '../../services/alerting.service.js';
 import { emitAdminUpdate } from '../notification/realtimeEmitters.js';
+import { isMerchantAccount, recordMerchantAccountProblem } from '../merchant/merchantProblems.service.js';
+import { PROBLEM_KINDS } from '#db/repositories/merchantProblems.js';
 
 /**
  * A buy order expired with nobody having paid. Advance BOTH counts.
@@ -125,6 +127,12 @@ async function countAgainstPlayer(orderId, userId, limits, reason) {
 async function countAgainstMerchant(orderId, merchantId, limits) {
   if (!merchantId) return { merchantStreak: 0, paused: false };
   try {
+    // A merchant account is never paused: the unpaid buy is a PROBLEM for
+    // the day's count, which may flag it (owner, 2026-10-11).
+    if (await isMerchantAccount(merchantId)) {
+      const problem = await recordMerchantAccountProblem({ merchantId, kind: PROBLEM_KINDS.EXPIRY, orderId });
+      return { merchantStreak: 0, paused: false, flagged: problem.flagged === true };
+    }
     const streak = await db.merchants.bumpConsecutiveExpiries(merchantId);
     const cap = limits.maxConsecutiveMerchantExpiries ?? 3;        // schema default: 3
     if (streak < cap) return { merchantStreak: streak, paused: false };

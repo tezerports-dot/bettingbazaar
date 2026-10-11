@@ -68,6 +68,9 @@ function toRequest(row) {
     requestId: row.request_id,
     teamId: row.team_id,
     teamName: row.team_name ?? null,
+    // AGENT or DIRECT. On a merchant account's request `supervisorId` is the
+    // owner who raised it: the column names who asked (owner, 2026-10-11).
+    teamKind: row.team_kind ?? 'AGENT',
     supervisorId: row.supervisor_id,
     supervisorName: row.supervisor_name ?? null,
     direction: row.direction,
@@ -82,7 +85,7 @@ function toRequest(row) {
 }
 
 const REQUEST_SELECT = `
-  SELECT r.*, t.name AS team_name, s.name AS supervisor_name
+  SELECT r.*, t.name AS team_name, t.kind AS team_kind, s.name AS supervisor_name
     FROM team_pool_requests r
     JOIN teams t ON t.team_id = r.team_id
     JOIN merchants s ON s.merchant_id = r.supervisor_id`;
@@ -107,10 +110,12 @@ export async function listEntries(teamId, { limit = 50 } = {}) {
 // ── Requests ─────────────────────────────────────────────────────────────────
 
 /**
- * A supervisor asks for a sale into, or a buyback from, one of THEIR teams.
- * Scoped by `supervisor_id` in the WHERE, so another supervisor's team id
- * matches nothing (trap 16). One pending request per team and direction — the
- * partial unique index refuses a second.
+ * A supervisor asks for a sale into, or a buyback from, one of THEIR teams —
+ * or a merchant account's owner for its own pool (owner, 2026-10-11): the
+ * requester is written to `supervisor_id` either way. Scoped in the WHERE to
+ * the team the requester supervises or owns, so another's team id matches
+ * nothing (trap 16). One pending request per team and direction — the partial
+ * unique index refuses a second.
  */
 export async function createRequest({ teamId, supervisorId, direction, tokenAmountPaise, note = null }) {
   if (!Object.values(POOL_DIRECTIONS).includes(direction)) {
@@ -123,7 +128,7 @@ export async function createRequest({ teamId, supervisorId, direction, tokenAmou
   const cleanNote = note === null || note === undefined ? null : String(note).trim().slice(0, 500) || null;
   return withTransaction(async (client) => {
     const { rows: t } = await client.query(
-      'SELECT team_id FROM teams WHERE team_id = $1 AND supervisor_id = $2',
+      'SELECT team_id FROM teams WHERE team_id = $1 AND (supervisor_id = $2 OR owner_merchant_id = $2)',
       [String(teamId), String(supervisorId)]);
     if (!t[0]) return { ok: false, reason: 'team_not_found' };
     if (direction === POOL_DIRECTIONS.SELL) {
@@ -381,7 +386,9 @@ export async function releaseBuyHoldWithin(client, orderId, { actor = 'system', 
  */
 export async function detachFromTeamWithin(client, orderId, { actor = 'system', reason = null } = {}) {
   const released = await releaseBuyHoldWithin(client, orderId, { actor, reason });
-  await client.query('UPDATE order_states SET team_id = NULL WHERE order_id = $1', [String(orderId)]);
+  // The account a merchant-account buy was to be paid into is that merchant's:
+  // it goes with the team (owner, 2026-10-11).
+  await client.query('UPDATE order_states SET team_id = NULL, pay_account_id = NULL WHERE order_id = $1', [String(orderId)]);
   return released;
 }
 

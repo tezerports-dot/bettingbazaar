@@ -28,7 +28,7 @@
  * A default declared here is the value a fresh install starts from AND the
  * value a reader falls back to when the key is absent — one constant, not two.
  */
-import { ORDER_SIZES, USDT_BUY_STEP } from '../../backend/domains/merchant/denominations.js';
+import { ORDER_SIZES, USDT_BUY_STEP, INR_ROUTING_MODES } from '../../backend/domains/merchant/denominations.js';
 import { approvedApiHosts } from '../../backend/config/apiHosts.js';
 
 /** A number setting: `n(default, min, max)`. Bounds are inclusive. */
@@ -222,6 +222,40 @@ export const SYSTEM_CONFIG_SPEC = group({
       USDT:     n(900, 60, 7200),
     }),
     utrSubmitSeconds:      n(60, 15, 3600),
+  }),
+  // ── Who serves INR orders (owner, 2026-10-11) ───────────────────────────
+  // AGENTS: supervisors' teams, the small sizes paid as cash at an ATM.
+  // MERCHANTS: merchant accounts (direct merchants), every size paid by UPI
+  // QR or bank transfer. USDT is never affected: always agents' USDT teams.
+  // Stamped on each INR order at creation (`order_states.inr_routing`); a
+  // switch moves only the INR orders still waiting for a first taker.
+  inrRoutingMode: { type: 'string', default: 'AGENTS', oneOf: () => [...INR_ROUTING_MODES] },
+  // Routing to merchant accounts. Read through `merchantRoutingSettings` in
+  // database/repositories/teamRouting.js — never off this document directly.
+  merchantRouting: group({
+    // How many open orders ONE merchant account may hold at a time, per
+    // direction: it is several people working several bank accounts.
+    concurrency: group({
+      DEPOSIT:    int(10, 1, 100),
+      WITHDRAWAL: int(10, 1, 100),
+    }),
+    // Seconds, as `teamRouting`: a queued order nobody could take expires
+    // after assignmentWait; an assigned order after its processing window.
+    assignmentWaitSeconds:   n(1500, 60, 86400),
+    processingWindowSeconds: group({
+      DEPOSIT:    n(900, 60, 7200),
+      WITHDRAWAL: n(900, 60, 7200),
+    }),
+  }),
+  // ── Merchant accounts (owner, 2026-10-11) ───────────────────────────────
+  directMerchants: group({
+    // Percent of each rise in matched volume paid into the merchant account's
+    // own pool (`payTeamCommission`; no supervisor share). Agents' teams stay
+    // at COMMISSION_PERCENT.
+    commissionPercent:         int(10, 1, 50),
+    // Problems (refusals, unpaid buys counted against it, lost disputes) in
+    // one IST day that flag a merchant account. A flag suspends nothing.
+    dailyProblemFlagThreshold: int(5, 1, 100),
   }),
   // ── Red flags (redesign Step 2f) ────────────────────────────────────────
   // Computed once a day, shown to people, acted on by nobody's code. Read

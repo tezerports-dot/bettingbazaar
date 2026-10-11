@@ -25,6 +25,7 @@
 // service needs the same rule without booting the token layer to get it.
 import { isTokenRevoked as pgIsTokenRevoked } from '#db/repositories/identity.js';
 import { getUser } from '#db/repositories/users.js';
+import { activeStaffByUser } from '#db/repositories/merchantStaff.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 // AQ-2 (2026-07-13): every sign/verify goes through the single PASETO authority —
 // Ed25519 signature verification, iss/aud stamped on sign. No raw token-library calls remain here.
@@ -206,8 +207,25 @@ export function refuseMissingSecondFactor(res) {
   });
 }
 
-/** The `users` row a merchant session belongs to (§33.5), or null. */
-export async function merchantLoginRow(merchant) {
+/**
+ * The `users` row a merchant session belongs to (§33.5), or null.
+ *
+ * A merchant account's SUB-MEMBER signs in with their own login (owner,
+ * 2026-10-11): their session names it (`staffUserId`), and it is THAT row's
+ * cutoff that decides — a change of their roles or their removal moves it
+ * (merchantStaff.js). A sub-member who is no longer an active sub-member of
+ * this merchant has no live session at all: the answer is a row whose cutoff
+ * is the end of time, so `sessionSuperseded` refuses every session on every
+ * path that asks (REST, SSE) — never `null`, which would admit.
+ */
+const NO_LIVE_SESSION = Object.freeze({ sessionsValidFrom: new Date(8.64e15) });
+
+export async function merchantLoginRow(merchant, decoded = null) {
+  if (decoded?.staffUserId) {
+    const staff = await activeStaffByUser(decoded.staffUserId);
+    if (!staff || String(staff.merchantId) !== String(merchant?.merchantId)) return NO_LIVE_SESSION;
+    return getUser(decoded.staffUserId);
+  }
   return merchant?.userId ? getUser(merchant.userId) : null;
 }
 

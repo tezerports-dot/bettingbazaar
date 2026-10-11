@@ -151,7 +151,15 @@ const MERCHANT_STATE_MESSAGE = {
  */
 async function merchantRefusal(door, user) {
   if (door.accountType !== 'MERCHANT') return { merchant: null };
-  const merchant = await db.merchants.getMerchantByUserId(user.userId);
+  // A merchant account's SUB-MEMBER signs in at the merchant door with their
+  // own login (owner, 2026-10-11): their session is the owner merchant's,
+  // acting as them, with the roles their row gives (`merchantAuth`).
+  let staff = null;
+  let merchant = await db.merchants.getMerchantByUserId(user.userId);
+  if (!merchant) {
+    staff = await db.merchantStaff.activeStaffByUser(user.userId);
+    if (staff) merchant = await db.merchants.getMerchant(staff.merchantId);
+  }
   if (!merchant) {
     return { refusal: { status: 403, code: 'MERCHANT_NOT_ACTIVE', message: 'This merchant account is not set up. Contact support.' } };
   }
@@ -165,7 +173,7 @@ async function merchantRefusal(door, user) {
       },
     };
   }
-  return { merchant };
+  return { merchant, staff };
 }
 
 /**
@@ -180,8 +188,8 @@ async function merchantRefusal(door, user) {
  * @param {string[]} o.amr  what this sign-in proved: 'pwd', 'tg', or both
  * @param {object|null} [o.merchant]
  */
-async function sessionFor(door, user, res, { amr, merchant = null }) {
-  if (door.accountType === 'MERCHANT') return issueMerchantSession(merchant, res, { amr });
+async function sessionFor(door, user, res, { amr, merchant = null, staff = null }) {
+  if (door.accountType === 'MERCHANT') return issueMerchantSession(merchant, res, { amr, staff });
   return issueSession(user, res, { amr });
 }
 
@@ -243,15 +251,26 @@ export async function issueSession(user, res, { amr = ['pwd'] } = {}) {
  * The merchant session. Its token carries `merchantId` and `isMerchant`, which
  * is how `merchantAuth` knows it, and the same `amr` every session carries.
  */
-export async function issueMerchantSession(merchant, res, { amr = ['pwd'] } = {}) {
+export async function issueMerchantSession(merchant, res, { amr = ['pwd'], staff = null } = {}) {
+  // A sub-member's session names their own login (`staffUserId`), whose
+  // cutoff and row decide it on every request (`merchantLoginRow`).
   const token = signToken({
-    merchantId: merchant._id, userId: merchant.userId, mobile: merchant.mobile,
+    merchantId: merchant._id,
+    userId: staff ? staff.userId : merchant.userId,
+    mobile: staff ? staff.mobile : merchant.mobile,
+    ...(staff ? { staffUserId: staff.userId } : {}),
     isMerchant: true, isAdmin: false, amr: [...new Set(amr)],
   });
   // The panel's own view, from the one projection `GET /profile` answers with
   // (§5): a hand-built copy here lacked `isSupervisor`, so a supervisor signing
-  // in was shown a member's online switch until the next reload.
-  return res.json({ success: true, token, merchant: formatMerchant(merchant) });
+  // in was shown a member's online switch until the next reload. `actor` says
+  // who is acting: the owner, or a sub-member and their roles.
+  return res.json({
+    success: true, token, merchant: formatMerchant(merchant),
+    actor: staff
+      ? { isOwner: false, staffId: staff.staffId, name: staff.name, roles: staff.roles }
+      : { isOwner: true },
+  });
 }
 
 /**
@@ -319,13 +338,13 @@ export async function loginHandler(req, res) {
       return verificationRequired(door, user, req, res, loginType);
     }
 
-    const { merchant, refusal: notActive } = await merchantRefusal(door, user);
+    const { merchant, staff, refusal: notActive } = await merchantRefusal(door, user);
     if (notActive) return send(res, notActive);
 
     // ── Second factor ──────────────────────────────────────────────────────
     // Always for staff and merchants (the link's CHECK says so); a player's
     // own switch otherwise.
-    if (!link.twoFactor) return sessionFor(door, user, res, { amr: ['pwd'], merchant });
+    if (!link.twoFactor) return sessionFor(door, user, res, { amr: ['pwd'], merchant, staff });
 
     // A Telegram sign-in already approved for THIS account at THIS door — the
     // staff and merchant "Login with Telegram", finished with the password.
@@ -337,7 +356,7 @@ export async function loginHandler(req, res) {
         challengeId: presented.challengeId, audience: door.accountType,
         purposes: ['TELEGRAM_LOGIN'], userId: user.userId,
       });
-      if (spent.ok) return sessionFor(door, user, res, { amr: ['pwd', 'tg'], merchant });
+      if (spent.ok) return sessionFor(door, user, res, { amr: ['pwd', 'tg'], merchant, staff });
     }
 
     if (!bot) throw telegramUnavailable();
@@ -404,13 +423,13 @@ export async function loginTwoFactorHandler(req, res) {
     const user = await db.users.getUser(spent.userId);
     const refused = accountRefusal(door, user, challenge.loginType);
     if (refused) return send(res, refused);
-    const { merchant, refusal: notActive } = await merchantRefusal(door, user);
+    const { merchant, staff, refusal: notActive } = await merchantRefusal(door, user);
     if (notActive) {
       // Verified, and still waiting for approval: say so, so the panel can
       // show "verified" rather than an error.
       return send(res, { ...notActive, verified: spent.purpose === 'VERIFY' });
     }
-    return sessionFor(door, user, res, { amr: ['pwd', 'tg'], merchant });
+    return sessionFor(door, user, res, { amr: ['pwd', 'tg'], merchant, staff });
   } catch (e) {
     return respondError(res, e, 'auth/login/2fa', { message: 'Sign-in failed. Please try again.' });
   }

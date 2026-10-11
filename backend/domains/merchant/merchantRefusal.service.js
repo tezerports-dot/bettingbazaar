@@ -60,6 +60,8 @@
 import { db } from '#db';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { sendAlert } from '../../services/alerting.service.js';
+import { isMerchantAccount, recordMerchantAccountProblem } from './merchantProblems.service.js';
+import { PROBLEM_KINDS } from '#db/repositories/merchantProblems.js';
 
 /**
  * How a merchant failed to serve an order. All three count the same.
@@ -99,6 +101,14 @@ export async function recordMerchantRefusal({
         ? `Assignment window expired without action${reason ? `: ${reason}` : ''}`
         : reason,
     });
+
+    // ── A merchant account is flagged, never suspended (owner, 2026-10-11) ─
+    // Its refusal is a PROBLEM for the day's count; the streak and the cap
+    // below are an agent's.
+    if (await isMerchantAccount(merchantId)) {
+      const problem = await recordMerchantAccountProblem({ merchantId, kind: PROBLEM_KINDS.REFUSAL, orderId });
+      return { streak: 0, suspended: false, flagged: problem.flagged === true };
+    }
 
     // Advanced and read in ONE statement. A read-then-write would let two
     // concurrent refusals both see 2 and both write 3, so a merchant could pass

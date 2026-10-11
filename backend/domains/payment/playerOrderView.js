@@ -37,6 +37,7 @@
  */
 
 import { PAYMENT_MODES } from '#db/repositories/orderRails.js';
+import { buildUpiPayLink } from './cashLink.js';
 
 /**
  * Top-level fields a player may see of their own order. Anything absent here
@@ -168,6 +169,9 @@ export const PLAYER_PAY_TO_BANK_FIELDS = Object.freeze([
  *                  transfer (IMPS/NEFT/RTGS) with the UTR given back (owner,
  *                  2026-10-03). Absent when the member has no full account on
  *                  file, which routing does not allow (`routingCandidates`).
+ *   merchant-account buy (owner, 2026-10-11): on a UPI_QR account
+ *                  `paymentLink`, built from the account's payee and name with
+ *                  the order's amount; on a BANK account `bankAccount` as above.
  *   USDT buy       `usdtAddress` with its chain, always together.
  *   any sell       nothing to pay: the member pays the player.
  *
@@ -197,6 +201,14 @@ function counterpartyFor(order) {
     // Nothing to pay yet: the reference and the deadline only.
   } else if (isBuy && order.paymentMode === PAYMENT_MODES.CASH_ATM) {
     if (order.cashLink) view.paymentLink = order.cashLink;
+  } else if (isBuy && snapshot.payAccountKind === 'UPI_QR' && snapshot.upiPa && snapshot.upiPn) {
+    // A merchant account's UPI QR (owner, 2026-10-11): the one place a UPI
+    // handle reaches a player, as the link they pay, built HERE from the
+    // account's payee and name with THIS order's amount and a note naming the
+    // order. The row refused a handle or name carrying a mobile (§24).
+    view.paymentLink = buildUpiPayLink({
+      pa: snapshot.upiPa, pn: snapshot.upiPn, amountRupees: order.tokenAmount, orderId: order.orderId,
+    });
   } else if (isBuy && order.currency !== 'USDT' && snapshot.accountNo) {
     const bank = {};
     for (const key of PLAYER_PAY_TO_BANK_FIELDS) {

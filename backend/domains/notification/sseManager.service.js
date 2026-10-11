@@ -20,6 +20,8 @@ class SSEManager {
 
         // Private merchant channels  Map<merchantId_string, Set<response>>
         this.merchantClients = new Map();
+        // res → the login that opened a merchant stream (see addMerchantClient).
+        this.merchantStreamLogins = new Map();
 
         // Private staff channel  Map<response, viewer>. The viewer is the staff
         // account as it was when the stream opened: what it may receive is
@@ -90,6 +92,7 @@ class SSEManager {
             case 'sendToMerchant':   return this._localSendToMerchant(...args);
             case 'broadcastToAdmins':return this._localBroadcastToAdmins(...args);
             case 'closeAdminClientsFor': return this._localCloseAdminClientsFor(...args);
+            case 'closeMerchantClientsFor': return this._localCloseMerchantClientsFor(...args);
             case 'broadcastToMerchants': return this._localBroadcastToMerchants(...args);
             case 'peer':             return this._peerHandlers.get(args[0])?.(args[1]);
         }
@@ -225,8 +228,12 @@ class SSEManager {
      * @param {string} merchantId  — Merchant._id as string
      * @param {Response} res       — Express response object
      */
-    addMerchantClient(merchantId, res) {
+    addMerchantClient(merchantId, res, { loginUserId = null } = {}) {
         const key = merchantId.toString();
+        // Which login opened it: the owner's, or a sub-member's of a merchant
+        // account (owner, 2026-10-11), so a change of that sub-member's roles
+        // can end their streams (`closeMerchantClientsFor`).
+        if (loginUserId) this.merchantStreamLogins.set(res, String(loginUserId));
         if (!this.merchantClients.has(key)) {
             this.merchantClients.set(key, new Set());
         }
@@ -235,6 +242,7 @@ class SSEManager {
 
         res.on('close', () => {
             const set = this.merchantClients.get(key);
+            this.merchantStreamLogins.delete(res);
             if (set) {
                 set.delete(res);
                 if (set.size === 0) this.merchantClients.delete(key);
@@ -356,6 +364,28 @@ class SSEManager {
         }
     }
 
+    /**
+     * End every merchant-panel stream one LOGIN holds, on every instance: a
+     * merchant account's sub-member whose roles changed or who was removed
+     * (owner, 2026-10-11). Their sessions are already dead (the login's
+     * `sessions_valid_from` moved); this closes what is open now.
+     */
+    closeMerchantClientsFor(loginUserId) {
+        this._localCloseMerchantClientsFor(loginUserId);
+        this._publish('closeMerchantClientsFor', [loginUserId]);
+    }
+
+    _localCloseMerchantClientsFor(loginUserId) {
+        for (const [res, login] of this.merchantStreamLogins) {
+            if (login !== String(loginUserId)) continue;
+            this.merchantStreamLogins.delete(res);
+            for (const [key, set] of this.merchantClients) {
+                if (set.delete(res) && set.size === 0) this.merchantClients.delete(key);
+            }
+            try { res.end(); } catch { /* already gone */ }
+        }
+    }
+
     // ── KEEP-ALIVE ────────────────────────────────────────────────────────────
 
     _ping() {
@@ -403,6 +433,7 @@ class SSEManager {
         clearInterval(this._pingInterval);
         this.clients.clear();
         this.merchantClients.clear();
+        this.merchantStreamLogins.clear();
         this.adminClients.clear();
     }
 }

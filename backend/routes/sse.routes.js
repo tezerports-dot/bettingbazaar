@@ -210,7 +210,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
                 return res.status(403).json({ success: false, message: 'Merchant account is not active' });
             }
             // A password reset ends this stream too, not only the REST API.
-            if (sessionSuperseded(await merchantLoginRow(merchant), decoded)) {
+            if (sessionSuperseded(await merchantLoginRow(merchant, decoded), decoded)) {
                 return refuseSupersededSession(res);
             }
             if (await secondFactorMissing('MERCHANT', decoded)) return refuseMissingSecondFactor(res);
@@ -222,7 +222,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         initSSEResponse(res);
 
         const merchantId = decoded.merchantId.toString();
-        sseManager.addMerchantClient(merchantId, res);
+        sseManager.addMerchantClient(merchantId, res, { loginUserId: decoded.staffUserId ?? null });
 
         // Push current active merchant orders snapshot immediately on connect.
         // ✅ FIXED BUG-6: PaymentOrder.merchantId now stores Merchant._id = decoded.merchantId

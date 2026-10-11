@@ -229,6 +229,8 @@ function rowToOrder(row) {
     // When the team's tokens were paid to the player for this buy. Set, the
     // order may only move to COMPLETED (see `transition`).
     poolPaidAt: row.pool_paid_at ?? null,
+    // AGENTS or MERCHANTS for an INR order, null for USDT (owner, 2026-10-11).
+    inrRouting: row.inr_routing ?? null,
     createdAt:  row.created_at,
     updatedAt:  row.updated_at,
   };

@@ -91,9 +91,16 @@ describePg('the sizes an order may be', () => {
     expect(CASH_SIZES).toEqual([500, 1_000, 5_000, 10_000]);
     expect(UPI_BANK_SIZES).toEqual([50_000, 100_000, 500_000]);
     expect(ORDER_SIZES).toEqual([...CASH_SIZES, ...UPI_BANK_SIZES]);
-    for (const size of CASH_SIZES) expect(railForSize(size)).toBe('CASH');
-    for (const size of UPI_BANK_SIZES) expect(railForSize(size)).toBe('UPI_BANK');
-    for (const bad of [0, 499, 2_000, 20_000, 40_000, 1_000_000, '500x']) expect(railForSize(bad)).toBeNull();
+    for (const size of CASH_SIZES) expect(railForSize(size, 'AGENTS')).toBe('CASH');
+    for (const size of UPI_BANK_SIZES) expect(railForSize(size, 'AGENTS')).toBe('UPI_BANK');
+    for (const bad of [0, 499, 2_000, 20_000, 40_000, 1_000_000, '500x']) {
+      expect(railForSize(bad, 'AGENTS')).toBeNull();
+      expect(railForSize(bad, 'MERCHANTS')).toBeNull();
+    }
+    // Under merchant accounts every size is UPI or bank (owner, 2026-10-11).
+    for (const size of ORDER_SIZES) expect(railForSize(size, 'MERCHANTS')).toBe('UPI_BANK');
+    // The mode is asked, never assumed.
+    expect(() => railForSize(500)).toThrow(TypeError);
   });
 
   // ── Buys ──────────────────────────────────────────────────────────────────
@@ -103,7 +110,8 @@ describePg('the sizes an order may be', () => {
       const order = await buy(player.userId, size);
       const row = await getOrderRecord(order.orderId);
       expect(row.tokenAmount).toBe(size);
-      expect(row.paymentMode).toBe(railForSize(size) === 'CASH' ? PAYMENT_MODES.CASH_ATM : PAYMENT_MODES.P2P_UPI);
+      expect(row.paymentMode).toBe(railForSize(size, 'AGENTS') === 'CASH' ? PAYMENT_MODES.CASH_ATM : PAYMENT_MODES.P2P_UPI);
+      expect(row.inrRouting).toBe('AGENTS');
       expect(row.status).toBe('PENDING_QUEUE');
     }
   });

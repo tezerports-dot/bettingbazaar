@@ -85,6 +85,11 @@ export const MERCHANT_ORDER_FIELDS = Object.freeze([
   // they were not paid.
   'usdtChain',
 
+  // A merchant account's order (owner, 2026-10-11): who serves it
+  // (AGENTS/MERCHANTS), the payment account a buy is paid into, and the one a
+  // sell was paid from. The merchant's own accounts, by id.
+  'inrRouting', 'payAccountId', 'paidFromAccountId',
+
   // Workflow timestamps.
   'assignedAt', 'processingAt', 'merchantPanelUrl', 'merchantResponseMinutes',
   'approvedAt', 'rejectedAt', 'cancelledAt',

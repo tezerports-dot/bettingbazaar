@@ -32,10 +32,11 @@
 import { pgQuery } from '../client.js';
 import { RAILS, railOf } from './orderRails.js';
 import { holdForBuyWithin, PoolRefused } from './teamPools.js';
+import { leastUsedDepositAccount, takeDepositAccountWithin } from './merchantPaymentAccounts.js';
 import { transitionOrder } from './orders.js';
 import { USDT_CHAIN_SPEC } from '../../backend/domains/merchant/merchantCurrency.js';
 
-export { RAILS, railOf, PAYMENT_MODES, paymentModeFor } from './orderRails.js';
+export { RAILS, railOf, PAYMENT_MODES, paymentModeFor, routedToMerchants } from './orderRails.js';
 
 const OPEN_STATES = ['ASSIGNED', 'PROCESSING', 'PAID'];
 
@@ -215,4 +216,147 @@ export async function setCashReady(merchantId, ready) {
       RETURNING cash_ready`,
     [String(merchantId), Boolean(ready)], 'team_routing_cash_ready');
   return rows[0] ? { ok: true, ready: rows[0].cash_ready } : { ok: false, reason: 'not_cash_member' };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Merchant accounts (owner, 2026-10-11 — Phase B)
+// ═════════════════════════════════════════════════════════════════════════════
+/**
+ * An INR order stamped MERCHANTS (`order_states.inr_routing`, the admin's
+ * `inrRoutingMode` at creation) goes to a MERCHANT ACCOUNT — a DIRECT team's
+ * owner — instead of an agent. Eligible: the owner is online, ACTIVE and
+ * approved, an INR merchant, switched on for the direction, under the
+ * per-direction cap (`merchantRouting.concurrency`), not barred from this
+ * order or player, and has an ACTIVE payment account for the direction
+ * (`accepts_deposits` for a buy, `pays_withdrawals` for a sell). On a buy the
+ * pool hold is the check, taken in the assigning transaction as for a team.
+ *
+ * Best first, as for agents: `routing_priority` DESC, the average response
+ * ASC, the open orders in this direction ASC, then whoever has waited longest.
+ */
+
+/** The merchant-account routing settings, with the schema defaults (config.spec.js merchantRouting). */
+export function merchantRoutingSettings(cfg) {
+  const r = cfg?.merchantRouting ?? {};
+  const c = r.concurrency ?? {};
+  const p = r.processingWindowSeconds ?? {};
+  return {
+    concurrency: {
+      DEPOSIT: Number(c.DEPOSIT ?? 10),       // schema default: 10
+      WITHDRAWAL: Number(c.WITHDRAWAL ?? 10), // schema default: 10
+    },
+    assignmentWaitSeconds: Number(r.assignmentWaitSeconds ?? 1500), // schema default: 1500
+    processingWindowSeconds: {
+      DEPOSIT: Number(p.DEPOSIT ?? 900),       // schema default: 900
+      WITHDRAWAL: Number(p.WITHDRAWAL ?? 900), // schema default: 900
+    },
+  };
+}
+
+/** The eligible merchant accounts for an order, best first. A READ; `assignToDirect` re-checks under a lock. */
+export async function directCandidates(order, { cap, barredMerchantIds = [], limit = 20 }) {
+  const isBuy = order.type === 'DEPOSIT';
+  const amount = Number(order.tokenAmountPaise);
+  if (!Number.isInteger(amount) || amount <= 0) {
+    throw new TypeError(`directCandidates: order ${order.orderId} has no token amount in paise`);
+  }
+  const barred = [...new Set((barredMerchantIds || []).filter(Boolean).map(String))];
+  const { rows } = await pgQuery(
+    `WITH open_by_direction AS (
+       SELECT merchant_id,
+              count(*) FILTER (WHERE order_type = 'DEPOSIT')::int    AS buys_open,
+              count(*) FILTER (WHERE order_type = 'WITHDRAWAL')::int AS sells_open
+         FROM order_states
+        WHERE merchant_id IS NOT NULL AND state = ANY($6)
+        GROUP BY merchant_id)
+     SELECT owner.merchant_id, t.team_id,
+            COALESCE(CASE WHEN $2 THEN ob.buys_open ELSE ob.sells_open END, 0) AS open_this_way
+       FROM teams t
+       JOIN merchants owner ON owner.merchant_id = t.owner_merchant_id
+       LEFT JOIN team_pools pool ON pool.team_id = t.team_id
+       LEFT JOIN open_by_direction ob ON ob.merchant_id = owner.merchant_id
+      WHERE t.kind = 'DIRECT'
+        AND owner.status = 'ACTIVE'
+        AND owner.merchant_approval_status = 'APPROVED'
+        AND owner.is_online
+        AND owner.assignment_paused_at IS NULL
+        AND 'INR' = ANY (owner.accepted_currencies)
+        AND (CASE WHEN $2 THEN owner.accepts_deposits ELSE owner.accepts_withdrawals END)
+        AND COALESCE(CASE WHEN $2 THEN ob.buys_open ELSE ob.sells_open END, 0) < $1
+        AND (NOT $2 OR COALESCE(pool.available_paise, 0) >= $3)
+        AND NOT (owner.merchant_id = ANY($4))
+        AND EXISTS (SELECT 1 FROM merchant_payment_accounts acct
+                     WHERE acct.merchant_id = owner.merchant_id AND acct.status = 'ACTIVE'
+                       AND (CASE WHEN $2 THEN acct.accepts_deposits ELSE acct.pays_withdrawals END))
+      ORDER BY owner.routing_priority DESC,
+               owner.avg_response_minutes ASC NULLS LAST,
+               open_this_way ASC,
+               owner.last_assigned_at ASC NULLS FIRST,
+               owner.merchant_id
+      LIMIT $5`,
+    [cap, isBuy, amount, barred, limit, OPEN_STATES], 'direct_routing_candidates');
+  return rows.map((r) => ({ merchantId: r.merchant_id, teamId: r.team_id, openOrders: Number(r.open_this_way) }));
+}
+
+/**
+ * Assign a PENDING_QUEUE order to the best eligible merchant account. On a
+ * buy: the payment account (least recently used) is taken under its lock and
+ * named on the order, and the tokens are HELD in the merchant account's pool —
+ * all in the transaction that moves the order. `buildSet(candidate, account)`
+ * builds the snapshot naming both.
+ *
+ * Returns { ok: true, order, merchantId, teamId, payAccountId } or
+ * { ok: false, reason: 'no_candidate' | 'no_pay_account' | 'merchant_busy' |
+ * 'pool_short' | 'member_unavailable' | 'not_queued' }.
+ */
+export async function assignToDirect(order, { cap, barredMerchantIds = [], buildSet, actor = 'assignment' }) {
+  const isBuy = order.type === 'DEPOSIT';
+  const oid = String(order.orderId);
+  const candidates = await directCandidates(order, { cap, barredMerchantIds });
+  let lastRefusal = 'no_candidate';
+
+  for (const cand of candidates) {
+    const account = isBuy ? await leastUsedDepositAccount(cand.merchantId) : null;
+    if (isBuy && !account) { lastRefusal = 'no_pay_account'; continue; }
+    const set = { ...(await buildSet(cand, account)), merchantId: cand.merchantId };
+    let moved;
+    try {
+      moved = await transitionOrder(oid, 'ASSIGNED', {
+        set, actor, reason: `Assigned to merchant account ${cand.teamId}`,
+        within: async (client) => {
+          const { rows: owner } = await client.query(
+            `SELECT is_online, status FROM merchants WHERE merchant_id = $1 FOR UPDATE`, [cand.merchantId]);
+          if (!owner[0]?.is_online || owner[0].status !== 'ACTIVE') throw new PoolRefused('member_unavailable');
+          // Counted AGAIN after the lock, in this direction only.
+          const { rows: open } = await client.query(
+            `SELECT count(*)::int AS n FROM order_states
+              WHERE merchant_id = $1 AND state = ANY($2) AND order_type = $3 AND order_id <> $4`,
+            [cand.merchantId, OPEN_STATES, order.type, oid]);
+          if (open[0].n >= cap) throw new PoolRefused('merchant_busy');
+          if (isBuy) {
+            const taken = await takeDepositAccountWithin(client, cand.merchantId, account.accountId);
+            if (!taken) throw new PoolRefused('no_pay_account');
+            await holdForBuyWithin(client, {
+              orderId: oid, teamId: cand.teamId, amountPaise: order.tokenAmountPaise, actor,
+            });
+            await client.query('UPDATE order_states SET pay_account_id = $2 WHERE order_id = $1',
+              [oid, account.accountId]);
+          } else {
+            await client.query('UPDATE order_states SET team_id = $2 WHERE order_id = $1 AND team_id IS NULL',
+              [oid, cand.teamId]);
+          }
+          await client.query('UPDATE merchants SET last_assigned_at = now() WHERE merchant_id = $1', [cand.merchantId]);
+        },
+      });
+    } catch (e) {
+      if (e instanceof PoolRefused) { lastRefusal = e.reason; continue; }
+      throw e;
+    }
+    if (!moved.ok || moved.idempotent) return { ok: false, reason: 'not_queued' };
+    return {
+      ok: true, order: moved.order, merchantId: cand.merchantId, teamId: cand.teamId,
+      payAccountId: account?.accountId ?? null,
+    };
+  }
+  return { ok: false, reason: lastRefusal };
 }

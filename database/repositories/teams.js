@@ -22,7 +22,8 @@
  */
 import { pgQuery, withTransaction } from '../client.js';
 import { randomBytes } from 'node:crypto';
-import { teamVolumeSql, teamMarkSql, toSummary } from './teamCommission.js';
+import { teamVolumeSql, teamMarkSql, toSummary, directCommissionPercent } from './teamCommission.js';
+import { getSystemConfig } from './config.js';
 import { textHasAMobile } from '../../backend/domains/identity/mobileInText.js';
 
 export const MAX_TEAMS = 4;
@@ -332,4 +333,89 @@ export async function removeMember({ merchantId, supervisorId = null, onlyPendin
     await client.query('DELETE FROM team_members WHERE merchant_id = $1', [String(merchantId)]);
     return { ok: true, teamId: rows[0].team_id, wasStatus: rows[0].status };
   });
+}
+
+// ── Merchant accounts (owner, 2026-10-11 — Phase B) ──────────────────────────
+/**
+ * A merchant account is a team of kind DIRECT owned by one merchant, with no
+ * supervisor and no members: the owner (and their sub-members, merchantStaff.js)
+ * serve its orders and its pool holds its tokens. The row's CHECK and trigger
+ * hold the shape (`teams_kind_shape`, `bb_direct_team_shape`): one per owner,
+ * never a supervisor or a member, kind and owner fixed.
+ *
+ * INSIDE the caller's transaction, so the admin's "create a merchant account"
+ * writes the login, the merchant and its team together. The owner must be an
+ * INR merchant (a merchant account serves INR only; USDT is always agents').
+ * Returns { ok: true, teamId } or { ok: false, reason }.
+ */
+export async function createDirectTeamWithin(client, { merchantId, name = null }) {
+  const { rows: m } = await client.query(
+    `SELECT name, accepted_currencies, is_supervisor FROM merchants WHERE merchant_id = $1 FOR UPDATE`,
+    [String(merchantId)]);
+  if (!m[0]) return { ok: false, reason: 'not_found' };
+  if (m[0].is_supervisor) return { ok: false, reason: 'is_supervisor' };
+  if (!(m[0].accepted_currencies ?? []).includes('INR')) return { ok: false, reason: 'not_inr' };
+  const { rows: member } = await client.query('SELECT 1 FROM team_members WHERE merchant_id = $1', [String(merchantId)]);
+  if (member[0]) return { ok: false, reason: 'is_member' };
+  const { rows: existing } = await client.query('SELECT team_id FROM teams WHERE owner_merchant_id = $1', [String(merchantId)]);
+  if (existing[0]) return { ok: true, teamId: existing[0].team_id, already: true };
+  const teamId = newTeamId();
+  await client.query(
+    `INSERT INTO teams (team_id, kind, owner_merchant_id, name) VALUES ($1, 'DIRECT', $2, $3)`,
+    [teamId, String(merchantId), teamName(name || m[0].name)]);
+  return { ok: true, teamId };
+}
+
+/** Make an existing merchant a merchant account (its own transaction). */
+export async function createDirectTeam({ merchantId, name = null }) {
+  return withTransaction((client) => createDirectTeamWithin(client, { merchantId, name }));
+}
+
+const DIRECT_SELECT = `
+  SELECT t.team_id, t.owner_merchant_id, t.name, t.created_at,
+         o.name AS owner_name, o.public_ref AS owner_ref, o.status AS owner_status,
+         o.merchant_approval_status AS owner_approval, o.is_online AS owner_online,
+         o.routing_priority AS owner_priority,
+         COALESCE(p.available_paise, 0) AS pool_available_paise,
+         COALESCE(p.held_paise, 0)      AS pool_held_paise,
+         v.buys_paise, v.sells_paise, k.high_paise, k.paid_paise
+    FROM teams t
+    JOIN merchants o ON o.merchant_id = t.owner_merchant_id
+    LEFT JOIN team_pools p ON p.team_id = t.team_id
+    CROSS JOIN LATERAL (${teamVolumeSql('t.team_id')}) v
+    CROSS JOIN LATERAL (${teamMarkSql('t.team_id')}) k
+   WHERE t.kind = 'DIRECT'`;
+
+function toDirectTeam(row, commissionPercent) {
+  if (!row) return null;
+  return {
+    teamId: row.team_id,
+    kind: 'DIRECT',
+    ownerMerchantId: row.owner_merchant_id,
+    ownerName: row.owner_name,
+    ownerRef: row.owner_ref,
+    ownerStatus: row.owner_status,
+    ownerApproval: row.owner_approval,
+    ownerOnline: row.owner_online === true,
+    routingPriority: Number(row.owner_priority),
+    name: row.name,
+    poolAvailablePaise: Number(row.pool_available_paise ?? 0),
+    poolHeldPaise: Number(row.pool_held_paise ?? 0),
+    commission: toSummary(row.team_id, row, { percent: commissionPercent, kind: 'DIRECT' }),
+    createdAt: row.created_at,
+  };
+}
+
+/** The merchant account a merchant owns, or null. */
+export async function directTeamOf(merchantId) {
+  if (!merchantId) return null;
+  const { rows } = await pgQuery(`${DIRECT_SELECT} AND t.owner_merchant_id = $1`, [String(merchantId)], 'teams_direct_of');
+  return toDirectTeam(rows[0], directCommissionPercent(await getSystemConfig()));
+}
+
+/** Every merchant account, by owner name. */
+export async function listDirectTeams() {
+  const { rows } = await pgQuery(`${DIRECT_SELECT} ORDER BY o.name, t.created_at`, [], 'teams_direct_list');
+  const percent = directCommissionPercent(await getSystemConfig());
+  return rows.map((r) => toDirectTeam(r, percent));
 }

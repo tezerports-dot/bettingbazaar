@@ -38,6 +38,7 @@ export const STAFF_EVENT_AREAS = Object.freeze({
   merchant_rejected: MERCHANTS,
   merchant_assignment_paused: MERCHANTS,
   merchant_assignment_resumed: MERCHANTS,
+  merchant_flag_raised: MERCHANTS,
   merchant_config_updated: MERCHANTS,
   // Players
   user_flagged: { keys: ['canManageUsers'] },

@@ -459,10 +459,17 @@ router.post('/merchants/create', authenticate, hasPermission('canManageMerchants
       return res.status(e.status || 400).json({ success: false, code: e.code, message: e.message });
     }
 
+    // `kind: 'DIRECT'` creates a MERCHANT ACCOUNT (owner, 2026-10-11): INR,
+    // with its own pool's team, in the same transaction.
+    const kind = req.body?.kind ?? 'AGENT';
+    if (!['AGENT', 'DIRECT'].includes(kind)) {
+      return res.status(400).json({ success: false, code: 'UNKNOWN_KIND', message: "kind is 'AGENT' or 'DIRECT'." });
+    }
     const created = await db.merchants.createMerchantAccount({
       userId: db.users.newUserId(),
       username, mobile, email: email || null,
       passwordHash: await hashPassword(password),
+      direct: kind === 'DIRECT',
     });
     if (!created.ok && created.reason === 'NAME_IS_A_MOBILE') {
       return res.status(400).json({ success: false, code: 'NAME_IS_A_MOBILE', message: NAME_IS_A_MOBILE_MESSAGE });
@@ -485,12 +492,12 @@ router.post('/merchants/create', authenticate, hasPermission('canManageMerchants
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'MERCHANT_CREATED', category: 'MERCHANT',
       targetType: 'Merchant', targetId: merchant.merchantId, targetName: merchant.name,
-      details: { mobile, createdByAdmin: true },
+      details: { mobile, createdByAdmin: true, kind },
     });
 
     res.json({
       success: true, message: 'Merchant created',
-      merchantId: merchant.merchantId, userId: created.userId,
+      merchantId: merchant.merchantId, userId: created.userId, kind,
     });
   } catch (error) {
     console.error('Create merchant error:', error);

@@ -1298,8 +1298,9 @@ and tier, this section's numbers.
 
 ## 3.11 Merchants and agents, Phase A (owner-approved plan) — **BUILT on branch `claude/agents-phase-a` (2026-10-11)**
 
-Phases B (the new merchant type) and C (names on screen) are not started; the
-plan and its open decisions are the owner's document. Phase A, five small changes,
+Phase B's server and database half is built (§3.12); its panels and Phase C
+(names on screen) are not started. The plan and its open decisions are the
+owner's document. Phase A, five small changes,
 internal names kept (merchant, member):
 
 1. **Separate buy and sell size lists.** `SystemConfig.buyOrderSizes` and
@@ -1327,6 +1328,45 @@ internal names kept (merchant, member):
 5. **QR for the cash pay link on a larger screen.** `PayLinkQr` draws the
    order's `upi://pay` link as a QR in the browser (`qrcode`) at
    `(min-width: 768px)`; the PAY NOW button stays on every screen.
+
+## 3.12 Merchants and agents, Phase B: merchant accounts — **SERVER AND DATABASE BUILT on `claude/agents-phase-a` (2026-10-11); panels NOT built**
+
+Owner decisions of 2026-10-11 (DECISION_LOG). What exists:
+
+1. **The switch.** `SystemConfig.inrRoutingMode` AGENTS|MERCHANTS (default
+   AGENTS), saved through `PUT /api/admin/system/config`. Each INR order is
+   stamped `order_states.inr_routing` with its rail; USDT is never stamped and
+   always goes to agents. On a flip the waiting INR orders are re-railed
+   (`rerailWaitingOrders`) and offered at once; assigned ones finish where they
+   are. Under MERCHANTS every size is UPI or bank, and the payload's
+   `orderSizes` keep their per-rail shape with every size under `UPI_BANK`.
+2. **Merchant accounts.** A DIRECT team (`teams.kind`, `owner_merchant_id`),
+   made by `POST /api/admin/merchant-accounts` or `POST /merchants/create`
+   with `kind: 'DIRECT'`; listed by `GET /api/admin/merchant-accounts`.
+3. **Payment accounts** (`merchant_payment_accounts`): UPI_QR (static QR
+   scanned) or BANK, per-direction switches, pause, remove. A buy is assigned
+   with the least recently used deposit account and its tokens held in the
+   account's pool; the player is shown a `upi://pay` link with the order's
+   amount, or the bank account. A sell is marked paid FROM one of its accounts
+   (`paidFromAccountId`, required).
+4. **Sub-members** (`merchant_staff`): own MERCHANT logins with roles
+   DEPOSITS / WITHDRAWALS / AUDIT and accounts assigned per duty; owner-only
+   account writes; a role change or removal ends their sessions.
+5. **Problems and flags**: refusals, expiries counted against it and lost
+   disputes are problems; at `directMerchants.dailyProblemFlagThreshold` (5) per
+   IST day the admin is alerted (`merchant_flag_raised`); never suspended.
+   `GET /api/admin/merchant-flags`.
+6. **Commission**: `directMerchants.commissionPercent` (10) into the account's
+   own pool, one OWNER share.
+7. **Reports**: `GET /api/merchant/account/reports` (per account and
+   sub-member) and `/account/reports/orders.csv`, owner and AUDIT.
+8. **Routing settings**: `SystemConfig.merchantRouting` (concurrency per
+   direction, waiting window, processing windows).
+
+Not built: every panel screen for the above (admin switch, merchant-account
+admin, the merchant panel's accounts / sub-members / reports / paid-from
+picker, the player's UPI link button); "House bettors" wording (Phase C).
+SSE pushes are per merchant, not filtered per sub-member.
 
 ## 4. How to pick this up
 

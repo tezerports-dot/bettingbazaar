@@ -30,6 +30,7 @@
 import { pgQuery, getPool, connectGuarded } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
+import { createDirectTeamWithin } from './teams.js';
 
 /** The reference players see. Random, not derived from anything identifying. */
 export function generateMerchantPublicRef() {
@@ -823,6 +824,10 @@ export async function deleteMerchant(merchantId) {
 export async function createMerchantAccount({
   userId, username, mobile, email = null, passwordHash,
   currency = 'INR', bankDetails = null, usdtAddressTrc20 = null, usdtAddressBep20 = null,
+  // A MERCHANT ACCOUNT (owner, 2026-10-11): its DIRECT team is created in this
+  // same transaction (`createDirectTeamWithin`), so there is no instant at
+  // which it is a merchant without its pool's team.
+  direct = false,
 }) {
   if (!mobile) throw new Error('createMerchantAccount requires a mobile');
   if (!passwordHash) throw new Error('createMerchantAccount requires a passwordHash');
@@ -883,6 +888,10 @@ export async function createMerchantAccount({
       currency, status: 'PENDING', bankDetails, usdtAddressTrc20, usdtAddressBep20,
       client,
     });
+    if (direct) {
+      const team = await createDirectTeamWithin(client, { merchantId: merchant.merchantId, name: merchant.name });
+      if (!team.ok) throw new Error(`createMerchantAccount: merchant account refused (${team.reason})`);
+    }
 
     await client.query('COMMIT');
     return { ok: true, merchant, userId: uid };
