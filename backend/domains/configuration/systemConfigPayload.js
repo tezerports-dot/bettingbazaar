@@ -46,7 +46,19 @@ import { INR_TOKEN_RATE } from './tokenRates.js';
 // read off the same config row, never from a list written out again here. Two
 // lists drift, and the drift is silent until a player is refused an amount the
 // screen offered them.
-import { offeredSizesFor, usdtBuyBounds } from '../merchant/denominations.js';
+import { offeredSizesFor, usdtBuyBounds, RAIL_PAYMENT_METHOD } from '../merchant/denominations.js';
+
+/** The sizes one direction offers, per rail. */
+const sizesByRail = (cfg, direction) => ({
+  CASH:     offeredSizesFor(cfg, 'CASH', direction),
+  UPI_BANK: offeredSizesFor(cfg, 'UPI_BANK', direction),
+});
+
+/** How one direction is paid, per rail: the sentence shown under its sizes. */
+const methodsByRail = (direction) => ({
+  CASH:     RAIL_PAYMENT_METHOD.CASH[direction],
+  UPI_BANK: RAIL_PAYMENT_METHOD.UPI_BANK[direction],
+});
 
 export function systemConfigPayload(cfg) {
   const usdt = usdtBuyBounds(cfg);
@@ -56,11 +68,20 @@ export function systemConfigPayload(cfg) {
     // whole bundle, so a picker built from a client-side list is a list an
     // attacker can edit — and a list that drifts from the server's is a player
     // being offered an amount the gate will refuse. So the SERVER says which
-    // sizes are on offer, per rail, from the same module and row
-    // `assessFundingOrder` judges by. The same sizes serve buys and sells.
+    // sizes are on offer, per direction and rail, from the same module and
+    // row `assessFundingOrder` judges by. Buys and sells have their own lists
+    // (`buyOrderSizes`, `sellOrderSizes`): the Buy tab offers `buy`, the Sell
+    // tab `sell`.
     orderSizes: {
-      CASH:     offeredSizesFor(cfg, 'CASH'),
-      UPI_BANK: offeredSizesFor(cfg, 'UPI_BANK'),
+      buy:  sizesByRail(cfg, 'DEPOSIT'),
+      sell: sizesByRail(cfg, 'WITHDRAWAL'),
+    },
+    // How each rail is paid, in the same shape, shown under its sizes. The
+    // sentence is the server's (`RAIL_PAYMENT_METHOD`, denominations.js); the
+    // panel renders it and keeps no copy (§5).
+    orderSizeMethods: {
+      buy:  methodsByRail('DEPOSIT'),
+      sell: methodsByRail('WITHDRAWAL'),
     },
     // The USDT rail: buy only, in whole steps of USDT between the admin's
     // bounds, and the rate that turns USDT into tokens. From the SERVER,

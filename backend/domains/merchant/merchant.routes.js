@@ -460,7 +460,7 @@ router.put('/preferences', merchantAuth, async (req, res) => {
  * they were trying to express already have owners: an order's CEILING is what
  * the team's pool holds, enforced by the hold taken the moment an order is
  * assigned (§3.10), and the SIZE is the platform's — one of the fixed order
- * sizes the admin has on offer (`SystemConfig.orderSizes`, Step 2d), the same
+ * sizes the admin has on offer (`SystemConfig.buyOrderSizes` and `sellOrderSizes`, Step 2d), the same
  * for everyone.
  */
 // ─── ORDERS ──────────────────────────────────────────────────────────────────
@@ -535,10 +535,13 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         // via the Payment domain's single builder — this route used to re-implement
         // it inline, which is how the USDT address would have been missed on the
         // accept path while assignment carried it (GOVERNANCE §4).
-        // Rolling avgResponseMinutes: EMA with α=0.2. Computed before the
-        // transition, applied after it — a merchant who lost the accept race
-        // should not have their response time recorded for an order they did
-        // not get.
+        //
+        // The response time — assignment to accept — is stamped on the ORDER
+        // with the move, so only the member who won the accept has one. It
+        // reaches the member's average once, when the order is confirmed, in
+        // `recordCompletedOrder` (the one writer of `avg_response_minutes`;
+        // routing orders members by it, CLAUDE.md §2). This route used to fold
+        // it into the average here too, a second writer with its own formula.
         const responseMinutes = order.assignedAt ? (now - new Date(order.assignedAt)) / 60000 : null;
 
         const accepted = await startOrder(order.orderId, {
@@ -566,15 +569,6 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         }
         Object.assign(order, accepted.order);
 
-        if (responseMinutes !== null) {
-            // Rolling average, EMA with α=0.2. Applied AFTER the transition —
-            // a merchant who lost the accept race must not have their response
-            // time recorded for an order they did not get.
-            const oldAvg = merchant.avgResponseMinutes ?? 2;
-            await db.merchants.updateMerchant(req.merchantId, {
-                avgResponseMinutes: (oldAvg * 0.8) + (responseMinutes * 0.2),
-            });
-        }
         // No counter to increment. The active order count is derived from the
         // orders, so accepting one IS the increment.
 
@@ -880,10 +874,14 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // it: they feed the merchant's processed volume and their per-rail
         // counts, and passing neither meant every completed order was recorded
         // as a zero-value deposit — a merchant's volume never moved.
+        //
+        // The response time stamped on the order at accept goes with them, so
+        // the average routing ranks members by moves once per confirmed order.
         await updateMerchantStatsOnComplete(req.merchantId, true, {
             direction: order.type,
             amountRupees: order.tokenAmount,
             earningsRupees: order.merchantProfit || 0,
+            responseMinutes: order.merchantResponseMinutes ?? null,
         }).catch(() => {});
 
         // Notify merchant of updated score (GOVERNANCE §11: merchant_score_update)

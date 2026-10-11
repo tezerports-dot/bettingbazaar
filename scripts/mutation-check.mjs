@@ -492,8 +492,15 @@ const MUTATIONS = [
     id: 'M109', file: 'backend/domains/configuration/systemConfigPayload.js', config: UNIT,
     test: 'backend/tests/unit/systemConfigPayload.test.js',
     why: 'the client is told a different set of sizes than the gate enforces, so the picker offers what the server refuses',
-    from: `      CASH:     offeredSizesFor(cfg, 'CASH'),`,
-    to: `      CASH:     [100, 200, 300],`,
+    from: `  CASH:     offeredSizesFor(cfg, 'CASH', direction),`,
+    to: `  CASH:     [100, 200, 300],`,
+  },
+  {
+    id: 'M457', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
+    test: 'backend/tests/routes/orderSizesPg.test.js',
+    why: 'a sell is judged against the BUY list, so a size the admin took off for selling is still sold (Phase A: one list per direction)',
+    from: `  const offered = offeredSizes(cfg, type);`,
+    to: `  const offered = offeredSizes(cfg, 'DEPOSIT');`,
   },
   {
     id: 'M344', file: 'database/repositories/config.js', config: PG,
@@ -1635,25 +1642,22 @@ const MUTATIONS = [
     to: `'SELECT team_id FROM teams WHERE team_id = $1 AND supervisor_id = $2',`,
   },
   {
-    id: 'M283', file: 'database/repositories/teams.js', config: PG,
-    test: 'database/tests/teamsPg.test.js',
-    why: 'every further departure restarts the grace day, so a team can be kept working below ten indefinitely',
-    from: `          WHEN t.was_full THEN COALESCE(t.short_since, now())`,
-    to: `          WHEN t.was_full THEN now()`,
-  },
-  {
     id: 'M284', file: 'database/repositories/teams.js', config: PG,
     test: 'database/tests/teamsPg.test.js',
     why: 'a supervisor can add members to another supervisor\'s team',
     from: `'SELECT team_id FROM teams WHERE team_id = $1 AND supervisor_id = $2 FOR UPDATE',`,
     to: `'SELECT team_id FROM teams WHERE team_id = $1 AND $2::text IS NOT NULL FOR UPDATE',`,
   },
+  // No M283, M285 or M295. They mutated the grace day ("a team below ten
+  // works until midnight IST") and routing's team-strength gate, which went
+  // in Phase A: a team works with one to ten approved members (owner). M458
+  // holds the rule that replaced them.
   {
-    id: 'M285', file: 'database/repositories/teams.js', config: PG,
+    id: 'M458', file: 'database/repositories/teams.js', config: PG,
     test: 'database/tests/teamsPg.test.js',
-    why: 'the grace day never ends, so a team below ten keeps taking orders for good',
-    from: `     AND (t.short_since AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date`,
-    to: `     AND true`,
+    why: 'a team of one approved member is reported as not working, so its supervisor and the admin are told it takes no orders when it does',
+    from: "const STRENGTH_SQL = `CASE WHEN approved_count >= 1 THEN 'WORKING' ELSE 'STOPPED' END`;",
+    to: "const STRENGTH_SQL = `CASE WHEN approved_count >= 2 THEN 'WORKING' ELSE 'STOPPED' END`;",
   },
   // No M286. "Only a supervisor reaches the supervisor routes" is enforced
   // TWICE on purpose — `requireSupervisor` in team.merchant.routes.js, and
@@ -1718,12 +1722,34 @@ const MUTATIONS = [
     from: "          if (c[0].total >= cap) throw new PoolRefused('member_busy');",
     to: "          if (false) throw new PoolRefused('member_busy');",
   },
+  // ── Who goes first (owner, Phase A) ──────────────────────────────────────
   {
-    id: 'M295', file: 'database/repositories/teamRouting.js', config: PG,
+    id: 'M459', file: 'database/repositories/teamRouting.js', config: PG,
     test: 'database/tests/teamRoutingPg.test.js',
-    why: "routing ignores team strength, so a team that never reached ten members is given orders",
-    from: "        AND (${STRENGTH_SQL}) IN ('WORKING', 'GRACE')\n",
-    to: "\n",
+    why: "the admin's routing priority is ignored, so a member set to 5 waits behind a faster member at 3",
+    from: "      ORDER BY m.routing_priority DESC,\n",
+    to: "      ORDER BY\n",
+  },
+  {
+    id: 'M460', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'the average response time is ignored, so at equal priority a slow member is offered orders before a fast one',
+    from: "               m.avg_response_minutes ASC NULLS LAST,\n",
+    to: "",
+  },
+  {
+    id: 'M461', file: 'database/repositories/merchants.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a priority outside 1 to 5 reaches the row, and the admin is answered with a constraint error instead of what to send',
+    from: '  if (!Number.isInteger(n) || n < ROUTING_PRIORITY.MIN || n > ROUTING_PRIORITY.MAX) {',
+    to: '  if (false) {',
+  },
+  {
+    id: 'M462', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantPanelRoutes.test.js',
+    why: "a confirmed order's response time never reaches the member's average, so routing ranks every member by the default",
+    from: '            responseMinutes: order.merchantResponseMinutes ?? null,',
+    to: '            responseMinutes: null,',
   },
   {
     id: 'M296', file: 'database/repositories/teamRouting.js', config: PG,

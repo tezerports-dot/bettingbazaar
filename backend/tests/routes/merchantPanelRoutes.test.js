@@ -118,9 +118,9 @@ describePg('merchant panel routes', () => {
 
   // ── Members, handed out one at a time ──────────────────────────────────────
   // Each test takes members nobody has used, so no earlier test's open orders
-  // count against a cap and no earlier refusal bars them. A team works only
-  // at ten (2a), so members come in tens: a working team on the rail, its
-  // pool funded through the supervisor's request and the admin's fulfilment.
+  // count against a cap and no earlier refusal bars them. Members come in
+  // tens, a full team on the rail, its pool funded through the supervisor's
+  // request and the admin's fulfilment.
   const POOL = { UPI_BANK: 1_000_000, CASH: 50_000, USDT: 500_000 };
   const bench = { UPI_BANK: [], CASH: [], USDT: [] };
   const member = async (rail = 'UPI_BANK') => {
@@ -478,19 +478,30 @@ describePg('merchant panel routes', () => {
     expect((await getOrderRecord(orderId)).state).toBe('PROCESSING');
   });
 
-  it('records a response time only for the merchant who WON', async () => {
-    // Applied after the transition: a merchant who did not get the order must
-    // not have their average moved by it.
+  it('records a response time only for the merchant who WON, once, when the order completes', async () => {
+    // Stamped on the ORDER at accept, so a merchant who did not get the order
+    // has none. It reaches the average once, through `recordCompletedOrder`
+    // (the one writer of `avg_response_minutes`; routing ranks by it), when
+    // the order is confirmed — never at accept as well.
     const winner = await member();
     const loser = await member();
-    const { orderId } = await buy({ to: winner });
+    const before = (await getMerchant(winner.merchantId)).avgResponseMinutes;
+    const { orderId, who } = await buy({ to: winner });
     // Three minutes on the clock since the router assigned it.
     await setOrderFields(orderId, { assignedAt: new Date(Date.now() - 3 * 60 * 1000) });
 
     expect((await as(app, winner).post(`/accept/${orderId}`).send({})).status).toBe(200);
     expect((await as(app, loser).post(`/accept/${orderId}`).send({})).status).toBe(403);
 
-    expect((await getMerchant(winner.merchantId)).avgResponseMinutes).toBeGreaterThan(2);
+    expect((await getOrderRecord(orderId)).merchantResponseMinutes).toBeGreaterThanOrEqual(3);
+    // Accepting alone does not move the average: there is one writer.
+    expect((await getMerchant(winner.merchantId)).avgResponseMinutes).toBe(before);
+
+    expect((await markOrderPaid(who.userId, orderId, utr())).status).toBe('PAID');
+    const done = await as(app, winner).post(`/confirm/${orderId}`);
+    expect(done.status, done.body.message).toBe(200);
+
+    expect((await getMerchant(winner.merchantId)).avgResponseMinutes).toBeGreaterThan(before);
     expect((await getMerchant(loser.merchantId)).avgResponseMinutes ?? 2).toBe(2);
   });
 

@@ -78,7 +78,7 @@ describePg('a merchant who keeps refusing', () => {
     return who;
   };
 
-  // Members come in tens — a team works only at ten (2a) — and each test
+  // Members come in tens (a full team) and each test
   // takes ones nobody has used, so no earlier refusal or open order is theirs.
   const bench = [];
   const member = async () => {

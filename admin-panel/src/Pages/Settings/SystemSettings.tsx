@@ -97,15 +97,20 @@ const routingDefaults = (): TeamRoutingForm => ({
 
 const outOfRange = (v: number, b: { min: number; max: number }) => !Number.isFinite(v) || v < b.min || v > b.max;
 
-// ── The seven order sizes, per rail (§5 mirror) ──────────────────────────────
-// Mirrors CASH_SIZES / UPI_BANK_SIZES in backend/domains/merchant/denominations.js,
-// the only legal values of SystemConfig.orderSizes. Display only: the server
-// refuses anything else, and the GET serves the list actually on offer.
-const ORDER_SIZE_RAILS: Array<{ rail: string; label: string; sizes: number[] }> = [
-  { rail: 'CASH', label: 'Cash (member at an ATM)', sizes: [500, 1000, 5000, 10000] },
-  { rail: 'UPI_BANK', label: 'UPI / bank', sizes: [50000, 100000, 500000] },
+// ── The seven order sizes, per rail ──────────────────────────────────────────
+// Served by GET /api/admin/system/config as `orderSizeRails` (ORDER_SIZE_RAILS in
+// backend/domains/merchant/denominations.js): each rail's sizes, its name, and
+// how a buy and a sell on it are paid. The card renders that list and keeps no
+// copy (§5); what is ticked is `buyOrderSizes` / `sellOrderSizes`.
+interface OrderSizeRail {
+  rail: string; label: string; sizes: number[];
+  methods: { DEPOSIT: string; WITHDRAWAL: string };
+}
+type SizeListKey = 'buyOrderSizes' | 'sellOrderSizes';
+const SIZE_LISTS: Array<{ key: SizeListKey; title: string; verb: string; direction: 'DEPOSIT' | 'WITHDRAWAL' }> = [
+  { key: 'buyOrderSizes',  title: 'Sizes players can buy',  verb: 'Buy',  direction: 'DEPOSIT' },
+  { key: 'sellOrderSizes', title: 'Sizes players can sell', verb: 'Sell', direction: 'WITHDRAWAL' },
 ];
-const ALL_ORDER_SIZES = ORDER_SIZE_RAILS.flatMap((r) => r.sizes);
 // Mirrors USDT_BUY_STEP (denominations.js) and the spec's usdtBuy defaults.
 const USDT_BUY_STEP = 100;
 const usdtStepOk = (v: number) => Number.isInteger(v) && v >= USDT_BUY_STEP && v <= 100000 && v % USDT_BUY_STEP === 0;
@@ -164,13 +169,18 @@ export const SystemSettings: React.FC = () => {
   // The signed gateway document's state (`gatewayDocumentStatus`,
   // domains/configuration/gatewayConfig.js). Read-only, like the choices.
   const [gateway, setGateway] = useState<GatewayDocumentStatus | null>(null);
+  // The order-size universe by rail, from the server (see ORDER_SIZE_RAILS above).
+  const [orderSizeRails, setOrderSizeRails] = useState<OrderSizeRail[]>([]);
 
   const [formData, setFormData] = useState({
     maintenanceMode: false,
     maintenanceMessage: '',
     registrationEnabled: true,
-    // The sizes on offer (Step 2d). Schema default: all seven.
-    orderSizes: [...ALL_ORDER_SIZES] as number[],
+    // The sizes on offer to buy and to sell (Step 2d, Phase A). Filled from the
+    // GET, which serves every declared key at its live value (schema default:
+    // all seven, each).
+    buyOrderSizes: [] as number[],
+    sellOrderSizes: [] as number[],
     usdtBuy: { minUsdt: 100, maxUsdt: 10000 },   // schema defaults: 100 / 10,000
     maxBalanceAdjustment: 1000000, // schema default: 1000000 (₹10,00,000)
     // ── Money rules (Phase A + Risk Platform) — consumed by bet.routes.js,
@@ -240,13 +250,15 @@ export const SystemSettings: React.FC = () => {
       if (response.success && response.data) {
         setApiHostChoices(Array.isArray(response.data.apiHostChoices) ? response.data.apiHostChoices : []);
         setGateway(response.data.gatewayDocument ?? null);
+        setOrderSizeRails(Array.isArray(response.data.orderSizeRails) ? response.data.orderSizeRails : []);
         setFormData({
           maintenanceMode: response.data.maintenanceMode || false,
           maintenanceMessage: response.data.maintenanceMessage || '',
           registrationEnabled: response.data.registrationEnabled !== false,
           // `??` rather than `||` throughout: 0 is a value an operator may
           // legitimately set, and `||` silently replaces it with the default.
-          orderSizes: Array.isArray(response.data.orderSizes) ? response.data.orderSizes : [...ALL_ORDER_SIZES],
+          buyOrderSizes: Array.isArray(response.data.buyOrderSizes) ? response.data.buyOrderSizes : [],
+          sellOrderSizes: Array.isArray(response.data.sellOrderSizes) ? response.data.sellOrderSizes : [],
           usdtBuy: {
             minUsdt: response.data.usdtBuy?.minUsdt ?? 100,    // schema default: 100
             maxUsdt: response.data.usdtBuy?.maxUsdt ?? 10000,  // schema default: 10,000
@@ -341,7 +353,11 @@ export const SystemSettings: React.FC = () => {
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      await api.system.updateConfig(formData);
+      // The size lists go back only when the card had the universe to tick
+      // them from: an empty list sent from a card that drew nothing would be
+      // refused (minItems 1) and take every other setting's save down with it.
+      const { buyOrderSizes, sellOrderSizes, ...rest } = formData;
+      await api.system.updateConfig(orderSizeRails.length > 0 ? { ...rest, buyOrderSizes, sellOrderSizes } : rest);
       toast.success('System settings updated');
       loadConfig();
     } catch (error: any) {
@@ -512,48 +528,61 @@ export const SystemSettings: React.FC = () => {
         <GatewayStatusLine status={gateway} />
       </div>
 
-      {/* Order sizes (Step 2d) */}
+      {/* Order sizes (Step 2d; separate buy and sell lists, Phase A) */}
       <div className="card">
         <h3 className="text-lg font-semibold mb-1">Order Sizes</h3>
         <p className="text-xs text-gray-500 mb-4">
           Every buy and sell is exactly one of these sizes, in tokens. The size decides the rail:
           cash sizes go to a member at an ATM, UPI/bank sizes to a UPI or bank team. Untick a size
-          to stop offering it; at least one must stay on.
+          to stop offering it; each list must keep at least one.
         </p>
-        <div className="space-y-3">
-          {ORDER_SIZE_RAILS.map((group) => (
-            <fieldset key={group.rail}>
-              <legend className="label">{group.label}</legend>
-              <div className="flex flex-wrap gap-4">
-                {group.sizes.map((size) => {
-                  const id = `order-size-${size}`;
-                  return (
-                    <label key={size} htmlFor={id} className="flex items-center gap-2 text-sm">
-                      <input id={id} type="checkbox"
-                        checked={formData.orderSizes.includes(size)}
-                        onChange={(e) => setFormData({
-                          ...formData,
-                          orderSizes: e.target.checked
-                            ? ALL_ORDER_SIZES.filter((s) => s === size || formData.orderSizes.includes(s))
-                            : formData.orderSizes.filter((s) => s !== size),
+        <div className="grid gap-6 md:grid-cols-2">
+          {SIZE_LISTS.map((list) => {
+            const chosen = formData[list.key];
+            const all = orderSizeRails.flatMap((r) => r.sizes);
+            return (
+              <div key={list.key}>
+                <h4 className="text-sm font-semibold mb-2">{list.title}</h4>
+                <div className="space-y-3">
+                  {orderSizeRails.map((group) => (
+                    <fieldset key={group.rail}>
+                      <legend className="label">{group.label}</legend>
+                      <p className="text-xs text-gray-500 mb-1">{group.methods[list.direction]}</p>
+                      <div className="flex flex-wrap gap-4">
+                        {group.sizes.map((size) => {
+                          const id = `order-size-${list.verb.toLowerCase()}-${size}`;
+                          const shown = size.toLocaleString('en-IN');
+                          return (
+                            <label key={size} htmlFor={id} className="flex items-center gap-2 text-sm">
+                              <input id={id} type="checkbox" aria-label={`${list.verb} ${shown}`}
+                                checked={chosen.includes(size)}
+                                onChange={(e) => setFormData({
+                                  ...formData,
+                                  [list.key]: e.target.checked
+                                    ? all.filter((s) => s === size || chosen.includes(s))
+                                    : chosen.filter((s) => s !== size),
+                                })}
+                              />
+                              {shown}
+                            </label>
+                          );
                         })}
-                      />
-                      {size.toLocaleString('en-IN')}
-                    </label>
-                  );
-                })}
+                      </div>
+                    </fieldset>
+                  ))}
+                </div>
+                {orderSizeRails.length > 0 && chosen.length === 0 && (
+                  <div role="alert" className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+                    <AlertTriangle className="text-red-500 shrink-0" size={16} />
+                    <p className="text-sm text-red-400">
+                      Keep at least one size players can {list.verb.toLowerCase()}. With none, no player could {list.verb.toLowerCase()}.
+                    </p>
+                  </div>
+                )}
               </div>
-            </fieldset>
-          ))}
+            );
+          })}
         </div>
-        {formData.orderSizes.length === 0 && (
-          <div role="alert" className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
-            <AlertTriangle className="text-red-500 shrink-0" size={16} />
-            <p className="text-sm text-red-400">
-              Keep at least one size on offer — with none, no player could buy or sell.
-            </p>
-          </div>
-        )}
 
         {/* An admin adjustment moves money into or out of a player's balance in
             one click. The ceiling is a setting rather than a constant so it is
@@ -1341,7 +1370,7 @@ export const SystemSettings: React.FC = () => {
       <button
         onClick={handleSave}
         disabled={isSaving
-          || formData.orderSizes.length === 0
+          || (orderSizeRails.length > 0 && (formData.buyOrderSizes.length === 0 || formData.sellOrderSizes.length === 0))
           || !usdtStepOk(formData.usdtBuy.minUsdt) || !usdtStepOk(formData.usdtBuy.maxUsdt)
           || (formData.usdtBuy.minUsdt > formData.usdtBuy.maxUsdt)
           || ROUTING_RAILS.some((r) => outOfRange(formData.teamRouting.concurrency[r.rail], r.concurrency)

@@ -4,8 +4,8 @@
 // PROJECT_STATUS §3.10).
 //
 // One screen, three readers, decided by the server (GET /api/merchant/team):
-//   SUPERVISOR — up to 4 teams of exactly 10; create, rename, delete an empty
-//                team, propose members by their merchant ID, remove members,
+//   SUPERVISOR — up to 4 teams of up to 10 members (a team works from its first
+//                approved member); create, rename, delete an empty team, propose members by their merchant ID, remove members,
 //                and buy tokens into each team's pool or sell them back
 //                (Step 2b) — an admin fulfils once the money has moved.
 //   MEMBER     — the team they are in, whether an admin has approved them yet,
@@ -35,9 +35,8 @@ import type {
 import { Banner, Button, Card, CardTitle, CopyRow, ErrorState, Skeleton, inputStyle } from '../components/ui';
 
 const STRENGTH: Record<Team['strength'], { label: string; tone: 'ok' | 'warn' | 'danger'; body: string }> = {
-  WORKING: { label: 'Working', tone: 'ok', body: 'All 10 members are in. The team takes orders.' },
-  GRACE:   { label: 'Short today', tone: 'warn', body: 'A member left today. The team keeps working until midnight IST, then stops until it has 10 again.' },
-  STOPPED: { label: 'Not working', tone: 'danger', body: 'A team takes orders only with 10 approved members.' },
+  WORKING: { label: 'Working', tone: 'ok', body: 'The team takes orders. It can have up to 10 members.' },
+  STOPPED: { label: 'Not working', tone: 'danger', body: 'A team takes orders once an admin has approved at least one member.' },
 };
 
 const errorText = (err: unknown, fallback: string) => (err as Error)?.message || fallback;

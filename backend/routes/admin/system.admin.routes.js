@@ -13,6 +13,7 @@ import { getSystemConfig } from '#db/repositories/config.js';
 import { SYSTEM_CONFIG_SPEC } from '#db/spec/config.spec.js';
 import { approvedApiHosts } from '../../config/apiHosts.js';
 import { gatewayDocumentStatus } from '../../domains/configuration/gatewayConfig.js';
+import { ORDER_SIZE_RAILS } from '../../domains/merchant/denominations.js';
 import { db } from '#db';
 import { respondError } from '../../shared/httpError.js';
 import { systemConfigPayload } from '../../domains/configuration/systemConfigPayload.js';
@@ -102,6 +103,11 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         // The signed gateway document's state, shown under API Host. Read-only
         // like the choices: not a setting, and the PUT ignores it (undeclared).
         gatewayDocument:       await gatewayDocumentStatus(),
+        // The seven order sizes by rail, with each rail's payment method, for
+        // the Order Sizes card's two lists (`buyOrderSizes`, `sellOrderSizes`).
+        // Read-only, like the choices: the universe is not a setting, and the
+        // PUT ignores it (undeclared). The card keeps no copy of it (§5).
+        orderSizeRails:        ORDER_SIZE_RAILS,
         // The INR peg, from its one owner. It was a literal here and in the
         // response below, a third and fourth declaration of a rule that already
         // had two.

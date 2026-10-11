@@ -30,7 +30,7 @@ import TeamPage from './TeamPage';
 
 const team = (teamId: string, name: string, extra = {}) => ({
   teamId, supervisorId: 's-1', supervisorName: 'Sup', supervisorRef: 'MSUP', name, rail: 'UPI_BANK',
-  approvedCount: 0, pendingCount: 0, size: 10, strength: 'STOPPED', shortSince: null, wasFull: false, createdAt: '',
+  approvedCount: 0, pendingCount: 0, size: 10, strength: 'STOPPED', createdAt: '',
   poolAvailablePaise: 0, poolHeldPaise: 0,
   commission: { teamId, buysPaise: 0, sellsPaise: 0, matchedPaise: 0, highPaise: 0, paidPaise: 0, owedPaise: 0,
     commissionPercent: 10, supervisorSharePercent: 16 },
@@ -53,10 +53,22 @@ describe('merchant Team screen', () => {
     expect(await screen.findByText('Waiting for an admin')).toBeInTheDocument();
   });
 
-  it('a member of a team in its grace day is told it stops at midnight', async () => {
-    api.getMyTeam.mockResolvedValue({ role: 'MEMBER', commissions: [], myCommissionPaise: 0, publicRef: 'M1', status: 'APPROVED', team: team('t-1', 'Alpha', { strength: 'GRACE', approvedCount: 9 }) });
+  it('a member of a team below ten is told it takes orders, with no midnight stop', async () => {
+    // A team works with one to ten approved members (owner, Phase A).
+    api.getMyTeam.mockResolvedValue({ role: 'MEMBER', commissions: [], myCommissionPaise: 0, publicRef: 'M1', status: 'APPROVED', team: team('t-1', 'Alpha', { strength: 'WORKING', approvedCount: 3 }) });
     render(<TeamPage />);
-    expect(await screen.findByText(/until midnight IST/)).toBeInTheDocument();
+    expect(await screen.findByText(/The team takes orders/)).toBeInTheDocument();
+    expect(screen.getByText(/Working · 3\/10/)).toBeInTheDocument();
+    expect(screen.queryByText(/midnight/)).toBeNull();
+  });
+
+  it('a supervisor of a team with no approved member is told what makes it work', async () => {
+    api.getMyTeam.mockResolvedValue({
+      role: 'SUPERVISOR', commissions: [], myCommissionPaise: 0, rail: 'UPI_BANK', publicRef: 'MSUP',
+      teams: [team('t-1', 'Alpha')], members: [],
+    });
+    render(<TeamPage />);
+    expect(await screen.findByText(/once an admin has approved at least one member/)).toBeInTheDocument();
   });
 
   it('a supervisor adds a member to the team whose form they typed into — the second team, not the first', async () => {

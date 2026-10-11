@@ -14,6 +14,7 @@ import { randomBytes } from 'node:crypto';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
   createMerchant, updateMerchant, newMerchantId, generateMerchantPublicRef, getMerchant,
+  setRoutingPriority, recordCompletedOrder, ROUTING_PRIORITY,
 } from '../repositories/merchants.js';
 import { setSupervisorRole, createTeam, addMember, approveMember, removeMember } from '../repositories/teams.js';
 import {
@@ -51,7 +52,7 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
   };
   const online = (ids, on = true) => pgQuery('UPDATE merchants SET is_online = $2 WHERE merchant_id = ANY($1)', [ids, on]);
 
-  /** A WORKING team of ten on `rail`, every member online, with `pool` tokens. */
+  /** A full team of ten on `rail`, every member online, with `pool` tokens. */
   const workingTeam = async (rail = 'UPI_BANK', pool = 0) => {
     const sup = await merchant();
     expect(await setSupervisorRole(sup, { rail })).toEqual({ ok: true });
@@ -167,26 +168,45 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     expect(sellers.length).toBe(t.members.length);
   });
 
-  it('a team below ten that has never been full takes nothing', async () => {
+  // A team works with any number of approved members, one to ten (owner,
+  // Phase A). There is no team-level gate: the member's own APPROVED is it.
+  it('a team of ONE approved member takes orders', async () => {
     const sup = await merchant();
     await setSupervisorRole(sup, { rail: 'UPI_BANK' });
-    const { teamId } = await createTeam({ supervisorId: sup, name: 'Short' });
+    const { teamId } = await createTeam({ supervisorId: sup, name: 'Solo' });
     teams.push(teamId);
     const m = await merchant();
     await addMember({ teamId, supervisorId: sup, merchantRef: m, actor: sup });
     await approveMember({ merchantId: m, actor: 'a' });
     await online([m]);
     const o = await order('WITHDRAWAL', 100000);
-    const cands = await routingCandidates(await getOrderRecord(o.orderId), { cap: 3 });
-    expect(cands.map((c) => c.merchantId)).not.toContain(m);
-    expect(cands.every((c) => c.teamId !== teamId)).toBe(true);
+    const cands = await routingCandidates(await getOrderRecord(o.orderId), { cap: 3, limit: 500 });
+    expect(cands.filter((c) => c.teamId === teamId)).toEqual([{ merchantId: m, teamId, openOrders: 0 }]);
+    // Everyone else barred, so the assignment has one place to go.
+    const others = cands.map((c) => c.merchantId).filter((id) => id !== m);
+    expect(await assign(o, 3, others)).toMatchObject({ ok: true, merchantId: m, teamId });
   });
 
-  it('a team that drops below ten keeps working today (grace)', async () => {
+  it('a team whose only member is still PENDING takes nothing (the opposite case)', async () => {
+    const sup = await merchant();
+    await setSupervisorRole(sup, { rail: 'UPI_BANK' });
+    const { teamId } = await createTeam({ supervisorId: sup, name: 'Waiting' });
+    teams.push(teamId);
+    const m = await merchant();
+    await addMember({ teamId, supervisorId: sup, merchantRef: m, actor: sup });
+    await online([m]);
+    const o = await order('WITHDRAWAL', 100000);
+    const cands = await routingCandidates(await getOrderRecord(o.orderId), { cap: 3, limit: 500 });
+    expect(cands.map((c) => c.merchantId)).not.toContain(m);
+  });
+
+  it('a team that drops below ten keeps working, with no grace day to run out', async () => {
     const t = await workingTeam('UPI_BANK', 0);
-    expect((await removeMember({ merchantId: t.members[0], supervisorId: t.sup })).ok).toBe(true);
+    for (const m of t.members.slice(0, 9)) {
+      expect((await removeMember({ merchantId: m, supervisorId: t.sup })).ok).toBe(true);
+    }
     const cands = await routingCandidates(await order('WITHDRAWAL', 70000), { cap: 3, limit: 500 });
-    expect(cands.some((c) => c.teamId === t.teamId)).toBe(true);
+    expect(cands.filter((c) => c.teamId === t.teamId).map((c) => c.merchantId)).toEqual([t.members[9]]);
   });
 
   it('a buy is not routed to a team whose pool cannot cover it, and stays queued', async () => {
@@ -249,6 +269,77 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     // Both hold one; the next goes to whoever was assigned FIRST (least recently).
     const third = await assign(await order('WITHDRAWAL', 60000), 3);
     expect(third.merchantId).toBe(first.merchantId);
+  });
+
+  // ── Who goes first (owner, Phase A) ──────────────────────────────────────
+  // The highest priority, then the fastest average response, then the fewest
+  // open orders, then whoever has waited longest.
+  const rankedIn = async (teamId) => (await routingCandidates(await order('WITHDRAWAL', 60000), { cap: 3, limit: 500 }))
+    .filter((c) => c.teamId === teamId).map((c) => c.merchantId);
+
+  it('the higher priority wins over a faster responder; at equal priority the faster responder wins', async () => {
+    const t = await workingTeam('UPI_BANK', 0);
+    await online(t.members.slice(3), false);
+    const [a, b, c] = t.members;
+    // Averages through their one writer: a 1 minute, c 4, b 9.
+    await recordCompletedOrder(a, { direction: 'WITHDRAWAL', responseMinutes: 1 });
+    await recordCompletedOrder(b, { direction: 'WITHDRAWAL', responseMinutes: 9 });
+    await recordCompletedOrder(c, { direction: 'WITHDRAWAL', responseMinutes: 4 });
+    expect((await getMerchant(a)).routingPriority).toBe(ROUTING_PRIORITY.DEFAULT);
+
+    // Equal priority (the default, 3): the fastest first.
+    expect(await rankedIn(t.teamId)).toEqual([a, c, b]);
+
+    // The slowest, given priority 5, goes first; the rest keep their order.
+    expect((await setRoutingPriority(b, 5)).ok).toBe(true);
+    expect(await rankedIn(t.teamId)).toEqual([b, a, c]);
+    // And a lower priority than the default goes last, however fast.
+    expect((await setRoutingPriority(a, 1)).ok).toBe(true);
+    expect(await rankedIn(t.teamId)).toEqual([b, c, a]);
+
+    // The assignment takes the first, and priority still beats the open order
+    // it now holds.
+    const got = await assign(await order('WITHDRAWAL', 60000), 3);
+    expect(got.merchantId).toBe(b);
+    expect((await rankedIn(t.teamId))[0]).toBe(b);
+  });
+
+  it('at equal priority and equal response, the member with fewer open orders wins', async () => {
+    const t = await workingTeam('UPI_BANK', 0);
+    await online(t.members.slice(2), false);
+    const [a, b] = t.members;
+    await recordCompletedOrder(a, { direction: 'WITHDRAWAL', responseMinutes: 4 });
+    await recordCompletedOrder(b, { direction: 'WITHDRAWAL', responseMinutes: 4 });
+    const first = await assign(await order('WITHDRAWAL', 60000), 3);
+    const other = first.merchantId === a ? b : a;
+    // One open order against none: the one without goes first.
+    expect(await rankedIn(t.teamId)).toEqual([other, first.merchantId]);
+    // A faster response beats an open order (the key above it).
+    await recordCompletedOrder(first.merchantId, { direction: 'WITHDRAWAL', responseMinutes: 0 });
+    expect(await rankedIn(t.teamId)).toEqual([first.merchantId, other]);
+  });
+
+  it('priority is a whole number from 1 to 5, a member\'s only, and the row holds the range for every writer', async () => {
+    const t = await workingTeam('UPI_BANK', 0);
+    const [a] = t.members;
+    for (const bad of [0, 6, 2.5, 'x', null, undefined]) {
+      await expect(setRoutingPriority(a, bad)).rejects.toMatchObject({ status: 400, code: 'BAD_PRIORITY' });
+    }
+    expect((await getMerchant(a)).routingPriority).toBe(ROUTING_PRIORITY.DEFAULT);
+    for (const good of [1, 5, '4']) {
+      const out = await setRoutingPriority(a, good);
+      expect(out.ok).toBe(true);
+      expect(out.merchant.routingPriority).toBe(Number(good));
+    }
+    // A supervisor takes no orders, so has no priority to set.
+    expect(await setRoutingPriority(t.sup, 5)).toEqual({ ok: false, reason: 'supervisor_no_priority' });
+    expect(await setRoutingPriority('no-such-merchant', 5)).toEqual({ ok: false, reason: 'not_found' });
+    // The generic patch cannot reach it (one writer), nor the average.
+    await expect(updateMerchant(a, { routingPriority: 5 })).rejects.toThrow();
+    await expect(updateMerchant(a, { avgResponseMinutes: 0 })).rejects.toThrow();
+    // The CHECK, for a writer that skips the repository.
+    await expect(pgQuery('UPDATE merchants SET routing_priority = 6 WHERE merchant_id = $1', [a]))
+      .rejects.toMatchObject({ constraint: 'merchants_routing_priority_range' });
   });
 
   it('a barred merchant is never chosen', async () => {

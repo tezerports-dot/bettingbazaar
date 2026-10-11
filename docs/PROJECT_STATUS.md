@@ -708,12 +708,14 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     policy's column defaults, and the per-member concurrency
     (CASH 1, UPI_BANK 3, USDT 3).
   - *Routing* is one query in `database/repositories/teamRouting.js`: approved
-    members of a team whose supervisor's rail is the order's and whose
-    strength is WORKING or GRACE; member ACTIVE, APPROVED, online, not
+    members of a team whose supervisor's rail is the order's (a team works with
+    one to ten approved members, Phase A); member ACTIVE, APPROVED, online, not
     assignment-paused, not barred for this order or player, under the cap, on
     USDT holding an address on the order's chain; a CASH buy needs **Ready**;
     a CASH member with an open buy gets no sell; for a buy, the team's pool
-    must cover it. Ordered by open orders, then least recently assigned.
+    must cover it. Ordered by the admin's routing priority (1–5, Phase A),
+    then the fastest average response, then open orders, then least recently
+    assigned.
   - *The hold is the assignment*: one transaction locks the pool row, moves
     the buy's tokens available → held (refused in the UPDATE's WHERE),
     transitions the order with `team_id`, stamps the member's
@@ -807,8 +809,9 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   CDM receipts deleted); USDT 100–10,000 step 100; the QR cash link.
 - **2d status (2026-10-03): BUILT on `claude/busy-wright-cy111a`.**
   - *Order sizes.* An INR order is one of seven sizes (`ORDER_SIZES`); the
-    admin's Settings screen ticks which are offered (`SystemConfig.orderSizes`),
-    and the player picks from those. Min/max deposit and withdrawal limits are
+    admin's Settings screen ticks which are offered, separately for buys and
+    sells (`SystemConfig.buyOrderSizes`, `sellOrderSizes`; Phase A), and the
+    player picks from the list for the tab they are on. Min/max deposit and withdrawal limits are
     gone; a size that is not offered is refused naming the ones that are.
   - *USDT.* A buy is 100–10,000 USDT in steps of 100 (`SystemConfig.usdtBuy`,
     admin-editable); tokens follow from the frozen rate. No USDT sell.
@@ -1292,6 +1295,38 @@ and tier, this section's numbers.
 - USDT order maximum 10,000 USDT.
 - "Until the next day" means until 00:00 IST.
 - The security deposit is recorded in rupees.
+
+## 3.11 Merchants and agents, Phase A (owner-approved plan) — **BUILT on branch `claude/agents-phase-a` (2026-10-11)**
+
+Phases B (the new merchant type) and C (names on screen) are not started; the
+plan and its open decisions are the owner's document. Phase A, five small changes,
+internal names kept (merchant, member):
+
+1. **Separate buy and sell size lists.** `SystemConfig.buyOrderSizes` and
+   `sellOrderSizes` replace `orderSizes` (each the seven by default, at least
+   one). The risk gate judges an order by its direction's list
+   (`offeredSizes(cfg, direction)`); the player payload sends
+   `orderSizes: { buy, sell }` per rail; Settings › Order Sizes has two lists;
+   the wallet's Buy tab offers the buy list and the Sell tab the sell list.
+2. **A team works with one to ten approved members.** The grace day and the
+   midnight stop are gone, with `teams.short_since` and `teams.was_full`.
+   `strength` is WORKING with at least one approved member, else STOPPED, and
+   is display only: routing asks the member row (APPROVED). `TEAM_SIZE` 10 and
+   `MAX_TEAMS` 4 stay the maxima.
+3. **Smarter assignment.** `merchants.routing_priority` (1–5, default 3), set
+   by an admin on the Teams screen (`PUT /api/admin/merchants/:id/priority`,
+   `canManageTeams`), written only by `setRoutingPriority`. Routing orders by
+   priority, then `avg_response_minutes`, then open orders, then least
+   recently assigned. The average has one writer, `recordCompletedOrder`, fed
+   the response time stamped on the order at accept when the order is
+   confirmed (the accept route's own EMA write is gone).
+4. **Each size states how it is paid.** `RAIL_PAYMENT_METHOD`
+   (`denominations.js`), sent as `orderSizeMethods: { buy, sell }` to the
+   player and as `orderSizeRails` to the admin card; both panels render the
+   server's sentence.
+5. **QR for the cash pay link on a larger screen.** `PayLinkQr` draws the
+   order's `upi://pay` link as a QR in the browser (`qrcode`) at
+   `(min-width: 768px)`; the PAY NOW button stays on every screen.
 
 ## 4. How to pick this up
 

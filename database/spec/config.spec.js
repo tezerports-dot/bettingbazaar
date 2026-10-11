@@ -83,15 +83,16 @@ export const SYSTEM_CONFIG_SPEC = group({
   // blank to players, with nothing reporting a problem. One owner — the scope.
 
   // ── The sizes an INR order may be (Step 2d, owner 2026-10-02) ─────────────
-  // Which of the seven fixed sizes are ON OFFER, buys and sells alike: 500,
-  // 1,000, 5,000 and 10,000 tokens on the cash rail; 50,000, 100,000 and
-  // 500,000 on UPI/bank. The seven are owned by `denominations.js` and are the
-  // only legal values; the admin chooses which are offered. At least one, so
-  // there is always some size a player can sell. This replaces the old
-  // min/max deposit and withdrawal limits: a list of sizes IS the limit, and a
-  // second pair of bounds beside it would be a second owner of the same
-  // question (§2).
-  orderSizes: { type: 'number[]', default: [...ORDER_SIZES], allowed: ORDER_SIZES, minItems: 1 },
+  // Which of the seven fixed sizes are ON OFFER, separately for buys and for
+  // sells (owner, Phase A of the merchants-and-agents plan): 500, 1,000, 5,000
+  // and 10,000 tokens on the cash rail; 50,000, 100,000 and 500,000 on
+  // UPI/bank. The seven are owned by `denominations.js` and are the only legal
+  // values; the admin chooses which are offered in each direction. At least
+  // one in each, so a player can always buy something and sell something. A
+  // list of sizes IS the limit: there are no min/max deposit and withdrawal
+  // bounds beside it, which would be a second owner of the same question (§2).
+  buyOrderSizes:  { type: 'number[]', default: [...ORDER_SIZES], allowed: ORDER_SIZES, minItems: 1 },
+  sellOrderSizes: { type: 'number[]', default: [...ORDER_SIZES], allowed: ORDER_SIZES, minItems: 1 },
 
   // ── The most one admin may move in one balance adjustment ────────────────
   // ₹10,00,000, owner-set 2026-09-23.

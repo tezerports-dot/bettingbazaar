@@ -438,7 +438,8 @@ export type SupervisorRail = 'CASH' | 'UPI_BANK' | 'USDT';
 export interface Team {
   teamId: string; supervisorId: string; supervisorName: string; supervisorRef: string;
   name: string; rail: SupervisorRail; approvedCount: number; pendingCount: number; size: number;
-  strength: 'WORKING' | 'GRACE' | 'STOPPED'; shortSince: string | null; wasFull: boolean; createdAt: string;
+  /** WORKING with at least one approved member, else STOPPED (a team works with 1–10; Phase A). */
+  strength: 'WORKING' | 'STOPPED'; createdAt: string;
   /** The team's token pool, in paise (Step 2b). */
   poolAvailablePaise: number; poolHeldPaise: number;
   /** Team commission (Step 2e): `toSummary` in database/repositories/teamCommission.js. */

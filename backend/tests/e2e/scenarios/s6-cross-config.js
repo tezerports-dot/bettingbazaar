@@ -59,20 +59,26 @@ export default async function run() {
   {
     const before = (await GET(aT, '/api/admin/system/config')).body?.config ?? {};
     try {
-      // Switch one cash size and one bank size off: the player is told only
-      // the rest, per rail, and the USDT bounds the admin chose.
+      // Switch one cash size and one bank size off for buys, and different
+      // ones for sells: the player is told only the rest, per direction and
+      // rail, and the USDT bounds the admin chose.
       await PUT(aT, '/api/admin/system/config', {
-        orderSizes: [1000, 5000, 10000, 50000, 500000],
+        buyOrderSizes: [1000, 5000, 10000, 50000, 500000],
+        sellOrderSizes: [500, 1000, 100000],
         usdtBuy: { minUsdt: 200, maxUsdt: 5000 },
       });
       const pub = await publicConfig();
-      const shown = `${pub.orderSizes?.CASH?.join(',')} | ${pub.orderSizes?.UPI_BANK?.join(',')} | ${pub.usdtBuy?.minUsdt}-${pub.usdtBuy?.maxUsdt}`;
-      check(A, 'player', 'the player panel is told the sizes on offer and the USDT bounds', '1000,5000,10000 | 50000,500000 | 200-5000',
-        shown, shown === '1000,5000,10000 | 50000,500000 | 200-5000',
+      const b = pub.orderSizes?.buy;
+      const sl = pub.orderSizes?.sell;
+      const shown = `${b?.CASH?.join(',')} | ${b?.UPI_BANK?.join(',')} | ${sl?.CASH?.join(',')} | ${sl?.UPI_BANK?.join(',')} | ${pub.usdtBuy?.minUsdt}-${pub.usdtBuy?.maxUsdt}`;
+      const want = '1000,5000,10000 | 50000,500000 | 500,1000 | 100000 | 200-5000';
+      check(A, 'player', 'the player panel is told the buy and sell sizes on offer and the USDT bounds', want,
+        shown, shown === want,
         '§2: the SIZES are one policy read from either end — a panel with its own list offers what the gate refuses');
     } finally {
       await PUT(aT, '/api/admin/system/config', {
-        orderSizes: before.orderSizes ?? [500, 1000, 5000, 10000, 50000, 100000, 500000], // schema default: all seven
+        buyOrderSizes: before.buyOrderSizes ?? [500, 1000, 5000, 10000, 50000, 100000, 500000],  // schema default: all seven
+        sellOrderSizes: before.sellOrderSizes ?? [500, 1000, 5000, 10000, 50000, 100000, 500000], // schema default: all seven
         usdtBuy: before.usdtBuy ?? { minUsdt: 100, maxUsdt: 10000 },                     // schema default
       });
     }

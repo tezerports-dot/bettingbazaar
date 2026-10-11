@@ -2317,14 +2317,15 @@ const CASES = [
       // The WHOLE document, not the one field — restoring a field leaves every
       // other one at whatever the press wrote.
       const before = await db.config.getSystemConfig();
-      const wasSizes = before?.orderSizes;
+      const wasSizes = before?.buyOrderSizes;
       try {
         await go(page, cfg, base, '/settings');
-        // One size on the Order Sizes card (Step 2d), addressed by its printed
-        // name (S24). Flipped from whatever it is now, so the press changes the
-        // document whichever state an earlier run left it in.
-        const box = page.getByLabel('5,000', { exact: true }).first();
-        if (await box.count() === 0) return ['NOT DRIVEN', 'no 5,000 order-size checkbox on /settings'];
+        // One size in the Order Sizes card's buy list (Step 2d, Phase A),
+        // addressed by its accessible name (S24). Flipped from whatever it is
+        // now, so the press changes the document whichever state an earlier
+        // run left it in.
+        const box = page.getByLabel('Buy 5,000', { exact: true }).first();
+        if (await box.count() === 0) return ['NOT DRIVEN', 'no "Buy 5,000" order-size checkbox on /settings'];
         const wasOn = await box.isChecked();
         await box.setChecked(!wasOn);
         await settle(page, 1500);
@@ -2336,20 +2337,20 @@ const CASES = [
         await settle(page, 8000);
 
         const after = await db.config.getSystemConfig();
-        const nowOn = (after?.orderSizes ?? []).map(Number).includes(5000);
+        const nowOn = (after?.buyOrderSizes ?? []).map(Number).includes(5000);
         if (nowOn === wasOn) {
-          return ['FAILED', `pressed Save; 5,000 is still ${wasOn ? 'on' : 'off'} offer (${JSON.stringify(after?.orderSizes)})`];
+          return ['FAILED', `pressed Save; 5,000 is still ${wasOn ? 'on' : 'off'} offer to buy (${JSON.stringify(after?.buyOrderSizes)})`];
         }
         const said = await words(page);
         if (!/saved|updated|success/i.test(said)) {
           return ['FAILED', 'the document was written; the screen never confirmed it'];
         }
-        return ['DROVE', `5,000 ${wasOn ? 'taken off' : 'put on'} offer, confirmed on screen`];
+        return ['DROVE', `5,000 ${wasOn ? 'taken off' : 'put on'} offer to buy, confirmed on screen`];
       } finally {
         // Outside the assertions, and outside the early returns above (trap 10).
         await db.config.applyConfig({
-          scope: 'system', actor: 'mutating-drive', patch: { orderSizes: wasSizes },
-        }).catch((e) => console.error('   ! could not restore orderSizes:', e.message));
+          scope: 'system', actor: 'mutating-drive', patch: { buyOrderSizes: wasSizes },
+        }).catch((e) => console.error('   ! could not restore buyOrderSizes:', e.message));
       }
     },
   },

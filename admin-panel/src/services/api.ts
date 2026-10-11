@@ -588,6 +588,8 @@ export const teams = {
     const res = await api.get<any>('/api/admin/teams');
     return res.data as {
       success: boolean; supervisors: TeamSupervisor[]; teams: TeamView[]; members: TeamMemberView[];
+      /** Mirrors ROUTING_PRIORITY in database/repositories/merchants.js. */
+      routingPriority: { MIN: number; MAX: number; DEFAULT: number };
     };
   },
   /** rail null removes the role. */
@@ -599,6 +601,10 @@ export const teams = {
     (await api.post(`/api/admin/team-members/${merchantId}/reject`)).data,
   removeMember: async (merchantId: string) =>
     (await api.delete(`/api/admin/team-members/${merchantId}`)).data,
+  /** A member's routing priority, 1–5 (Phase A): highest is offered orders first. */
+  setPriority: async (merchantId: string, priority: number) =>
+    (await api.put(`/api/admin/merchants/${merchantId}/priority`, { priority })).data as
+      { success: boolean; priority: number; message: string },
   /** Red flags of the last `days` days (Step 2f): low activity per member. */
   redFlags: async (days = 30) => {
     const res = await api.get<any>('/api/admin/team-red-flags', { params: { days } });

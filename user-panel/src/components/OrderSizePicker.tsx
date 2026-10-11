@@ -3,17 +3,20 @@
  * The order sizes a player may buy or sell, as tiles grouped by rail.
  *
  * ── The owner's rule (PROJECT_STATUS §3.10, Step 2d) ─────────────────────────
- * An INR order is exactly one of a fixed list of sizes, the same for buys and
- * sells, and the size decides the rail: the small sizes go to a cash team, the
- * large ones to a UPI/bank team. So a player picks a size, never types one, and
- * the tile they pick says which rail it is on.
+ * An INR order is exactly one of a fixed list of sizes, and the size decides
+ * the rail: the small sizes go to a cash team, the large ones to a UPI/bank
+ * team. Buys and sells each have their own list (Phase A), so the Buy tab and
+ * the Sell tab each pass their own. A player picks a size, never types one,
+ * and the tile they pick says which rail it is on and how it is paid.
  *
  * ── Every size comes from the server ───────────────────────────────────────
- * `sizes` is `GET /api/v1/system/config`'s `orderSizes`, built from the same
- * module and row the risk gate judges by (backend/domains/merchant/
- * denominations.js, via systemConfigPayload.js). Nothing here is a list of
- * sizes: the app ships as an APK containing this bundle, so a list written here
- * is one an attacker can edit and one that drifts from the gate.
+ * `sizes` is one side of `GET /api/v1/system/config`'s `orderSizes` (`buy` or
+ * `sell`), built from the same module and row the risk gate judges by
+ * (backend/domains/merchant/denominations.js, via systemConfigPayload.js), and
+ * `methods` the same side of `orderSizeMethods`: the sentence saying how each
+ * rail is paid, rendered as sent. Nothing here is a list of sizes or a method:
+ * the app ships as an APK containing this bundle, so a list written here is
+ * one an attacker can edit and one that drifts from the gate.
  *
  * ── `maxAllowed` ───────────────────────────────────────────────────────────
  * A sell can only draw on winnings, so a size above them is shown but disabled,
@@ -23,10 +26,13 @@
  */
 import React from 'react';
 
-/** The rails a size can be on — the keys of the server's `orderSizes`. */
+/** The rails a size can be on — the keys of each side of the server's `orderSizes`. */
 export type SizeRail = 'CASH' | 'UPI_BANK';
 
 export interface OrderSizes { CASH: number[]; UPI_BANK: number[] }
+
+/** How each rail is paid, as the server words it (`orderSizeMethods.buy` / `.sell`). */
+export type OrderSizeMethods = Partial<Record<SizeRail, string>>;
 
 const RAIL_LABEL: Record<SizeRail, string> = {
   CASH: 'Cash team',
@@ -37,6 +43,8 @@ interface Props {
   /** Prefix for element ids, so a buy and a sell picker can share a page. */
   idPrefix: string;
   sizes: OrderSizes;
+  /** How each rail is paid, shown under its label. */
+  methods?: OrderSizeMethods;
   value: number | null;
   onChange: (size: number) => void;
   /** Sizes above this are disabled (a sell beyond winnings). */
@@ -48,7 +56,7 @@ interface Props {
 const fmt = (n: number) => n.toLocaleString('en-IN');
 
 export default function OrderSizePicker({
-  idPrefix, sizes, value, onChange, maxAllowed, accent = 'var(--gold)',
+  idPrefix, sizes, methods = {}, value, onChange, maxAllowed, accent = 'var(--gold)',
 }: Props) {
   const rails = (['CASH', 'UPI_BANK'] as SizeRail[]).filter((r) => sizes[r].length > 0);
   if (rails.length === 0) {
@@ -65,12 +73,19 @@ export default function OrderSizePicker({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 10 }}>
       {rails.map((rail) => {
         const labelId = `${idPrefix}-${rail.toLowerCase()}`;
+        const methodId = `${labelId}-method`;
+        const method = methods[rail];
         return (
           <div key={rail}>
-            <div id={labelId} style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 6 }}>
+            <div id={labelId} style={{ fontSize: 11, color: 'var(--text3)', marginBottom: method ? 2 : 6 }}>
               {RAIL_LABEL[rail]}
             </div>
-            <div role="radiogroup" aria-labelledby={labelId}
+            {method && (
+              <div id={methodId} style={{ fontSize: 10.5, color: 'var(--text2)', marginBottom: 6, lineHeight: 1.4 }}>
+                {method}
+              </div>
+            )}
+            <div role="radiogroup" aria-labelledby={labelId} aria-describedby={method ? methodId : undefined}
               style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))', gap: 8 }}>
               {sizes[rail].map((size) => {
                 const on = value === size;

@@ -7,7 +7,9 @@
  *   1. makes an approved merchant a SUPERVISOR on one rail (or removes the
  *      role from a supervisor who runs no teams);
  *   2. approves or rejects the members supervisors propose;
- *   3. removes a member from a team;
+ *   3. removes a member from a team, or sets a member's routing priority
+ *      (1–5, Phase A): routing offers an order to the highest priority
+ *      first, then the fastest average response, then the fewest open orders;
  *   4. sells tokens into a team's pool, or buys them back, when a supervisor
  *      asks — recording what was paid (Step 2b). That part is the money area
  *      canFundMerchants, so it is shown only to staff who hold it;
@@ -16,6 +18,7 @@
  *      the admin and the supervisor decide.
  *
  * Supervisors create their teams and propose members from the merchant panel.
+ * A team takes orders with any number of approved members from one to ten.
  * Every cap (4 teams, 10 members, one team per merchant) is enforced by the
  * server inside the write; this screen shows the server's refusal verbatim,
  * because it names what to do next (§32 S14).
@@ -38,8 +41,7 @@ const RAILS: Array<{ value: SupervisorRail; label: string }> = [
 
 const STRENGTH: Record<TeamView['strength'], { label: string; cls: string }> = {
   WORKING: { label: 'Working', cls: 'bg-green-500/20 text-green-400' },
-  GRACE:   { label: 'Short — works until midnight IST', cls: 'bg-yellow-500/20 text-yellow-400' },
-  STOPPED: { label: 'Not working — needs 10 members', cls: 'bg-red-500/20 text-red-400' },
+  STOPPED: { label: 'Not working: no approved member yet', cls: 'bg-red-500/20 text-red-400' },
 };
 
 const messageOf = (err: any, fallback: string) => err?.response?.data?.message || fallback;
@@ -212,6 +214,8 @@ export const TeamsManager: React.FC = () => {
   const [supervisors, setSupervisors] = useState<TeamSupervisor[]>([]);
   const [teams, setTeams] = useState<TeamView[]>([]);
   const [members, setMembers] = useState<TeamMemberView[]>([]);
+  // The server's range (ROUTING_PRIORITY); null until loaded, and then no picker.
+  const [priorityRange, setPriorityRange] = useState<{ MIN: number; MAX: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [newId, setNewId] = useState('');
@@ -225,6 +229,7 @@ export const TeamsManager: React.FC = () => {
       setSupervisors(res.supervisors || []);
       setTeams(res.teams || []);
       setMembers(res.members || []);
+      setPriorityRange(res.routingPriority ?? null);
     } catch (err) {
       toast.error(messageOf(err, 'Could not load teams'));
     } finally {
@@ -262,8 +267,8 @@ export const TeamsManager: React.FC = () => {
           </button>
         </div>
         <p className="text-xs text-gray-400 mb-3">
-          A supervisor runs up to 4 teams of exactly 10 members on ONE rail, and serves no orders
-          itself. The merchant must already be approved and must not be in a team.
+          A supervisor runs up to 4 teams of up to 10 members on ONE rail, and serves no orders
+          itself. A team takes orders once it has one approved member. The merchant must already be approved and must not be in a team.
         </p>
         <form
           className="flex flex-wrap gap-2 items-end"
@@ -377,15 +382,40 @@ export const TeamsManager: React.FC = () => {
                     </span>
                   )}
                 </div>
+                {priorityRange && t.approvedCount > 0 && (
+                  <p className="text-xs text-gray-500 mb-1">
+                    Orders go to the highest priority first ({priorityRange.MAX} is highest), then the fastest
+                    average response, then the fewest open orders.
+                  </p>
+                )}
                 <ul className="text-sm space-y-1">
                   {members.filter((m) => m.teamId === t.teamId && m.status === 'APPROVED').map((m) => (
-                    <li key={m.merchantId} className="flex items-center justify-between">
+                    <li key={m.merchantId} className="flex items-center justify-between gap-2">
                       <span>{m.name} <span className="text-xs text-gray-500">{m.publicRef}</span></span>
-                      <button disabled={!!busy}
-                        onClick={() => void act(`del-${m.merchantId}`, () => api.teams.removeMember(m.merchantId), `${m.name} removed`, 'Could not remove')}
-                        className="text-xs px-2 py-0.5 rounded-lg bg-dark-700 text-red-400 disabled:opacity-50">
-                        Remove {m.name}
-                      </button>
+                      <span className="flex items-center gap-2">
+                        {priorityRange && (
+                          <>
+                            <label htmlFor={`prio-${m.merchantId}`} className="text-xs text-gray-400">
+                              Priority for {m.name}
+                            </label>
+                            <select id={`prio-${m.merchantId}`} value={m.routingPriority} disabled={!!busy}
+                              onChange={(e) => {
+                                const priority = Number(e.target.value);
+                                void act(`prio-${m.merchantId}`, () => api.teams.setPriority(m.merchantId, priority),
+                                  `${m.name}: priority ${priority}`, 'Could not set the priority');
+                              }}
+                              className="bg-dark-700 border border-dark-600 rounded-lg px-2 py-0.5 text-xs disabled:opacity-50">
+                              {Array.from({ length: priorityRange.MAX - priorityRange.MIN + 1 }, (_, i) => priorityRange.MIN + i)
+                                .map((p) => <option key={p} value={p}>{p}</option>)}
+                            </select>
+                          </>
+                        )}
+                        <button disabled={!!busy}
+                          onClick={() => void act(`del-${m.merchantId}`, () => api.teams.removeMember(m.merchantId), `${m.name} removed`, 'Could not remove')}
+                          className="text-xs px-2 py-0.5 rounded-lg bg-dark-700 text-red-400 disabled:opacity-50">
+                          Remove {m.name}
+                        </button>
+                      </span>
                     </li>
                   ))}
                 </ul>

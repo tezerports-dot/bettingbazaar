@@ -3,8 +3,8 @@
  * Supervisors and their teams (owner, 2026-10-02 — PROJECT_STATUS §3.10, 2a).
  *
  * A SUPERVISOR is a merchant with `is_supervisor` and one rail. It runs up to
- * MAX_TEAMS teams of exactly TEAM_SIZE approved members. A member is in one
- * team at most (`team_members.merchant_id` is the primary key).
+ * MAX_TEAMS teams of at most TEAM_SIZE members. A member is in one team at
+ * most (`team_members.merchant_id` is the primary key).
  *
  * ── Every cap is asked inside the write, under a lock ────────────────────────
  * "Fewer than four teams" and "fewer than ten members" are counts of sibling
@@ -14,12 +14,11 @@
  * that lock, so the second counts what the first wrote (§32 S6).
  *
  * ── Strength ────────────────────────────────────────────────────────────────
- * A team works only at TEAM_SIZE. One that DROPS below it keeps working until
- * the end of that day in IST, then stops until it is full again (owner).
- * `short_since` records the drop; `was_full` separates a team that dropped
- * from one that has never been full (and so never worked). Both are written in
- * the same transaction as the membership change that moves them, so the
- * strength a reader sees cannot disagree with the members it is derived from.
+ * A team works with any number of approved members from one to TEAM_SIZE
+ * (owner, Phase A of the merchants-and-agents plan). It replaced "works only at
+ * ten; a team that drops below ten stops at midnight IST", and the columns that
+ * rule needed (`short_since`, `was_full`) went with it. Strength is derived
+ * from the approved count in the read, so it cannot disagree with the members.
  */
 import { pgQuery, withTransaction } from '../client.js';
 import { randomBytes } from 'node:crypto';
@@ -33,20 +32,18 @@ export const SUPERVISOR_RAILS = Object.freeze(['CASH', 'UPI_BANK', 'USDT']);
 const newTeamId = () => `team_${randomBytes(10).toString('hex')}`;
 
 /**
- * The team's working state, computed by the database's clock.
- *   WORKING — ten approved members.
- *   GRACE   — dropped below ten today (IST); still takes orders until midnight.
- *   STOPPED — below ten, and either never full or the grace day has passed.
+ * The team's working state, for the screens that show it.
+ *   WORKING — at least one approved member: the team takes orders.
+ *   STOPPED — no approved member yet, so there is nobody to route to.
+ *
+ * Routing does not read this: it routes to APPROVED members, which is the
+ * same rule asked of the member row (`routingCandidates`), so a team-level
+ * gate beside it would be a second answer to one question.
  */
-export const STRENGTH_SQL = `CASE
-    WHEN approved_count >= ${TEAM_SIZE} THEN 'WORKING'
-    WHEN t.short_since IS NOT NULL
-     AND (t.short_since AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date
-      THEN 'GRACE'
-    ELSE 'STOPPED' END`;
+const STRENGTH_SQL = `CASE WHEN approved_count >= 1 THEN 'WORKING' ELSE 'STOPPED' END`;
 
 const TEAM_SELECT = `
-  SELECT t.team_id, t.supervisor_id, t.name, t.short_since, t.was_full, t.created_at,
+  SELECT t.team_id, t.supervisor_id, t.name, t.created_at,
          s.name AS supervisor_name, s.public_ref AS supervisor_ref, s.supervisor_rail AS rail,
          c.approved_count, c.pending_count,
          COALESCE(p.available_paise, 0) AS pool_available_paise,
@@ -82,8 +79,6 @@ function toTeam(row) {
     // Step 2e: matched volume, the high-water mark, what has been paid, and
     // what is earned but waiting for the commission pool.
     commission: toSummary(row.team_id, row),
-    shortSince: row.short_since,
-    wasFull: row.was_full,
     createdAt: row.created_at,
   };
 }
@@ -96,6 +91,9 @@ function toMember(row) {
     publicRef: row.public_ref,
     status: row.status,
     isOnline: row.is_online,
+    // The admin's 1–5 routing priority (`setRoutingPriority`), shown and set
+    // on the admin's Teams screen.
+    routingPriority: Number(row.routing_priority),
     addedBy: row.added_by,
     addedAt: row.added_at,
     approvedBy: row.approved_by,
@@ -105,30 +103,8 @@ function toMember(row) {
 
 const MEMBER_SELECT = `
   SELECT tm.merchant_id, tm.team_id, tm.status, tm.added_by, tm.added_at,
-         tm.approved_by, tm.approved_at, m.name, m.public_ref, m.is_online
+         tm.approved_by, tm.approved_at, m.name, m.public_ref, m.is_online, m.routing_priority
     FROM team_members tm JOIN merchants m ON m.merchant_id = tm.merchant_id`;
-
-/**
- * Recompute a team's strength fields after a membership change, inside the
- * caller's transaction and under its lock on the team row.
- */
-async function settleStrength(client, teamId) {
-  await client.query(
-    `UPDATE teams t SET
-        was_full    = t.was_full OR c.n >= ${TEAM_SIZE},
-        short_since = CASE
-          WHEN c.n >= ${TEAM_SIZE} THEN NULL
-          -- Dropping from full starts the grace day; already short keeps the
-          -- day it started, so removing a second member cannot extend it.
-          WHEN t.was_full THEN COALESCE(t.short_since, now())
-          ELSE NULL END,
-        updated_at  = now()
-       FROM (SELECT count(*)::int AS n FROM team_members
-              WHERE team_id = $1 AND status = 'APPROVED') c
-      WHERE t.team_id = $1`,
-    [teamId],
-  );
-}
 
 // ── Supervisors ──────────────────────────────────────────────────────────────
 
@@ -321,7 +297,7 @@ export async function addMember({ teamId, supervisorId, merchantRef, actor }) {
   }
 }
 
-/** An admin approves a pending member. Refused if the team already has ten. */
+/** An admin approves a pending member. Refused if the team already has TEAM_SIZE approved. */
 export async function approveMember({ merchantId, actor }) {
   return withTransaction(async (client) => {
     const { rows } = await client.query(
@@ -336,7 +312,6 @@ export async function approveMember({ merchantId, actor }) {
     await client.query(
       `UPDATE team_members SET status = 'APPROVED', approved_by = $2, approved_at = now()
         WHERE merchant_id = $1`, [String(merchantId), String(actor)]);
-    await settleStrength(client, teamId);
     return { ok: true, teamId };
   });
 }
@@ -355,7 +330,6 @@ export async function removeMember({ merchantId, supervisorId = null, onlyPendin
     if (!rows[0]) return { ok: false, reason: 'not_found' };
     if (onlyPending && rows[0].status !== 'PENDING') return { ok: false, reason: 'not_pending' };
     await client.query('DELETE FROM team_members WHERE merchant_id = $1', [String(merchantId)]);
-    await settleStrength(client, rows[0].team_id);
     return { ok: true, teamId: rows[0].team_id, wasStatus: rows[0].status };
   });
 }

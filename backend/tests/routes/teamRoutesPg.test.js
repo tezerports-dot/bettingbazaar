@@ -3,7 +3,8 @@
  * Supervisors and teams over HTTP, through the real routers and a real
  * database (PROJECT_STATUS §3.10, Step 2a).
  *
- * The repository suite (teamsPg) proves the caps and the strength rule. This
+ * The repository suite (teamsPg) proves the caps and the strength rule, and
+ * teamRoutingPg the routing priority's effect on who is chosen. This
  * one proves the DOORS: who may call which route, that a supervisor can only
  * touch their own teams, that every refusal names what to do, and that the
  * merchant a supervisor proposes sees the result on their own screen.
@@ -63,6 +64,40 @@ describePg('team routes', () => {
     expect((await as(adminApp, analyst).post(`/team-members/${m.merchantId}/approve`)).status).toBe(403);
     const { rows } = await pgQuery('SELECT is_supervisor FROM merchants WHERE merchant_id = $1', [m.merchantId]);
     expect(rows[0].is_supervisor).toBe(false);
+  });
+
+  // ── A member's routing priority (owner, Phase A) ────────────────────────
+  it('an admin sets a member\'s routing priority 1–5, audited, and the Teams listing shows it', async () => {
+    const sup = await supervisor();
+    const teamId = (await as(merchantApp, sup).post('/supervisor/teams').send({ name: 'Prio' })).body.team.teamId;
+    const m = await merchant();
+    await as(merchantApp, sup).post(`/supervisor/teams/${teamId}/members`).send({ merchantRef: m.merchantId });
+    await as(adminApp, admin).post(`/team-members/${m.merchantId}/approve`);
+
+    const before = (await as(adminApp, admin).get('/teams')).body.members.find((x) => x.merchantId === m.merchantId);
+    expect(before.routingPriority).toBe(3); // schema default: 3
+
+    const set = await as(adminApp, admin).put(`/merchants/${m.merchantId}/priority`).send({ priority: 5 });
+    expect(set.status, JSON.stringify(set.body)).toBe(200);
+    expect(set.body).toMatchObject({ success: true, priority: 5 });
+    const after = (await as(adminApp, admin).get('/teams')).body.members.find((x) => x.merchantId === m.merchantId);
+    expect(after.routingPriority).toBe(5);
+    expect((await historyFor(m.merchantId)).map((a) => a.action)).toContain('ROUTING_PRIORITY_SET');
+
+    // Refusals name what to send, and change nothing.
+    for (const bad of [0, 6, 2.5, 'high']) {
+      const res = await as(adminApp, admin).put(`/merchants/${m.merchantId}/priority`).send({ priority: bad });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/whole number from 1 to 5/);
+    }
+    const sRes = await as(adminApp, admin).put(`/merchants/${sup.merchantId}/priority`).send({ priority: 4 });
+    expect(sRes.status).toBe(409);
+    expect(sRes.body.code).toBe('supervisor_no_priority');
+    expect((await as(adminApp, admin).put('/merchants/nobody-at-all/priority').send({ priority: 4 })).status).toBe(404);
+    // Staff without the Teams area cannot set it.
+    expect((await as(adminApp, analyst).put(`/merchants/${m.merchantId}/priority`).send({ priority: 1 })).status).toBe(403);
+    const { rows } = await pgQuery('SELECT routing_priority FROM merchants WHERE merchant_id = $1', [m.merchantId]);
+    expect(rows[0].routing_priority).toBe(5);
   });
 
   // ── The supervisor's half ────────────────────────────────────────────────

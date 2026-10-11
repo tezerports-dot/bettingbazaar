@@ -99,7 +99,7 @@ describePg('what a merchant is told about a player', () => {
     return who;
   };
 
-  // Members come in tens — a team works only at ten (2a) — and each test takes
+  // Members come in tens (a full team) and each test takes
   // ones nobody has used.
   const bench = { CASH: [], UPI_BANK: [] };
   const member = async (rail) => {

@@ -3,10 +3,16 @@
  * Which team member serves an order (redesign Step 2c, PROJECT_STATUS §3.10).
  *
  * ── The rule (owner, 2026-10-02) ─────────────────────────────────────────────
- * An order goes to a MEMBER of a TEAM whose supervisor is approved for the
- * order's rail, and only while that team is working (ten members, or short
- * since today in IST). Inside the eligible members, the one with the fewest
- * open orders; ties to whoever was assigned least recently.
+ * An order goes to an APPROVED MEMBER of a TEAM whose supervisor is approved
+ * for the order's rail. A team works with any number of approved members from
+ * one to ten (owner, Phase A): there is no team-level gate, because a team
+ * with no approved member has nobody this query can return.
+ *
+ * Inside the eligible members, best first (owner, Phase A):
+ *   1. the highest `routing_priority` (1–5, the admin's, default 3);
+ *   2. then the fastest average response (`avg_response_minutes`);
+ *   3. then the fewest open orders;
+ *   4. then whoever has waited longest since their last assignment.
  *
  *   CASH buy  — the member must have pressed Ready (they are at the machine);
  *               the assignment switches Ready off.
@@ -24,7 +30,6 @@
  * order moved. A refusal unwinds the move and the next candidate is tried.
  */
 import { pgQuery } from '../client.js';
-import { STRENGTH_SQL } from './teams.js';
 import { RAILS, railOf } from './orderRails.js';
 import { holdForBuyWithin, PoolRefused } from './teamPools.js';
 import { transitionOrder } from './orders.js';
@@ -101,12 +106,8 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
        JOIN merchants m ON m.merchant_id = tm.merchant_id
        LEFT JOIN team_pools p ON p.team_id = t.team_id
        LEFT JOIN open o ON o.merchant_id = m.merchant_id
-       CROSS JOIN LATERAL (
-         SELECT count(*) FILTER (WHERE status = 'APPROVED')::int AS approved_count
-           FROM team_members WHERE team_id = t.team_id) c
       WHERE tm.status = 'APPROVED'
         AND s.supervisor_rail = $1
-        AND (${STRENGTH_SQL}) IN ('WORKING', 'GRACE')
         AND m.status = 'ACTIVE'
         AND m.merchant_approval_status = 'APPROVED'
         AND m.is_online
@@ -124,7 +125,11 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
         AND (NOT ($3 AND $1 = 'UPI_BANK') OR (
               COALESCE(m.bank_account_no, '') <> '' AND COALESCE(m.bank_ifsc, '') <> ''
           AND COALESCE(m.bank_account_holder_name, '') <> ''))
-      ORDER BY COALESCE(o.total, 0) ASC, m.last_assigned_at ASC NULLS FIRST, m.merchant_id
+      ORDER BY m.routing_priority DESC,
+               m.avg_response_minutes ASC NULLS LAST,
+               COALESCE(o.total, 0) ASC,
+               m.last_assigned_at ASC NULLS FIRST,
+               m.merchant_id
       LIMIT $6`,
     [rail, cap, isBuy, amount, barred, limit, OPEN_STATES], 'team_routing_candidates');
   return rows.map((r) => ({ merchantId: r.merchant_id, teamId: r.team_id, openOrders: Number(r.open_total) }));

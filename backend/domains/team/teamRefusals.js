@@ -19,6 +19,7 @@ const REFUSALS = Object.freeze({
   has_teams:             [409, 'This supervisor still runs teams. Remove every team before changing their rail or role.'],
   is_member:             [409, 'That merchant is in a team. Remove them from it before making them a supervisor.'],
   is_supervisor:         [409, 'A supervisor cannot be a member of a team.'],
+  supervisor_no_priority: [409, 'A supervisor takes no orders, so has no routing priority. Set it on a member.'],
   not_supervisor:        [403, 'Only a supervisor can do that.'],
   team_limit:            [409, `A supervisor can run at most ${MAX_TEAMS} teams.`],
   team_full:             [409, `That team already has ${TEAM_SIZE} members.`],

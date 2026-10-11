@@ -2954,7 +2954,8 @@ ALTER TABLE merchants ADD COLUMN IF NOT EXISTS consecutive_rejections INTEGER NO
 -- Both questions they were reaching for have owners. The CEILING is the tokens
 -- the merchant holds, and the deposit escrow ENFORCES it by reserving them at
 -- assignment rather than checking a number (F-018). The SIZE is platform-wide:
--- one of the fixed order sizes on offer (SystemConfig.orderSizes, Step 2d).
+-- one of the fixed order sizes on offer for its direction
+-- (SystemConfig.buyOrderSizes / sellOrderSizes, Step 2d).
 --
 -- Dropped rather than left in place, per §3: an admin-editable field with no
 -- consumer is a violation, and a column nothing reads is the next reader's
@@ -3403,6 +3404,18 @@ ALTER TABLE users ADD CONSTRAINT users_status_check
 -- siblings — so they are asked inside the statement that writes, under a lock
 -- on the parent row (teams.js). A read in one statement acted on in another
 -- is a snapshot (§32 S6).
+-- 🎯 A member's routing priority (owner, Phase A of the merchants-and-agents
+-- plan): 1 to 5, default 3, set by an admin on the Teams screen and written
+-- only by `setRoutingPriority` (database/repositories/merchants.js). Routing
+-- offers an order to the highest priority first, then the fastest average
+-- response, then the fewest open orders, then whoever has waited longest
+-- (`routingCandidates`). The CHECK is dropped and re-added so a changed bound
+-- converges (S31).
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS routing_priority SMALLINT NOT NULL DEFAULT 3;
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_routing_priority_range;
+ALTER TABLE merchants ADD CONSTRAINT merchants_routing_priority_range
+  CHECK (routing_priority BETWEEN 1 AND 5);
+
 ALTER TABLE merchants ADD COLUMN IF NOT EXISTS is_supervisor BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE merchants ADD COLUMN IF NOT EXISTS supervisor_rail TEXT;
 ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_supervisor_rail;
@@ -3418,19 +3431,18 @@ CREATE TABLE IF NOT EXISTS teams (
   team_id       TEXT PRIMARY KEY,
   supervisor_id TEXT NOT NULL REFERENCES merchants (merchant_id),
   name          TEXT NOT NULL,
-  -- When the team dropped below ten APPROVED members, having been at ten. It
-  -- keeps taking orders until the end of that day (IST) and then stops until
-  -- it is back at ten (owner). NULL while full, and for a team that has never
-  -- been full — which has never worked, so it has no grace day to use.
-  short_since   TIMESTAMPTZ,
-  -- Whether it has EVER been at ten. Distinguishes "dropped to nine today"
-  -- from "never had ten", which the grace rule treats differently.
-  was_full      BOOLEAN NOT NULL DEFAULT FALSE,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT teams_name_present CHECK (length(btrim(name)) BETWEEN 1 AND 60)
 );
 CREATE INDEX IF NOT EXISTS teams_supervisor_idx ON teams (supervisor_id);
+-- A team works with any number of approved members from one to ten (owner,
+-- Phase A of the merchants-and-agents plan). The "works only at ten, stops at
+-- midnight IST once short" rule went, and with it the two columns that only it
+-- read: `short_since` (when it dropped below ten) and `was_full`. Dropped here
+-- so a database built before converges (S31).
+ALTER TABLE teams DROP COLUMN IF EXISTS short_since;
+ALTER TABLE teams DROP COLUMN IF EXISTS was_full;
 
 CREATE TABLE IF NOT EXISTS team_members (
   merchant_id TEXT PRIMARY KEY REFERENCES merchants (merchant_id),

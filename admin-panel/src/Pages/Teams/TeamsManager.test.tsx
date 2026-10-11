@@ -10,15 +10,16 @@ const listing = {
   success: true,
   supervisors: [{ merchantId: 's-1', name: 'Sup One', publicRef: 'MSUP1', rail: 'UPI_BANK', isOnline: true }],
   teams: [{ teamId: 't-1', supervisorId: 's-1', supervisorName: 'Sup One', supervisorRef: 'MSUP1', name: 'Alpha',
-    rail: 'UPI_BANK', approvedCount: 1, pendingCount: 2, size: 10, strength: 'STOPPED', shortSince: null, wasFull: false, createdAt: '',
+    rail: 'UPI_BANK', approvedCount: 1, pendingCount: 2, size: 10, strength: 'WORKING', createdAt: '',
     poolAvailablePaise: 0, poolHeldPaise: 0,
     commission: { teamId: 't-1', buysPaise: 0, sellsPaise: 0, matchedPaise: 0, highPaise: 0, paidPaise: 0, owedPaise: 0,
       commissionPercent: 10, supervisorSharePercent: 16 } }],
   members: [
-    { merchantId: 'm-1', teamId: 't-1', name: 'Asha', publicRef: 'MA', status: 'APPROVED', isOnline: false, addedBy: 's-1', addedAt: '', approvedBy: 'a', approvedAt: '' },
-    { merchantId: 'm-2', teamId: 't-1', name: 'Bhanu', publicRef: 'MB', status: 'PENDING', isOnline: false, addedBy: 's-1', addedAt: '', approvedBy: null, approvedAt: null },
-    { merchantId: 'm-3', teamId: 't-1', name: 'Chitra', publicRef: 'MC', status: 'PENDING', isOnline: false, addedBy: 's-1', addedAt: '', approvedBy: null, approvedAt: null },
+    { merchantId: 'm-1', teamId: 't-1', name: 'Asha', publicRef: 'MA', status: 'APPROVED', isOnline: false, routingPriority: 3, addedBy: 's-1', addedAt: '', approvedBy: 'a', approvedAt: '' },
+    { merchantId: 'm-2', teamId: 't-1', name: 'Bhanu', publicRef: 'MB', status: 'PENDING', isOnline: false, routingPriority: 3, addedBy: 's-1', addedAt: '', approvedBy: null, approvedAt: null },
+    { merchantId: 'm-3', teamId: 't-1', name: 'Chitra', publicRef: 'MC', status: 'PENDING', isOnline: false, routingPriority: 3, addedBy: 's-1', addedAt: '', approvedBy: null, approvedAt: null },
   ],
+  routingPriority: { MIN: 1, MAX: 5, DEFAULT: 3 },
 };
 
 const poolRequests = [
@@ -36,6 +37,7 @@ vi.mock('../../services/api', () => ({
       approveMember: vi.fn().mockResolvedValue({ success: true }),
       rejectMember: vi.fn().mockResolvedValue({ success: true }),
       removeMember: vi.fn().mockResolvedValue({ success: true }),
+      setPriority: vi.fn().mockResolvedValue({ success: true, priority: 5, message: 'Priority set to 5.' }),
       poolRequests: vi.fn(),
       fulfilPoolRequest: vi.fn().mockResolvedValue({ success: true, message: 'Sold' }),
       rejectPoolRequest: vi.fn().mockResolvedValue({ success: true }),
@@ -134,6 +136,32 @@ describe('admin Teams screen', () => {
     await waitFor(() => expect(api.teams.rejectMember).toHaveBeenCalledWith('m-2'));
     fireEvent.click(await screen.findByRole('button', { name: 'Remove Asha' }));
     await waitFor(() => expect(api.teams.removeMember).toHaveBeenCalledWith('m-1'));
+  });
+
+  // ── Routing priority (Phase A) ───────────────────────────────────────────
+  it('sets the routing priority of the member on the row, from the server\'s range', async () => {
+    render(<TeamsManager />);
+    const picker = await screen.findByLabelText('Priority for Asha') as HTMLSelectElement;
+    expect(picker.value).toBe('3');
+    expect([...picker.options].map((o) => o.value)).toEqual(['1', '2', '3', '4', '5']);
+    fireEvent.change(picker, { target: { value: '5' } });
+    await waitFor(() => expect(api.teams.setPriority).toHaveBeenCalledWith('m-1', 5));
+    expect(api.teams.setPriority).toHaveBeenCalledTimes(1);
+    // The screen reloads what the server now says.
+    await waitFor(() => expect(api.teams.list).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows the priority refusal verbatim', async () => {
+    (api.teams.setPriority as any).mockRejectedValueOnce({ response: { data: { message: 'Priority is a whole number from 1 to 5.' } } });
+    render(<TeamsManager />);
+    fireEvent.change(await screen.findByLabelText('Priority for Asha'), { target: { value: '1' } });
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Priority is a whole number from 1 to 5.'));
+  });
+
+  it('a team with one approved member is shown as working', async () => {
+    render(<TeamsManager />);
+    expect(await screen.findByText('Working')).toBeInTheDocument();
+    expect(screen.queryByText(/needs 10/)).toBeNull();
   });
 
   it('makes a supervisor with the rail chosen', async () => {

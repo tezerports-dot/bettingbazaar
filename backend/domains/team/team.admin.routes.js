@@ -29,7 +29,9 @@ router.get('/teams', authenticate, hasPermission(AREA), async (req, res) => {
     const [supervisors, teams, members] = await Promise.all([
       db.teams.listSupervisors(), db.teams.listTeams(), db.teams.listMembers(),
     ]);
-    res.json({ success: true, supervisors, teams, members });
+    // The priority range is the repository's (`ROUTING_PRIORITY`), sent so the
+    // screen's 1–5 picker keeps no copy of it (§5).
+    res.json({ success: true, supervisors, teams, members, routingPriority: db.merchants.ROUTING_PRIORITY });
   } catch (err) { respondError(res, err, 'GET /admin/teams'); }
 });
 
@@ -54,6 +56,26 @@ router.put('/merchants/:merchantId/supervisor', authenticate, hasPermission(AREA
     });
     res.json({ success: true, message: rail ? `Now a supervisor on ${rail}.` : 'Supervisor role removed.' });
   } catch (err) { respondError(res, err, 'PUT /admin/merchants/:id/supervisor'); }
+});
+
+// PUT /api/admin/merchants/:merchantId/priority  { priority: 1..5 }
+// A member's routing priority (owner, Phase A): routing offers an order to the
+// highest first, then the fastest responder, then the fewest open orders
+// (`routingCandidates`). The Teams area, like every other member decision here.
+router.put('/merchants/:merchantId/priority', authenticate, hasPermission(AREA), async (req, res) => {
+  try {
+    const out = await db.merchants.setRoutingPriority(req.params.merchantId, req.body?.priority);
+    if (!out.ok) return refuse(res, out.reason);
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, category: 'TEAMS', targetType: 'MERCHANT', action: 'ROUTING_PRIORITY_SET',
+      details: { priority: out.merchant.routingPriority }, targetId: req.params.merchantId, ip: req.ip,
+    });
+    res.json({
+      success: true,
+      priority: out.merchant.routingPriority,
+      message: `Priority set to ${out.merchant.routingPriority}.`,
+    });
+  } catch (err) { respondError(res, err, 'PUT /admin/merchants/:id/priority'); }
 });
 
 // POST /api/admin/team-members/:merchantId/approve
