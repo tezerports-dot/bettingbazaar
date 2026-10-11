@@ -24,7 +24,10 @@
 # you have saved the backup.
 set -euo pipefail
 
-REPO="${REPO:-tezerports-dot/bettingbazaar}"
+# REPO is the repository this checkout came from (its origin remote), so the
+# script keeps working after the repository moves to another GitHub account.
+# Override with REPO=owner/name if you run it outside a clone.
+REPO="${REPO:-}"
 DIR="${SIGNING_DIR:-$HOME/bettingbazaar-signing}"
 ALIAS="bettingbazaar-upload"
 KEYSTORE="$DIR/upload-keystore.jks"
@@ -49,6 +52,11 @@ if ! GH auth status >/dev/null 2>&1; then
   bold "Sign in to GitHub (a browser code is shown; this is your own account, not the Codespace's token):"
   GH auth login --hostname github.com --git-protocol https --web --scopes repo
 fi
+if [ -z "$REPO" ]; then
+  REPO="$(GH repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
+  [ -n "$REPO" ] || die "Could not tell which GitHub repository this is. Run the script from inside your clone, or set it: REPO=your-account/bettingbazaar bash scripts/android/create-signing-key.sh"
+fi
+bold "Repository: $REPO  (if this is not the one you mean, press Ctrl+C and run with REPO=owner/name)"
 GH secret list -R "$REPO" >/dev/null 2>&1 || die "Your GitHub login cannot manage secrets on $REPO. You need admin access to the repository."
 ok "GitHub access to $REPO"
 

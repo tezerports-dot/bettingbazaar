@@ -115,6 +115,14 @@ jobs:
         run: npm run build:native
         env:
           VITE_MERCHANT_PANEL_URL: ${{ vars.ANDROID_MERCHANT_PANEL_URL }}
+          # Same optional inputs as android-release.yml, so a tester's debug
+          # APK signs in against a captcha-protected server like a release does.
+          VITE_TURNSTILE_SITE_KEY: ${{ vars.ANDROID_TURNSTILE_SITE_KEY }}
+          VITE_API_BACKUP_URL: ${{ vars.ANDROID_API_BACKUP_URL }}
+          VITE_API_DISCOVERY_URL: ${{ vars.ANDROID_API_DISCOVERY_URL }}
+          VITE_API_ALLOWED_HOSTS: ${{ vars.ANDROID_API_ALLOWED_HOSTS }}
+          VITE_GATEWAY_CONFIG_PUBLIC_KEY: ${{ vars.ANDROID_GATEWAY_CONFIG_PUBLIC_KEY }}
+          VITE_GATEWAY_CONFIG_URLS: ${{ vars.ANDROID_GATEWAY_CONFIG_URLS }}
 
       - name: Sync web assets into the Android project
         run: npx cap sync android
