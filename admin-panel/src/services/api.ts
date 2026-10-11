@@ -10,12 +10,12 @@ import type {
   SupervisorRail, TeamSupervisor, TeamView, TeamMemberView, TeamPoolRequest, TeamRedFlag,
 } from '../types';
 
-const _adminViteUrl = import.meta.env.VITE_API_URL as string | undefined;
+const _adminViteUrl = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '');
 const _adminIsLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-if (!_adminViteUrl && !_adminIsLocal) {
-  throw new Error('[FATAL] VITE_API_URL is not set for the admin panel. Set it (at build time) to the backend URL, e.g. https://your-domain.example — see docs/GO_LIVE_RUNBOOK.md.');
-}
-const API_URL = _adminViteUrl?.replace(/\/$/, '') || 'http://localhost:8080';
+// Same origin unless VITE_API_URL names another, as sse.ts and the merchant
+// panel do: the server serves this panel at /admin/ beside the API, and the
+// Docker image sets no VITE_API_URL. (A throw here blanked the whole panel.)
+const API_URL = _adminViteUrl || (_adminIsLocal ? 'http://localhost:8080' : window.location.origin);
 
 const api: AxiosInstance = axios.create({
   baseURL: API_URL,
