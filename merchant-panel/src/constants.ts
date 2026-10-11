@@ -83,6 +83,27 @@ export const ENDPOINTS = {
     DISPUTE_CHAT:  (orderId: string) => `/api/merchant/supervisor/disputes/${orderId}/chat`,
     POOL_CANCEL:   (requestId: string) => `/api/merchant/supervisor/pool-requests/${requestId}`,
   },
+  // A merchant account's own screens (owner, 2026-10-11). Backend:
+  // backend/domains/merchant/merchantAccount.routes.js. Each entry carries its
+  // verb beside its path, so the call (`accountRequest` in services/api.ts)
+  // and the route it reaches are read in one place: two of these paths are
+  // served under two verbs.
+  ACCOUNT: {
+    OVERVIEW:          { method: 'GET',    path: () => '/api/merchant/account' },
+    ADD_ACCOUNT:       { method: 'POST',   path: () => '/api/merchant/account/payment-accounts' },
+    UPDATE_ACCOUNT:    { method: 'PUT',    path: (accountId: string) => `/api/merchant/account/payment-accounts/${accountId}` },
+    REMOVE_ACCOUNT:    { method: 'DELETE', path: (accountId: string) => `/api/merchant/account/payment-accounts/${accountId}` },
+    ADD_STAFF:         { method: 'POST',   path: () => '/api/merchant/account/staff' },
+    SET_STAFF_ROLES:   { method: 'PUT',    path: (staffId: string) => `/api/merchant/account/staff/${staffId}/roles` },
+    REMOVE_STAFF:      { method: 'DELETE', path: (staffId: string) => `/api/merchant/account/staff/${staffId}` },
+    ASSIGN_ACCOUNT:    { method: 'POST',   path: (staffId: string) => `/api/merchant/account/staff/${staffId}/accounts` },
+    UNASSIGN_ACCOUNT:  { method: 'DELETE', path: (staffId: string, accountId: string, duty: string) =>
+      `/api/merchant/account/staff/${staffId}/accounts/${accountId}/${duty}` },
+    REQUEST_POOL:      { method: 'POST',   path: () => '/api/merchant/account/pool-requests' },
+    CANCEL_POOL:       { method: 'DELETE', path: (requestId: string) => `/api/merchant/account/pool-requests/${requestId}` },
+    REPORTS:           { method: 'GET',    path: () => '/api/merchant/account/reports' },
+    REPORTS_CSV:       { method: 'GET',    path: () => '/api/merchant/account/reports/orders.csv' },
+  },
 };
 
 export const APP_CONFIG = {
@@ -151,6 +172,14 @@ export const ROUTES = {
   // Every merchant: a supervisor manages teams here, a member sees theirs.
   TEAM: '/team',
   PROFILE: '/profile',
+  // A merchant account's screens (owner, 2026-10-11), one nav entry (ACCOUNT)
+  // with a tab per screen. Shown only to a merchant account's sessions, by role.
+  ACCOUNT: '/account',
+  ACCOUNT_PAYMENT_ACCOUNTS: '/account/payment-accounts',
+  ACCOUNT_SUB_MEMBERS: '/account/sub-members',
+  ACCOUNT_POOL: '/account/pool',
+  ACCOUNT_REPORTS: '/account/reports',
+  ACCOUNT_FLAGS: '/account/flags',
 };
 
 

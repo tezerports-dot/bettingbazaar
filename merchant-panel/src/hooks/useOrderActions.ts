@@ -42,7 +42,7 @@ import type { ConfirmRequest } from '../components/ui';
 import type { OrderActions } from '../components/OrderCard';
 
 /** The shortest string the backend will accept as a bank UTR. */
-const MIN_UTR_LENGTH = 12;
+export const MIN_UTR_LENGTH = 12;
 
 const orderRef = (order: PaymentOrder): string => String(order._id || order.id || order.orderId);
 
@@ -56,6 +56,9 @@ export function useOrderActions(
   const [rejectBusy, setRejectBusy] = useState(false);
   const [scanTarget, setScanTarget] = useState<PaymentOrder | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
+  // A sell a merchant account serves: paid FROM one of its accounts, chosen
+  // with the UTR in its own dialog (owner, 2026-10-11).
+  const [payoutTarget, setPayoutTarget] = useState<PaymentOrder | null>(null);
   const copy = railCopy(rail);
 
   /**
@@ -129,7 +132,7 @@ export function useOrderActions(
       });
     },
 
-    onPayout: (order) => setConfirmRequest({
+    onPayout: (order) => (order.inrRouting === 'MERCHANTS' ? setPayoutTarget(order) : setConfirmRequest({
       title: 'Mark payout as sent?',
       body: 'Confirm you have sent the amount by bank transfer to the player\u2019s account, and enter the reference your bank gave the transfer.',
       confirmLabel: "I've sent the money",
@@ -150,7 +153,7 @@ export function useOrderActions(
         () => api.confirmPayment(orderRef(order), utr),
         'Payout confirmed'
       ),
-    }),
+    })),
 
     // A merchant reports that an order is wrong; they do not DISPUTE it. The
     // dispute is the instrument of the party who is owed, which on this
@@ -212,9 +215,27 @@ export function useOrderActions(
     }
   }, [onChanged]);
 
+  /**
+   * Mark a merchant account's sell paid, from the account chosen. Throws the
+   * server's refusal (PAID_FROM_ACCOUNT_REQUIRED, a claimed UTR, a role) so
+   * the dialog stays open and says it; resolves once it went through.
+   */
+  const submitPayoutFrom = useCallback(async (utr: string, paidFromAccountId: string) => {
+    if (!payoutTarget) return;
+    await api.confirmPayment(orderRef(payoutTarget), utr, paidFromAccountId);
+    toast.success('Payout confirmed');
+    setPayoutTarget(null);
+    setCloseDetail(true);
+    await onChanged();
+  }, [onChanged, payoutTarget]);
+
   return {
     actions,
     confirmRequest,
+    /** A merchant account's sell being marked paid, with its paid-from account. */
+    payoutTarget,
+    dismissPayout: () => setPayoutTarget(null),
+    submitPayoutFrom,
     /** The cash buy whose machine QR is being scanned, if any. */
     scanTarget,
     scanBusy,

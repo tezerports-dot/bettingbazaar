@@ -68,7 +68,7 @@ describe('merchant Team screen', () => {
       teams: [team('t-1', 'Alpha')], members: [],
     });
     render(<TeamPage />);
-    expect(await screen.findByText(/once an admin has approved at least one member/)).toBeInTheDocument();
+    expect(await screen.findByText(/once an admin has approved at least one agent/)).toBeInTheDocument();
   });
 
   it('a supervisor adds a member to the team whose form they typed into — the second team, not the first', async () => {
@@ -77,7 +77,7 @@ describe('merchant Team screen', () => {
       teams: [team('t-1', 'Alpha'), team('t-2', 'Bravo')], members: [],
     });
     render(<TeamPage />);
-    const box = await screen.findByLabelText(/Add a member to Bravo/);
+    const box = await screen.findByLabelText(/Add an agent to Bravo/);
     fireEvent.change(box, { target: { value: ' MXYZ ' } });
     fireEvent.submit(box.closest('form')!);
     await waitFor(() => expect(api.addTeamMember).toHaveBeenCalledWith('t-2', 'MXYZ'));
@@ -290,7 +290,7 @@ describe('merchant Team screen', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open the thread for Asha' }));
     await waitFor(() => expect(api.getDisputeThread).toHaveBeenCalledWith('o-9'));
     expect(await screen.findByText('Please send the bank statement.')).toBeInTheDocument();
-    const box = screen.getByLabelText('Message the dispute manager for your member');
+    const box = screen.getByLabelText('Message the dispute manager for your agent');
     fireEvent.change(box, { target: { value: ' Paid at 14:02; UTR on the order. ' } });
     fireEvent.submit(box.closest('form')!);
     await waitFor(() => expect(api.postDisputeMessage).toHaveBeenCalledWith('o-9', 'Paid at 14:02; UTR on the order.'));
@@ -311,7 +311,7 @@ describe('merchant Team screen', () => {
     render(<TeamPage />);
     fireEvent.click(await screen.findByRole('button', { name: 'Open the thread for Asha' }));
     expect(await screen.findByText('Decided: RELEASE_TO_USER. The thread is closed.')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Message the dispute manager for your member')).toBeNull();
+    expect(screen.queryByLabelText('Message the dispute manager for your agent')).toBeNull();
   });
 
   it('a member sees the team\'s totals and their own figures', async () => {
@@ -323,7 +323,7 @@ describe('merchant Team screen', () => {
     render(<TeamPage />);
     expect(await screen.findByText('Team performance, last 7 days')).toBeInTheDocument();
     expect(screen.getByText('The team completed 40 orders (2,00,000 tokens).')).toBeInTheDocument();
-    expect(screen.getByText('An average member: 4 orders, online 1h 30m.')).toBeInTheDocument();
+    expect(screen.getByText('An average agent: 4 orders, online 1h 30m.')).toBeInTheDocument();
     expect(screen.getByText('You: 6 orders, online 2h 01m.')).toBeInTheDocument();
   });
 
@@ -333,7 +333,7 @@ describe('merchant Team screen', () => {
       performance: { days: 7, from: '', members: 2, team: null, me: { completedOrders: 1, completedTokens: 500, onlineSeconds: 60 } },
     });
     render(<TeamPage />);
-    expect(await screen.findByText('The team\'s figures show once it has three approved members.')).toBeInTheDocument();
+    expect(await screen.findByText('The team\'s figures show once it has three approved agents.')).toBeInTheDocument();
     expect(screen.getByText('You: 1 orders, online 1m.')).toBeInTheDocument();
     expect(screen.queryByText(/The team completed/)).toBeNull();
   });

@@ -35,8 +35,8 @@ import type {
 import { Banner, Button, Card, CardTitle, CopyRow, ErrorState, Skeleton, inputStyle } from '../components/ui';
 
 const STRENGTH: Record<Team['strength'], { label: string; tone: 'ok' | 'warn' | 'danger'; body: string }> = {
-  WORKING: { label: 'Working', tone: 'ok', body: 'The team takes orders. It can have up to 10 members.' },
-  STOPPED: { label: 'Not working', tone: 'danger', body: 'A team takes orders once an admin has approved at least one member.' },
+  WORKING: { label: 'Working', tone: 'ok', body: 'The team takes orders. It can have up to 10 agents.' },
+  STOPPED: { label: 'Not working', tone: 'danger', body: 'A team takes orders once an admin has approved at least one agent.' },
 };
 
 const errorText = (err: unknown, fallback: string) => (err as Error)?.message || fallback;
@@ -84,7 +84,7 @@ const CommissionSection: React.FC<{ team: Team; commissions: TeamCommission[] }>
       <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '0 0 8px' }}>
         Matched volume {tokens(c.matchedPaise)} (completed buys {tokens(c.buysPaise)}, sells {tokens(c.sellsPaise)}).
         Each time it passes its highest so far, {c.commissionPercent}% of the rise is paid into the pool:
-        {' '}{c.supervisorSharePercent}% is the supervisor&apos;s, {100 - c.supervisorSharePercent}% is shared equally by the members.
+        {' '}{c.supervisorSharePercent}% is the supervisor&apos;s, {100 - c.supervisorSharePercent}% is shared equally by the agents.
       </p>
       {c.owedPaise > 0 && (
         <Banner tone="warn" style={{ marginBottom: 8 }}>
@@ -126,10 +126,10 @@ const PerformanceSection: React.FC<{ performance: TeamPerformance }> = ({ perfor
       {p.team ? (
         <>
           <li style={{ padding: '3px 0' }}>The team completed {p.team.completedOrders} orders ({tokens(p.team.completedTokens * 100)} tokens).</li>
-          <li style={{ padding: '3px 0' }}>An average member: {p.team.averageOrders} orders, online {duration(p.team.averageOnlineSeconds)}.</li>
+          <li style={{ padding: '3px 0' }}>An average agent: {p.team.averageOrders} orders, online {duration(p.team.averageOnlineSeconds)}.</li>
         </>
       ) : (
-        <li style={{ padding: '3px 0', color: 'var(--muted)' }}>The team&apos;s figures show once it has three approved members.</li>
+        <li style={{ padding: '3px 0', color: 'var(--muted)' }}>The team&apos;s figures show once it has three approved agents.</li>
       )}
       {p.me && <li style={{ padding: '3px 0', fontWeight: 700 }}>You: {p.me.completedOrders} orders, online {duration(p.me.onlineSeconds)}.</li>}
     </ul>
@@ -184,11 +184,11 @@ const TeamActivitySection: React.FC<{ team: Team; today: MemberActivity[]; week:
   const flagsOf = (id: string) => flags.filter((f) => f.merchantId === id && f.teamId === team.teamId);
   return (
     <div style={sectionStyle}>
-      <span style={{ fontSize: 13, fontWeight: 800 }}>Member activity</span>
+      <span style={{ fontSize: 13, fontWeight: 800 }}>Agent activity</span>
       <p style={{ fontSize: 12, color: 'var(--text-2)', margin: '4px 0 8px' }}>
-        Completed orders and time online. A red flag means a member was well below the team&apos;s average in both on that day. It is for you to judge; nothing happens to them automatically.
+        Completed orders and time online. A red flag means an agent was well below the team&apos;s average in both on that day. It is for you to judge; nothing happens to them automatically.
       </p>
-      {mine.length === 0 && <p style={{ fontSize: 12.5, color: 'var(--muted)' }}>No approved members yet.</p>}
+      {mine.length === 0 && <p style={{ fontSize: 12.5, color: 'var(--muted)' }}>No approved agents yet.</p>}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {mine.map((r) => {
           const t = todayOf(r.merchantId);
@@ -261,7 +261,7 @@ const DisputeThread: React.FC<{ order: SupervisorOrder }> = ({ order }) => {
               .finally(() => setSending(false));
           }}
         >
-          <label htmlFor={boxId} style={labelStyle}>Message the dispute manager for your member</label>
+          <label htmlFor={boxId} style={labelStyle}>Message the dispute manager for your agent</label>
           <textarea id={boxId} value={text} onChange={(e) => setText(e.target.value)} maxLength={2000} rows={3}
             style={{ ...inputStyle, width: '100%', resize: 'vertical' }} />
           <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '4px 0' }}>Do not include anyone&apos;s mobile number.</p>
@@ -280,10 +280,10 @@ const TeamDisputesCard: React.FC<{ members: TeamMember[] }> = ({ members }) => {
   useEffect(() => {
     getTeamDisputes().then(setDisputes).catch((err) => setError(errorText(err, 'Could not load the disputes.')));
   }, []);
-  const nameOf = (id: string) => members.find((m) => m.merchantId === id)?.name ?? 'A former member';
+  const nameOf = (id: string) => members.find((m) => m.merchantId === id)?.name ?? 'A former agent';
   return (
     <Card style={{ marginBottom: 14 }}>
-      <CardTitle title="Disputes on your teams" sub="Speak for your member to the dispute manager while a dispute is open." />
+      <CardTitle title="Disputes on your teams" sub="Speak for your agent to the dispute manager while a dispute is open." />
       {error && <p role="alert" style={{ fontSize: 12.5, color: 'var(--danger)' }}>{error}</p>}
       {disputes === null && !error && <Skeleton height={60} />}
       {disputes?.length === 0 && <p style={{ fontSize: 12.5, color: 'var(--muted)' }}>No disputes in the last 30 days.</p>}
@@ -436,7 +436,7 @@ const SupervisorTeamCard: React.FC<{
       <TeamActivitySection team={team} today={today} week={week} flags={flags} />
 
       <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 12px' }}>
-        {members.length === 0 && <li style={{ fontSize: 12.5, color: 'var(--muted)' }}>No members yet.</li>}
+        {members.length === 0 && <li style={{ fontSize: 12.5, color: 'var(--muted)' }}>No agents yet.</li>}
         {members.map((m) => (
           <li key={m.merchantId} style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
             <span style={{ fontSize: 13, fontWeight: 700 }}>
@@ -477,7 +477,7 @@ const SupervisorTeamCard: React.FC<{
       >
         <div style={{ flex: 1 }}>
           <label htmlFor={inputId} style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>
-            Add a member to {team.name} — their merchant ID
+            Add an agent to {team.name} — their agent ID
           </label>
           <input id={inputId} value={ref} onChange={(e) => setRef(e.target.value)} style={inputStyle} placeholder="M…" />
         </div>
@@ -555,11 +555,11 @@ const TeamPage: React.FC = () => {
       <div>
         {header}
         <Card>
-          <CardTitle title="You are not in a team" sub="Orders reach merchants through teams." />
+          <CardTitle title="You are not in a team" sub="Orders reach agents through teams." />
           <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 12 }}>
             Give this ID to a supervisor. They add you to their team, and an admin approves it.
           </p>
-          <CopyRow label="Your merchant ID" value={data.publicRef} />
+          <CopyRow label="Your agent ID" value={data.publicRef} />
         </Card>
       </div>
     );

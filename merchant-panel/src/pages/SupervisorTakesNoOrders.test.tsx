@@ -66,7 +66,7 @@ describe('a supervisor is offered no online switch and no order directions', () 
 
   it('the Dashboard says what they are and links to their teams, with no "Go online"', async () => {
     show(SUPERVISOR, <Dashboard />);
-    expect(await screen.findByText(/Supervisor · your members take the orders/)).toBeInTheDocument();
+    expect(await screen.findByText(/Supervisor · your agents take the orders/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Go online|Go offline/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Open your teams/ })).toBeInTheDocument();
   });
@@ -77,7 +77,7 @@ describe('a supervisor is offered no online switch and no order directions', () 
     expect(screen.queryAllByTitle(/Go online|Go offline/)).toEqual([]);
     // What is shown instead: what they are, not a control.
     expect(screen.getByText('Supervisor · takes no orders')).toBeInTheDocument();
-    expect(screen.getByText(/Your members go online from their own accounts/)).toBeInTheDocument();
+    expect(screen.getByText(/Your agents go online from their own accounts/)).toBeInTheDocument();
   });
 
   it('Profile explains there are no order directions to choose, and offers none', () => {

@@ -6,11 +6,12 @@
 // footer so they stay reachable while reading.
 import React from 'react';
 import { ArrowDownLeft, ArrowUpRight, Check, ShieldCheck } from 'lucide-react';
-import { OrderStatus, type MerchantProfile, type PaymentOrder } from '../types';
+import { OrderStatus, type MerchantProfile, type PaymentAccount, type PaymentOrder } from '../types';
+import { mayWorkOrder } from '../utils/actor';
 import { counterpartyOf, formatMoney, railCopy, railOf, receivingAddressFor, tokenColumn } from '../utils/rail';
 import { formatCountdown, secondsLeft, URGENT_SECONDS } from '../hooks/useCountdown';
 import { Banner, Button, CopyInline, Panel, StatusPill } from './ui';
-import type { OrderActions } from './OrderCard';
+import { accountNamed, viewOnlyReason, type OrderActions } from './OrderCard';
 
 const sectionLabel: React.CSSProperties = {
   fontSize: 11, fontWeight: 800, color: 'var(--muted)',
@@ -24,7 +25,9 @@ export const OrderDetail: React.FC<{
   isMobile: boolean;
   onClose: () => void;
   actions: OrderActions;
-}> = ({ order, merchant, now, isMobile, onClose, actions }) => {
+  /** A merchant account's payment accounts, to name the one an order is paid into or from. */
+  paymentAccounts?: PaymentAccount[];
+}> = ({ order, merchant, now, isMobile, onClose, actions, paymentAccounts }) => {
   if (!order) return null;
 
   const rail = railOf(merchant);
@@ -42,7 +45,10 @@ export const OrderDetail: React.FC<{
   const showTimer = remaining !== null && openStatus;
   const urgent = remaining !== null && remaining < URGENT_SECONDS;
 
-  const canAccept = order.status === OrderStatus.ASSIGNED || order.status === OrderStatus.PENDING_QUEUE;
+  // What this person may do to it (a merchant account's sub-member by role and
+  // assigned accounts; owner, 2026-10-11). Controls they cannot use are not offered.
+  const workable = mayWorkOrder(merchant, order);
+  const canAccept = workable && (order.status === OrderStatus.ASSIGNED || order.status === OrderStatus.PENDING_QUEUE);
   /**
    * PAID, but not yet evidenced.
    *
@@ -57,13 +63,23 @@ export const OrderDetail: React.FC<{
    * move is to call support about a working guard.
    */
   const awaitingReference = order.status === OrderStatus.PAID && isDeposit && !order.utrNumber;
-  const canRelease = order.status === OrderStatus.PAID && isDeposit && !awaitingReference;
-  const canPayout = order.status === OrderStatus.PROCESSING && !isDeposit;
+  const canRelease = workable && order.status === OrderStatus.PAID && isDeposit && !awaitingReference;
+  const canPayout = workable && order.status === OrderStatus.PROCESSING && !isDeposit;
+  const payAccount = accountNamed(paymentAccounts, order.payAccountId);
+  const paidFrom = accountNamed(paymentAccounts, order.paidFromAccountId);
 
   // Payment rows: the merchant's own receiving credentials on a deposit, the
   // user's payout destination on a withdrawal.
   const paymentRows: Array<{ label: string; value: string }> = [];
-  if (isDeposit) {
+  if (isDeposit && order.payAccountId) {
+    // A merchant account's buy: paid into the account routing chose (owner, 2026-10-11).
+    paymentRows.push({ label: 'Your account', value: payAccount?.label ?? String(order.payAccountId) });
+    if (payAccount?.kind === 'UPI_QR' && payAccount.upiId) paymentRows.push({ label: 'UPI ID', value: payAccount.upiId });
+    if (payAccount) {
+      paymentRows.push({ label: 'Account no.', value: payAccount.accountNo });
+      paymentRows.push({ label: 'IFSC', value: payAccount.ifsc });
+    }
+  } else if (isDeposit) {
     if (rail === 'USDT') {
       // The network comes from the ORDER, not from a constant. The player chose
       // it, and a merchant watching the wrong explorer sees no payment and
@@ -124,7 +140,12 @@ export const OrderDetail: React.FC<{
     </>
   );
 
-  const footer = awaitingReference ? (
+  const viewOnly = !workable && openStatus ? viewOnlyReason(merchant, order) : '';
+  const footer = viewOnly ? (
+    <div role="status" style={{ flex: 1, fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)', textAlign: 'center', padding: 8 }}>
+      {viewOnly}
+    </div>
+  ) : awaitingReference ? (
     <div style={{
       flex: 1, padding: 13, borderRadius: 12, textAlign: 'center',
       background: 'var(--warn-bg)', border: '1px solid var(--warn)',
@@ -230,6 +251,15 @@ export const OrderDetail: React.FC<{
         </div>
       )}
 
+      {!isDeposit && order.paidFromAccountId && (
+        <div>
+          <div style={sectionLabel}>Paid from</div>
+          <div style={{ background: 'var(--surface-2)', borderRadius: 12, padding: '0 14px' }}>
+            <CopyInline label="Your account" value={paidFrom?.label ?? String(order.paidFromAccountId)} />
+          </div>
+        </div>
+      )}
+
       {(order.utrNumber || order.proofScreenshot) && (
         <div>
           <div style={sectionLabel}>{copy.proofSectionLabel}</div>
@@ -264,7 +294,7 @@ export const OrderDetail: React.FC<{
         <Banner tone="danger" title="Rejected">
           {order.rejectedReason || 'This order was rejected.'}
           {order.disputeWindowUntil && new Date(order.disputeWindowUntil).getTime() > Date.now() && (
-              <> The team's tokens stay held until {new Date(order.disputeWindowUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} in case the player disputes. If they do not, the tokens return to the team pool.</>
+              <> The pool's tokens stay held until {new Date(order.disputeWindowUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} in case the player disputes. If they do not, the tokens return to the pool.</>
             )}
         </Banner>
       )}

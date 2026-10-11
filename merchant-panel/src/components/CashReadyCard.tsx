@@ -139,7 +139,7 @@ export const CashReadyCard: React.FC = () => {
             ? 'You are Ready: the next cash buy can be given to you. Being given one switches Ready off, '
               + 'because you are busy at the machine with it. Press Ready again when you are free.'
             : 'Press Ready when you are at the ATM and free to take a cash buy. Cash buys go only to '
-              + 'members who are Ready. Being given one switches Ready off; press it again when you are free.'}
+              + 'agents who are Ready. Being given one switches Ready off; press it again when you are free.'}
         </p>
       </div>
       {ready && !online && (

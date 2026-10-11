@@ -9,7 +9,8 @@
 // component — the merchant's rail is fixed by the backend, never chosen here.
 import React from 'react';
 import { ArrowDownLeft, ArrowUpRight, Check, Clock, Copy, ChevronRight, QrCode, ShieldCheck } from 'lucide-react';
-import { OrderStatus, type MerchantProfile, type PaymentOrder } from '../types';
+import { OrderStatus, type MerchantProfile, type PaymentAccount, type PaymentOrder } from '../types';
+import { actorOf, mayWorkOrder } from '../utils/actor';
 import { counterpartyOf, formatMoney, railCopy, railOf, receivingAddressFor, tokenColumn, truncateMiddle, type MerchantRail } from '../utils/rail';
 import { formatCountdown, secondsLeft, URGENT_SECONDS } from '../hooks/useCountdown';
 import { Banner, Button, CopyRow, StatusPill, cardStyle, copyText } from './ui';
@@ -29,14 +30,50 @@ export interface OrderActions {
   onOpen: (order: PaymentOrder) => void;
 }
 
+/** The merchant account's own payment account an order names, if the list has it. */
+export function accountNamed(accounts: PaymentAccount[] | undefined, accountId: string | null | undefined): PaymentAccount | null {
+  if (!accountId) return null;
+  return accounts?.find((a) => a.accountId === String(accountId)) ?? null;
+}
+
+/**
+ * Why a sub-member is shown an order without its controls (owner,
+ * 2026-10-11): the server would refuse them (merchantActor.js `workRefusal`).
+ */
+export function viewOnlyReason(merchant: MerchantProfile | null, order: PaymentOrder): string {
+  const actor = actorOf(merchant);
+  if (actor.isOwner) return '';
+  const isDeposit = order.type === 'DEPOSIT';
+  const role = isDeposit ? 'DEPOSITS' : 'WITHDRAWALS';
+  if (!actor.roles.includes(role)) {
+    return actor.roles.includes('AUDIT') && actor.roles.length === 1
+      ? 'View only: auditors read orders and change nothing.'
+      : `View only: your role does not include ${isDeposit ? 'deposits' : 'withdrawals'}.`;
+  }
+  return isDeposit
+    ? 'View only: this deposit is paid into an account not assigned to you.'
+    : 'View only: no account assigned to you can pay this withdrawal.';
+}
+
 /** Where this order's money is going, in the merchant's own terms. */
 export function paymentDestination(
   order: PaymentOrder,
   merchant: MerchantProfile | null,
-  rail: MerchantRail
+  rail: MerchantRail,
+  paymentAccounts?: PaymentAccount[],
 ): { label: string; value: string; sub?: string } | null {
   const copy = railCopy(rail);
   const isDeposit = order.type === 'DEPOSIT';
+
+  // A merchant account's buy is paid into the payment account routing chose
+  // for it (owner, 2026-10-11), never into the profile's bank details.
+  if (isDeposit && order.payAccountId) {
+    const account = accountNamed(paymentAccounts, order.payAccountId);
+    if (!account) return { label: 'Your payment account — user pays here', value: String(order.payAccountId) };
+    return account.kind === 'UPI_QR'
+      ? { label: `${account.label} — user pays your UPI QR`, value: account.upiId ?? account.label, sub: account.upiName ?? undefined }
+      : { label: `${account.label} — user transfers here`, value: account.accountNo, sub: [account.bankName, account.ifsc].filter(Boolean).join(' · ') };
+  }
 
   if (isDeposit) {
     // Money coming in — the merchant's own credentials, which the user pays to.
@@ -83,7 +120,9 @@ export const OrderCard: React.FC<{
   merchant: MerchantProfile | null;
   now: number;
   actions: OrderActions;
-}> = ({ order, merchant, now, actions }) => {
+  /** A merchant account's payment accounts, to name the one an order is paid into or from. */
+  paymentAccounts?: PaymentAccount[];
+}> = ({ order, merchant, now, actions, paymentAccounts }) => {
   const rail = railOf(merchant);
   const copy = railCopy(rail);
   const isDeposit = order.type === 'DEPOSIT';
@@ -94,17 +133,23 @@ export const OrderCard: React.FC<{
   const showTimer = remaining !== null && OPEN_STATUSES.includes(order.status) || (remaining !== null && order.status === OrderStatus.PAID);
   const urgent = showTimer && remaining !== null && remaining < URGENT_SECONDS;
 
-  const canAccept = order.status === OrderStatus.ASSIGNED || order.status === OrderStatus.PENDING_QUEUE;
-  const canRelease = order.status === OrderStatus.PAID && isDeposit;
-  const canPayout = order.status === OrderStatus.PROCESSING && !isDeposit;
-  // A cash buy waits on THIS member first: the player has nothing to pay until
+  // A merchant account's sub-member is offered only what their role and their
+  // assigned accounts let them do; AUDIT is offered nothing (owner,
+  // 2026-10-11). The server refuses the rest whatever is shown.
+  const workable = mayWorkOrder(merchant, order);
+  const canAccept = workable && (order.status === OrderStatus.ASSIGNED || order.status === OrderStatus.PENDING_QUEUE);
+  const canRelease = workable && order.status === OrderStatus.PAID && isDeposit;
+  const canPayout = workable && order.status === OrderStatus.PROCESSING && !isDeposit;
+  // A cash buy waits on THIS agent first: the player has nothing to pay until
   // they accept and scan the machine's QR (Step 2d). Re-scannable until the
   // player taps. The server refuses a scan before the accept (`ACCEPT_FIRST`).
   const cashBuy = isDeposit && order.paymentMode === 'CASH_ATM';
-  const canScan = cashBuy && order.status === OrderStatus.PROCESSING;
+  const canScan = workable && cashBuy && order.status === OrderStatus.PROCESSING;
+  const viewOnly = !workable && [...OPEN_STATUSES, OrderStatus.PAID].includes(order.status) ? viewOnlyReason(merchant, order) : '';
+  const paidFrom = !isDeposit ? accountNamed(paymentAccounts, order.paidFromAccountId) : null;
   const awaitingUser = order.status === OrderStatus.PROCESSING && isDeposit && (!cashBuy || Boolean(order.cashLink));
 
-  const destination = OPEN_STATUSES.includes(order.status) ? paymentDestination(order, merchant, rail) : null;
+  const destination = OPEN_STATUSES.includes(order.status) ? paymentDestination(order, merchant, rail, paymentAccounts) : null;
   const token = tokenColumn(order, rail);
   const reference = String(order.orderId || order._id || '');
   const counterparty = counterpartyOf(order);
@@ -219,6 +264,19 @@ export const OrderCard: React.FC<{
           </div>
         )}
 
+        {/* A sell a merchant account paid: the account it was paid from. */}
+        {(paidFrom || (!isDeposit && order.paidFromAccountId)) && (
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 13 }}>
+            Paid from <b style={{ color: 'var(--text)' }}>{paidFrom?.label ?? order.paidFromAccountId}</b>
+          </div>
+        )}
+
+        {viewOnly && (
+          <div role="status" style={{ marginBottom: 13 }}>
+            <Banner tone="info">{viewOnly}</Banner>
+          </div>
+        )}
+
         {/* Cash buy: the machine's QR comes first */}
         {canScan && (
           <div style={{ marginBottom: 13 }}>
@@ -292,7 +350,7 @@ export const OrderCard: React.FC<{
           <Banner tone="danger" title="Rejected" style={{ marginBottom: 13 }}>
             {order.rejectedReason || order.disputeReason || 'This order was rejected.'}
             {order.disputeWindowUntil && new Date(order.disputeWindowUntil).getTime() > Date.now() && (
-              <> The team's tokens stay held until {new Date(order.disputeWindowUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} in case the player disputes. If they do not, the tokens return to the team pool.</>
+              <> The pool's tokens stay held until {new Date(order.disputeWindowUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} in case the player disputes. If they do not, the tokens return to the pool.</>
             )}
           </Banner>
         )}

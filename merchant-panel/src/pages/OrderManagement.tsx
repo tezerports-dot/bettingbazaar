@@ -10,6 +10,9 @@ import { useOrders } from '../hooks/useOrders';
 import { useOrderActions } from '../hooks/useOrderActions';
 import PaymentNotReceivedDialog from '../components/PaymentNotReceivedDialog';
 import CashLinkScanner from '../components/CashLinkScanner';
+import PayoutFromAccountDialog from '../components/PayoutFromAccountDialog';
+import { useMerchantAccount } from '../hooks/useMerchantAccount';
+import { isMerchantAccountSession } from '../utils/actor';
 import { useNow } from '../hooks/useCountdown';
 import { useViewport } from '../hooks/useViewport';
 import { railOf } from '../utils/rail';
@@ -39,8 +42,17 @@ const OrderManagement: React.FC = () => {
 
   const { actions, confirmRequest, dismissConfirm, shouldCloseDetail, acknowledgeCloseDetail,
           rejectTarget, rejectBusy, dismissReject, submitPaymentNotReceived,
-          scanTarget, scanBusy, dismissScan, sendCashLink } =
+          scanTarget, scanBusy, dismissScan, sendCashLink,
+          payoutTarget, dismissPayout, submitPayoutFrom } =
     useOrderActions(rail, reload);
+  // A merchant account's payment accounts: which one a buy is paid into, and
+  // the choices a sell is marked paid from (owner, 2026-10-11).
+  const merchantAccount = isMerchantAccountSession(merchant);
+  const { overview: account, reload: reloadAccount } = useMerchantAccount(merchantAccount);
+  const paymentAccounts = account?.accounts ?? [];
+  // The choices are re-read when the dialog opens: an account paused a minute
+  // ago is not offered.
+  useEffect(() => { if (payoutTarget && merchantAccount) void reloadAccount(); }, [payoutTarget, merchantAccount, reloadAccount]);
 
   useEffect(() => {
     if (shouldCloseDetail) {
@@ -173,7 +185,7 @@ const OrderManagement: React.FC = () => {
       {state === 'ready' && visible.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: columns, gap: 14, alignItems: 'start' }}>
           {visible.map((order) => (
-            <OrderCard key={orderKey(order)} order={order} merchant={merchant} now={now} actions={cardActions} />
+            <OrderCard key={orderKey(order)} order={order} merchant={merchant} now={now} actions={cardActions} paymentAccounts={paymentAccounts} />
           ))}
         </div>
       )}
@@ -185,6 +197,7 @@ const OrderManagement: React.FC = () => {
         isMobile={isMobile}
         onClose={() => setSelectedId(null)}
         actions={cardActions}
+        paymentAccounts={paymentAccounts}
       />
       <ConfirmDialog request={confirmRequest} onClose={dismissConfirm} />
       <PaymentNotReceivedDialog
@@ -195,6 +208,13 @@ const OrderManagement: React.FC = () => {
         onSubmit={submitPaymentNotReceived}
       />
       <CashLinkScanner order={scanTarget} busy={scanBusy} onClose={dismissScan} onSend={sendCashLink} />
+      <PayoutFromAccountDialog
+        order={payoutTarget}
+        merchant={merchant}
+        accounts={paymentAccounts}
+        onCancel={dismissPayout}
+        onSubmit={submitPayoutFrom}
+      />
     </div>
   );
 };

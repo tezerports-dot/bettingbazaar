@@ -9,7 +9,7 @@
 // (on desktop) the profile chip and sign-out.
 import React, { useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router';
-import { Home, Package, History, User, LogOut, Power, Bell, Sun, Moon, Users } from 'lucide-react';
+import { Home, Package, History, User, LogOut, Power, Bell, Sun, Moon, Users, Landmark } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
 import { availabilityOf } from '../utils/availability';
@@ -19,14 +19,31 @@ import { useViewport } from '../hooks/useViewport';
 import { railOf, railCopy } from '../utils/rail';
 import { Avatar, Logo } from './ui';
 import { useTheme } from '../services/ThemeContext';
+import { actorOf, isMerchantAccountSession } from '../utils/actor';
+import { firstAccountTab } from '../pages/account/accountTabs';
+import type { MerchantProfile } from '../types';
 
-const NAV = [
-  { path: ROUTES.DASHBOARD, icon: Home,    label: 'Dashboard', title: 'Dashboard',        sub: 'Settlement operations' },
-  { path: ROUTES.ORDERS,    icon: Package, label: 'Orders',    title: 'Order Management', sub: 'Live queue' },
-  { path: ROUTES.HISTORY,   icon: History, label: 'History',   title: 'History',          sub: 'Reports & completed orders' },
-  { path: ROUTES.TEAM,      icon: Users,   label: 'Team',      title: 'Team',             sub: 'Your team, or the teams you supervise' },
-  { path: ROUTES.PROFILE,   icon: User,    label: 'Profile',   title: 'Profile',          sub: 'Identity & payment details' },
+const NAV_ALL = [
+  { path: ROUTES.DASHBOARD, icon: Home,     label: 'Dashboard', title: 'Dashboard',        sub: 'Settlement operations' },
+  { path: ROUTES.ORDERS,    icon: Package,  label: 'Orders',    title: 'Order Management', sub: 'Live queue' },
+  { path: ROUTES.HISTORY,   icon: History,  label: 'History',   title: 'History',          sub: 'Reports & completed orders' },
+  { path: ROUTES.TEAM,      icon: Users,    label: 'Team',      title: 'Team',             sub: 'Your team, or the agent teams you supervise' },
+  // A merchant account's own screens (owner, 2026-10-11): accounts,
+  // sub-members, pool, reports and flags, one tab each.
+  { path: ROUTES.ACCOUNT,   icon: Landmark, label: 'Account',   title: 'Merchant account', sub: 'Payment accounts, sub-members, pool, reports' },
+  { path: ROUTES.PROFILE,   icon: User,     label: 'Profile',   title: 'Profile',          sub: 'Identity & payment details' },
 ];
+
+/**
+ * The nav a session gets. Teams are agents' and supervisors' (a merchant
+ * account has no supervisor and no team page); the Account screens are a
+ * merchant account's, for its owner and its sub-members (by role, inside).
+ */
+export function navFor(merchant: MerchantProfile | null) {
+  const merchantAccount = isMerchantAccountSession(merchant);
+  return NAV_ALL.filter((item) => (item.path === ROUTES.ACCOUNT ? merchantAccount
+    : item.path === ROUTES.TEAM ? !merchantAccount : true));
+}
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -47,10 +64,16 @@ const Layout: React.FC<LayoutProps> = ({ children, actionable = 0 }) => {
   // take no orders (CLAUDE.md §2), and the server refuses it.
   const availability = availabilityOf(merchant);
   const { online, switchable } = availability;
+  const NAV = useMemo(() => navFor(merchant), [merchant]);
+  // A sub-member is named as themselves, never as the account's owner.
+  const actor = actorOf(merchant);
+  const signedInName = actor.isOwner ? merchant?.username : actor.name;
   const active = useMemo(
     () => NAV.find((item) => location.pathname.startsWith(item.path)) ?? NAV[0],
-    [location.pathname]
+    [NAV, location.pathname]
   );
+  // The Account entry opens the first of its tabs this person may see.
+  const go = (path: string) => navigate(path === ROUTES.ACCOUNT ? firstAccountTab(merchant) : path);
 
   const toggleOnline = async () => {
     const next = !online;
@@ -112,7 +135,7 @@ const Layout: React.FC<LayoutProps> = ({ children, actionable = 0 }) => {
               const Icon = item.icon;
               const badge = item.path === ROUTES.ORDERS && actionable > 0;
               return (
-                <button key={item.path} title={item.label} onClick={() => navigate(item.path)} style={navButtonStyle(item.path)}>
+                <button key={item.path} title={item.label} onClick={() => go(item.path)} style={navButtonStyle(item.path)}>
                   <Icon size={19} style={{ flexShrink: 0 }} />
                   {isDesktop && <span style={{ flex: 1 }}>{item.label}</span>}
                   {badge && isDesktop && (
@@ -155,7 +178,9 @@ const Layout: React.FC<LayoutProps> = ({ children, actionable = 0 }) => {
                   </button>
                 )}
                 <div style={{ marginTop: 11, fontSize: 11, fontWeight: 600, color: 'var(--muted)' }}>
-                  {switchable ? `${copy.name} merchant · ${copy.credentialsLabel}` : 'Your members go online from their own accounts'}
+                  {switchable ? `${copy.name} ${isMerchantAccountSession(merchant) ? 'merchant' : 'agent'} · ${copy.credentialsLabel}`
+                    : availability.subMember ? 'The account owner switches it online'
+                    : 'Your agents go online from their own accounts'}
                 </div>
               </div>
             ) : switchable && (
@@ -215,12 +240,12 @@ const Layout: React.FC<LayoutProps> = ({ children, actionable = 0 }) => {
               {online ? 'Online' : 'Offline'}
             </button>
           ) : (
-            // Not a control: a supervisor's account has no switch to press.
+            // Not a control: a supervisor's account, and a sub-member, have no switch to press.
             <span style={{
               padding: '8px 13px', borderRadius: 11, border: '1px solid var(--border)',
               background: 'var(--surface-2)', color: 'var(--text-2)', fontSize: 12.5, fontWeight: 700, flexShrink: 0,
             }}>
-              Supervisor
+              {availability.badge}
             </span>
           )}
 
@@ -251,13 +276,13 @@ const Layout: React.FC<LayoutProps> = ({ children, actionable = 0 }) => {
                   border: '1px solid var(--border)', background: 'var(--surface)', borderRadius: 22, cursor: 'pointer',
                 }}
               >
-                <Avatar name={merchant?.username} />
+                <Avatar name={signedInName} />
                 <span style={{ textAlign: 'left' }}>
                   <span style={{ display: 'block', fontSize: 12.5, fontWeight: 700, color: 'var(--text)', lineHeight: 1.1 }}>
-                    {merchant?.username || 'Merchant'}
+                    {signedInName || 'Merchant'}
                   </span>
                   <span style={{ display: 'block', fontSize: 10.5, fontWeight: 600, color: 'var(--muted)' }}>
-                    {copy.name} operator
+                    {availability.subMember ? `Sub-member of ${merchant?.username ?? 'the account'}` : `${copy.name} operator`}
                   </span>
                 </span>
               </button>
@@ -295,7 +320,7 @@ const Layout: React.FC<LayoutProps> = ({ children, actionable = 0 }) => {
             return (
               <button
                 key={item.path}
-                onClick={() => navigate(item.path)}
+                onClick={() => go(item.path)}
                 style={{
                   flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
                   padding: '9px 0 8px', border: 0, background: 'transparent', cursor: 'pointer',

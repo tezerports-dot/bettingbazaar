@@ -150,10 +150,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const acceptSession = (response: AuthResponse) => {
     const merchantData = response.user || response.merchant;
     if (!merchantData) return;
-    setMerchant(merchantData);
+    // Who signed in (the owner, or a merchant account's sub-member) travels
+    // beside the merchant; the profile read that follows adds the accounts
+    // assigned to a sub-member and whether this is a merchant account.
+    setMerchant(response.actor ? { ...merchantData, actor: response.actor } : merchantData);
     setUnreachable(false);
     toast.success('Login successful!');
     navigate('/dashboard');
+    void Promise.resolve().then(() => api.getMerchantProfile()).then((fresh) => {
+      if (!fresh) return;
+      setMerchant(fresh);
+      try { localStorage.setItem('merchantData', JSON.stringify(fresh)); } catch { /* blocked storage */ }
+    }).catch(() => { /* the next screen's reads say what is wrong */ });
   };
 
   const login = async (credentials: LoginCredentials): Promise<TelegramChallenge | null> => {
