@@ -51,7 +51,7 @@ Install with `npm ci` (the user-panel no longer needs `--legacy-peer-deps`).
 `railway.json` + `nixpacks.toml` are already committed (Nixpacks, Node 22, builds all
 three panels, starts `node backend/server.js`, healthcheck `/health`).
 
-1. **New Project → Deploy from GitHub** → `tezerports-dot/bettingbazaar`.
+1. **New Project → Deploy from GitHub** → your copy of `bettingbazaar` (whichever GitHub account holds it).
 2. Add plugins to the project: **Redis** and **PostgreSQL**.
 3. Create an S3 bucket (Cloudflare R2 / Backblaze B2 are cheap) → set `S3_BUCKET_NAME` + creds.
 4. **Variables** → paste the required env; map `DATABASE_URL` / `REDIS_URL`
@@ -72,7 +72,7 @@ the k8s manifests in `deploy/` (native `RollingUpdate` + blue/green selector fli
 `deploy/docker-compose.yml` stands up **app + PostgreSQL 18 + Redis** from scratch. Provide S3 (managed R2/B2/MinIO) and your secrets via a `.env` file.
 
 ```bash
-git clone https://github.com/tezerports-dot/bettingbazaar && cd bettingbazaar
+git clone https://github.com/<your-account>/bettingbazaar && cd bettingbazaar
 cp .env.example deploy/.env      # fill strong secrets + S3_* (DATABASE_URL/PG_SSL are prewired)
 docker compose -f deploy/docker-compose.yml up -d --build
 curl -I http://localhost:8080/health

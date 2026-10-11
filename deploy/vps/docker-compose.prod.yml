@@ -43,6 +43,9 @@ x-app-base: &app-base
   build:
     context: ../..
     dockerfile: Dockerfile
+    args:
+      # Public; baked into the player panel (Dockerfile). Read from .env here.
+      VITE_TURNSTILE_SITE_KEY: ${VITE_TURNSTILE_SITE_KEY:-}
   image: bettingbazaar:local
   restart: unless-stopped
   env_file: [.env]

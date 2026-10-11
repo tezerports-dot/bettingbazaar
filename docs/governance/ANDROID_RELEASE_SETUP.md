@@ -57,6 +57,14 @@ It will:
    - `ANDROID_APP_ORIGIN`, your public site, the same value as the backend's
      `PUBLIC_APP_ORIGIN`, e.g. `https://yourdomain.com`
 8. Print the three backend lines for §2, including your key's fingerprint.
+
+Optional repository **variables** the APK builds also read (Settings → Secrets
+and variables → Actions → Variables). All are public values:
+
+| Variable | Set it when |
+|---|---|
+| `ANDROID_TURNSTILE_SITE_KEY` | The server has `TURNSTILE_SECRET_KEY` (production does). Without it the app sends no captcha token and every app signup and login is refused. Same value as the web panel's `VITE_TURNSTILE_SITE_KEY`. |
+| `ANDROID_API_BACKUP_URL`, `ANDROID_API_DISCOVERY_URL`, `ANDROID_API_ALLOWED_HOSTS`, `ANDROID_GATEWAY_CONFIG_PUBLIC_KEY`, `ANDROID_GATEWAY_CONFIG_URLS` | You run a backup API host or a signed gateway document (`docs/governance/ENV.md`, `GATEWAY_KEY_ROTATION.md`). |
 9. Offer to shred the local copies. Say yes, then delete the Codespace if you
    made it only for this.
 
@@ -71,7 +79,7 @@ keytool -genkeypair -v -keystore upload-keystore.jks -storetype PKCS12 \
 keytool -list -v -keystore upload-keystore.jks -storepass:env KS_PASS | grep SHA256:   # the fingerprint
 
 unset GITHUB_TOKEN; gh auth login -s repo          # your account, not the Codespace token
-R=tezerports-dot/bettingbazaar
+R=$(gh repo view --json nameWithOwner -q .nameWithOwner)   # this clone's repository
 base64 -w0 upload-keystore.jks | gh secret set ANDROID_KEYSTORE_BASE64 -R $R
 printf %s "$KS_PASS"             | gh secret set ANDROID_KEYSTORE_PASSWORD -R $R
 printf %s bettingbazaar-upload   | gh secret set ANDROID_KEY_ALIAS -R $R
@@ -143,7 +151,11 @@ scheme, which does not apply). Confirm it on a phone as part of §7.
    tag `android-v4.1.0`). About 5–10 minutes. It verifies the APK is signed
    with your key, not the debug key, and uploads `app-release.apk` (to sideload
    and upload) and `app-release.aab` (only for the Play Store) as a workflow
-   artifact.
+   artifact. It also attaches the APK, with its SHA-256, to a GitHub Release
+   named `android-v<version>` on the repository's **Releases** page. That page
+   is only a download point; players' apps update from step 3, never from
+   GitHub. Nothing appears on Releases until this workflow has run once with
+   the four signing secrets set (§1).
 3. **Publish:** admin panel → **Android App** → drop in `app-release.apk`.
    - The server reads the version and signing key **from the file** and
      **verifies the signature** (v2/v3, the same checks as `apksigner

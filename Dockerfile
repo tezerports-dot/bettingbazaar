@@ -39,6 +39,12 @@ RUN cd merchant-panel && npm ci --include=dev --legacy-peer-deps
 COPY user-panel     ./user-panel
 COPY admin-panel    ./admin-panel
 COPY merchant-panel ./merchant-panel
+# The player panel's Turnstile SITE key (public) is baked in at build time.
+# Without it the panel sends no captcha token, and a server with
+# TURNSTILE_SECRET_KEY set refuses every player signup and login. Pass it with
+# --build-arg (deploy/vps/docker-compose.prod.yml reads it from .env).
+ARG VITE_TURNSTILE_SITE_KEY=
+ENV VITE_TURNSTILE_SITE_KEY=$VITE_TURNSTILE_SITE_KEY
 RUN cd user-panel     && npm run build \
  && cd ../admin-panel && npm run build \
  && cd ../merchant-panel && npm run build

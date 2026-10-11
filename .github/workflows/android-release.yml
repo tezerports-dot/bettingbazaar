@@ -27,6 +27,11 @@ concurrency:
   group: android-release-${{ github.ref }}
   cancel-in-progress: false
 
+# contents: write is for the last step, which attaches the APK to a GitHub
+# Release. Everything else only reads the repository.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -89,6 +94,17 @@ jobs:
           # the App Link filter claims, so a password-reset link from the bot
           # opens the installed app rather than a browser.
           VITE_APP_ORIGIN: ${{ vars.ANDROID_APP_ORIGIN }}
+          # Optional. Without the Turnstile SITE key the app sends no captcha
+          # token, and a server with TURNSTILE_SECRET_KEY set (production needs
+          # it, CLAUDE.md §36) refuses every signup and login from the app.
+          # The rest are the failover settings (docs/governance/ENV.md); unset
+          # means the app uses ANDROID_API_URL alone. All are public values.
+          VITE_TURNSTILE_SITE_KEY: ${{ vars.ANDROID_TURNSTILE_SITE_KEY }}
+          VITE_API_BACKUP_URL: ${{ vars.ANDROID_API_BACKUP_URL }}
+          VITE_API_DISCOVERY_URL: ${{ vars.ANDROID_API_DISCOVERY_URL }}
+          VITE_API_ALLOWED_HOSTS: ${{ vars.ANDROID_API_ALLOWED_HOSTS }}
+          VITE_GATEWAY_CONFIG_PUBLIC_KEY: ${{ vars.ANDROID_GATEWAY_CONFIG_PUBLIC_KEY }}
+          VITE_GATEWAY_CONFIG_URLS: ${{ vars.ANDROID_GATEWAY_CONFIG_URLS }}
 
       # The manifest placeholder is the App Link host, and it must be the same
       # host the web bundle was just told to trust. Deriving it here from the
@@ -198,6 +214,31 @@ jobs:
             user-panel/android/app/build/outputs/apk/release/app-release.apk
             user-panel/android/app/build/outputs/bundle/release/app-release.aab
           retention-days: 90
+
+      # The run's artifact is only visible inside the Actions tab, to people
+      # signed in, for 90 days. The Release page is where the owner looks for a
+      # downloadable APK, so the signed APK is attached there too, under the
+      # tag android-v<version>. A re-run of the same version replaces the file
+      # on the existing release rather than failing. This is a download page
+      # only: installed apps update from the admin panel's Android App page
+      # (CLAUDE.md §2, Android releases), never from GitHub.
+      - name: Attach the APK to a GitHub Release
+        working-directory: user-panel/android
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="android-v$VERSION_NAME"
+          OUT="$RUNNER_TEMP/bettingbazaar-$VERSION_NAME.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$OUT"
+          (cd "$RUNNER_TEMP" && sha256sum "bettingbazaar-$VERSION_NAME.apk" > "bettingbazaar-$VERSION_NAME.apk.sha256")
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$OUT" "$OUT.sha256" --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$OUT" "$OUT.sha256" -R "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Android app $VERSION_NAME" \
+              --notes "Signed APK for version $VERSION_NAME (build $VERSION_CODE). Publish it to players from the admin panel's Android App page; installed apps update from there, not from this page."
+          fi
 
       - name: Remove the keystore from the runner
         if: always()

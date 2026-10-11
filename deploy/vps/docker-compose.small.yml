@@ -1,0 +1,32 @@
+# GOVERNANCE: Read CLAUDE.md before editing this file.
+# ══════════════════════════════════════════════════════════════════════════════
+# SMALL TEST SERVER — layer this on top of docker-compose.prod.yml:
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.small.yml up -d --build
+#
+# For a test box of about 2 cores / 8 GB with a handful of testers, never for
+# launch: the production file is sized for the 8-core / 16 GB server (4 api and
+# 2 realtime workers, PostgreSQL shared_buffers 4 GB). On 8 GB that leaves too
+# little for the image build and the operating system. This file changes only
+# sizes, never behaviour: one worker per role, and PostgreSQL's memory settings
+# overridden on its command line (a -c flag wins over the config file).
+# ══════════════════════════════════════════════════════════════════════════════
+
+services:
+  api:
+    environment:
+      BB_WORKERS: "1"
+  realtime:
+    environment:
+      BB_WORKERS: "1"
+  postgres:
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=3GB
+      - -c
+      - maintenance_work_mem=256MB
