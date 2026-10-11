@@ -75,7 +75,7 @@ const ROUTING_TIMERS: Array<{
 }> = [
   { key: 'assignmentWaitSeconds', label: 'Queue Wait Before Expiry (seconds)',
     min: 60, max: 86400, fallback: 1500,   // spec default: 1500
-    help: 'How long a queued order nobody could take waits for a team member before it expires.' },
+    help: 'How long a queued order nobody could take waits for an agent before it expires.' },
   { key: 'utrSubmitSeconds', label: 'Extra Time to Submit a Reference (seconds)',
     min: 15, max: 3600, fallback: 60,   // spec default: 60
     help: 'The one-off grace a player can claim to fetch their payment reference.' },
@@ -94,6 +94,54 @@ const routingDefaults = (): TeamRoutingForm => ({
   processingWindowSeconds: Object.fromEntries(ROUTING_RAILS.map((r) => [r.rail, r.processing.fallback])) as Record<RoutingRail, number>,
   ...Object.fromEntries(ROUTING_TIMERS.map((t) => [t.key, t.fallback])),
 } as TeamRoutingForm);
+
+// §5 MIRROR — `SYSTEM_CONFIG_SPEC.fields.merchantRouting` and
+// `.directMerchants` in `database/spec/config.spec.js` (owner, 2026-10-11),
+// read by `merchantRoutingSettings` (database/repositories/teamRouting.js),
+// `payTeamCommission` and `merchantProblems.js`. Bounds repeat the spec's for
+// the input; the server refuses an out-of-range value by name. `fallback` is a
+// LOADING placeholder equal to the spec default beside it (§4).
+type OrderDirection = 'DEPOSIT' | 'WITHDRAWAL';
+const MERCHANT_ROUTING_DIRECTIONS: Array<{
+  direction: OrderDirection; label: string;
+  concurrency: { min: number; max: number; fallback: number };
+  processing: { min: number; max: number; fallback: number };
+}> = [
+  { direction: 'DEPOSIT', label: 'Buys',
+    concurrency: { min: 1, max: 100, fallback: 10 },     // spec default: 10
+    processing:  { min: 60, max: 7200, fallback: 900 } }, // spec default: 900
+  { direction: 'WITHDRAWAL', label: 'Sells',
+    concurrency: { min: 1, max: 100, fallback: 10 },     // spec default: 10
+    processing:  { min: 60, max: 7200, fallback: 900 } }, // spec default: 900
+];
+const MERCHANT_ASSIGNMENT_WAIT = { min: 60, max: 86400, fallback: 1500 };   // spec default: 1500
+const DIRECT_MERCHANT_FIELDS: Array<{
+  key: 'commissionPercent' | 'dailyProblemFlagThreshold'; label: string;
+  min: number; max: number; fallback: number; help: string;
+}> = [
+  { key: 'commissionPercent', label: 'Merchant commission (%)',
+    min: 1, max: 50, fallback: 10,   // spec default: 10
+    help: 'Percent of each rise in a merchant\'s matched volume, paid into its own pool. There is no supervisor share. Agents\' teams are not affected.' },
+  { key: 'dailyProblemFlagThreshold', label: 'Problems in a day before a merchant is flagged',
+    min: 1, max: 100, fallback: 5,   // spec default: 5
+    help: 'Refusals, unpaid buys counted against it and lost disputes in one IST day. A flag is shown here and to the merchant; it suspends nothing.' },
+];
+/** UI names for the served `inrRoutingModes` (INR_ROUTING_MODES); an unknown value shows as itself. §11. */
+const INR_MODE_LABEL: Record<string, string> = { AGENTS: 'Agents', MERCHANTS: 'Merchants' };
+
+interface MerchantRoutingForm {
+  concurrency: Record<OrderDirection, number>;
+  processingWindowSeconds: Record<OrderDirection, number>;
+  assignmentWaitSeconds: number;
+  [other: string]: unknown;
+}
+const merchantRoutingDefaults = (): MerchantRoutingForm => ({
+  concurrency: Object.fromEntries(MERCHANT_ROUTING_DIRECTIONS.map((d) => [d.direction, d.concurrency.fallback])) as Record<OrderDirection, number>,
+  processingWindowSeconds: Object.fromEntries(MERCHANT_ROUTING_DIRECTIONS.map((d) => [d.direction, d.processing.fallback])) as Record<OrderDirection, number>,
+  assignmentWaitSeconds: MERCHANT_ASSIGNMENT_WAIT.fallback,
+});
+const directMerchantDefaults = () =>
+  Object.fromEntries(DIRECT_MERCHANT_FIELDS.map((f) => [f.key, f.fallback])) as Record<'commissionPercent' | 'dailyProblemFlagThreshold', number>;
 
 const outOfRange = (v: number, b: { min: number; max: number }) => !Number.isFinite(v) || v < b.min || v > b.max;
 
@@ -171,6 +219,8 @@ export const SystemSettings: React.FC = () => {
   const [gateway, setGateway] = useState<GatewayDocumentStatus | null>(null);
   // The order-size universe by rail, from the server (see ORDER_SIZE_RAILS above).
   const [orderSizeRails, setOrderSizeRails] = useState<OrderSizeRail[]>([]);
+  // The two values `inrRoutingMode` takes (INR_ROUTING_MODES), served with the config.
+  const [inrRoutingModes, setInrRoutingModes] = useState<string[]>([]);
 
   const [formData, setFormData] = useState({
     maintenanceMode: false,
@@ -197,6 +247,10 @@ export const SystemSettings: React.FC = () => {
     // Per-rail caps and windows for team routing, seeded from ROUTING_RAILS /
     // ROUTING_TIMERS rather than restated.
     teamRouting: routingDefaults(),
+    // Who serves INR orders: agents' teams or merchants (owner, 2026-10-11).
+    inrRoutingMode: 'AGENTS',   // schema default: 'AGENTS'
+    merchantRouting: merchantRoutingDefaults(),
+    directMerchants: directMerchantDefaults(),
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
     // How long a sell stays in escrow after the member marks it paid.
@@ -251,6 +305,7 @@ export const SystemSettings: React.FC = () => {
         setApiHostChoices(Array.isArray(response.data.apiHostChoices) ? response.data.apiHostChoices : []);
         setGateway(response.data.gatewayDocument ?? null);
         setOrderSizeRails(Array.isArray(response.data.orderSizeRails) ? response.data.orderSizeRails : []);
+        setInrRoutingModes(Array.isArray(response.data.inrRoutingModes) ? response.data.inrRoutingModes : []);
         setFormData({
           maintenanceMode: response.data.maintenanceMode || false,
           maintenanceMessage: response.data.maintenanceMessage || '',
@@ -290,6 +345,18 @@ export const SystemSettings: React.FC = () => {
               processingWindowSeconds: { ...d.processingWindowSeconds, ...(served.processingWindowSeconds ?? {}) },
             } as TeamRoutingForm;
           })(),
+          inrRoutingMode: response.data.inrRoutingMode ?? 'AGENTS',   // schema default: 'AGENTS'
+          // Taken whole, like teamRouting.
+          merchantRouting: (() => {
+            const served = response.data.merchantRouting ?? {};
+            const d = merchantRoutingDefaults();
+            return {
+              ...d, ...served,
+              concurrency: { ...d.concurrency, ...(served.concurrency ?? {}) },
+              processingWindowSeconds: { ...d.processingWindowSeconds, ...(served.processingWindowSeconds ?? {}) },
+            } as MerchantRoutingForm;
+          })(),
+          directMerchants: { ...directMerchantDefaults(), ...(response.data.directMerchants ?? {}) },
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
           riskRules: {
             enforceMultiplesOf10:     response.data.riskRules?.enforceMultiplesOf10     ?? true,
@@ -357,8 +424,13 @@ export const SystemSettings: React.FC = () => {
       // them from: an empty list sent from a card that drew nothing would be
       // refused (minItems 1) and take every other setting's save down with it.
       const { buyOrderSizes, sellOrderSizes, ...rest } = formData;
-      await api.system.updateConfig(orderSizeRails.length > 0 ? { ...rest, buyOrderSizes, sellOrderSizes } : rest);
-      toast.success('System settings updated');
+      const saved = await api.system.updateConfig(orderSizeRails.length > 0 ? { ...rest, buyOrderSizes, sellOrderSizes } : rest);
+      // A switch of `inrRoutingMode` moves the INR orders still waiting for a
+      // first taker; the server says how many (`rerailedOrders`).
+      const moved = Number(saved?.rerailedOrders) || 0;
+      toast.success(moved > 0
+        ? `System settings updated. ${moved} waiting INR ${moved === 1 ? 'order was' : 'orders were'} moved to the new route.`
+        : 'System settings updated');
       loadConfig();
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Failed to update settings');
@@ -533,7 +605,7 @@ export const SystemSettings: React.FC = () => {
         <h3 className="text-lg font-semibold mb-1">Order Sizes</h3>
         <p className="text-xs text-gray-500 mb-4">
           Every buy and sell is exactly one of these sizes, in tokens. The size decides the rail:
-          cash sizes go to a member at an ATM, UPI/bank sizes to a UPI or bank team. Untick a size
+          cash sizes go to an agent at an ATM, UPI/bank sizes to a UPI or bank team. Untick a size
           to stop offering it; each list must keep at least one.
         </p>
         <div className="grid gap-6 md:grid-cols-2">
@@ -799,11 +871,11 @@ export const SystemSettings: React.FC = () => {
               above and sent back as `teamRouting`, which the PUT accepts by
               declaration. */}
           <div className="pt-4 border-t border-dark-700">
-            <h3 className="font-semibold mb-1">Team Routing</h3>
+            <h3 className="font-semibold mb-1">Agent Team Routing</h3>
             <p className="text-xs text-gray-500 mb-4">
-              An order goes to a member of a working team on its rail: USDT orders to USDT teams, INR orders up
-              to the cash ceiling to Cash teams, larger INR orders to UPI / bank teams. Each rail has its own cap
-              and window.
+              An order routed to agents goes to an agent of a working team on its rail: USDT orders to USDT teams,
+              INR orders up to the cash ceiling to Cash teams, larger INR orders to UPI / bank teams. Each rail has
+              its own cap and window.
             </p>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {ROUTING_RAILS.map((r) => {
@@ -813,7 +885,7 @@ export const SystemSettings: React.FC = () => {
                   <div key={r.rail} className="space-y-3 p-3 bg-dark-800 rounded-lg">
                     <p className="text-sm font-medium">{r.label}</p>
                     <div>
-                      <label className="label" htmlFor={`tr-conc-${r.rail}`}>Open orders per member ({r.concurrency.min}–{r.concurrency.max})</label>
+                      <label className="label" htmlFor={`tr-conc-${r.rail}`}>Open orders per agent ({r.concurrency.min}–{r.concurrency.max})</label>
                       <input id={`tr-conc-${r.rail}`} type="number" step={1}
                         min={r.concurrency.min} max={r.concurrency.max}
                         value={Number.isFinite(conc) ? conc : ''}
@@ -866,6 +938,114 @@ export const SystemSettings: React.FC = () => {
                     {outOfRange(v, t)
                       ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {t.min}–{t.max} seconds.</p>
                       : <p className="text-xs text-gray-500 mt-1">{t.help}</p>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* ── INR routing mode and merchants (owner, 2026-10-11) ───────────
+              Who serves INR orders, and the numbers merchants work to.
+              Rendered from the served `inrRoutingModes` and the §5 mirrors
+              above; sent back as `inrRoutingMode`, `merchantRouting` and
+              `directMerchants`, which the PUT accepts by declaration. */}
+          <div className="pt-4 border-t border-dark-700">
+            <h3 className="font-semibold mb-1">INR Orders</h3>
+            <fieldset>
+              <legend className="label">INR orders go to</legend>
+              <div className="flex flex-wrap gap-4 mt-1">
+                {inrRoutingModes.map((mode) => (
+                  <label key={mode} className="flex items-center space-x-2 text-sm">
+                    <input type="radio" name="inr-routing-mode" value={mode}
+                      checked={formData.inrRoutingMode === mode}
+                      onChange={() => setFormData({ ...formData, inrRoutingMode: mode })} />
+                    <span>{INR_MODE_LABEL[mode] ?? mode}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <p className="text-xs text-gray-500 mt-2">
+              USDT orders always go to agent teams. When you switch, INR orders still waiting for someone to take
+              them move to the new route; orders already taken finish where they are. With Merchants, every INR
+              size is paid by UPI or bank transfer.
+            </p>
+
+            <h3 className="font-semibold mt-6 mb-1">Merchant Routing</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {MERCHANT_ROUTING_DIRECTIONS.map((d) => {
+                const conc = formData.merchantRouting.concurrency[d.direction];
+                const proc = formData.merchantRouting.processingWindowSeconds[d.direction];
+                return (
+                  <div key={d.direction} className="space-y-3 p-3 bg-dark-800 rounded-lg">
+                    <p className="text-sm font-medium">{d.label}</p>
+                    <div>
+                      <label className="label" htmlFor={`mr-conc-${d.direction}`}>Open orders per merchant ({d.concurrency.min}–{d.concurrency.max})</label>
+                      <input id={`mr-conc-${d.direction}`} type="number" step={1}
+                        min={d.concurrency.min} max={d.concurrency.max}
+                        value={Number.isFinite(conc) ? conc : ''}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          merchantRouting: {
+                            ...formData.merchantRouting,
+                            concurrency: { ...formData.merchantRouting.concurrency, [d.direction]: Math.floor(Number(e.target.value)) },
+                          },
+                        })}
+                        className="input" />
+                      {outOfRange(conc, d.concurrency) && (
+                        <p role="alert" className="text-xs text-red-400 mt-1">Must be {d.concurrency.min}–{d.concurrency.max}.</p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="label" htmlFor={`mr-proc-${d.direction}`}>Window to serve an assigned order (seconds)</label>
+                      <input id={`mr-proc-${d.direction}`} type="number" step={1}
+                        min={d.processing.min} max={d.processing.max}
+                        value={Number.isFinite(proc) ? proc : ''}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          merchantRouting: {
+                            ...formData.merchantRouting,
+                            processingWindowSeconds: { ...formData.merchantRouting.processingWindowSeconds, [d.direction]: Math.floor(Number(e.target.value)) },
+                          },
+                        })}
+                        className="input" />
+                      {outOfRange(proc, d.processing)
+                        ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {d.processing.min}–{d.processing.max} seconds.</p>
+                        : <p className="text-xs text-gray-500 mt-1">{Math.round(proc / 60)} min</p>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+              <div>
+                <label className="label" htmlFor="mr-assignmentWaitSeconds">Queue Wait Before Expiry (seconds)</label>
+                <input id="mr-assignmentWaitSeconds" type="number" step={1}
+                  min={MERCHANT_ASSIGNMENT_WAIT.min} max={MERCHANT_ASSIGNMENT_WAIT.max}
+                  value={Number.isFinite(formData.merchantRouting.assignmentWaitSeconds) ? formData.merchantRouting.assignmentWaitSeconds : ''}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    merchantRouting: { ...formData.merchantRouting, assignmentWaitSeconds: Math.floor(Number(e.target.value)) },
+                  })}
+                  className="input" />
+                {outOfRange(formData.merchantRouting.assignmentWaitSeconds, MERCHANT_ASSIGNMENT_WAIT)
+                  ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {MERCHANT_ASSIGNMENT_WAIT.min}–{MERCHANT_ASSIGNMENT_WAIT.max} seconds.</p>
+                  : <p className="text-xs text-gray-500 mt-1">How long a queued INR order no merchant could take waits before it expires.</p>}
+              </div>
+              {DIRECT_MERCHANT_FIELDS.map((f) => {
+                const v = formData.directMerchants[f.key];
+                return (
+                  <div key={f.key}>
+                    <label className="label" htmlFor={`dm-${f.key}`}>{f.label}</label>
+                    <input id={`dm-${f.key}`} type="number" step={1} min={f.min} max={f.max}
+                      value={Number.isFinite(v) ? v : ''}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        directMerchants: { ...formData.directMerchants, [f.key]: Math.floor(Number(e.target.value)) },
+                      })}
+                      className="input" />
+                    {outOfRange(v, f)
+                      ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {f.min}–{f.max}.</p>
+                      : <p className="text-xs text-gray-500 mt-1">{f.help}</p>}
                   </div>
                 );
               })}
@@ -1006,7 +1186,7 @@ export const SystemSettings: React.FC = () => {
               className="input"
             />
             <p className="text-xs text-gray-500 mt-1">
-              After a team member marks a sell paid, the player's tokens stay in escrow this long so the
+              After an agent or merchant marks a sell paid, the player's tokens stay in escrow this long so the
               player can raise a dispute. At least 60 minutes.
             </p>
           </div>
@@ -1022,9 +1202,9 @@ export const SystemSettings: React.FC = () => {
               className="input"
             />
             <p className="text-xs text-gray-500 mt-1">
-              When a team member rejects a paid buy as unpaid, the team's tokens stay in escrow this long.
+              When an agent or merchant rejects a paid buy as unpaid, the pool's tokens stay in escrow this long.
               If the player disputes in time they stay until the dispute is decided; if not, they go back
-              to the team pool.
+              to the pool.
             </p>
           </div>
         </div>
@@ -1043,7 +1223,7 @@ export const SystemSettings: React.FC = () => {
               className="input"
             />
             <p className="text-xs text-gray-500 mt-1">
-              A member is flagged to their supervisor and here when their completed orders and their online
+              An agent is flagged to their supervisor and here when their completed orders and their online
               time on a day were both this far below their team's average.
             </p>
           </div>
@@ -1375,7 +1555,11 @@ export const SystemSettings: React.FC = () => {
           || (formData.usdtBuy.minUsdt > formData.usdtBuy.maxUsdt)
           || ROUTING_RAILS.some((r) => outOfRange(formData.teamRouting.concurrency[r.rail], r.concurrency)
             || outOfRange(formData.teamRouting.processingWindowSeconds[r.rail], r.processing))
-          || ROUTING_TIMERS.some((t) => outOfRange(formData.teamRouting[t.key], t))}
+          || ROUTING_TIMERS.some((t) => outOfRange(formData.teamRouting[t.key], t))
+          || MERCHANT_ROUTING_DIRECTIONS.some((d) => outOfRange(formData.merchantRouting.concurrency[d.direction], d.concurrency)
+            || outOfRange(formData.merchantRouting.processingWindowSeconds[d.direction], d.processing))
+          || outOfRange(formData.merchantRouting.assignmentWaitSeconds, MERCHANT_ASSIGNMENT_WAIT)
+          || DIRECT_MERCHANT_FIELDS.some((f) => outOfRange(formData.directMerchants[f.key], f))}
         className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
       >
         {isSaving ? (

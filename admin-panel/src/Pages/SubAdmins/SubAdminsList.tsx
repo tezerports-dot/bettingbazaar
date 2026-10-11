@@ -122,11 +122,11 @@ export const SubAdminsList: React.FC = () => {
     if (!selectedUser) return;
     try {
       await api.subAdmins.assignPhantomAccess(selectedUser.userId, phantomAccess);
-      toast.success('Phantom access updated');
+      toast.success('House-bettor access updated');
       setShowPhantomModal(false);
       loadSubAdmins();
     } catch (error: any) {
-      toast.error(error.response?.data?.message || 'Failed to update phantom access');
+      toast.error(error.response?.data?.message || 'Failed to update house-bettor access');
     }
   };
 
@@ -192,7 +192,7 @@ export const SubAdminsList: React.FC = () => {
     },
     {
       key: 'phantomAccess',
-      label: 'Phantom Access',
+      label: 'House-Bettor Access',
       render: (user: User) => {
         const colors: Record<string, string> = {
           NONE: 'bg-gray-500/20 text-gray-500',
@@ -229,7 +229,7 @@ export const SubAdminsList: React.FC = () => {
               setShowPhantomModal(true);
             }}
             className="p-2 hover:bg-dark-700 rounded-lg transition-colors"
-            title="Edit Phantom Access"
+            title="Edit House-Bettor Access"
           >
             <Edit size={16} />
           </button>
@@ -309,9 +309,9 @@ export const SubAdminsList: React.FC = () => {
 
       {/* Phantom Access Reference */}
       <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-4 text-sm">
-        <p className="font-semibold text-orange-400 mb-1">Phantom Access</p>
+        <p className="font-semibold text-orange-400 mb-1">House-Bettor Access</p>
         <p className="text-gray-400">
-          <strong className="text-gray-300">NONE</strong>: No phantom betting ·{' '}
+          <strong className="text-gray-300">NONE</strong>: No house bets ·{' '}
           <strong className="text-gray-300">A board</strong>: that board only ·{' '}
           <strong className="text-gray-300">BOTH</strong>: every board.
           Phantom bets always lose — they only balance the pool display.
@@ -320,7 +320,7 @@ export const SubAdminsList: React.FC = () => {
 
       <Kpis min={200} items={[
         { label: 'Total Sub-Admins', value: subAdmins.length },
-        { label: 'Phantom Managers', value: subAdmins.filter((u) => u.phantomAccess && u.phantomAccess !== 'NONE').length, tone: 'var(--gold-ink)' },
+        { label: 'House-Bettor Managers', value: subAdmins.filter((u) => u.phantomAccess && u.phantomAccess !== 'NONE').length, tone: 'var(--gold-ink)' },
         { label: 'With Permissions', value: subAdmins.filter((u) => u.subAdminPermissions && Object.values(u.subAdminPermissions).some(Boolean)).length, tone: 'var(--risk)' },
       ]} />
 
@@ -422,32 +422,32 @@ export const SubAdminsList: React.FC = () => {
         <Modal
           isOpen={showPhantomModal}
           onClose={() => setShowPhantomModal(false)}
-          title="Assign Phantom Access"
+          title="Assign House-Bettor Access"
         >
           <div className="space-y-4">
             <p className="text-gray-400">
-              Assign phantom betting access for <strong>{selectedUser.username}</strong>
+              Assign house-bettor access for <strong>{selectedUser.username}</strong>
             </p>
             <div>
-              <label className="label" htmlFor="phantom-access-level">Phantom Access Level</label>
+              <label className="label" htmlFor="phantom-access-level">House-Bettor Access Level</label>
               <select id="phantom-access-level"
                 value={phantomAccess}
                 onChange={(e) => setPhantomAccess(e.target.value)}
                 className="input"
               >
-                <option value="NONE">NONE — No phantom access</option>
+                <option value="NONE">NONE — No house-bettor access</option>
                 {boards.map((b) => <option key={b.key} value={b.key}>{b.name} — this board only</option>)}
                 <option value="BOTH">BOTH — every board</option>
               </select>
             </div>
             <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-3">
               <p className="text-sm text-orange-400">
-                ⚠️ Phantom managers balance the pool display by placing bets. These bets always
+                ⚠️ House bettors balance the pool display by placing bets. These bets always
                 lose — they have zero financial risk but affect what users see.
               </p>
             </div>
             <button onClick={handleAssignPhantomAccess} className="w-full btn-primary">
-              Update Phantom Access
+              Update House-Bettor Access
             </button>
           </div>
         </Modal>

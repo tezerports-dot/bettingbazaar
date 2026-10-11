@@ -105,7 +105,7 @@ describePg('staff permissions: every area, every route', () => {
     const fulfil = await as(app, merchants).post('/team-pool-requests/tpr-x/fulfil').send({ fiatAmount: 1 });
     expect(fulfil.status).toBe(403);
     expect(fulfil.body.requiredPermission).toBe('canFundMerchants');
-    expect(fulfil.body.message).toMatch(/"Team pool requests" permission/);
+    expect(fulfil.body.message).toMatch(/"Pool requests" permission/);
     const faq = await as(app, merchants).post('/content/faq').send({ question: 'q', answer: 'a' });
     expect(faq.status).toBe(403);
     // The refusal says which area to ask for, in the picker's words.

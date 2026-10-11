@@ -119,7 +119,7 @@ describe('admin Teams screen', () => {
     perms.fund = false;
     render(<TeamsManager />);
     await screen.findByRole('button', { name: 'Approve Chitra' });
-    expect(screen.queryByText('Team token requests')).toBeNull();
+    expect(screen.queryByText('Pool token requests')).toBeNull();
     expect(api.teams.poolRequests).not.toHaveBeenCalled();
   });
 
@@ -166,7 +166,7 @@ describe('admin Teams screen', () => {
 
   it('makes a supervisor with the rail chosen', async () => {
     render(<TeamsManager />);
-    fireEvent.change(await screen.findByLabelText('Merchant ID'), { target: { value: ' m-9 ' } });
+    fireEvent.change(await screen.findByLabelText('Agent ID'), { target: { value: ' m-9 ' } });
     fireEvent.change(screen.getByLabelText('Rail'), { target: { value: 'CASH' } });
     fireEvent.click(screen.getByRole('button', { name: 'Make supervisor' }));
     await waitFor(() => expect(api.teams.setSupervisor).toHaveBeenCalledWith('m-9', 'CASH'));

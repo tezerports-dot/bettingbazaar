@@ -57,7 +57,7 @@ const saveButton = () => screen.getAllByRole('button', { name: /save/i }).pop() 
 const paint = async () => {
   getConfig.mockResolvedValue({ success: true, data: served });
   render(<SystemSettings />);
-  await screen.findByText('Team Routing');
+  await screen.findByText('Agent Team Routing');
   await waitFor(() => expect(field('tr-conc-UPI_BANK').value).toBe('5'));
 };
 

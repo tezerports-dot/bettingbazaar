@@ -322,8 +322,26 @@ export const merchants = {
     const res = await api.get<any>(`/api/admin/merchants/${merchantId}/earnings`);
     return res.data;
   },
-  create: async (data: { username: string; mobile: string; password: string; email?: string }) => {
+  // `kind`: 'AGENT' (works in a team under a supervisor) or 'DIRECT' (a
+  // merchant account: INR, its own pool, accounts and sub-members). Owner,
+  // 2026-10-11; the server refuses any other value (UNKNOWN_KIND).
+  create: async (data: { username: string; mobile: string; password: string; email?: string; kind: 'AGENT' | 'DIRECT' }) => {
     const res = await api.post('/api/admin/merchants/create', data);
+    return res.data;
+  },
+
+  // ── Merchant accounts (owner, 2026-10-11 — Phase B) ──────────────────────
+  // merchantAccount.admin.routes.js, all `canManageMerchants`.
+  listMerchantAccounts: async () => {
+    const res = await api.get<any>('/api/admin/merchant-accounts');
+    return res.data;
+  },
+  makeMerchantAccount: async (merchantId: string) => {
+    const res = await api.post('/api/admin/merchant-accounts', { merchantId });
+    return res.data;
+  },
+  listMerchantFlags: async (days = 30) => {
+    const res = await api.get<any>('/api/admin/merchant-flags', { params: { days } });
     return res.data;
   },
 

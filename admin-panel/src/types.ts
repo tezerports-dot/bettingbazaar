@@ -546,6 +546,9 @@ export interface TeamView {
 // — §5: change them together.
 export interface TeamPoolRequest {
   requestId: string; teamId: string; teamName: string | null;
+  // AGENT: an agents' team, asked by its supervisor. DIRECT: a merchant
+  // (merchant account), asked by its owner (`toRequest`, teamPools.js).
+  teamKind: 'AGENT' | 'DIRECT';
   supervisorId: string; supervisorName: string | null;
   direction: 'BUY' | 'SELL'; tokenAmountPaise: number;
   status: 'PENDING' | 'FULFILLED' | 'REJECTED' | 'CANCELLED';
