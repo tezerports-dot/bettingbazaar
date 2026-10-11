@@ -203,6 +203,9 @@ router.put('/telegram/two-factor', merchantAuth, telegramTwoFactor);
 
 // ─── PROFILE ─────────────────────────────────────────────────────────────────
 
+/** The owner's own details a merchant account's sub-member is never sent. */
+const OWNER_ONLY_PROFILE_FIELDS = ['mobile', 'email', 'username', 'bankDetails', 'usdtAddressTrc20', 'usdtAddressBep20'];
+
 router.get('/profile', merchantAuth, async (req, res) => {
     try {
         const merchant = await db.merchants.getMerchant(req.merchantId);
@@ -210,10 +213,17 @@ router.get('/profile', merchantAuth, async (req, res) => {
         // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
         // no buy/sell spread. Shape kept for merchant-panel compatibility;
         // merchant earnings are team commission (2e, teamCommission.js).
+        // A sub-member reads the merchant account's record, never the owner's
+        // own contact or payout details (§24: nobody is shown another
+        // person's mobile).
+        const view = formatMerchant(merchant, req.user);
+        if (req.merchantActor?.isOwner === false) {
+            for (const k of OWNER_ONLY_PROFILE_FIELDS) delete view[k];
+        }
         res.json({
             success: true,
             merchant: {
-                ...formatMerchant(merchant, req.user),
+                ...view,
                 prices: { buyPrice: 1, sellPrice: 1, profit: 0 },
             },
             // Who is signed in (owner, 2026-10-11): the owner, or a merchant

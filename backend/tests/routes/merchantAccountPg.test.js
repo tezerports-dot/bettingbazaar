@@ -454,6 +454,12 @@ describePg('merchant accounts', () => {
       const overview = await as(accountApp, s).get('/account');
       expect(overview.status).toBe(200);
       expect(overview.body.staff).toBeUndefined();
+      // Their profile is the account's, without the owner's mobile or payout details (§24).
+      const profile = await as(panel, s).get('/profile');
+      expect(profile.status).toBe(200);
+      for (const k of ['mobile', 'email', 'username', 'bankDetails']) expect(profile.body.merchant).not.toHaveProperty(k);
+      expect(profile.body.actor.isOwner).toBe(false);
+      expect((await as(panel, m).get('/profile')).body.merchant).toHaveProperty('mobile');
       expect((await as(panel, s).put('/online-status').send({ isOnline: false })).body.code).toBe('OWNER_ONLY');
       expect((await as(accountApp, s).post('/account/payment-accounts').send({})).body.code).toBe('OWNER_ONLY');
       expect((await as(accountApp, s).post('/account/staff').send({})).body.code).toBe('OWNER_ONLY');
