@@ -127,6 +127,7 @@ import { RELEASES_DIR, LOCAL_RELEASE_PATH } from './domains/distribution/android
 import { getSystemConfig } from '#db/repositories/config.js';
 import { db } from '#db';
 import { isDatabaseReachable } from '#db/client.js';
+import { mountSpaFallbacks } from './startup/spaFallbacks.js';
 
 // ─── APP SETUP ────────────────────────────────────────────────────────────────
 const runtime = runtimeProfile();
@@ -700,23 +701,8 @@ if (runtime.acceptsRealtime) {
 initRealtimeBridge(io, sseManager);
 
 // ─── SPA FALLBACKS ───────────────────────────────────────────────────────────
-// AQ-6 (Express 5): named wildcards ('/admin/*splat') — '/admin/*' is invalid
-// under path-to-regexp 8. '/{*splat}' matches all remaining paths incl. root.
-app.get('/admin/*splat', (req, res, next) => {
-  if (req.path.startsWith('/api') || path.extname(req.path)) return next();
-  const p = path.join(__dirname, '../admin-panel/dist/index.html');
-  fs.existsSync(p) ? res.sendFile(p) : res.status(503).send('<h1>Admin Panel Not Built</h1>');
-});
-app.get('/merchant/*splat', (req, res, next) => {
-  if (req.path.startsWith('/api') || path.extname(req.path)) return next();
-  const p = path.join(__dirname, '../merchant-panel/dist/index.html');
-  fs.existsSync(p) ? res.sendFile(p) : res.status(503).send('<h1>Merchant Panel Not Built</h1>');
-});
-app.get('/{*splat}', (req, res, next) => {
-  if (req.path.startsWith('/api') || path.extname(req.path)) return next();
-  const p = path.join(__dirname, '../dist/index.html');
-  fs.existsSync(p) ? res.sendFile(p) : res.status(200).json({ success: true, message: 'API running.' });
-});
+// startup/spaFallbacks.js: each panel's index.html, its root included.
+mountSpaFallbacks(app, path.join(__dirname, '..'));
 app.use((req, res) => {
   if (path.extname(req.path)) return res.status(404).send('Not found');
   res.status(404).json({ success: false, message: 'Route not found' });
