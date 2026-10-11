@@ -68,7 +68,9 @@ then the firewall.
 
 **The three things that will silently break it** (VPS doc §0 — read them, they
 each fail *after* you think you're done):
-1. Object storage (MinIO or Cloudflare R2) is **mandatory** — no local-disk mode.
+1. Object storage (MinIO or Cloudflare R2) is **mandatory** — no local-disk mode. It
+   needs a public read address (`CDN_URL`) and a CORS rule allowing `PUT` from the
+   site's origins, because browsers upload to it directly (`docs/governance/ENV.md` §2).
 2. You need **HTTPS with a real certificate** before anyone can even log in.
 3. `TRUST_PROXY=1` must be set, or every user shares one rate-limit budget.
 

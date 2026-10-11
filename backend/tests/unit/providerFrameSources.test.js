@@ -30,13 +30,15 @@ import {
   providerOrigin, providerFrameSources, __setProviderFrameSourcesForTest,
 } from '../../domains/casino/providerFrameSources.js';
 import { securityHeaders, __resetSecurityHeadersCache } from '../../middleware/cspMiddleware.js';
+import { CAPTCHA_ORIGIN, TELEGRAM_SCRIPT, TELEGRAM_WEB_ORIGIN } from '../../config/security.config.js';
 
 /** The header, split into directives, from a real response. */
-async function cspOf() {
+async function cspOf(path = '/') {
   const app = express();
   app.use(securityHeaders);
-  app.get('/', (_req, res) => res.json({ ok: true }));
-  const res = await request(app).get('/');
+  app.get(path, (_req, res) => res.json({ ok: true }));
+  const res = await request(app).get(path);
+  cspOf.frameOptions = res.headers['x-frame-options'];
   const header = res.headers['content-security-policy'] || '';
   return Object.fromEntries(
     header.split(';').map((d) => d.trim()).filter(Boolean)
@@ -76,7 +78,7 @@ describe('the header the browser is sent', () => {
   it('names the enabled provider, so its game can load', async () => {
     __setProviderFrameSourcesForTest(['https://api.provider.example/launch']);
     const csp = await cspOf();
-    expect(csp['frame-src']).toEqual(["'self'", 'https://api.provider.example']);
+    expect(csp['frame-src']).toEqual(["'self'", CAPTCHA_ORIGIN, 'https://api.provider.example']);
   });
 
   it('is `self` alone when no provider is enabled — never a wildcard', async () => {
@@ -84,7 +86,7 @@ describe('the header the browser is sent', () => {
     // completes, and it is exactly what shipped, so the failure mode is the
     // status quo rather than something an attacker can widen.
     const csp = await cspOf();
-    expect(csp['frame-src']).toEqual(["'self'"]);
+    expect(csp['frame-src']).toEqual(["'self'", CAPTCHA_ORIGIN]);
     expect(csp['frame-src']).not.toContain('*');
     expect(csp['frame-src']).not.toContain('https:');
   });
@@ -101,7 +103,7 @@ describe('the header the browser is sent', () => {
     __setProviderFrameSourcesForTest(['https://api.provider.example']);
     const csp = await cspOf();
     expect(csp['default-src']).toEqual(["'self'"]);
-    expect(csp['script-src']).toEqual(["'self'"]);
+    expect(csp['script-src']).toEqual(["'self'", TELEGRAM_SCRIPT, CAPTCHA_ORIGIN]);
     expect(csp['object-src']).toEqual(["'none'"]);
     // The provider's origin is admitted for FRAMING only. It does not become a
     // script source, which would be a much larger grant than the defect needed.
@@ -112,15 +114,15 @@ describe('the header the browser is sent', () => {
     // The middleware caches its helmet instance, so this is the case that says
     // the cache is keyed on the origins rather than built once and kept.
     __setProviderFrameSourcesForTest(['https://one.example']);
-    expect((await cspOf())['frame-src']).toEqual(["'self'", 'https://one.example']);
+    expect((await cspOf())['frame-src']).toEqual(["'self'", CAPTCHA_ORIGIN, 'https://one.example']);
 
     __setProviderFrameSourcesForTest(['https://one.example', 'https://two.example']);
-    expect((await cspOf())['frame-src']).toEqual(["'self'", 'https://one.example', 'https://two.example']);
+    expect((await cspOf())['frame-src']).toEqual(["'self'", CAPTCHA_ORIGIN, 'https://one.example', 'https://two.example']);
 
     // A provider switched off stops being frameable. That toggle is how a
     // supplier is cut off in a hurry.
     __setProviderFrameSourcesForTest(['https://two.example']);
-    expect((await cspOf())['frame-src']).toEqual(["'self'", 'https://two.example']);
+    expect((await cspOf())['frame-src']).toEqual(["'self'", CAPTCHA_ORIGIN, 'https://two.example']);
   });
 
   it('does not repeat an origin two providers share', async () => {
@@ -129,6 +131,30 @@ describe('the header the browser is sent', () => {
     ]);
     // Provider origins only — `'self'` belongs to the directive builder.
     expect(providerFrameSources()).toEqual(['https://api.example']);
-    expect((await cspOf())['frame-src']).toEqual(["'self'", 'https://api.example']);
+    expect((await cspOf())['frame-src']).toEqual(["'self'", CAPTCHA_ORIGIN, 'https://api.example']);
+  });
+});
+
+describe('the two vendor scripts the platform needs', () => {
+  it('lets Turnstile load and open its frame, and the Mini App load Telegram', async () => {
+    // Blocked, signup and login refuse every player (no captcha token) and the
+    // Mini App cannot verify, approve or reset anything (no window.Telegram).
+    const csp = await cspOf();
+    expect(csp['script-src']).toContain(CAPTCHA_ORIGIN);
+    expect(csp['script-src']).toContain(TELEGRAM_SCRIPT);
+    expect(csp['frame-src']).toContain(CAPTCHA_ORIGIN);
+  });
+
+  it('lets Telegram Web frame the Mini App page, and nothing else', async () => {
+    const mini = await cspOf('/mini-app.html');
+    expect(mini['frame-ancestors']).toEqual(["'self'", TELEGRAM_WEB_ORIGIN]);
+    expect(cspOf.frameOptions).toBeUndefined();
+
+    // Every panel keeps refusing to be framed by anyone else.
+    for (const path of ['/', '/admin/', '/merchant/', '/mini-app.htmlx']) {
+      const page = await cspOf(path);
+      expect(page['frame-ancestors'], path).toEqual(["'self'"]);
+      expect(cspOf.frameOptions, path).toBe('SAMEORIGIN');
+    }
   });
 });

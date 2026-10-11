@@ -120,6 +120,11 @@ function getToken(): string | null {
     : null;
 }
 
+/** Whether this browser holds a session at all (it may still be refused). */
+export function hasStoredSession(): boolean {
+  return Boolean(getToken());
+}
+
 // Exposed so AuthContext can refresh it without touching localStorage directly.
 export function setToken(token: string | null): void {
   if (typeof window === 'undefined') return;
@@ -213,9 +218,15 @@ async function performFetch(
   }
 
   if (resp.status === 401) {
-    setToken(null);
-    window.location.href = '/';
-    throw new Error('Session expired. Please log in again.');
+    // A session that WAS held has expired: drop it and start again at the
+    // board. With none held there is nothing to expire, and reloading the app
+    // only made a signed-out tap on an account screen look ignored (S48).
+    if (token) {
+      setToken(null);
+      window.location.href = '/';
+      throw new Error('Session expired. Please log in again.');
+    }
+    throw Object.assign(new Error('Please sign in.'), { status: 401 });
   }
 
   const json = await resp.json().catch(() => ({}));

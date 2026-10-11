@@ -13,7 +13,7 @@ const full = {
   REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', METRICS_TOKEN: 'a-secure-random-metrics-token-value',
   // All four S3 vars: production boot requires isS3Configured(), which needs
   // bucket + access key + secret key + endpoint, not the bucket alone.
-  S3_BUCKET_NAME: 'b', S3_ACCESS_KEY: 'ak', S3_SECRET_KEY: 'sk', S3_ENDPOINT: 'https://s3.example.test',
+  S3_BUCKET_NAME: 'b', S3_ACCESS_KEY: 'ak', S3_SECRET_KEY: 'sk', S3_ENDPOINT: 'https://s3.example.test', CDN_URL: 'https://cdn.example.test',
   PUBLIC_APP_ORIGIN: 'https://app.example.test',
   // Both must be STATED in production (2026-09-30): see the two cases below.
   TRUST_PROXY: '1', TURNSTILE_SECRET_KEY: 'a-turnstile-secret-for-tests',
@@ -127,6 +127,26 @@ describe('validateEnv', () => {
         .toThrow(new RegExp(key));
     });
   }
+
+  // Every stored upload URL is built on CDN_URL; unset, they were saved as the
+  // literal `undefined/<key>`.
+  it('requires CDN_URL in production, as a bare https origin', () => {
+    const { CDN_URL: _omitted, ...withoutCdn } = full;
+    expect(() => validateEnv({ ...withoutCdn, NODE_ENV: 'production' }, true)).toThrow(/CDN_URL/);
+    for (const bad of ['http://cdn.example.test', 'https://cdn.example.test/', 'cdn.example.test']) {
+      expect(() => validateEnv({ ...full, CDN_URL: bad, NODE_ENV: 'production' }, true), bad).toThrow(/CDN_URL/);
+    }
+    expect(() => validateEnv({ ...full, CDN_URL: 'https://pub-abc.r2.dev', NODE_ENV: 'production' }, true)).not.toThrow();
+  });
+
+  it('refuses a SITE_ADDRESS domain missing from ALLOWED_ORIGINS, so its sign-in is not refused', () => {
+    const origins = 'https://a.example,https://www.a.example,https://localhost';
+    expect(() => validateEnv({ ...full, ALLOWED_ORIGINS: origins, SITE_ADDRESS: 'a.example www.a.example', NODE_ENV: 'production' }, true)).not.toThrow();
+    expect(() => validateEnv({ ...full, ALLOWED_ORIGINS: origins, SITE_ADDRESS: 'a.example b.example', NODE_ENV: 'production' }, true))
+      .toThrow(/https:\/\/b\.example is in SITE_ADDRESS but not in ALLOWED_ORIGINS/);
+    // Not a VPS deploy (no SITE_ADDRESS): nothing to compare.
+    expect(() => validateEnv({ ...full, NODE_ENV: 'production' }, true)).not.toThrow();
+  });
 
   it('rejects weak or placeholder metrics tokens in production', () => {
     expect(() => validateEnv({ ...full, METRICS_TOKEN: 'change-this-to-a-random-metrics-token', NODE_ENV: 'production' }, true))

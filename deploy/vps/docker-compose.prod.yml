@@ -21,22 +21,18 @@
 # Rolling restart of the workers without dropping requests:
 #   docker compose -f docker-compose.prod.yml exec api node_modules/.bin/pm2 reload all
 #   docker compose -f docker-compose.prod.yml exec realtime node_modules/.bin/pm2 reload all
-#   minio      S3-compatible storage (OPTIONAL — see the profile note below)
 #
 # Everything except Caddy is on an internal network with no published ports, so
 # the databases are unreachable from the internet even if the firewall lapses.
 #
-# ── Object storage: MinIO or an external bucket ──────────────────────────────
+# ── Object storage: an external bucket ───────────────────────────────────────
 # server.js REFUSES to boot in production without a fully configured
-# S3-compatible provider — it will not fall back to local disk. Two options:
-#
-#   A) External bucket (RECOMMENDED — Cloudflare R2, Backblaze B2):
-#      set the S3_* values in .env to the provider's, and start normally.
-#      Uploads then survive this server dying, and the disk stops filling.
-#
-#   B) MinIO on this box: start with `--profile minio` and use the S3_* values
-#      shown in .env.template. Simpler to begin with; note that KYC documents
-#      and payment proofs then live on this server's disk and are lost with it.
+# S3-compatible provider (Cloudflare R2, Backblaze B2) and validateEnv.js
+# without CDN_URL, the bucket's public https address. Browsers upload straight
+# to the bucket with a presigned PUT, so it needs a CORS rule admitting PUT from
+# the site's origins (docs/GO_LIVE_RUNBOOK.md). A bucket on this box (MinIO) was
+# an option until 2026-10-11: its images are no longer published, and a presigned
+# URL naming an internal hostname is one no browser can reach.
 # ══════════════════════════════════════════════════════════════════════════════
 
 x-app-base: &app-base
@@ -182,7 +178,10 @@ services:
     networks: [bb]
 
   postgres:
-    image: postgres:18
+    # PostgreSQL 18 with pgvector, which the support assistant's document search
+    # needs (database/schema.sql). Plain postgres:18 has no `vector` extension:
+    # the schema skips it and /api/admin/support/documents answers 503.
+    image: pgvector/pgvector:pg18
     restart: unless-stopped
     # Tuned for the 16 GB / 8-core server — see ./postgres/postgresql.conf.
     command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
@@ -219,40 +218,6 @@ services:
       retries: 12
     networks: [bb]
 
-  # ── Optional object storage (see the header note) ───────────────────────────
-  minio:
-    image: minio/minio:latest
-    profiles: ["minio"]
-    restart: unless-stopped
-    command: ["server", "/data", "--console-address", ":9001"]
-    environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
-    volumes: ["minio-data:/data"]
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-    networks: [bb]
-
-  # Creates the bucket once, then exits.
-  minio-init:
-    image: minio/mc:latest
-    profiles: ["minio"]
-    depends_on:
-      minio: { condition: service_healthy }
-    entrypoint: >
-      sh -c "mc alias set bb http://minio:9000 $$S3_ACCESS_KEY $$S3_SECRET_KEY &&
-             mc mb --ignore-existing bb/$$S3_BUCKET_NAME &&
-             echo 'bucket ready'"
-    environment:
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
-      S3_SECRET_KEY: ${S3_SECRET_KEY}
-      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
-    restart: "no"
-    networks: [bb]
-
 networks:
   bb:
     driver: bridge
@@ -260,6 +225,5 @@ networks:
 volumes:
   postgres-data:
   redis-data:
-  minio-data:
   caddy-data:
   caddy-config:

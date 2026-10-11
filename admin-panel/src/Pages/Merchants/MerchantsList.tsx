@@ -63,9 +63,9 @@ export const MerchantsList: React.FC = () => {
   const [rail, setRail] = useState<'INR' | 'USDT'>('INR');
   const [isSavingRail, setIsSavingRail] = useState(false);
 
-  // Merchant panel URL comes from the admin panel build-time env var
-  // VITE_MERCHANT_PANEL_URL (only needed if the merchant panel is on its own host).
-  const merchantPanelUrl = (import.meta as any).env?.VITE_MERCHANT_PANEL_URL || '';
+  // The merchant panel is served at /merchant/ on this same origin; set
+  // VITE_MERCHANT_PANEL_URL at build time only if it moves to its own host.
+  const merchantPanelUrl = (import.meta as any).env?.VITE_MERCHANT_PANEL_URL || '/merchant/';
 
   const { page, limit, setPage } = usePagination();
   const debouncedSearch = useDebounce(search);
@@ -406,7 +406,7 @@ export const MerchantsList: React.FC = () => {
                 <div className="p-3 bg-dark-700 rounded-lg"><p className="text-xs text-gray-400">Total Orders</p><p className="text-lg font-bold">{selectedMerchant.merchantStats?.totalOrdersProcessed || 0}</p></div>
               </div>
 
-              {/* Open Merchant Panel — URL from VITE_MERCHANT_PANEL_URL env var */}
+              {/* Open Merchant Panel — /merchant/, or VITE_MERCHANT_PANEL_URL */}
               {merchantPanelUrl && (
                 <div className="pt-3 border-t border-dark-700">
                   <a

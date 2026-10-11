@@ -2,6 +2,8 @@
 /** The signed-in player's own settings and records. Never served stale. */
 import apiClient from '../apiClient';
 
+export { hasStoredSession } from '../apiClient';
+
 /** Which board-rules version this player has accepted, beside the current one. */
 export const boardRulesAcceptance = (): Promise<any> =>
   apiClient.get('/api/user/board-rules');

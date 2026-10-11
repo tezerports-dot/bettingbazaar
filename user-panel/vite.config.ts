@@ -3,8 +3,15 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import { stampServiceWorker } from './scripts/sw-precache.mjs';
+import { readFileSync } from 'fs';
+
+// §2 "App version": this panel's package.json, as VITE_APP_VERSION. Nothing
+// else set it, so every build reported '0.0.0' and the web minimum-version
+// gate (appUpdate.ts) never fired.
+const APP_VERSION: string = JSON.parse(readFileSync(`${import.meta.dirname}/package.json`, 'utf8')).version;
 
 export default defineConfig({
+  define: { 'import.meta.env.VITE_APP_VERSION': JSON.stringify(process.env.VITE_APP_VERSION || APP_VERSION) },
   plugins: [
     react(),
     {

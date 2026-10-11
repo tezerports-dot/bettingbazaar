@@ -41,6 +41,12 @@ const REQUIRED = [
   ['S3_ACCESS_KEY',     'S3 credentials; production storage refuses the local-disk fallback'],
   ['S3_SECRET_KEY',     'S3 credentials; production storage refuses the local-disk fallback'],
   ['S3_ENDPOINT',       'S3-compatible endpoint URL (e.g. Cloudflare R2, Vultr, AWS)'],
+  // Every stored upload URL is `${CDN_URL}/<key>` (services/cdn.service.js).
+  // Unset, logos, chat attachments and payment proofs were saved as the literal
+  // `undefined/<key>`, and app assets were sent to the bucket's private S3 API
+  // host, which refuses anonymous reads. An R2 bucket's public r2.dev URL or a
+  // custom domain in front of it.
+  ['CDN_URL',           'the public https address the bucket is read from; every uploaded file\'s URL is built on it'],
   ['METRICS_TOKEN',     'protects Prometheus metrics from public disclosure'],
   // The player app's origin: the referral link's fallback (publicAppOrigin())
   // and the Android App Links association are built from it.
@@ -117,7 +123,7 @@ function isOrigin(value, { requireHttps = false } = {}) {
 export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'production') {
   const missing = REQUIRED.filter(([k]) => !env[k] || String(env[k]).trim() === '').map(([k]) => k);
   const weakMetricsToken = hasWeakMetricsToken(env.METRICS_TOKEN);
-  const invalidOrigins = ['PUBLIC_APP_ORIGIN'].filter((key) => {
+  const invalidOrigins = ['PUBLIC_APP_ORIGIN', 'CDN_URL'].filter((key) => {
     const origins = csv(env[key]);
     return env[key] && (!origins.length || !origins.every((origin) => isOrigin(origin, { requireHttps: isProd })));
   });
@@ -190,6 +196,17 @@ export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'produc
   if (isProd && String(env.ANDROID_PACKAGE_ID || '').trim()
       && !csv(env.ALLOWED_ORIGINS).includes('https://localhost')) {
     throw new Error('FATAL: ANDROID_PACKAGE_ID is set, so this deploy ships the Android app, but ALLOWED_ORIGINS does not include https://localhost — the origin the app runs at on the phone. Add it, or every request from the app is refused.');
+  }
+
+  // SITE_ADDRESS is every domain Caddy answers on (deploy/vps/.env.template),
+  // and the CORS check refuses a POST from any origin not in ALLOWED_ORIGINS.
+  // A domain added to one list and not the other serves the site and refuses
+  // its sign-in, with nothing logged as an error.
+  const unlisted = String(env.SITE_ADDRESS || '').split(/\s+/).filter(Boolean)
+    .map((host) => `https://${host.replace(/^https?:\/\//, '').replace(/\/$/, '')}`)
+    .filter((origin) => !csv(env.ALLOWED_ORIGINS).includes(origin));
+  if (isProd && unlisted.length) {
+    throw new Error(`FATAL: ${unlisted.join(', ')} ${unlisted.length > 1 ? 'are' : 'is'} in SITE_ADDRESS but not in ALLOWED_ORIGINS, so sign-in and every other request that sends data would be refused there. Add ${unlisted.length > 1 ? 'them' : 'it'} to ALLOWED_ORIGINS.`);
   }
 
   if (advisedMissing.length && isProd) {
