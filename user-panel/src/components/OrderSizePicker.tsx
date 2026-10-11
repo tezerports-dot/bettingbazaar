@@ -18,6 +18,11 @@
  * the app ships as an APK containing this bundle, so a list written here is
  * one an attacker can edit and one that drifts from the gate.
  *
+ * ── One rail, no heading ─────────────────────────────────────────────────
+ * When INR orders go to merchants the server sends every size under UPI_BANK
+ * and none under CASH (owner, 2026-10-11): an empty rail draws nothing, and a
+ * single rail is a flat list with its method sentence and no rail heading.
+ *
  * ── `maxAllowed` ───────────────────────────────────────────────────────────
  * A sell can only draw on winnings, so a size above them is shown but disabled,
  * with the sentence under the tiles saying why. Display only: the server
@@ -75,17 +80,21 @@ export default function OrderSizePicker({
         const labelId = `${idPrefix}-${rail.toLowerCase()}`;
         const methodId = `${labelId}-method`;
         const method = methods[rail];
+        const headed = rails.length > 1;
         return (
           <div key={rail}>
-            <div id={labelId} style={{ fontSize: 11, color: 'var(--text3)', marginBottom: method ? 2 : 6 }}>
-              {RAIL_LABEL[rail]}
-            </div>
+            {headed && (
+              <div id={labelId} style={{ fontSize: 11, color: 'var(--text3)', marginBottom: method ? 2 : 6 }}>
+                {RAIL_LABEL[rail]}
+              </div>
+            )}
             {method && (
               <div id={methodId} style={{ fontSize: 10.5, color: 'var(--text2)', marginBottom: 6, lineHeight: 1.4 }}>
                 {method}
               </div>
             )}
-            <div role="radiogroup" aria-labelledby={labelId} aria-describedby={method ? methodId : undefined}
+            <div role="radiogroup" aria-labelledby={headed ? labelId : undefined}
+              aria-label={headed ? undefined : 'Order size'} aria-describedby={method ? methodId : undefined}
               style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))', gap: 8 }}>
               {sizes[rail].map((size) => {
                 const on = value === size;

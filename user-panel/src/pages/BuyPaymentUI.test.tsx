@@ -316,3 +316,46 @@ describe('the ATM cash rail', () => {
     expect(screen.queryByRole('button', { name: /tell the merchant/ })).toBeNull();
   });
 });
+
+describe('a buy paid to a UPI scanner (owner, 2026-10-11)', () => {
+  // On a non-cash buy the server may send `payTo.paymentLink`: a UPI scanner's
+  // link with the order's amount in it (playerOrderView.js). Paid in a UPI
+  // app, then the UTR, like a bank buy. Never the handle as text.
+  const UPI_LINK = 'upi://pay?pa=shop.hdfc@okhdfc&pn=Shop%20Ltd&am=50000.00&cu=INR&tr=ORD77';
+  const UPI_ORDER: any = { ...ORDER, payTo: { paymentLink: UPI_LINK, merchantRef: 'Merchant #7731' } };
+  const wide = (matches: boolean) => Object.defineProperty(window, 'matchMedia', {
+    configurable: true, writable: true,
+    value: vi.fn((query: string) => ({
+      matches, media: query, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+    })),
+  });
+
+  it('shows PAY NOW with the server\'s link, a QR on a wide screen, and asks for the UTR', async () => {
+    wide(true);
+    renderUI(UPI_ORDER);
+    const pay = screen.getByRole('link', { name: /PAY NOW/ }) as HTMLAnchorElement;
+    expect(pay.getAttribute('href')).toBe(UPI_LINK);
+    expect(screen.getByRole('img', { name: /QR code to pay/ })).toBeInTheDocument();
+    expect(screen.queryByText('Account number')).toBeNull();
+    expect(screen.queryByText(/shop\.hdfc@okhdfc/)).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText('Enter after paying'), { target: { value: '412345678901' } });
+    fireEvent.click(screen.getByRole('button', { name: /I've Paid/ }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith(expect.stringContaining('ORD-77'), expect.objectContaining({ utrNumber: '412345678901' })));
+    delete (window as { matchMedia?: unknown }).matchMedia;
+  });
+
+  it('draws no QR on a phone; the button is the way to pay', () => {
+    wide(false);
+    renderUI(UPI_ORDER);
+    expect(screen.getByRole('link', { name: /PAY NOW/ })).toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: /QR code to pay/ })).toBeNull();
+    delete (window as { matchMedia?: unknown }).matchMedia;
+  });
+
+  it('a bank buy still shows the bank fields and no PAY NOW', () => {
+    renderUI();
+    expect(screen.getByText('Account number')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /PAY NOW/ })).toBeNull();
+  });
+});

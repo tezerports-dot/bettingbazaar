@@ -204,10 +204,14 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
    *              pay. Used verbatim.
    *   bank buy   `bankAccount`, the member's account, paid by bank transfer
    *              with the UTR given back (owner, 2026-10-03).
+   *   UPI buy    `paymentLink` on a non-cash buy: a UPI scanner the server
+   *              built the link for, with the order's amount in it (owner,
+   *              2026-10-11). Paid in a UPI app, then the UTR, as a bank buy.
    */
   const cashLink = onCashRail ? (payTo?.paymentLink ?? '') : '';
-  const bank = onCashRail ? undefined : payTo?.bankAccount;
-  const somewhereToPay = onCashRail ? Boolean(cashLink) : Boolean(bank?.accountNo);
+  const upiLink = onCashRail ? '' : (payTo?.paymentLink ?? '');
+  const bank = onCashRail || upiLink ? undefined : payTo?.bankAccount;
+  const somewhereToPay = onCashRail ? Boolean(cashLink) : Boolean(upiLink || bank?.accountNo);
 
   useEffect(() => {
     if (order.status === 'PAID' && order.paidAt) {
@@ -397,6 +401,18 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
           {/* On a laptop or tablet, the same link as a QR drawn here, to scan
               with a phone (Phase A). Nothing on a narrow screen. */}
           <PayLinkQr link={cashLink} amountLabel={fmtINR(order.fiatAmount)} />
+        </div>
+      )}
+      {!awaitingReference && !onCashRail && upiLink && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <a href={upiLink} style={{ width: '100%', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', fontWeight: 800, padding: '15px 12px', borderRadius: 13, fontSize: 15, textAlign: 'center', display: 'block', textDecoration: 'none' }}>
+            PAY NOW · {fmtINR(order.fiatAmount)}
+          </a>
+          <p style={{ fontSize: 11, color: 'var(--text3)', textAlign: 'center', margin: 0, lineHeight: 1.5 }}>
+            Opens your UPI app with the amount filled in. After paying, enter the UTR / UPI reference below.
+          </p>
+          {/* On a laptop or tablet, the same link as a QR to scan with a phone. */}
+          <PayLinkQr link={upiLink} amountLabel={fmtINR(order.fiatAmount)} />
         </div>
       )}
       {!awaitingReference && !onCashRail && bank && (
@@ -848,7 +864,7 @@ const WalletPage: React.FC = () => {
                       <><b style={{ color: 'var(--text)' }}>Cash purchase.</b> A cash-team member at a cash machine serves it: when they send the payment link, pay it, tap “I’ve paid” straight away, then add the UTR.</>
                     )}
                     {buyRail === 'UPI_BANK' && (
-                      <><b style={{ color: 'var(--text)' }}>UPI / bank purchase.</b> Paid to a team member from your UPI or bank app, then you submit the UTR.</>
+                      <><b style={{ color: 'var(--text)' }}>UPI / bank purchase.</b> Paid from your UPI or bank app to where the order shows, then you submit the UTR.</>
                     )}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>You pay <b style={{ color: 'var(--gold-ink)' }}>{fmtINR(buyAmount)}</b> · 1 token = ₹1</div>

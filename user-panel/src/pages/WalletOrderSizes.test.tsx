@@ -217,3 +217,29 @@ describe('an order already in flight', () => {
     expect(screen.getByRole('button', { name: /I've Paid — tell the merchant/ })).toBeInTheDocument();
   });
 });
+
+describe('INR orders to merchants: one flat list (owner, 2026-10-11)', () => {
+  // In MERCHANTS mode the server sends CASH empty and every size under
+  // UPI_BANK, with its own method sentence (systemConfigPayload.js). An empty
+  // rail draws nothing, and one rail has no heading.
+  const FLAT = {
+    ...CONFIG,
+    orderSizes: { buy: { CASH: [], UPI_BANK: [500, 1000, 50000] }, sell: { CASH: [], UPI_BANK: [500, 1000, 50000] } },
+    orderSizeMethods: { buy: { UPI_BANK: 'UPI or bank transfer' }, sell: { UPI_BANK: 'Bank transfer to your bank account' } },
+  };
+
+  it('draws every size in one unheaded group with the server\'s sentence, and buys the size picked', async () => {
+    await open({ config: FLAT });
+    expect(await tile('500 tokens')).toBeInTheDocument();
+    const group = screen.getByRole('radiogroup', { name: 'Order size' });
+    expect(within(group).getAllByRole('radio').map((r) => r.getAttribute('aria-label'))).toEqual(['500 tokens', '1,000 tokens', '50,000 tokens']);
+    expect(screen.queryByText('Cash team')).toBeNull();
+    expect(screen.queryByText('UPI / bank team')).toBeNull();
+    expect(screen.getByRole('radiogroup', { name: 'Order size' })).toHaveAccessibleDescription('UPI or bank transfer');
+    expect(document.body.textContent).not.toMatch(/agent|merchant account/i);
+    fireEvent.click(screen.getByRole('radio', { name: '500 tokens' }));
+    fireEvent.click(continueButton());
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    expect(JSON.stringify(post.mock.calls[0])).toContain('500');
+  });
+});
