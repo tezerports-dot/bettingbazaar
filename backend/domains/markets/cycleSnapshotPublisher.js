@@ -46,7 +46,18 @@
  * The SSE bridge is NOT a leftover and stays. `pool_update` travels through
  * Socket.IO rooms only, and the browser socket is WebSocket-only, so a client
  * behind a WebSocket-blocking proxy has SSE as its sole transport. `sseManager`
- * has no room concept to scope it to — see the flush() comment.
+ * has no room concept to scope it to — see the flush() comment. *
+ * ONE SSE MESSAGE PER TICK, CLUSTER-WIDE (2026-10-11)
+ * Since 2026-10-10 the SSE `bet_placed` is the player app's only pool feed. It
+ * used to go out once per dirty cycle per worker, and `sseManager.broadcast`
+ * relays each copy to every other worker, so every stream received
+ * (live cycles × workers) messages a second, each one gzip-flushed separately
+ * (`eventStreamCompression`). Measured locally: 1.63 million deliveries in 65 s
+ * for ONE live cycle on three workers with 10,000 streams, and bet p95 went
+ * from 38 ms to 9.8 s. Now each worker shares its dirty snapshots with the
+ * others (`sseManager.sharePeer`, written to no client), keeps the newest per
+ * cycle, and on its own tick sends its own streams ONE `bet_placed` carrying
+ * every changed cycle: `{ pools: [ … ] }`.
  */
 import { assertPublicCycleSafe } from './cyclePublicView.js';
 
@@ -61,6 +72,10 @@ export class CycleSnapshotPublisher {
     this.sseManager = null;
     /** cycleId -> { cycleType, totalDelhi, totalBombay, poolsHidden, betCount, dirty, updatedAt } */
     this.snapshots = new Map();
+    /** cycleId -> { pool, ts } — newest snapshot each other worker shared since the last flush. */
+    this.peerPools = new Map();
+    /** cycleId -> ts of the snapshot last sent to this worker's streams (never send an older one after it). */
+    this.sentTs = new Map();
     this.timer = null;
     this.metrics = { flushes: 0, snapshotsPublished: 0, betsCoalesced: 0, lastFlushSize: 0, pruned: 0 };
   }
@@ -69,6 +84,7 @@ export class CycleSnapshotPublisher {
   attach({ io, sseManager } = {}) {
     this.io = io || null;
     this.sseManager = sseManager || null;
+    this.sseManager?.onPeer?.('cycle_pools', (items) => this.ingestPeer(items));
     return this;
   }
 
@@ -91,6 +107,26 @@ export class CycleSnapshotPublisher {
       dirty: true,
       updatedAt: Date.now(),
     });
+  }
+
+  /**
+   * Snapshots another worker flushed. Held until this worker's next flush,
+   * which sends them to its own streams in the same message as its own.
+   */
+  ingestPeer(items) {
+    if (!Array.isArray(items)) return;
+    for (const item of items) {
+      const cycleId = item?.pool?.cycleId;
+      const ts = Number(item?.ts) || 0;
+      if (typeof cycleId !== 'string' || !cycleId) continue;
+      const prev = this.peerPools.get(cycleId);
+      if (prev && prev.ts > ts) continue;
+      try {
+        this.peerPools.set(cycleId, { pool: assertPublicCycleSafe(item.pool), ts });
+      } catch (e) {
+        console.warn('[cycleSnapshot] refused a peer snapshot:', e.message);
+      }
+    }
   }
 
   /** Start the single publisher timer. Idempotent. */
@@ -122,42 +158,37 @@ export class CycleSnapshotPublisher {
     });
   }
 
-  /** Emit every dirty cycle's snapshot once, then clear dirt and prune stale. */
+  /**
+   * Emit every dirty cycle's snapshot once, send this worker's streams ONE
+   * `bet_placed` with every changed cycle (its own and its peers'), then clear
+   * dirt and prune stale.
+   */
   flush() {
     this.metrics.flushes++;
     const now = Date.now();
     let published = 0;
+    /** cycleId -> { pool, ts } to send this tick. */
+    const outgoing = new Map();
+    const shared = [];
 
     for (const [cycleId, snap] of this.snapshots) {
       if (snap.dirty) {
         snap.dirty = false;
         const payload = this.buildPayload(cycleId, snap);
 
-        // Canonical: room-scoped to watchers of this cycle.
+        // Canonical: room-scoped to watchers of this cycle. The Socket.IO Redis
+        // adapter carries it to the other workers' rooms.
         this.io?.to(`cycle:${cycleId}`).emit('pool_update', payload);
 
-        // ── SSE-only bridge ────────────────────────────────────────────────
-        // The Socket.IO half of this bridge is GONE (2026-08-31): every socket
-        // client ships `watch_cycle` + `pool_update` (GameContext.tsx), so the
-        // global `io.emit` was sending each live cycle's snapshot to every
-        // connected client on top of the room-scoped one they already had —
-        // with three boards live, four deliveries a second where one was
-        // wanted.
-        //
-        // The SSE half STAYS, and is not a leftover. `pool_update` is emitted
-        // through Socket.IO rooms only, and the browser socket is configured
-        // WebSocket-only (`transports: ['websocket'], upgrade: false`), so a
-        // client behind a proxy that blocks WebSocket has SSE as its ONLY
-        // transport — and `sseManager` has just `broadcast` and
-        // `sendToClient`, no topic or room concept to scope this to.
-        //
-        // Removing it would silently stop live pool movement for exactly the
-        // users least able to report why. Scoping the SSE side needs a
-        // subscription registry, which is a feature, not a cleanup.
-        const legacy = assertPublicCycleSafe(snap.poolsHidden
+        // The SSE feed. Not a leftover: since 2026-10-10 the player app opens
+        // no socket, so this is its only live-pool feed. `sseManager` has no
+        // room concept, so it reaches every stream; one message per tick keeps
+        // that affordable (see the header).
+        const pool = assertPublicCycleSafe(snap.poolsHidden
           ? { cycleId, cycleType: snap.cycleType, poolsHidden: true, totalPool: payload.totalPool }
           : { cycleId, cycleType: snap.cycleType, newTotalDelhi: snap.totalDelhi, newTotalBombay: snap.totalBombay });
-        this.sseManager?.broadcast('bet_placed', legacy);
+        outgoing.set(cycleId, { pool, ts: snap.updatedAt });
+        shared.push({ pool, ts: snap.updatedAt });
 
         published++;
       } else if (now - snap.updatedAt > STALE_AFTER_MS) {
@@ -166,6 +197,27 @@ export class CycleSnapshotPublisher {
         this.snapshots.delete(cycleId);
         this.metrics.pruned++;
       }
+    }
+
+    if (shared.length) this.sseManager?.sharePeer?.('cycle_pools', shared);
+
+    // A peer's snapshot of the same cycle wins when it is newer: each worker
+    // holds the totals of the last bet IT placed.
+    for (const [cycleId, peer] of this.peerPools) {
+      const mine = outgoing.get(cycleId);
+      if (!mine || peer.ts > mine.ts) outgoing.set(cycleId, peer);
+    }
+    this.peerPools.clear();
+
+    const pools = [];
+    for (const [cycleId, { pool, ts }] of outgoing) {
+      if ((this.sentTs.get(cycleId) ?? -Infinity) > ts) continue; // already sent newer totals
+      this.sentTs.set(cycleId, ts);
+      pools.push(pool);
+    }
+    if (pools.length) this.sseManager?.broadcastLocal?.('bet_placed', { pools });
+    for (const [cycleId, ts] of this.sentTs) {
+      if (now - ts > STALE_AFTER_MS) this.sentTs.delete(cycleId);
     }
 
     this.metrics.lastFlushSize = published;
@@ -179,7 +231,7 @@ export class CycleSnapshotPublisher {
   }
 
   /** Drop a cycle immediately (e.g. on RESULT_DECLARED). */
-  forget(cycleId) { this.snapshots.delete(cycleId); }
+  forget(cycleId) { this.snapshots.delete(cycleId); this.peerPools.delete(cycleId); this.sentTs.delete(cycleId); }
 
   /** Observability snapshot for the metrics endpoint. */
   stats() { return { ...this.metrics, trackedCycles: this.snapshots.size, intervalMs: PUBLISH_INTERVAL_MS }; }

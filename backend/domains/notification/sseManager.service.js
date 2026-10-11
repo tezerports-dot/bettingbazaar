@@ -45,6 +45,8 @@ class SSEManager {
         this._origin = crypto.randomUUID(); // this instance's id (dedup tag)
         this._pub = null;                    // ioredis publisher (or null)
         this._channel = 'bb:sse';
+        // Instance-to-instance messages that are not deliveries (sharePeer).
+        this._peerHandlers = new Map();
 
         // Keep-alive ping every 25s — prevents Railway 30s idle timeout
         this._pingInterval = setInterval(() => this._ping(), 25000);
@@ -89,7 +91,23 @@ class SSEManager {
             case 'broadcastToAdmins':return this._localBroadcastToAdmins(...args);
             case 'closeAdminClientsFor': return this._localCloseAdminClientsFor(...args);
             case 'broadcastToMerchants': return this._localBroadcastToMerchants(...args);
+            case 'peer':             return this._peerHandlers.get(args[0])?.(args[1]);
         }
+    }
+
+    /**
+     * sharePeer / onPeer — hand data to the OTHER instances without writing it
+     * to any client. A producer that batches its own deliveries (the cycle pool
+     * publisher) shares what it produced here and lets every instance send its
+     * own clients one combined message, instead of relaying each copy through
+     * `broadcast`, which writes every instance's copy to every stream.
+     */
+    sharePeer(kind, payload) {
+        this._publish('peer', [kind, payload]);
+    }
+
+    onPeer(kind, handler) {
+        this._peerHandlers.set(kind, handler);
     }
 
     // ── WRITE SAFETY / BACKPRESSURE ───────────────────────────────────────────
@@ -176,6 +194,11 @@ class SSEManager {
     broadcast(event, data) {
         this._localBroadcast(event, data);
         this._publish('broadcast', [event, data]);
+    }
+
+    /** Broadcast to THIS instance's public clients only (see sharePeer). */
+    broadcastLocal(event, data) {
+        this._localBroadcast(event, data);
     }
 
     _localBroadcast(event, data) {

@@ -1374,6 +1374,12 @@ CREATE INDEX IF NOT EXISTS cycles_audience_recent_idx ON cycles (cycle_type, aud
 -- The settlement sweep's query: declared, not yet settled.
 CREATE INDEX IF NOT EXISTS cycles_settleable_idx ON cycles (end_time)
   WHERE winner IS NOT NULL AND NOT is_settled;
+-- The history feed's version (`markets.resolvedHistoryVersion`): the newest
+-- change to any resolved cycle of one board and audience. Every write to a
+-- resolved cycle's public fields (result, settlement) sets `updated_at`, so the
+-- cached feed is rebuilt exactly when a row in it could have changed.
+CREATE INDEX IF NOT EXISTS cycles_resolved_updated_idx ON cycles (cycle_type, audience, updated_at DESC)
+  WHERE winner IS NOT NULL;
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- CASINO — third-party game providers

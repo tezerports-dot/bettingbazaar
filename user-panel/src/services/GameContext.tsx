@@ -195,6 +195,9 @@ const createNullCycle = (type: CycleType): GameCycle => ({
   phantomBombay:   0,
   phantomBalanced: false,
 });
+/** What the stream bridge already received of a replayed event (none from a test double). */
+const heldPayloads = (bridge: EventTarget | undefined, event: string): unknown[] =>
+  (bridge as { heldPayloads?: (e: string) => unknown[] } | undefined)?.heldPayloads?.(event) ?? [];
 const NO_STATS: LiveStats = Object.freeze({ totalDelhi: 0, totalBombay: 0, totalPool: 0, poolsHidden: false }) as LiveStats;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -277,6 +280,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const audienceRef = useRef<PlayProfile>('VIP');
   const snapshotsRef = useRef<Partial<Record<PlayProfile, any>>>({});
   const applySnapshotRef = useRef<((data: any) => void) | null>(null);
+  /** Held stream payloads already replayed into this context (see heldPayloads). */
+  const replayedRef = useRef(new WeakSet<object>());
   // serverTimeOffset removed — cycle timing is server-authoritative.
   // Status and timeRemaining come from cycle_update WS events, not local math.
   const serverTimeOffset = 0; // kept for context API compat, components must not use for cycle math
@@ -502,6 +507,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     }
     const onHistory = (e: Event) => mergeCycleHistory((e as any).data?.cycles);
     sseBridge.addEventListener('cycle_history', onHistory);
+    // The stream may have opened before this listener existed (realBackend.ts `held`).
+    for (const h of heldPayloads(sseBridge, 'cycle_history')) mergeCycleHistory((h as any)?.cycles);
     return () => sseBridge.removeEventListener('cycle_history', onHistory);
   }, [mergeCycleHistory]);
 
@@ -565,6 +572,10 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       const applySnapshotType = (rawType: string, ct: CycleType) => {
         const c = map[rawType];
         if (!c) return;
+        // A snapshot replayed to a late listener can be older than a
+        // `new_cycle` already applied: never move a board back to an earlier round.
+        const held = cyclesRef.current[ct];
+        if (held && held.startTime > (Number(c.startTime) || 0)) return;
         for (const [pendingCycleId, pending] of pendingBetPlaced) {
           if (pending.cycleType === ct) pendingBetPlaced.delete(pendingCycleId);
         }
@@ -646,12 +657,17 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       });
     };
 
+    // One message per server tick carries every live cycle whose pools moved:
+    // `{ pools: [{ cycleId, cycleType, newTotalDelhi, newTotalBombay }, …] }`.
     const handleBetPlaced = (data: any) => {
-      const ct = toCycleType(data.cycleType, data.cycleId);
-      if (!ct) return;
-      if (typeof data.cycleId !== 'string' || !data.cycleId) return;
-      pendingBetPlaced.set(data.cycleId, { cycleType: ct, stats: poolStats(data) });
-      if (betPlacedFlushTimer == null) {
+      const pools: any[] = Array.isArray(data?.pools) ? data.pools : [];
+      for (const p of pools) {
+        const ct = toCycleType(p?.cycleType, p?.cycleId);
+        if (!ct) continue;
+        if (typeof p.cycleId !== 'string' || !p.cycleId) continue;
+        pendingBetPlaced.set(p.cycleId, { cycleType: ct, stats: poolStats(p) });
+      }
+      if (pendingBetPlaced.size > 0 && betPlacedFlushTimer == null) {
         betPlacedFlushTimer = window.setTimeout(flushBetPlaced, 120);
       }
     };
@@ -829,6 +845,16 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       // Listen to both so admin wallet top-ups reflect instantly without refresh.
       onSSE('user_update',         handleUserBalanceUpdate),
     ];
+    // The opening snapshot is sent once, when the stream opens — usually
+    // before this effect runs. Apply what the bridge already holds.
+    // Each held payload once: this effect re-runs on sign-in, and a payload
+    // already applied must not be applied again.
+    for (const snap of heldPayloads(sseBridge, 'cycle_snapshot')) {
+      if (snap && typeof snap === 'object' && !replayedRef.current.has(snap)) {
+        replayedRef.current.add(snap);
+        handleCycleSnapshot(snap);
+      }
+    }
 
     return () => {
       if (betPlacedFlushTimer != null) window.clearTimeout(betPlacedFlushTimer);
