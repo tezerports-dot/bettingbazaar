@@ -765,6 +765,22 @@ export async function setPendingResult(cycleId, side) {
  * a 1-minute block resolves 60 times an hour, so 50 rows shared across three
  * types is the last 50 minutes and nothing else.
  */
+/**
+ * When anything in one board's resolved history last changed: a new result,
+ * or a settlement moving a row to COMPLETED. Index-only
+ * (`cycles_resolved_updated_idx`), so it is what a cache asks before
+ * re-reading `resolvedCyclesWithPools`, whose per-cycle pool sums are the cost.
+ * Null while the board has no resolved cycle.
+ */
+export async function resolvedHistoryVersion(cycleType, audience) {
+  const { rows } = await pgQuery(
+    `SELECT max(updated_at)::text AS v FROM cycles
+      WHERE cycle_type = $1 AND audience = $2 AND winner IS NOT NULL`,
+    [String(cycleType), audienceOf(audience)], 'cycle_resolved_history_version',
+  );
+  return rows[0]?.v ?? null;
+}
+
 export async function resolvedCyclesWithPools(cycleType, audience, { limit = 50 } = {}) {
   const { rows } = await pgQuery(
     `SELECT ${qualified('c')},

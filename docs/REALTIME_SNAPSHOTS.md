@@ -76,6 +76,21 @@ client change**. New clients additionally `watch_cycle` + read `pool_update`.
    `sseManager.service.js` (mirroring its existing user/admin channels) gives SSE
    watchers the same room benefit. Marginal at ~2k users; do it if load says so.
 
+## One SSE message per tick, cluster-wide (2026-10-11)
+
+Since 2026-10-10 the player app opens no socket, so the SSE `bet_placed` is its
+only pool feed, and it went out once per dirty cycle per worker, each copy
+relayed to every other worker by `sseManager.broadcast`. Every stream received
+(live cycles × workers) messages a second, each gzip-flushed on its own. A local
+run with 10,000 streams on three workers saw 1.63 million deliveries in 65 s for
+one live cycle, and bet p95 rose from 38 ms to 9.8 s.
+
+Now each worker shares its dirty snapshots with the others over
+`sseManager.sharePeer('cycle_pools', …)` (written to no client), keeps the newest
+per cycle by timestamp, and on its own tick sends its own streams one
+`bet_placed` with every changed cycle: `{ pools: [ … ] }` (`broadcastLocal`).
+The Socket.IO `pool_update` is unchanged.
+
 ## Measure it (do not guess — item 17)
 
 Two harnesses + `/metrics`, all **staging only, not yet run**:

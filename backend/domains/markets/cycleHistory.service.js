@@ -84,9 +84,50 @@ export function normaliseLimit(limit, typeCount) {
  * that instant, which on a 1-minute block is usually one row or none.
  */
 async function historyForType(type, audience, limit) {
-  const cycles = await db.markets.resolvedCyclesWithPools(type, audience, { limit });
-  return cycles.map(publicCycleView);
+  // ── Cached per board and audience, keyed on the history's version ─────────
+  // Every stream open asks for this (sse.routes.js `sendOpening`) and the
+  // analytics drawer asks for up to 1,440 rows, each summing its cycles' bets.
+  // Measured on 100k players / 2M bets: 1.15 s of database time per stream
+  // open, and 500 players connecting at once left the server unresponsive for
+  // over two minutes. Resolved history only changes when a result or a
+  // settlement lands, and both move `updated_at`, so the cache asks the
+  // index-only `resolvedHistoryVersion` and re-reads only when it moved. A
+  // shallower window is a prefix of a deeper one, so one entry serves both.
+  const key = `${type}|${audience}`;
+  const version = await db.markets.resolvedHistoryVersion(type, audience);
+  const hit = historyCache.get(key);
+  if (hit && hit.version === version && hit.depth >= limit) return hit.rows.slice(0, limit);
+
+  // One read per key, version and depth at a time: a reconnect wave is
+  // thousands of identical asks arriving together.
+  const flightKey = `${key}|${version}|${limit}`;
+  let flight = inFlight.get(flightKey);
+  if (!flight) {
+    flight = db.markets.resolvedCyclesWithPools(type, audience, { limit })
+      .then((cycles) => {
+        const rows = cycles.map(publicCycleView);
+        const depth = rows.length < limit ? Infinity : limit;
+        const now = historyCache.get(key);
+        // A newer version replaces; the same version keeps the deeper window;
+        // an older read finishing late never replaces a newer one. Versions
+        // are PostgreSQL timestamptz text, which sorts as it orders.
+        const v = version ?? '';
+        const held = now?.version ?? '';
+        if (!now || v > held || (v === held && depth >= now.depth)) {
+          historyCache.set(key, { version, depth, rows });
+        }
+        return rows;
+      })
+      .finally(() => inFlight.delete(flightKey));
+    inFlight.set(flightKey, flight);
+  }
+  return (await flight).slice(0, limit);
 }
+
+/** `type|audience` → { version, depth, rows } (see historyForType). */
+const historyCache = new Map();
+/** `type|audience|version|limit` → the read in progress. */
+const inFlight = new Map();
 
 /**
  * Resolved-cycle history.

@@ -87,6 +87,9 @@ const STREAM_EVENTS = [
   'user_balance_update', 'user_update', 'round_result', 'payout_success', 'order_update',
 ] as const;
 
+/** Opening state a screen must see even if it subscribes after the stream opened. */
+const REPLAYED_EVENTS = new Set(['cycle_snapshot', 'cycle_history']);
+
 class SSEEventBridge extends EventTarget {
   private sse: EventStream | null = null;
   /** The token the open stream was admitted with; null = the public stream. */
@@ -98,6 +101,21 @@ class SSEEventBridge extends EventTarget {
    * next open to hear them.
    */
   readonly last = new Map<string, unknown>();
+  /**
+   * The stream's opening state, kept per audience (and, for history, per set
+   * of boards) so a screen that subscribes AFTER the stream opened still gets
+   * it. The server sends `cycle_snapshot` once, at open — measured, it lands
+   * ~100–200 ms before GameContext attaches its listener, and a board with no
+   * snapshot reads as closed ("Bets just closed") until the next round's
+   * re-broadcast, up to a minute later. `last` cannot serve here: it holds one
+   * payload per event, so the GENERAL snapshot would overwrite the VIP one.
+   */
+  private readonly held = new Map<string, Map<string, unknown>>();
+
+  /** Every held payload of a replayed event, for a listener attached late. */
+  heldPayloads(event: string): unknown[] {
+    return [...(this.held.get(event)?.values() ?? [])];
+  }
 
   constructor(private readonly token: () => string | null) { super(); }
 
@@ -148,6 +166,11 @@ class SSEEventBridge extends EventTarget {
           try {
             const data = JSON.parse((e as MessageEvent).data);
             this.last.set(eventName, data);
+            if (REPLAYED_EVENTS.has(eventName)) {
+              const key = `${data?.audience ?? 'VIP'}|${Array.isArray(data?.types) ? data.types.join(',') : ''}`;
+              if (!this.held.has(eventName)) this.held.set(eventName, new Map());
+              this.held.get(eventName)!.set(key, data);
+            }
             this.dispatchEvent(Object.assign(new Event(eventName), { data }));
           } catch { /* ignore malformed events */ }
         });

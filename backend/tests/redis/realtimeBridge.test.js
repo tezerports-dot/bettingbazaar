@@ -87,6 +87,33 @@ suite('SSE Redis bridge (cross-instance fan-out)', () => {
     expect(onA.received()).toHaveLength(1); // once, not twice
   });
 
+  it('sharePeer hands data to the OTHER instance\'s handler and writes it to no client', async () => {
+    // The cycle pool publisher shares its snapshots this way so each instance
+    // sends its own streams one combined bet_placed per tick.
+    const onA = fakeClient();
+    const onB = fakeClient();
+    A.addClient(onA); B.addClient(onB);
+    const gotA = []; const gotB = [];
+    A.onPeer('cycle_pools', (p) => gotA.push(p));
+    B.onPeer('cycle_pools', (p) => gotB.push(p));
+    A.sharePeer('cycle_pools', [{ pool: { cycleId: 'c1' }, ts: 1 }]);
+    await sleep(150);
+    expect(gotB).toEqual([[{ pool: { cycleId: 'c1' }, ts: 1 }]]);
+    expect(gotA).toEqual([]);                 // not echoed to its origin
+    expect(onA.received()).toHaveLength(0);   // not a delivery
+    expect(onB.received()).toHaveLength(0);
+  });
+
+  it('broadcastLocal reaches this instance\'s clients only', async () => {
+    const onA = fakeClient();
+    const onB = fakeClient();
+    A.addClient(onA); B.addClient(onB);
+    A.broadcastLocal('bet_placed', { pools: [] });
+    await sleep(150);
+    expect(onA.received()).toHaveLength(1);
+    expect(onB.received()).toHaveLength(0);
+  });
+
   it('merchant + admin fan-outs cross instances', async () => {
     const mOnB = fakeClient();
     const admOnB = fakeClient();
