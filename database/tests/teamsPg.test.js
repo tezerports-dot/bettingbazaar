@@ -5,7 +5,8 @@
  * What a database is needed for: the two caps (4 teams, 10 members) are counts
  * of sibling rows, asked under a lock — so they are tested by RACING them; the
  * supervisor/member separation is a trigger; and the strength a team reports
- * is computed by the database's clock in IST.
+ * is derived from its approved members in the read (a team works with one to
+ * ten; owner, Phase A).
  *
  * Trap 10: every merchant and team here is this run's own, and removed after.
  */
@@ -251,41 +252,39 @@ describePg('supervisors and teams (PostgreSQL)', () => {
     expect(await membershipOf(members[0])).toBeNull();
   });
 
-  // ── Strength ─────────────────────────────────────────────────────────────
-  it('a team that has never had ten is STOPPED, and at ten it is WORKING', async () => {
-    const { teamId, sup } = await teamWith(TEAM_SIZE - 1);
-    expect((await getTeam(teamId)).strength).toBe('STOPPED');
+  // ── Strength (owner, Phase A: a team works with one to ten) ─────────────
+  it('a team with no approved member is STOPPED, and with ONE it is WORKING', async () => {
+    const { teamId, sup } = await teamWithPending(1);
+    // A pending proposal is not a member yet: nobody to route to.
+    expect(await getTeam(teamId)).toMatchObject({ strength: 'STOPPED', approvedCount: 0, pendingCount: 1 });
     const m = await merchant();
     await addMember({ teamId, supervisorId: sup, merchantRef: m, actor: sup });
     await approveMember({ merchantId: m, actor: 'admin-1' });
-    expect(await getTeam(teamId)).toMatchObject({ strength: 'WORKING', approvedCount: TEAM_SIZE, wasFull: true, shortSince: null });
+    expect(await getTeam(teamId)).toMatchObject({ strength: 'WORKING', approvedCount: 1 });
   });
 
-  it('dropping from ten starts a grace day; a second drop does not restart it; refilling ends it', async () => {
+  it('works at every size from one to ten, and keeps working after a member leaves', async () => {
     const { teamId, sup, members } = await teamWith(TEAM_SIZE);
-    await removeMember({ merchantId: members[0], supervisorId: sup });
-    const first = await getTeam(teamId);
-    expect(first.strength).toBe('GRACE');
-    expect(first.shortSince).not.toBeNull();
-
-    await removeMember({ merchantId: members[1], supervisorId: sup });
-    expect((await getTeam(teamId)).shortSince.getTime()).toBe(first.shortSince.getTime());
-
-    for (let i = 0; i < 2; i += 1) {
-      const m = await merchant();
-      await addMember({ teamId, supervisorId: sup, merchantRef: m, actor: sup });
-      await approveMember({ merchantId: m, actor: 'admin-1' });
+    expect(await getTeam(teamId)).toMatchObject({ strength: 'WORKING', approvedCount: TEAM_SIZE });
+    // No grace day and no midnight stop: each departure leaves a working team
+    // until the last approved member goes.
+    for (let left = TEAM_SIZE - 1; left >= 1; left -= 1) {
+      await removeMember({ merchantId: members[TEAM_SIZE - 1 - left], supervisorId: sup });
+      expect(await getTeam(teamId)).toMatchObject({ strength: 'WORKING', approvedCount: left });
     }
-    expect(await getTeam(teamId)).toMatchObject({ strength: 'WORKING', shortSince: null });
+    await removeMember({ merchantId: members[TEAM_SIZE - 1], supervisorId: sup });
+    expect(await getTeam(teamId)).toMatchObject({ strength: 'STOPPED', approvedCount: 0 });
   });
 
-  it('the grace day ends at midnight IST, by the database clock', async () => {
-    const { teamId, sup, members } = await teamWith(TEAM_SIZE);
-    await removeMember({ merchantId: members[0], supervisorId: sup });
-    // Yesterday in IST, whatever the server's own zone is.
-    await pgQuery(`UPDATE teams SET short_since = (date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') - interval '1 minute') AT TIME ZONE 'Asia/Kolkata'
-                    WHERE team_id = $1`, [teamId]);
-    expect((await getTeam(teamId)).strength).toBe('STOPPED');
+  it('carries no grace-day fields: the columns are gone from the table and the view', async () => {
+    const { teamId } = await teamWith(1);
+    const team = await getTeam(teamId);
+    expect(team).not.toHaveProperty('shortSince');
+    expect(team).not.toHaveProperty('wasFull');
+    const { rows } = await pgQuery(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'teams' AND column_name IN ('short_since', 'was_full')`);
+    expect(rows).toEqual([]);
   });
 
   it(`refuses to approve an eleventh member`, async () => {

@@ -4,12 +4,13 @@
  *
  * Seven fixed sizes (`denominations.js`): 500, 1,000, 5,000 and 10,000 tokens
  * on the cash rail, 50,000, 100,000 and 500,000 on UPI/bank. The admin chooses
- * which are on offer (`SystemConfig.orderSizes`); buys and sells alike are
- * exactly one of them, and the size decides the rail. One open INR buy at a
+ * which are on offer to buy (`SystemConfig.buyOrderSizes`) and which to sell
+ * (`SystemConfig.sellOrderSizes`); an order is exactly one of its direction's
+ * list, and the size decides the rail. One open INR buy at a
  * time. Every refusal names what the player CAN choose (§25) and writes
  * nothing: a refused sell locks no stake.
  *
- * The suite writes `orderSizes` and `payoutFeePercent` and puts both back
+ * The suite writes both size lists and `payoutFeePercent` and puts them back
  * (trap 10).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -22,7 +23,7 @@ import { getSystemConfig, applySystemConfig } from '#db/repositories/config.js';
 import { PAYMENT_MODES } from '#db/repositories/orderRails.js';
 import { createDepositOrder, createWithdrawalOrder } from '../../domains/payment/paymentProcessing.service.js';
 import {
-  CASH_SIZES, UPI_BANK_SIZES, ORDER_SIZES, railForSize, offeredSizes,
+  CASH_SIZES, UPI_BANK_SIZES, ORDER_SIZES, railForSize, offeredSizes, offeredSizesFor,
 } from '../../domains/merchant/denominations.js';
 import { teamFixture } from '../teamFixture.js';
 import { actor } from './_harness.js';
@@ -33,6 +34,8 @@ describePg('the sizes an order may be', () => {
   const teams = teamFixture();
   const orders = [];
   let prior;
+  const ALL = { buyOrderSizes: [...ORDER_SIZES], sellOrderSizes: [...ORDER_SIZES] };
+  const offer = (patch) => applySystemConfig(patch, { actor: 'order-sizes-suite' });
 
   const buy = async (userId, tokens) => {
     const { order } = await createDepositOrder(userId, tokens);
@@ -66,8 +69,10 @@ describePg('the sizes an order may be', () => {
     // Every size on offer and no payout fee, set here rather than assumed
     // (§32 S19), and put back afterwards (trap 10).
     const cfg = await getSystemConfig();
-    prior = { orderSizes: cfg.orderSizes, payoutFeePercent: cfg.payoutFeePercent };
-    await applySystemConfig({ orderSizes: [...ORDER_SIZES], payoutFeePercent: 0 }, { actor: 'order-sizes-suite' });
+    prior = {
+      buyOrderSizes: cfg.buyOrderSizes, sellOrderSizes: cfg.sellOrderSizes, payoutFeePercent: cfg.payoutFeePercent,
+    };
+    await offer({ ...ALL, payoutFeePercent: 0 });
   }, 60_000);
 
   afterAll(async () => {
@@ -86,9 +91,16 @@ describePg('the sizes an order may be', () => {
     expect(CASH_SIZES).toEqual([500, 1_000, 5_000, 10_000]);
     expect(UPI_BANK_SIZES).toEqual([50_000, 100_000, 500_000]);
     expect(ORDER_SIZES).toEqual([...CASH_SIZES, ...UPI_BANK_SIZES]);
-    for (const size of CASH_SIZES) expect(railForSize(size)).toBe('CASH');
-    for (const size of UPI_BANK_SIZES) expect(railForSize(size)).toBe('UPI_BANK');
-    for (const bad of [0, 499, 2_000, 20_000, 40_000, 1_000_000, '500x']) expect(railForSize(bad)).toBeNull();
+    for (const size of CASH_SIZES) expect(railForSize(size, 'AGENTS')).toBe('CASH');
+    for (const size of UPI_BANK_SIZES) expect(railForSize(size, 'AGENTS')).toBe('UPI_BANK');
+    for (const bad of [0, 499, 2_000, 20_000, 40_000, 1_000_000, '500x']) {
+      expect(railForSize(bad, 'AGENTS')).toBeNull();
+      expect(railForSize(bad, 'MERCHANTS')).toBeNull();
+    }
+    // Under merchant accounts every size is UPI or bank (owner, 2026-10-11).
+    for (const size of ORDER_SIZES) expect(railForSize(size, 'MERCHANTS')).toBe('UPI_BANK');
+    // The mode is asked, never assumed.
+    expect(() => railForSize(500)).toThrow(TypeError);
   });
 
   // ── Buys ──────────────────────────────────────────────────────────────────
@@ -98,7 +110,8 @@ describePg('the sizes an order may be', () => {
       const order = await buy(player.userId, size);
       const row = await getOrderRecord(order.orderId);
       expect(row.tokenAmount).toBe(size);
-      expect(row.paymentMode).toBe(railForSize(size) === 'CASH' ? PAYMENT_MODES.CASH_ATM : PAYMENT_MODES.P2P_UPI);
+      expect(row.paymentMode).toBe(railForSize(size, 'AGENTS') === 'CASH' ? PAYMENT_MODES.CASH_ATM : PAYMENT_MODES.P2P_UPI);
+      expect(row.inrRouting).toBe('AGENTS');
       expect(row.status).toBe('PENDING_QUEUE');
     }
   });
@@ -150,41 +163,96 @@ describePg('the sizes an order may be', () => {
 
   // ── The admin's offer ─────────────────────────────────────────────────────
   it('refuses a size the admin switched off, for buys and sells, and still admits the rest', async () => {
-    await applySystemConfig({ orderSizes: [500, 5_000, 100_000] }, { actor: 'order-sizes-suite' });
+    await offer({ buyOrderSizes: [500, 5_000, 100_000], sellOrderSizes: [500, 5_000, 100_000] });
     try {
-      expect(offeredSizes(await getSystemConfig())).toEqual([500, 5_000, 100_000]);
+      expect(offeredSizes(await getSystemConfig(), 'DEPOSIT')).toEqual([500, 5_000, 100_000]);
       const buyer = await actor({});
-      await expect(buy(buyer.userId, 1_000)).rejects.toThrow(/1,000 tokens is not on offer right now\. Choose one of 500, 5,000, 1,00,000 tokens/);
+      await expect(buy(buyer.userId, 1_000)).rejects.toThrow(/1,000 tokens is not on offer to buy right now\. Choose one of 500, 5,000, 1,00,000 tokens/);
       await expect(buy(buyer.userId, 50_000)).rejects.toMatchObject({ code: 'NOT_AN_ORDER_SIZE' });
       expect(await countOpenDeposits(buyer.userId)).toBe(0);
 
       const holder = await seller(10_000);
       const before = await getBalancesPaise(holder.userId);
-      await expect(sell(holder.userId, 10_000)).rejects.toThrow(/not on offer right now/);
+      await expect(sell(holder.userId, 10_000)).rejects.toThrow(/not on offer to sell right now/);
       expect(await getBalancesPaise(holder.userId)).toEqual(before);
 
       // The opposite case (§37 step 6): a size still on offer goes through.
       expect((await buy(buyer.userId, 5_000)).tokenAmount).toBe(5_000);
       expect((await sell(holder.userId, 500)).tokenAmount).toBe(500);
     } finally {
-      await applySystemConfig({ orderSizes: [...ORDER_SIZES] }, { actor: 'order-sizes-suite' });
+      await offer(ALL);
     }
   });
 
-  it('stores only sizes from the seven, at least one, once each, in the fixed order', async () => {
-    const before = (await getSystemConfig()).orderSizes;
-    await expect(applySystemConfig({ orderSizes: [500, 7_777] })).rejects.toThrow(/may only contain .*got 7777/);
-    await expect(applySystemConfig({ orderSizes: [40_000] })).rejects.toThrow(/may only contain/);
-    await expect(applySystemConfig({ orderSizes: [500, 500] })).rejects.toThrow(/lists a value twice/);
-    await expect(applySystemConfig({ orderSizes: [] })).rejects.toThrow(/at least 1 value/);
-    expect((await getSystemConfig()).orderSizes).toEqual(before);
-
-    await applySystemConfig({ orderSizes: [500_000, 500, 10_000] }, { actor: 'order-sizes-suite' });
+  // ── Each direction has its own list (Phase A, owner) ─────────────────────
+  it('admits a size on offer to buy but not to sell for a buy, and refuses it for a sell', async () => {
+    await offer({ buyOrderSizes: [1_000, 50_000], sellOrderSizes: [500, 100_000] });
     try {
-      expect((await getSystemConfig()).orderSizes).toEqual([500, 10_000, 500_000]);
+      const cfg = await getSystemConfig();
+      expect(offeredSizes(cfg, 'DEPOSIT')).toEqual([1_000, 50_000]);
+      expect(offeredSizes(cfg, 'WITHDRAWAL')).toEqual([500, 100_000]);
+      expect(offeredSizesFor(cfg, 'CASH', 'DEPOSIT')).toEqual([1_000]);
+      expect(offeredSizesFor(cfg, 'UPI_BANK', 'WITHDRAWAL')).toEqual([100_000]);
+
+      // 1,000: buy yes, sell no.
+      const buyer = await actor({});
+      expect((await buy(buyer.userId, 1_000)).tokenAmount).toBe(1_000);
+      const holder = await seller(2_000);
+      const before = await getBalancesPaise(holder.userId);
+      await expect(sell(holder.userId, 1_000)).rejects.toMatchObject({ code: 'NOT_AN_ORDER_SIZE', status: 400, sizes: [500, 100_000] });
+      await expect(sell(holder.userId, 1_000)).rejects.toThrow(/1,000 tokens is not on offer to sell right now\. Choose one of 500, 1,00,000 tokens/);
+      // A refused sell locks no stake.
+      expect(await getBalancesPaise(holder.userId)).toEqual(before);
     } finally {
-      await applySystemConfig({ orderSizes: [...ORDER_SIZES] }, { actor: 'order-sizes-suite' });
+      await offer(ALL);
     }
+  });
+
+  it('admits a size on offer to sell but not to buy for a sell, and refuses it for a buy', async () => {
+    await offer({ buyOrderSizes: [1_000, 50_000], sellOrderSizes: [500, 100_000] });
+    try {
+      // 500: sell yes, buy no.
+      const holder = await seller(500);
+      const before = await getBalancesPaise(holder.userId);
+      const order = await sell(holder.userId, 500);
+      expect(order.tokenAmount).toBe(500);
+      expect(before.winningsBalance - (await getBalancesPaise(holder.userId)).winningsBalance).toBe(500 * 100);
+
+      const buyer = await actor({});
+      await expect(buy(buyer.userId, 500)).rejects.toMatchObject({ code: 'NOT_AN_ORDER_SIZE', status: 400, sizes: [1_000, 50_000] });
+      await expect(buy(buyer.userId, 500)).rejects.toThrow(/500 tokens is not on offer to buy right now\. Choose one of 1,000, 50,000 tokens/);
+      expect(await countOpenDeposits(buyer.userId)).toBe(0);
+    } finally {
+      await offer(ALL);
+    }
+  });
+
+  it('refuses a direction that is neither buy nor sell rather than guessing a list', () => {
+    expect(() => offeredSizes({}, 'BUY')).toThrow(TypeError);
+    expect(() => offeredSizes({}, undefined)).toThrow(TypeError);
+    // A row with no list at all is a fresh install: every size, both ways.
+    expect(offeredSizes({}, 'DEPOSIT')).toEqual([...ORDER_SIZES]);
+    expect(offeredSizes({}, 'WITHDRAWAL')).toEqual([...ORDER_SIZES]);
+  });
+
+  it('stores only sizes from the seven, at least one, once each, in the fixed order, per list', async () => {
+    for (const field of ['buyOrderSizes', 'sellOrderSizes']) {
+      const before = (await getSystemConfig())[field];
+      await expect(applySystemConfig({ [field]: [500, 7_777] })).rejects.toThrow(/may only contain .*got 7777/);
+      await expect(applySystemConfig({ [field]: [40_000] })).rejects.toThrow(/may only contain/);
+      await expect(applySystemConfig({ [field]: [500, 500] })).rejects.toThrow(/lists a value twice/);
+      await expect(applySystemConfig({ [field]: [] })).rejects.toThrow(/at least 1 value/);
+      expect((await getSystemConfig())[field]).toEqual(before);
+
+      await offer({ [field]: [500_000, 500, 10_000] });
+      try {
+        expect((await getSystemConfig())[field]).toEqual([500, 10_000, 500_000]);
+      } finally {
+        await offer(ALL);
+      }
+    }
+    // The single list is gone: a patch naming it is refused, not ignored.
+    await expect(applySystemConfig({ orderSizes: [500] })).rejects.toThrow(/undeclared setting 'orderSizes'/);
   });
 
   // ── One purchase at a time ───────────────────────────────────────────────

@@ -6,6 +6,7 @@ import { db } from '#db';
 import cdnService from '../services/cdn.service.js';
 import { authenticatePlayer } from '../domains/identity/auth.middleware.js';
 import { merchantAuth } from '../middleware/merchantAuth.js';
+import { refuseWork } from '../domains/merchant/merchantActor.js';
 import { unpaidRejectRefusal } from '../domains/payment/rejectedBuyWindow.service.js';
 import { serverError, callerError, respondError } from '../shared/httpError.js';
 // Order chat. An attachment that is not recorded is an upload nobody can find.
@@ -56,6 +57,9 @@ router.post('/merchant/order-reject-proof/:orderId/upload-url', merchantAuth, as
     // AND the merchant id, so an order that is not theirs is simply not found.
     const order = await db.orders.getMerchantOrder(orderId, req.merchantId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    // The reject's own role question (owner, 2026-10-11): a sub-member stages
+    // proof only for an order they may work.
+    if (refuseWork(req, res, order)) return;
     // The same question the reject asks, from the same function (§32 S3): a
     // buy the player has tapped Paid on (owner, 2026-10-07). This admitted
     // PROCESSING, and any order type, so evidence could be staged for an

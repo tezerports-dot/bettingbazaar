@@ -32,6 +32,7 @@
  * a serialised write, not a snapshot (§32 S6, trap 18).
  */
 import { pgQuery, withTransaction } from '../client.js';
+import { getSystemConfig } from './config.js';
 import { creditCommissionWithin, PoolRefused } from './teamPools.js';
 import { recordEvent, accountBalancePaise } from './ledger.core.js';
 import { ACCOUNTS as LEDGER, EVENT_TYPES, buildBonusIssuePostings } from '../../backend/domains/revenue/chartOfAccounts.js';
@@ -40,7 +41,17 @@ import { ACCOUNTS as LEDGER, EVENT_TYPES, buildBonusIssuePostings } from '../../
 export const COMMISSION_PERCENT = 10;
 /** Of each payment, recorded to the supervisor; the rest to the members equally (owner). */
 export const SUPERVISOR_SHARE_PERCENT = 16;
-export const SHARE_ROLES = Object.freeze({ SUPERVISOR: 'SUPERVISOR', MEMBER: 'MEMBER' });
+export const SHARE_ROLES = Object.freeze({ SUPERVISOR: 'SUPERVISOR', MEMBER: 'MEMBER', OWNER: 'OWNER' });
+
+/**
+ * The percent a merchant account (a DIRECT team) is paid: the admin's
+ * `directMerchants.commissionPercent` (owner, 2026-10-11), with no supervisor
+ * share. An agents' team stays at COMMISSION_PERCENT.
+ */
+export function directCommissionPercent(cfg) {
+  const n = Number(cfg?.directMerchants?.commissionPercent ?? 10); // schema default: 10
+  return Number.isInteger(n) && n >= 1 && n <= 50 ? n : 10; // schema default: 10
+}
 
 const PAY_LOCK = `SELECT pg_advisory_xact_lock(hashtext('bb_team_commission_pay'))`;
 const toNum = (v) => Number(v ?? 0);
@@ -60,10 +71,14 @@ export const teamMarkSql = (team) => `
   SELECT COALESCE(MAX(to_high_paise), 0) AS high_paise, COALESCE(SUM(commission_paise), 0) AS paid_paise
     FROM team_commissions WHERE team_id = ${team}`;
 
-/** 10% of the rise above the mark, rounded down to the paisa; 0 without a rise. The CHECK does the same sum. */
-export function commissionFor(matchedPaise, highPaise) {
+/**
+ * `percent` of the rise above the mark (COMMISSION_PERCENT for an agents'
+ * team), rounded down to the paisa; 0 without a rise. The CHECK does the same
+ * sum with the percent the row records (`team_commissions_percent_of_rise`).
+ */
+export function commissionFor(matchedPaise, highPaise, percent = COMMISSION_PERCENT) {
   const rise = Number(matchedPaise) - Number(highPaise);
-  return rise > 0 ? Math.floor((rise * COMMISSION_PERCENT) / 100) : 0;
+  return rise > 0 ? Math.floor((rise * Number(percent)) / 100) : 0;
 }
 
 /**
@@ -87,8 +102,14 @@ export function splitShares(commissionPaise, supervisorId, memberIds) {
   ];
 }
 
-/** A team's commission picture from a row carrying the volume and mark columns above. */
-export function toSummary(teamId, row) {
+/**
+ * A team's commission picture from a row carrying the volume and mark columns
+ * above. A merchant account (`kind: 'DIRECT'`) is paid `percent` and has no
+ * supervisor share.
+ */
+export function toSummary(teamId, row, { percent = COMMISSION_PERCENT, kind = 'AGENT' } = {}) {
+  const direct = kind === 'DIRECT';
+  const rate = direct ? Number(percent ?? COMMISSION_PERCENT) : COMMISSION_PERCENT;
   const buys = toNum(row?.buys_paise);
   const sells = toNum(row?.sells_paise);
   const matched = Math.min(buys, sells);
@@ -103,10 +124,10 @@ export function toSummary(teamId, row) {
     // Earned by volume already completed and not paid yet: the pool could not
     // cover it, or the payment after the completion did not run. The sweep and
     // the admin's next top-up pay it.
-    owedPaise: commissionFor(matched, high),
+    owedPaise: commissionFor(matched, high, rate),
     // The rule itself, so no screen keeps its own copy of the numbers (§4).
-    commissionPercent: COMMISSION_PERCENT,
-    supervisorSharePercent: SUPERVISOR_SHARE_PERCENT,
+    commissionPercent: rate,
+    supervisorSharePercent: direct ? 0 : SUPERVISOR_SHARE_PERCENT,
   };
 }
 
@@ -124,12 +145,16 @@ export async function payTeamCommission(teamId, { actor = 'system' } = {}) {
     return await withTransaction(async (client) => {
       await client.query(PAY_LOCK);
       const { rows: team } = await client.query(
-        'SELECT team_id, supervisor_id FROM teams WHERE team_id = $1', [tid]);
+        'SELECT team_id, kind, supervisor_id, owner_merchant_id FROM teams WHERE team_id = $1', [tid]);
       if (!team[0]) return { ok: false, reason: 'team_not_found' };
+      // A merchant account is paid the admin's percent into its own pool, all
+      // of it recorded to its owner (owner, 2026-10-11).
+      const direct = team[0].kind === 'DIRECT';
+      const percent = direct ? directCommissionPercent(await getSystemConfig()) : COMMISSION_PERCENT;
       // Read after the lock, so a completion that committed while this waited is counted.
       const { rows: [vol] } = await client.query(teamVolumeSql('$1'), [tid]);
       const { rows: [mark] } = await client.query(teamMarkSql('$1'), [tid]);
-      const summary = toSummary(tid, { ...vol, ...mark });
+      const summary = toSummary(tid, { ...vol, ...mark }, { percent, kind: team[0].kind });
       const amount = summary.owedPaise;
       if (amount <= 0) {
         return { ok: true, paid: false, reason: summary.matchedPaise > summary.highPaise ? 'rise_too_small' : 'no_rise', summary };
@@ -142,15 +167,20 @@ export async function payTeamCommission(teamId, { actor = 'system' } = {}) {
       const { rows: [paid] } = await client.query(
         `INSERT INTO team_commissions
            (commission_id, team_id, supervisor_id, from_high_paise, to_high_paise,
-            buys_paise, sells_paise, commission_paise)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            buys_paise, sells_paise, commission_paise, commission_percent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING *`,
         [commissionId, tid, team[0].supervisor_id, summary.highPaise, summary.matchedPaise,
-          summary.buysPaise, summary.sellsPaise, amount]);
+          summary.buysPaise, summary.sellsPaise, amount, percent]);
 
-      const { rows: members } = await client.query(
-        `SELECT merchant_id FROM team_members WHERE team_id = $1 AND status = 'APPROVED'`, [tid]);
-      const shares = splitShares(amount, team[0].supervisor_id, members.map((m) => m.merchant_id));
+      let shares;
+      if (direct) {
+        shares = [{ merchantId: team[0].owner_merchant_id, role: SHARE_ROLES.OWNER, sharePaise: amount }];
+      } else {
+        const { rows: members } = await client.query(
+          `SELECT merchant_id FROM team_members WHERE team_id = $1 AND status = 'APPROVED'`, [tid]);
+        shares = splitShares(amount, team[0].supervisor_id, members.map((m) => m.merchant_id));
+      }
       await client.query(
         `INSERT INTO team_commission_shares (commission_id, merchant_id, role, share_paise)
          SELECT $1, s.merchant_id, s.role, s.share_paise
@@ -163,7 +193,7 @@ export async function payTeamCommission(teamId, { actor = 'system' } = {}) {
         idempotencyKey: `acct_${commissionId}`,
         postings: buildBonusIssuePostings(amount).map((p) => ({ account: p.account, amountPaise: p.amountMinor })),
         refModel: 'Team', refId: tid, amountPaise: amount,
-        description: `Team commission: ${COMMISSION_PERCENT}% of matched volume ${summary.highPaise / 100} → ${summary.matchedPaise / 100}`,
+        description: `Team commission: ${percent}% of matched volume ${summary.highPaise / 100} → ${summary.matchedPaise / 100}`,
       });
       // The commission row above is new, so its event cannot exist; one that
       // does was posted outside this module. Never pay against it twice.
@@ -215,12 +245,15 @@ export async function payOwedCommissions({ actor = 'system:commission-sweep' } =
   return results;
 }
 
-/** One team's commission picture, for its supervisor, its members and the admin. */
+/** One team's commission picture, for its supervisor, its members, its owner and the admin. */
 export async function teamSummary(teamId) {
   const { rows } = await pgQuery(
-    `SELECT v.*, k.* FROM (${teamVolumeSql('$1')}) v, (${teamMarkSql('$1')}) k`,
+    `SELECT v.*, k.*, (SELECT kind FROM teams WHERE team_id = $1) AS kind
+       FROM (${teamVolumeSql('$1')}) v, (${teamMarkSql('$1')}) k`,
     [String(teamId)], 'team_commission_summary');
-  return toSummary(teamId, rows[0]);
+  const kind = rows[0]?.kind ?? 'AGENT';
+  const percent = kind === 'DIRECT' ? directCommissionPercent(await getSystemConfig()) : COMMISSION_PERCENT;
+  return toSummary(teamId, rows[0], { percent, kind });
 }
 
 /**

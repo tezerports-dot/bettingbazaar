@@ -17,6 +17,13 @@ import {
   MiniAppSetup,
   TelegramStatus,
   SignupResponse,
+  MerchantAccountOverview,
+  PaymentAccount,
+  PaymentAccountKind,
+  SubMember,
+  StaffRole,
+  StaffDuty,
+  MerchantReport,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -182,7 +189,9 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 const keepSession = (data: AuthResponse): void => {
   if (data.token) localStorage.setItem('merchantToken', data.token);
   const merchant = data.user || data.merchant;
-  if (merchant) setMerchantData(merchant);
+  // Who signed in travels beside `merchant` on the login answer; kept with it
+  // so a sub-member's screens are gated from the first render.
+  if (merchant) setMerchantData(data.actor ? { ...merchant, actor: data.actor } : merchant);
 };
 
 /** A refusal `request()` threw, with the body the server sent. */
@@ -294,9 +303,21 @@ export const logout = (reason?: string | null): void => {
   window.location.href = "/merchant/";
 };
 
+/**
+ * The signed-in merchant's profile. `actor` (who is acting: the owner, or a
+ * merchant account's sub-member) and `isMerchantAccount` arrive BESIDE
+ * `merchant` (merchant.routes.js GET /profile) and are merged into it here, so
+ * every screen reads one object — and so they are not dropped, which is what
+ * returning `data.merchant` alone would do.
+ */
 export const getMerchantProfile = async (): Promise<MerchantProfile> => {
   const data = await request<any>(ENDPOINTS.AUTH.PROFILE);
-  return data.merchant || data;
+  const merchant = data.merchant || data;
+  return {
+    ...merchant,
+    ...(data.actor ? { actor: data.actor } : {}),
+    ...(typeof data.isMerchantAccount === 'boolean' ? { isMerchantAccount: data.isMerchantAccount } : {}),
+  };
 };
 
 // =======================================================================
@@ -356,10 +377,19 @@ export const acceptOrder = async (orderId: string): Promise<PaymentOrder> => {
  * `proof` is gone from both: it could only ever be `undefined` once
  * payment-proof collection was removed platform-wide.
  */
-export const confirmPayment = async (orderId: string, utrNumber?: string): Promise<PaymentOrder> => {
+export const confirmPayment = async (
+  orderId: string, utrNumber?: string, paidFromAccountId?: string,
+): Promise<PaymentOrder> => {
+  // `paidFromAccountId`: on a sell a merchant account serves, which of its
+  // accounts paid it (owner, 2026-10-11). Required there, and refused 400
+  // PAID_FROM_ACCOUNT_REQUIRED without one; never sent on any other order.
+  const body = {
+    ...(utrNumber ? { utrNumber } : {}),
+    ...(paidFromAccountId ? { paidFromAccountId } : {}),
+  };
   const data = await request<any>(ENDPOINTS.ORDERS.CONFIRM(orderId), {
     method: 'POST',
-    ...(utrNumber ? { body: JSON.stringify({ utrNumber }) } : {}),
+    ...(Object.keys(body).length ? { body: JSON.stringify(body) } : {}),
   });
   return data.order || data;
 };
@@ -686,6 +716,124 @@ export const postDisputeMessage = async (orderId: string, message: string): Prom
     method: 'POST', body: JSON.stringify({ message }),
   })).message;
 
+// =======================================================================
+// MERCHANT ACCOUNTS (owner, 2026-10-11 — Phase B)
+// =======================================================================
+// backend/domains/merchant/merchantAccount.routes.js. Every write is the
+// owner's (403 OWNER_ONLY otherwise); reports are the owner's and AUDIT's. A
+// refusal is thrown with the server's own words, status and body (`request`).
+
+type AccountEndpoint<A extends unknown[]> = { method: string; path: (...args: A) => string };
+
+/** One call to a merchant-account route, by the verb its ENDPOINTS entry declares. */
+function accountRequest<T, A extends unknown[]>(endpoint: AccountEndpoint<A>, args: A, body?: unknown): Promise<T> {
+  return request<T>(endpoint.path(...args), {
+    method: endpoint.method,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}
+
+export const getMerchantAccount = async (): Promise<MerchantAccountOverview> =>
+  accountRequest<MerchantAccountOverview, []>(ENDPOINTS.ACCOUNT.OVERVIEW, []);
+
+/** What the owner sends for an account. `upiLink` is what the scanner read off their static UPI QR. */
+export interface PaymentAccountInput {
+  kind?: PaymentAccountKind;
+  label?: string;
+  upiLink?: string;
+  holderName?: string;
+  accountNo?: string;
+  ifsc?: string;
+  bankName?: string;
+  acceptsDeposits?: boolean;
+  paysWithdrawals?: boolean;
+  status?: 'ACTIVE' | 'PAUSED';
+}
+
+export const addPaymentAccount = async (input: PaymentAccountInput): Promise<PaymentAccount> =>
+  (await accountRequest<{ account: PaymentAccount }, []>(ENDPOINTS.ACCOUNT.ADD_ACCOUNT, [], input)).account;
+
+export const updatePaymentAccount = async (accountId: string, patch: PaymentAccountInput): Promise<PaymentAccount> =>
+  (await accountRequest<{ account: PaymentAccount }, [string]>(ENDPOINTS.ACCOUNT.UPDATE_ACCOUNT, [accountId], patch)).account;
+
+export const removePaymentAccount = async (accountId: string): Promise<void> => {
+  await accountRequest(ENDPOINTS.ACCOUNT.REMOVE_ACCOUNT, [accountId]);
+};
+
+export const addSubMember = async (input: {
+  mobile: string; password: string; name: string; roles: StaffRole[];
+}): Promise<SubMember> =>
+  (await accountRequest<{ staff: SubMember }, []>(ENDPOINTS.ACCOUNT.ADD_STAFF, [], input)).staff;
+
+export const setSubMemberRoles = async (staffId: string, roles: StaffRole[]): Promise<SubMember> =>
+  (await accountRequest<{ staff: SubMember }, [string]>(ENDPOINTS.ACCOUNT.SET_STAFF_ROLES, [staffId], { roles })).staff;
+
+export const removeSubMember = async (staffId: string): Promise<void> => {
+  await accountRequest(ENDPOINTS.ACCOUNT.REMOVE_STAFF, [staffId]);
+};
+
+export const assignSubMemberAccount = async (staffId: string, accountId: string, duty: StaffDuty): Promise<SubMember> =>
+  (await accountRequest<{ staff: SubMember }, [string]>(ENDPOINTS.ACCOUNT.ASSIGN_ACCOUNT, [staffId], { accountId, duty })).staff;
+
+export const unassignSubMemberAccount = async (staffId: string, accountId: string, duty: StaffDuty): Promise<SubMember> =>
+  (await accountRequest<{ staff: SubMember }, [string, string, string]>(
+    ENDPOINTS.ACCOUNT.UNASSIGN_ACCOUNT, [staffId, accountId, duty])).staff;
+
+/** BUY asks the platform to sell tokens into the pool; SELL asks it to buy them back. Whole tokens. */
+export const requestMerchantPool = async (direction: PoolDirection, tokens: number, note: string): Promise<string> =>
+  (await accountRequest<{ requestId: string }, []>(ENDPOINTS.ACCOUNT.REQUEST_POOL, [], {
+    direction, tokens, note: note || null,
+  })).requestId;
+
+export const cancelMerchantPoolRequest = async (requestId: string): Promise<void> => {
+  await accountRequest(ENDPOINTS.ACCOUNT.CANCEL_POOL, [requestId]);
+};
+
+/** A range of IST days as YYYY-MM-DD; empty means the server's default (the last seven). */
+const rangeQuery = (from: string, to: string): string => {
+  const q = new URLSearchParams();
+  if (from) q.append('from', from);
+  if (to) q.append('to', to);
+  return q.toString() ? `?${q.toString()}` : '';
+};
+
+export const getMerchantReport = async (from: string, to: string): Promise<MerchantReport> =>
+  request<MerchantReport>(`${ENDPOINTS.ACCOUNT.REPORTS.path()}${rangeQuery(from, to)}`, {
+    method: ENDPOINTS.ACCOUNT.REPORTS.method,
+  });
+
+/**
+ * The orders behind a report, as a CSV file the browser saves. Fetched with
+ * the session's token (a plain link would carry none), then handed to the
+ * browser as a download. A refusal is thrown with the server's words.
+ */
+export const downloadMerchantReportCsv = async (from: string, to: string): Promise<void> => {
+  const token = getAuthToken();
+  const response = await fetch(`${BASE_URL}${ENDPOINTS.ACCOUNT.REPORTS_CSV.path()}${rangeQuery(from, to)}`, {
+    method: ENDPOINTS.ACCOUNT.REPORTS_CSV.method,
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    mode: 'cors',
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    let said = `The export failed (status ${response.status}).`;
+    try {
+      const body = await response.json();
+      if (typeof body?.message === 'string' && body.message) said = body.message;
+    } catch { /* not JSON: keep the status sentence */ }
+    throw Object.assign(new Error(said), { status: response.status });
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `merchant-orders-${from || 'last7'}-${to || 'today'}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
 export const api = {
   // Auth
   isAuthenticated,
@@ -724,6 +872,21 @@ export const api = {
   toggleOnlineStatus,
   updatePreferences,
   updateProfile,
+
+  // Merchant accounts (owner, 2026-10-11)
+  getMerchantAccount,
+  addPaymentAccount,
+  updatePaymentAccount,
+  removePaymentAccount,
+  addSubMember,
+  setSubMemberRoles,
+  removeSubMember,
+  assignSubMemberAccount,
+  unassignSubMemberAccount,
+  requestMerchantPool,
+  cancelMerchantPoolRequest,
+  getMerchantReport,
+  downloadMerchantReportCsv,
 
   // Red Flag
   // Utilities

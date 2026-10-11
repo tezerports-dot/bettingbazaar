@@ -156,9 +156,11 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
         {/* A supervisor takes no orders (CLAUDE.md §2), so there is no switch to
-            offer: their work, and their members' online time, is on Team. */}
+            offer: their work, and their agents' online time, is on Team. A
+            merchant account's sub-member has no switch either (the owner's,
+            OWNER_ONLY): their work is on Orders. */}
         <button
-          onClick={switchable ? toggleOnline : () => navigate(ROUTES.TEAM)}
+          onClick={switchable ? toggleOnline : () => navigate(availability.subMember ? ROUTES.ORDERS : ROUTES.TEAM)}
           style={{
             display: 'flex', alignItems: 'center', gap: 8, padding: '11px 18px', borderRadius: 12,
             border: '1.5px solid rgba(255,255,255,.35)', background: 'rgba(255,255,255,.14)',
@@ -167,6 +169,7 @@ const Dashboard: React.FC = () => {
         >
           {switchable
             ? <><Power size={15} /> {online ? 'Go offline' : 'Go online'}</>
+            : availability.subMember ? <>Open orders <ArrowRight size={15} /></>
             : <>Open your teams <ArrowRight size={15} /></>}
         </button>
       </div>

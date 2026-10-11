@@ -3,9 +3,11 @@
  * The sizes a player may buy or sell — the SERVER's list, as tiles, each on
  * the rail its size names (PROJECT_STATUS §3.10, Step 2d).
  *
- * The server sends `orderSizes` grouped by rail (backend/domains/configuration/
- * systemConfigPayload.js, from the module the risk gate judges by), so this
- * screen draws exactly those, never a list of its own (§3).
+ * The server sends `orderSizes` per direction (`buy`, `sell`; Phase A) and
+ * grouped by rail, with `orderSizeMethods` saying how each rail is paid
+ * (backend/domains/configuration/systemConfigPayload.js, from the module the
+ * risk gate judges by), so this screen draws exactly those, never a list or a
+ * sentence of its own (§3, §5).
  *
  * What is asserted, and why each:
  *   - a bank-size tile is a UPI/bank purchase and a cash-size tile a cash one,
@@ -13,7 +15,9 @@
  *   - the tiles are the SERVER's — a size the admin switched off is not drawn;
  *   - nothing is sent until a size is picked, and with no config the screen
  *     says nothing is on offer rather than guessing;
- *   - a sell uses the same sizes, and a size above the winnings is not offered;
+ *   - the Buy tab draws the buy list and the Sell tab the sell list, each with
+ *     the server's payment method under each rail;
+ *   - a size above the winnings is not offered for a sell;
  *   - the USDT panel is drawn from the server's bounds;
  *   - a USDT buy in flight is drawn by the USDT panel, never by the INR step.
  */
@@ -27,8 +31,14 @@ vi.mock('../services/apiClient', () => ({ default: { get, post } }));
 import WalletPage from './WalletPage';
 
 /** The payload's shape (backend/domains/configuration/systemConfigPayload.js). */
+const ALL_SIZES = { CASH: [500, 1000, 5000, 10000], UPI_BANK: [50000, 100000, 500000] };
+const METHODS = {
+  buy: { CASH: 'Cash at an ATM: pay the ATM QR the member scans, in any UPI app', UPI_BANK: "Bank transfer (IMPS, NEFT or RTGS) to the member's bank account" },
+  sell: { CASH: 'Bank transfer to your bank account', UPI_BANK: 'Bank transfer to your bank account' },
+};
 const CONFIG = {
-  orderSizes: { CASH: [500, 1000, 5000, 10000], UPI_BANK: [50000, 100000, 500000] },
+  orderSizes: { buy: ALL_SIZES, sell: ALL_SIZES },
+  orderSizeMethods: METHODS,
   usdtBuy: { minUsdt: 100, maxUsdt: 10000, stepUsdt: 100 },
   usdtTokensPerUnit: 90,
   usdtChains: [{ chain: 'TRC20', label: 'Tron (TRC-20)' }],
@@ -94,7 +104,7 @@ describe('a buy is one of the sizes on offer', () => {
   });
 
   it('draws only the SERVER\'s sizes — a size the admin switched off is not offered', async () => {
-    await open({ config: { ...CONFIG, orderSizes: { CASH: [1000], UPI_BANK: [100000] } } });
+    await open({ config: { ...CONFIG, orderSizes: { buy: { CASH: [1000], UPI_BANK: [100000] }, sell: ALL_SIZES } } });
     expect(await tile('1,000 tokens')).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: '1,00,000 tokens' })).toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: '500 tokens' })).toBeNull();
@@ -123,7 +133,46 @@ describe('a buy is one of the sizes on offer', () => {
   });
 });
 
-describe('a sell is one of the same sizes', () => {
+describe('each tab draws its own list (Phase A)', () => {
+  const SPLIT = {
+    ...CONFIG,
+    orderSizes: {
+      buy: { CASH: [1000, 5000], UPI_BANK: [50000] },
+      sell: { CASH: [500], UPI_BANK: [100000] },
+    },
+  };
+
+  it('the Buy tab offers the buy list, with how each rail is paid under it', async () => {
+    await open({ config: SPLIT });
+    expect(await tile('1,000 tokens')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: '50,000 tokens' })).toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: '500 tokens' })).toBeNull();
+    expect(screen.queryByRole('radio', { name: '1,00,000 tokens' })).toBeNull();
+    expect(screen.getByText(METHODS.buy.CASH)).toBeInTheDocument();
+    expect(screen.getByText(METHODS.buy.UPI_BANK)).toBeInTheDocument();
+    // The method describes its rail's tiles to a screen reader too.
+    expect(screen.getByRole('radiogroup', { name: 'Cash team' })).toHaveAccessibleDescription(METHODS.buy.CASH);
+  });
+
+  it('the Sell tab offers the sell list, with how each rail is paid under it', async () => {
+    await open({ config: SPLIT, winnings: 200000 });
+    fireEvent.click(screen.getByRole('button', { name: /SELL TOKENS/ }));
+    expect(await tile('500 tokens')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: '1,00,000 tokens' })).toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: '1,000 tokens' })).toBeNull();
+    expect(screen.queryByRole('radio', { name: '50,000 tokens' })).toBeNull();
+    expect(screen.getAllByText(METHODS.sell.CASH)).toHaveLength(2);
+    expect(screen.queryByText(METHODS.buy.CASH)).toBeNull();
+
+    await waitFor(() => expect(screen.getByRole('radio', { name: '500 tokens' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('radio', { name: '500 tokens' }));
+    post.mockResolvedValueOnce({ success: true, order: { orderId: 'WD-2', status: 'PENDING_QUEUE', type: 'WITHDRAWAL', tokenAmount: 500, fiatAmount: 500 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sell tokens' }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/payment/withdrawal/create', { tokenAmount: 500 }));
+  });
+});
+
+describe('a sell is one of the sizes on offer to sell', () => {
   it('offers the sizes the winnings cover, and creates the one picked', async () => {
     await open({ winnings: 20000 });
     fireEvent.click(screen.getByRole('button', { name: /SELL TOKENS/ }));
@@ -166,5 +215,31 @@ describe('an order already in flight', () => {
     });
     expect(await screen.findByText('Complete payment')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /I've Paid — tell the merchant/ })).toBeInTheDocument();
+  });
+});
+
+describe('INR orders to merchants: one flat list (owner, 2026-10-11)', () => {
+  // In MERCHANTS mode the server sends CASH empty and every size under
+  // UPI_BANK, with its own method sentence (systemConfigPayload.js). An empty
+  // rail draws nothing, and one rail has no heading.
+  const FLAT = {
+    ...CONFIG,
+    orderSizes: { buy: { CASH: [], UPI_BANK: [500, 1000, 50000] }, sell: { CASH: [], UPI_BANK: [500, 1000, 50000] } },
+    orderSizeMethods: { buy: { UPI_BANK: 'UPI or bank transfer' }, sell: { UPI_BANK: 'Bank transfer to your bank account' } },
+  };
+
+  it('draws every size in one unheaded group with the server\'s sentence, and buys the size picked', async () => {
+    await open({ config: FLAT });
+    expect(await tile('500 tokens')).toBeInTheDocument();
+    const group = screen.getByRole('radiogroup', { name: 'Order size' });
+    expect(within(group).getAllByRole('radio').map((r) => r.getAttribute('aria-label'))).toEqual(['500 tokens', '1,000 tokens', '50,000 tokens']);
+    expect(screen.queryByText('Cash team')).toBeNull();
+    expect(screen.queryByText('UPI / bank team')).toBeNull();
+    expect(screen.getByRole('radiogroup', { name: 'Order size' })).toHaveAccessibleDescription('UPI or bank transfer');
+    expect(document.body.textContent).not.toMatch(/agent|merchant account/i);
+    fireEvent.click(screen.getByRole('radio', { name: '500 tokens' }));
+    fireEvent.click(continueButton());
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    expect(JSON.stringify(post.mock.calls[0])).toContain('500');
   });
 });

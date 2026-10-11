@@ -23,7 +23,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { systemConfigPayload, systemConfigFallback } from '../../domains/configuration/systemConfigPayload.js';
-import { CASH_SIZES, UPI_BANK_SIZES } from '../../domains/merchant/denominations.js';
+import { CASH_SIZES, UPI_BANK_SIZES, RAIL_PAYMENT_METHOD } from '../../domains/merchant/denominations.js';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const read = (p) => readFileSync(join(repo, p), 'utf8');
@@ -53,7 +53,8 @@ describe('the system-config payload', () => {
   it('still fills an ABSENT value with its declared default', () => {
     // The other half: `??` must not turn into "pass everything through".
     const empty = systemConfigPayload(null);
-    expect(empty.orderSizes).toEqual({ CASH: [...CASH_SIZES], UPI_BANK: [...UPI_BANK_SIZES] });
+    const all = { CASH: [...CASH_SIZES], UPI_BANK: [...UPI_BANK_SIZES] };
+    expect(empty.orderSizes).toEqual({ buy: all, sell: all });
     expect(empty.usdtBuy).toEqual({ minUsdt: 100, maxUsdt: 10_000, stepUsdt: 100 });
     expect(empty.payoutMultiplier).toBe(2);
   });
@@ -124,18 +125,38 @@ describe('the settlement rail, and the amounts it allows', () => {
    * `assessFundingOrder` validates against — and are asserted here to BE that
    * module's list rather than a copy that happens to match today.
    */
-  it('tells the client exactly the sizes the risk gate accepts, per rail', () => {
+  it('tells the client exactly the sizes the risk gate accepts, per direction and rail', () => {
     // Only the sizes the admin has on offer, split by the rail each one runs on
-    // (Step 2d). The same list serves buys and sells.
-    const payload = systemConfigPayload({ orderSizes: [1_000, 10_000, 100_000] });
-    expect(payload.orderSizes).toEqual({ CASH: [1_000, 10_000], UPI_BANK: [100_000] });
+    // (Step 2d), and by direction: buys and sells have their own lists (Phase A).
+    const payload = systemConfigPayload({
+      buyOrderSizes: [1_000, 10_000, 100_000], sellOrderSizes: [500, 500_000],
+    });
+    expect(payload.orderSizes).toEqual({
+      buy:  { CASH: [1_000, 10_000], UPI_BANK: [100_000] },
+      sell: { CASH: [500], UPI_BANK: [500_000] },
+    });
   });
 
   it('ignores a stored size that is not one of the seven', () => {
     // A row edited around the spec (a direct UPDATE, an old backup) is not a
     // size a team is organised to serve, so it is not offered.
-    expect(systemConfigPayload({ orderSizes: [500, 7_777, 40_000] }).orderSizes)
+    expect(systemConfigPayload({ buyOrderSizes: [500, 7_777, 40_000] }).orderSizes.buy)
       .toEqual({ CASH: [500], UPI_BANK: [] });
+  });
+
+  it('says how each rail is paid, per direction, from the one owner', () => {
+    // The panels render this sentence under the sizes and keep no copy (§5).
+    const { orderSizeMethods } = systemConfigPayload(null);
+    expect(orderSizeMethods).toEqual({
+      buy:  { CASH: RAIL_PAYMENT_METHOD.CASH.DEPOSIT, UPI_BANK: RAIL_PAYMENT_METHOD.UPI_BANK.DEPOSIT },
+      sell: { CASH: RAIL_PAYMENT_METHOD.CASH.WITHDRAWAL, UPI_BANK: RAIL_PAYMENT_METHOD.UPI_BANK.WITHDRAWAL },
+    });
+    // Truthful to the code (CLAUDE.md §2 "How each rail is paid"): a cash buy
+    // through the ATM QR, a UPI/bank buy and every sell by bank transfer.
+    expect(orderSizeMethods.buy.CASH).toMatch(/ATM/);
+    expect(orderSizeMethods.buy.UPI_BANK).toMatch(/Bank transfer/);
+    expect(orderSizeMethods.sell.CASH).toMatch(/Bank transfer/);
+    expect(orderSizeMethods.sell.UPI_BANK).toMatch(/Bank transfer/);
   });
 
   it('tells the client the USDT bounds in USDT, and the rate to price them', () => {
@@ -172,8 +193,10 @@ describe('the settlement rail, and the amounts it allows', () => {
   it('still carries the sizes when the config cannot be read', () => {
     // A payload that dropped these would leave the picker empty and the player
     // unable to buy for a reason unrelated to what failed.
-    expect(systemConfigFallback().orderSizes.CASH.length).toBeGreaterThan(0);
-    expect(systemConfigFallback().orderSizes.UPI_BANK.length).toBeGreaterThan(0);
+    for (const side of ['buy', 'sell']) {
+      expect(systemConfigFallback().orderSizes[side].CASH.length).toBeGreaterThan(0);
+      expect(systemConfigFallback().orderSizes[side].UPI_BANK.length).toBeGreaterThan(0);
+    }
   });
 });
 

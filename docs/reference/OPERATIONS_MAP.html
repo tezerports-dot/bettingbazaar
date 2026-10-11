@@ -327,7 +327,7 @@ flowchart TD
   CHN -->|No| R3["400 USDT_CHAIN_REQUIRED"]
   CHN -->|Yes| UA{"100–10,000 USDT, step 100?<br/>SystemConfig.usdtBuy"}
   UA -->|No| R4["400 NOT_A_USDT_AMOUNT"]
-  CUR -->|INR| SZ{"One of the offered sizes?<br/>SystemConfig.orderSizes"}
+  CUR -->|INR| SZ{"One of the sizes offered to buy?<br/>SystemConfig.buyOrderSizes"}
   SZ -->|No| R5["400 NOT_AN_ORDER_SIZE · sizes"]
   UA -->|Yes| OPEN{"A buy already open?"}
   SZ -->|Yes| OPEN
@@ -464,13 +464,13 @@ flowchart TD
   A1 -->|Yes| PEND["Member PENDING"]
   PEND --> APR["Admin approves<br/>POST /api/admin/team-members/:id/approve"]
   APR --> STR{"Approved members"}
-  STR -->|10| WK["WORKING"]
-  STR -->|"fell below 10 today (IST)"| GR["GRACE until 00:00 IST"]
-  STR -->|"below 10 otherwise"| ST["STOPPED: no new orders<br/>open orders finish"]
+  STR -->|"1 to 10"| WK["WORKING: takes orders"]
+  STR -->|"none"| ST["STOPPED: nobody to route to"]
   </pre>
   <p>The counts are taken inside the write under a lock on the parent row, so two approvals cannot both
-  become the eleventh member (§32 S6). Strength (<code>teams.js</code>) reads the <b>database</b> clock
-  in IST; only routing reads it.</p>
+  become the eleventh member (§32 S6). A team works with any number of approved members from one to
+  ten (owner, Phase A); strength (<code>teams.js</code>) is shown on the panels and derived from the
+  approved count. Routing asks the same question of the member row (APPROVED), not of the team.</p>
   </div>
 </div>
 
@@ -515,9 +515,7 @@ flowchart TD
 flowchart TD
   Q["Order PENDING_QUEUE"] --> F1{"Member APPROVED in a team<br/>whose supervisor holds this rail?"}
   F1 -->|No| N["Not a candidate"]
-  F1 -->|Yes| F2{"Team WORKING or GRACE?"}
-  F2 -->|No| N
-  F2 -->|Yes| F3{"Member ACTIVE · approved · online ·<br/>not assignment-paused?"}
+  F1 -->|Yes| F3{"Member ACTIVE · approved · online ·<br/>not assignment-paused?"}
   F3 -->|No| N
   F3 -->|Yes| F4{"Switched on for this direction?"}
   F4 -->|No| N
@@ -529,7 +527,7 @@ flowchart TD
   F7 -->|No| N
   F7 -->|Yes| F8{"Not barred for this order or player?<br/>USDT: address on THIS chain?<br/>UPI_BANK buy: full bank account?"}
   F8 -->|No| N
-  F8 -->|Yes| ORD["Fewest open orders,<br/>then least recently assigned"]
+  F8 -->|Yes| ORD["Highest routing priority (1–5),<br/>then fastest average response,<br/>then fewest open orders,<br/>then least recently assigned"]
   ORD --> TX["ONE transaction, under the member's row lock:<br/>re-check online · Ready · cap · cash buy ·<br/>hold the pool (buy) · ASSIGNED · stamp last_assigned_at ·<br/>switch Ready off (cash buy)"]
   TX -->|"a re-check fails"| NEXT["Next candidate"]
   TX --> ASN["ASSIGNED · team_id set · snapshot frozen"]
@@ -715,7 +713,7 @@ flowchart TD
   <div class="body">
   <div class="scroll"><table>
   <tr><th>Field</th><th>Default</th><th>Read by</th></tr>
-  <tr><td><code>orderSizes</code></td><td>all seven</td><td>buy and sell create; the player's size picker</td></tr>
+  <tr><td><code>buyOrderSizes</code> / <code>sellOrderSizes</code></td><td>all seven, each</td><td>buy create / sell create; the player's Buy and Sell size pickers</td></tr>
   <tr><td><code>usdtBuy.minUsdt</code> / <code>maxUsdt</code></td><td>100 / 10,000</td><td>USDT buy create</td></tr>
   <tr><td><code>usdtPricing.userMerchantBuyInr</code> / <code>merchantAdminBuyInr</code></td><td>0 = unset, refused by name</td><td>USDT buy quote; a USDT pool sale</td></tr>
   <tr><td><code>teamRouting.concurrency</code></td><td>CASH 1 · UPI_BANK 3 · USDT 3</td><td>routing</td></tr>

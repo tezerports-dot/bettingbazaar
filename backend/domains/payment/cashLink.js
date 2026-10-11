@@ -124,4 +124,74 @@ export function checkCashLink(raw, amountRupees) {
   return link;
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// A merchant account's own UPI QR (owner, 2026-10-11)
+// ═════════════════════════════════════════════════════════════════════════════
+/**
+ * A UPI handle reaches a player only from a merchant account's UPI QR, as the
+ * link they pay (§24's one exception). The merchant scans their own STATIC QR
+ * once when they add the account; the server keeps its payee (`pa`) and name
+ * (`pn`) and builds each order's link from them with that order's amount
+ * (`buildUpiPayLink`). So the static link is held to the same shape as an ATM
+ * link, minus the amount: a `upi://pay` intent, URL-safe, bounded, one of each
+ * parameter, a UPI address, a name, rupees if named, and no mobile number in
+ * the handle, the name or the note.
+ *
+ * @returns {{ link: string, pa: string, pn: string }}
+ * @throws  400 INVALID_UPI_QR naming what is wrong
+ */
+export function checkStaticUpiLink(raw) {
+  const no = (message) => Object.assign(new Error(message), { status: 400, code: 'INVALID_UPI_QR' });
+  if (typeof raw !== 'string' || !raw.trim()) throw no('Scan your UPI QR: no link was received.');
+  const scanned = raw.trim();
+  if (scanned.length > CASH_LINK_MAX_LENGTH) throw no('That QR is not a UPI payment link (it is far too long).');
+  if (scanned.slice(0, PREFIX.length).toLowerCase() !== PREFIX) throw no('That QR is not a UPI payment link.');
+  if (!URL_SAFE.test(scanned)) throw no('That QR contains characters a UPI payment link never has. Scan it again.');
+  const link = PREFIX + scanned.slice(PREFIX.length);
+  let params;
+  try {
+    params = [...new URLSearchParams(link.slice(PREFIX.length))];
+  } catch {
+    throw no('That QR could not be read as a UPI payment link. Scan it again.');
+  }
+  const seen = new Map();
+  for (const [key, value] of params) {
+    if (seen.has(key)) throw no(`That payment link names "${key}" twice, so it cannot be trusted.`);
+    seen.set(key, value);
+  }
+  const pa = seen.get('pa');
+  if (!pa || !VPA.test(pa)) throw no('That QR has no valid UPI payee address.');
+  if (MOBILE_IN_HANDLE.test(pa.split('@')[0])) {
+    throw no('That UPI ID is a mobile number, and players would see it. Use a UPI ID that is not your mobile number.');
+  }
+  const pn = (seen.get('pn') ?? '').trim();
+  if (!pn) throw no('That QR has no payee name.');
+  if (pn.length > 100) throw no('That QR\'s payee name is too long.');
+  if (['pn', 'tn'].some((key) => textHasAMobile(seen.get(key) ?? ''))) {
+    throw no('That QR has a mobile number in its name or note, and players would see it.');
+  }
+  // A static QR names no amount: each order's link carries its own. A QR
+  // that fixes one is for a single payment, not an account.
+  if (seen.has('am')) throw no('That QR is for one fixed amount. Scan your shop\'s static UPI QR, which has no amount.');
+  const cu = seen.get('cu');
+  if (cu !== undefined && cu !== 'INR') throw no('That payment link is not in rupees.');
+  return { link, pa, pn };
+}
+
+/** The order note on a built link: the order's reference, never a number a person owns. */
+export const orderNoteFor = (orderId) => `BB ${String(orderId).replace(/[^A-Za-z0-9]/g, '').slice(-8).toUpperCase()}`;
+
+/**
+ * The link a player pays one merchant-account buy through: the account's
+ * payee and name, the ORDER's amount, rupees, and a note naming the order.
+ * Built on the server from the stored account (never from a client), so the
+ * amount a player's UPI app shows is the order's.
+ */
+export function buildUpiPayLink({ pa, pn, amountRupees, orderId }) {
+  const am = (Math.round(Number(amountRupees) * 100) / 100).toFixed(2);
+  const q = new URLSearchParams({ pa: String(pa), pn: String(pn), am, cu: 'INR', tn: orderNoteFor(orderId) });
+  // URLSearchParams writes a space as '+'; UPI apps read %20.
+  return `${PREFIX}${q.toString().replace(/\+/g, '%20')}`;
+}
+
 export default checkCashLink;

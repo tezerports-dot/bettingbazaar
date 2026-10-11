@@ -10,6 +10,12 @@ import OrderManagement from './pages/OrderManagement';
 import TeamPage from './pages/TeamPage';
 import HistoryViews from './pages/HistoryViews';
 import ProfileSettings from './pages/ProfileSettings';
+import PaymentAccountsPage from './pages/account/PaymentAccountsPage';
+import SubMembersPage from './pages/account/SubMembersPage';
+import PoolPage from './pages/account/PoolPage';
+import ReportsPage from './pages/account/ReportsPage';
+import FlagsPage from './pages/account/FlagsPage';
+import { firstAccountTab } from './pages/account/accountTabs';
 import Layout from './components/Layout';
 import { Spinner } from './components/ui';
 import { PlatformUnreachable } from './components/PlatformUnreachable';
@@ -91,6 +97,12 @@ const RealtimeManager: React.FC = () => {
   return null;
 };
 
+/** The Account entry itself: the first tab this person may open. */
+const AccountHome: React.FC = () => {
+  const { merchant } = useAuth();
+  return <Navigate to={firstAccountTab(merchant)} replace />;
+};
+
 function AppRoutes() {
   return (
     <Routes>
@@ -100,6 +112,13 @@ function AppRoutes() {
       <Route path={ROUTES.TEAM} element={<ProtectedRoute><Shell><TeamPage /></Shell></ProtectedRoute>} />
       <Route path={ROUTES.HISTORY} element={<ProtectedRoute><Shell><HistoryViews /></Shell></ProtectedRoute>} />
       <Route path={ROUTES.PROFILE} element={<ProtectedRoute><Shell><ProfileSettings /></Shell></ProtectedRoute>} />
+      {/* A merchant account's screens (owner, 2026-10-11); each says so to a session it is not for. */}
+      <Route path={ROUTES.ACCOUNT} element={<ProtectedRoute><AccountHome /></ProtectedRoute>} />
+      <Route path={ROUTES.ACCOUNT_PAYMENT_ACCOUNTS} element={<ProtectedRoute><Shell><PaymentAccountsPage /></Shell></ProtectedRoute>} />
+      <Route path={ROUTES.ACCOUNT_SUB_MEMBERS} element={<ProtectedRoute><Shell><SubMembersPage /></Shell></ProtectedRoute>} />
+      <Route path={ROUTES.ACCOUNT_POOL} element={<ProtectedRoute><Shell><PoolPage /></Shell></ProtectedRoute>} />
+      <Route path={ROUTES.ACCOUNT_REPORTS} element={<ProtectedRoute><Shell><ReportsPage /></Shell></ProtectedRoute>} />
+      <Route path={ROUTES.ACCOUNT_FLAGS} element={<ProtectedRoute><Shell><FlagsPage /></Shell></ProtectedRoute>} />
       <Route path="*" element={<Navigate to={ROUTES.LOGIN} replace />} />
     </Routes>
   );

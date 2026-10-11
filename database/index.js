@@ -82,6 +82,10 @@ import * as teamPools from './repositories/teamPools.js';
 import * as teamCommission from './repositories/teamCommission.js';
 import * as teamRouting from './repositories/teamRouting.js';
 import * as teamOversight from './repositories/teamOversight.js';
+import * as merchantStaff from './repositories/merchantStaff.js';
+import * as merchantPaymentAccounts from './repositories/merchantPaymentAccounts.js';
+import * as merchantProblems from './repositories/merchantProblems.js';
+import * as merchantReports from './repositories/merchantReports.js';
 import * as disputeFaults from './repositories/disputeFaults.js';
 import * as stats from './repositories/stats.js';
 import * as utr from './repositories/utr.js';
@@ -158,6 +162,11 @@ export const db = Object.freeze({
   teamCommission,
   teamRouting,
   teamOversight,
+  // Merchant accounts (owner, 2026-10-11)
+  merchantStaff,
+  merchantPaymentAccounts,
+  merchantProblems,
+  merchantReports,
   disputeFaults,
   operations,
   supportDocuments,

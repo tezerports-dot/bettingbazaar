@@ -20,6 +20,7 @@ import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
 import api from '../../services/api';
 import type { Merchant, MerchantProfile } from '../../types';
+import { MerchantAccountsPanel } from './MerchantAccountsPanel';
 import toast from 'react-hot-toast';
 
 type DetailTab = 'info' | 'rail' | 'history' | 'earnings';
@@ -38,7 +39,13 @@ export const MerchantsList: React.FC = () => {
 
   // Create merchant
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [createForm, setCreateForm] = useState({ username: '', mobile: '', password: '', email: '' });
+  // kind: 'AGENT' works in a team under a supervisor; 'DIRECT' is a merchant
+  // (merchant account) serving INR itself (owner, 2026-10-11).
+  const emptyCreate = { username: '', mobile: '', password: '', email: '', kind: 'AGENT' as 'AGENT' | 'DIRECT' };
+  const [createForm, setCreateForm] = useState(emptyCreate);
+  const [accountsReload, setAccountsReload] = useState(0);
+  const [makingAccount, setMakingAccount] = useState(false);
+  const [makeAccountProblem, setMakeAccountProblem] = useState('');
   const [isCreating, setIsCreating] = useState(false);
 
   const [merchantEarnings, setMerchantEarnings] = useState<any>(null);
@@ -189,11 +196,12 @@ export const MerchantsList: React.FC = () => {
     if (!createForm.username || !createForm.mobile || !createForm.password) { toast.error('Fill required fields'); return; }
     setIsCreating(true);
     try {
-      await (api.merchants as any).create?.(createForm);
-      toast.success('Merchant account created');
+      await api.merchants.create(createForm);
+      toast.success(createForm.kind === 'DIRECT' ? 'Merchant created' : 'Agent created');
       setShowCreateModal(false);
-      setCreateForm({ username: '', mobile: '', password: '', email: '' });
+      setCreateForm(emptyCreate);
       loadMerchants();
+      setAccountsReload((n) => n + 1);
     } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to create merchant'); }
     finally { setIsCreating(false); }
   };
@@ -259,6 +267,19 @@ export const MerchantsList: React.FC = () => {
     },
   ];
 
+  // Make an existing INR agent a merchant (POST /api/admin/merchant-accounts).
+  // The server refuses a supervisor, a team member or a USDT merchant by name.
+  const handleMakeMerchantAccount = async (merchantId: string) => {
+    setMakingAccount(true); setMakeAccountProblem('');
+    try {
+      const res = await api.merchants.makeMerchantAccount(merchantId);
+      toast.success(res?.already ? 'Already a merchant' : 'Now a merchant');
+      setAccountsReload((n) => n + 1);
+    } catch (e: any) {
+      setMakeAccountProblem(e.response?.data?.message || 'Could not make this a merchant.');
+    } finally { setMakingAccount(false); }
+  };
+
   return (
     <div className="om-fade">
       <Kpis items={[
@@ -286,9 +307,11 @@ export const MerchantsList: React.FC = () => {
         <DataTable data={merchants} columns={columns} currentPage={page} totalPages={Math.ceil(total / limit)} onPageChange={setPage} isLoading={isLoading} />
       </div>
 
+      <MerchantAccountsPanel reloadKey={accountsReload} />
+
       {/* Merchant Detail Modal */}
       {selectedMerchant && (
-        <Modal isOpen={!!selectedMerchant} onClose={() => setSelectedMerchant(null)} title="Merchant Profile" size="xl">
+        <Modal isOpen={!!selectedMerchant} onClose={() => { setSelectedMerchant(null); setMakeAccountProblem(''); }} title="Merchant Profile" size="xl">
           <div className="flex space-x-1 mb-6 bg-dark-800 rounded-lg p-1">
             {(['info', 'rail', 'history', 'earnings'] as DetailTab[]).map((tab) => (
               <button key={tab} onClick={() => { setDetailTab(tab); if (tab === 'history') loadMerchantOrders(selectedMerchant._id); if (tab === 'earnings') loadEarnings(selectedMerchant._id); }}
@@ -305,6 +328,18 @@ export const MerchantsList: React.FC = () => {
                 <div><p className="text-gray-400">Mobile</p><p className="font-medium">{formatters.phone(selectedMerchant.mobile)}</p></div>
                 <div><p className="text-gray-400">Account Status</p><StatusBadge status={selectedMerchant.status} type="merchant" /></div>
                 <div><p className="text-gray-400">Approval</p><StatusBadge status={selectedMerchant.merchantApprovalStatus} type="merchant" /></div>
+              </div>
+
+              <div className="p-3 bg-dark-800 rounded-lg">
+                <p className="text-sm text-gray-300 mb-2">
+                  Make this an INR merchant that serves orders itself, with its own pool, payment accounts and
+                  sub-members. Not for a supervisor or an agent in a team.
+                </p>
+                <button onClick={() => void handleMakeMerchantAccount(selectedMerchant._id)} disabled={makingAccount}
+                  className="btn-secondary text-sm disabled:opacity-50">
+                  {makingAccount ? 'Working…' : 'Make merchant account'}
+                </button>
+                {makeAccountProblem && <p role="alert" className="text-sm text-red-400 mt-2">{makeAccountProblem}</p>}
               </div>
 
               {selectedMerchant.merchantApprovalStatus === 'PENDING' && (
@@ -484,9 +519,29 @@ export const MerchantsList: React.FC = () => {
 
       {/* Create Merchant Modal */}
       {showCreateModal && (
-        <Modal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} title="Create Merchant Account">
+        <Modal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} title="Create an Agent or Merchant">
           <div className="space-y-4">
-            <p className="text-sm text-gray-400">Create a new merchant account. The merchant will receive login credentials and must be approved before they can process orders.</p>
+            <p className="text-sm text-gray-400">Create a login for the merchant panel. It must be approved before it can take orders.</p>
+            <fieldset>
+              <legend className="label">Kind</legend>
+              <div className="flex gap-4 mt-1 text-sm">
+                <label className="flex items-center gap-2">
+                  <input type="radio" name="create-kind" value="AGENT" checked={createForm.kind === 'AGENT'}
+                    onChange={() => setCreateForm((f) => ({ ...f, kind: 'AGENT' }))} />
+                  Agent
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="radio" name="create-kind" value="DIRECT" checked={createForm.kind === 'DIRECT'}
+                    onChange={() => setCreateForm((f) => ({ ...f, kind: 'DIRECT' }))} />
+                  Merchant
+                </label>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                {createForm.kind === 'DIRECT'
+                  ? 'A merchant serves INR orders itself, with its own pool, payment accounts and sub-members.'
+                  : 'An agent works in a team under a supervisor.'}
+              </p>
+            </fieldset>
             <div>
               <label htmlFor="create-username" className="label">Username *</label>
               <input id="create-username" name="username" type="text" value={createForm.username} onChange={(e) => setCreateForm(f => ({ ...f, username: e.target.value }))} className="input" placeholder="Merchant display name" />

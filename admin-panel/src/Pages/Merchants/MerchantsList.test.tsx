@@ -22,6 +22,7 @@ const { merchants, put } = vi.hoisted(() => ({
     getAll: vi.fn(), getProfile: vi.fn(), getEarnings: vi.fn(), getOrders: vi.fn(),
     resumeAssignment: vi.fn(), suspend: vi.fn(), activate: vi.fn(),
     approve: vi.fn(), reject: vi.fn(), create: vi.fn(),
+    listMerchantAccounts: vi.fn(), makeMerchantAccount: vi.fn(), listMerchantFlags: vi.fn(),
   },
   put: vi.fn(),
 }));
@@ -55,6 +56,8 @@ beforeEach(() => {
     success: true, earnings: { totalOrders: 14, completedOrders: 12, pendingOrders: 1, totalVolume: 23450 },
   });
   merchants.resumeAssignment.mockResolvedValue({ success: true, message: 'Assignment resumed for this merchant.' });
+  merchants.listMerchantAccounts.mockResolvedValue({ success: true, merchantAccounts: [] });
+  merchants.listMerchantFlags.mockResolvedValue({ success: true, flags: [] });
 });
 
 const openProfile = async () => {
@@ -117,5 +120,51 @@ describe('Merchants after the team-routing change', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Payment Details' }));
     fireEvent.click(screen.getByRole('button', { name: /USDT · wallet addresses/ }));
     await waitFor(() => expect(put).toHaveBeenCalledWith('/api/admin/merchants/MRC-1/capabilities', { merchantType: 'USDT' }));
+  });
+});
+
+describe('merchants (merchant accounts), owner 2026-10-11', () => {
+  const DIRECT = {
+    teamId: 'TD-1', ownerMerchantId: 'MRC-9', ownerName: 'shop', ownerRef: 'M9', ownerStatus: 'ACTIVE', ownerOnline: true,
+    name: 'Shop Direct', poolAvailablePaise: 250000, poolHeldPaise: 50000,
+    commission: { paidPaise: 1000, owedPaise: 0, commissionPercent: 10 },
+    accounts: [{ accountId: 'mpa_1', kind: 'UPI_QR', label: 'Counter', upiId: 'shop@okhdfc', bankName: 'HDFC', accountNo: '123456789012', acceptsDeposits: true, paysWithdrawals: false, status: 'ACTIVE' }],
+    staff: [{ staffId: 'mst_1', name: 'Asha', mobile: '9876500000', roles: ['DEPOSITS', 'AUDIT'], status: 'ACTIVE' }],
+    problemDays: [],
+  };
+
+  it('creates a Merchant when the kind says so', async () => {
+    merchants.create.mockResolvedValue({ success: true });
+    render(<MerchantsList />);
+    fireEvent.click(await screen.findByRole('button', { name: /Create Merchant/ }));
+    fireEvent.change(screen.getByLabelText('Username *'), { target: { value: 'shop' } });
+    fireEvent.change(screen.getByLabelText('Mobile Number *'), { target: { value: '9123456780' } });
+    fireEvent.change(screen.getByLabelText('Temporary Password *'), { target: { value: 'a-long-password' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Merchant' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create Merchant' }).pop()!);
+    await waitFor(() => expect(merchants.create).toHaveBeenCalledWith(expect.objectContaining({ username: 'shop', kind: 'DIRECT' })));
+  });
+
+  it('lists the merchants the server sends, never a sub-member\'s mobile, and the flags', async () => {
+    merchants.listMerchantAccounts.mockResolvedValue({ success: true, merchantAccounts: [DIRECT] });
+    merchants.listMerchantFlags.mockResolvedValue({ success: true, flags: [{ id: 1, merchantId: 'MRC-9', merchantName: 'shop', day: '2026-10-10', problemCount: 6, threshold: 5 }] });
+    render(<MerchantsList />);
+    const card = await screen.findByRole('article', { name: 'Shop Direct' });
+    expect(card).toHaveTextContent('Pool: 2,500 tokens · 500 held');
+    expect(card).toHaveTextContent('Asha · Deposits, Audit');
+    expect(card).toHaveTextContent('Counter · UPI scanner');
+    expect(screen.queryByText(/9876500000/)).toBeNull();
+    expect(screen.getByRole('table', { name: 'Merchant flags' })).toHaveTextContent('6 / 5');
+  });
+
+  it('makes an existing agent a merchant from the profile, and says the refusal', async () => {
+    merchants.makeMerchantAccount.mockRejectedValueOnce({ response: { data: { message: 'That merchant is in a team. Remove them from it first.' } } });
+    await openProfile();
+    fireEvent.click(screen.getByRole('button', { name: 'Make merchant account' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('That merchant is in a team.');
+    merchants.makeMerchantAccount.mockResolvedValueOnce({ success: true, teamId: 'TD-2' });
+    fireEvent.click(screen.getByRole('button', { name: 'Make merchant account' }));
+    await waitFor(() => expect(merchants.makeMerchantAccount).toHaveBeenLastCalledWith('MRC-1'));
+    await waitFor(() => expect(merchants.listMerchantAccounts).toHaveBeenCalledTimes(2));
   });
 });

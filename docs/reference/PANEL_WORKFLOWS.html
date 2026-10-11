@@ -229,7 +229,7 @@ their teams serve only that rail.</p>
 every 30 seconds for whatever is still queued.</p>
 </div>
 <ul>
-<li>an APPROVED member of a team that is <code>WORKING</code> (10 approved) or in <code>GRACE</code> (fell below 10 today, IST), whose supervisor holds the order's rail</li>
+<li>an APPROVED member of a team (a team works with one to ten approved members), whose supervisor holds the order's rail</li>
 <li>the member ACTIVE, approved, online, not assignment-paused, switched on for this direction</li>
 <li>under the rail's cap (<code>SystemConfig.teamRouting.concurrency</code>)</li>
 <li>not barred from this order or this player (<code>order_rejections</code>)</li>
@@ -481,8 +481,8 @@ Every refusal below is from <code>backend/domains/team/teamRefusals.js</code>.</
 <tr><td>Disputes on your teams · Send</td><td>GET /supervisor/disputes · GET/POST /supervisor/disputes/:orderId/chat</td><td>404 That dispute is not on an order of one of your teams. · 409 This dispute has been decided, so its thread is closed… · 400 Take the mobile number out of your message… · 409 You have sent the 50 messages a supervisor may send on one dispute…</td></tr>
 </tbody>
 </table></div>
-<p class="note">Each team card shows its strength (<code>WORKING</code> / <code>GRACE</code> /
-<code>STOPPED</code>), approved and waiting counts, the pool (available and held),
+<p class="note">Each team card shows its strength (<code>WORKING</code> with at least one
+approved member, else <code>STOPPED</code>), approved and waiting counts, the pool (available and held),
 commission matched, paid and waiting, and member activity today and over 7 days with
 the low-activity flags of 14 days. A member's log shows their orders through
 <code>SUPERVISOR_ORDER_FIELDS</code> (no player detail) and their online stretches
@@ -629,8 +629,9 @@ the hold. There is no per-merchant order range.</p>
 being declared</strong>; the GET and PUT walk <code>SYSTEM_CONFIG_SPEC</code>. Every
 field is admin-editable: a value the platform writes has its own table and one writer,
 never <code>config_documents</code>.</p>
-<p>The Step 2 fields on this screen: <code>orderSizes</code> (tick which of the seven are
-offered), <code>usdtBuy.minUsdt</code>/<code>maxUsdt</code>, <code>usdtPricing</code> (both
+<p>The Step 2 fields on this screen: <code>buyOrderSizes</code> and <code>sellOrderSizes</code>
+(tick which of the seven are offered to buy, and which to sell; each rail shows how it is paid,
+from the server's <code>orderSizeRails</code>), <code>usdtBuy.minUsdt</code>/<code>maxUsdt</code>, <code>usdtPricing</code> (both
 rates, ₹10–₹1,000 or unset), <code>teamRouting</code> (concurrency per rail, the assignment
 wait, the processing windows, the UTR deadline), <code>rejectedBuyDisputeMinutes</code>,
 <code>withdrawalHoldMinutes</code> and <code>redFlags.lowActivityPercent</code>.</p>
@@ -704,7 +705,7 @@ account's own audience bot and grants choosing a password, never a session.</p>
 <tr><td>Three buys in a row expired unpaid</td><td>429</td><td>Three of your orders in a row expired without payment, so new orders are paused until 14:35. Paying for an order clears this straight away. (<code>ORDER_COOL_OFF</code>)</td></tr>
 <tr><td>USDT with no network chosen</td><td>400</td><td>Choose the network you will send USDT on: TRC20 or BEP20. (<code>USDT_CHAIN_REQUIRED</code>)</td></tr>
 <tr><td>USDT off the step or bounds</td><td>400</td><td>A USDT purchase is 100 to 10,000 USDT, in steps of 100. (<code>NOT_A_USDT_AMOUNT</code>)</td></tr>
-<tr><td>Not an offered size</td><td>400</td><td>… tokens is not on offer right now. Choose one of … tokens. (<code>NOT_AN_ORDER_SIZE</code>, with the sizes)</td></tr>
+<tr><td>Not an offered size</td><td>400</td><td>… tokens is not on offer to buy (or sell) right now. Choose one of … tokens. (<code>NOT_AN_ORDER_SIZE</code>, with the sizes)</td></tr>
 <tr><td>A buy already open</td><td>409</td><td>You already have a purchase in progress. Finish or cancel it before starting another. (<code>BUY_ALREADY_OPEN</code>)</td></tr>
 <tr><td>Too many in an hour</td><td>429</td><td>Too many funding requests — limit is N per hour. Please try later. (<code>VELOCITY_LIMIT</code>)</td></tr>
 <tr><td>Suspended for payment violations</td><td>403</td><td>Your account has been suspended due to payment violations. Contact support. (<code>USER_BLOCKED</code>)</td></tr>

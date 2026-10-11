@@ -80,10 +80,10 @@ export const UsersList: React.FC = () => {
     setIsSavingPhantom(true);
     try {
       await api.post(`/api/admin/users/${phantomUser.userId}/phantom-access`, { accessLevel: phantomLevel });
-      toast.success(`Phantom access set to ${phantomLevel}`);
+      toast.success(`House-bettor access set to ${phantomLevel}`);
       setPhantomUser(null);
       loadUsers();
-    } catch { toast.error('Failed to set phantom access'); }
+    } catch { toast.error('Failed to set house-bettor access'); }
     finally { setIsSavingPhantom(false); }
   };
 
@@ -164,7 +164,7 @@ export const UsersList: React.FC = () => {
           {canAdjust && isPlayer(u) && <button onClick={() => openBalanceModal(u, 'deduct')} className="p-1.5 hover:bg-red-600/20   text-red-400   rounded-sm" title="Deduct"><Minus size={14} /></button>}
           <button onClick={() => openUserDetails(u, 'history')} className="p-1.5 hover:bg-blue-600/20  text-blue-400  rounded-sm" title="Tx History"><History size={14} /></button>
           <button onClick={() => openUserDetails(u, 'bank')}    className="p-1.5 hover:bg-purple-600/20 text-purple-400 rounded-sm" title="Bank"><CreditCard size={14} /></button>
-          {canPhantom && isPlayer(u) && <button onClick={() => { setPhantomUser(u); setPhantomLevel((u as any).phantomAccess || 'NONE'); }} className="p-1.5 hover:bg-yellow-600/20 text-yellow-400 rounded-sm" title="Phantom Access"><Ghost size={14} /></button>}
+          {canPhantom && isPlayer(u) && <button onClick={() => { setPhantomUser(u); setPhantomLevel((u as any).phantomAccess || 'NONE'); }} className="p-1.5 hover:bg-yellow-600/20 text-yellow-400 rounded-sm" title="House-Bettor Access"><Ghost size={14} /></button>}
           {u.status === 'BLOCKED' ? (
             <button onClick={() => setConfirmAction({ type: 'unblock', user: u })} className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Unblock"><CheckCircle size={14} /></button>
           ) : (
@@ -359,7 +359,7 @@ export const UsersList: React.FC = () => {
       )}
 
       {phantomUser && (
-        <Modal isOpen onClose={() => setPhantomUser(null)} title="Set Phantom Access">
+        <Modal isOpen onClose={() => setPhantomUser(null)} title="Set House-Bettor Access">
           <div className="space-y-4">
             <div className="bg-dark-700 rounded-lg p-4 text-sm">
               <p className="text-gray-400">User</p>
@@ -367,9 +367,9 @@ export const UsersList: React.FC = () => {
               <p className="text-xs text-gray-500 mt-1">Current: {(phantomUser as any).phantomAccess || 'NONE'}</p>
             </div>
             <div>
-              <label className="label" htmlFor="phantom-access-level">Phantom Access Level</label>
+              <label className="label" htmlFor="phantom-access-level">House-Bettor Access Level</label>
               <select id="phantom-access-level" value={phantomLevel} onChange={e => setPhantomLevel(e.target.value)} className="input">
-                <option value="NONE">NONE — No phantom betting</option>
+                <option value="NONE">NONE — No house bets</option>
                 {boards.map((b) => <option key={b.key} value={b.key}>{b.name} — this board only</option>)}
                 <option value="BOTH">BOTH — every board</option>
               </select>

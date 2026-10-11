@@ -61,9 +61,9 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/users',               icon: Users,            label: 'Users',          title: 'Users',              sub: 'Player accounts, balances & status', permission: 'canManageUsers' },
     { path: '/users/balance-adjust',icon: SlidersHorizontal,label: 'Balance Adjust', title: 'Balance Adjustment', sub: 'Manual credit / debit with mandatory audit note', permission: 'canAdjustBalances' },
     { path: '/users/flagged',       icon: Flag,             label: 'Flagged Players',title: 'Flagged Players',    sub: "A merchant disputed their payment — reason, proof, and the block decision", permission: 'canManageUsers' },
-    { path: '/merchants',           icon: Store,            label: 'Merchants',      title: 'Merchants',          sub: 'P2P payment merchants, approval & settlement rail', permission: 'canManageMerchants' },
-    { path: '/teams',               icon: Users,            label: 'Teams',          title: 'Supervisors & Teams', sub: 'Supervisors, their teams, and members waiting for approval', permission: 'canManageTeams' },
-    { path: '/users/phantom-agents',  icon: Ghost,           label: 'Phantom Agents', title: 'Phantom Agents',     sub: 'Who can place cosmetic bets, and on which boards', permission: 'canManagePhantomAgents' },
+    { path: '/merchants',           icon: Store,            label: 'Agents & Merchants', title: 'Agents & Merchants', sub: 'Agents in teams and direct merchants: approval, payment details, merchant accounts', permission: 'canManageMerchants' },
+    { path: '/teams',               icon: Users,            label: 'Teams',          title: 'Supervisors & Teams', sub: 'Supervisors, their agent teams, agents waiting for approval, pool requests', permission: 'canManageTeams' },
+    { path: '/users/phantom-agents',  icon: Ghost,           label: 'House Bettors', title: 'House Bettors',     sub: 'Who can place cosmetic bets, and on which boards', permission: 'canManagePhantomAgents' },
   ] },
   // Identity and payout control plane. Each screen is its own area, granted
   // by an admin on the Sub-admins screen (owner, 2026-10-01). Every staff
@@ -75,7 +75,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/referrals', icon: Share2,          label: 'Referrals',       title: 'Referral Programme',  sub: 'Fund the payout queue in joining order', permission: 'canManageReferrals' },
   ] },
   { key: 'payments', label: 'Payments & Queue', items: [
-    { path: '/queue-manager',   icon: Layers,   label: 'Queue Manager',  title: 'Queue Manager', sub: 'Live payment order queue — orders are routed to working teams', queueManagerAccess: true, permission: 'canManageMerchants', badge: 'queue' },
+    { path: '/queue-manager',   icon: Layers,   label: 'Queue Manager',  title: 'Queue Manager', sub: 'Live payment order queue — orders are routed to agent teams or merchants', queueManagerAccess: true, permission: 'canManageMerchants', badge: 'queue' },
     { path: '/transactions',    icon: FileText, label: 'Transactions',   title: 'Transactions',  sub: 'Ledger of deposits, withdrawals, bets & adjustments', permission: 'canViewTransactions' },
     { path: '/disputes',        icon: Scale,    label: 'Disputes',       title: 'Disputes',      sub: 'Payment order disputes & resolution', permission: 'canResolveDisputes' },
     { path: '/disputes/stalled-withdrawals', icon: Hourglass, label: 'Stalled Payouts', title: 'Stalled Withdrawals', sub: 'Payouts no merchant has taken, and the tokens locked behind them', permission: 'canResolveDisputes' },

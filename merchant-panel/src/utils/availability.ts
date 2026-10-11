@@ -9,27 +9,35 @@
  * `merchant-paused` profile.
  */
 import type { MerchantProfile } from '../types';
+import { isSubMember } from './actor';
 
 export function availabilityOf(
-  merchant: Pick<MerchantProfile, 'isOnline' | 'assignmentPausedAt' | 'isSupervisor'> | null | undefined,
+  merchant: Pick<MerchantProfile, 'isOnline' | 'assignmentPausedAt' | 'isSupervisor' | 'actor'> | null | undefined,
 ) {
-  // A supervisor is never a member (CLAUDE.md §2): they take no orders, so
+  // A supervisor is never an agent (CLAUDE.md §2): they take no orders, so
   // there is nothing to switch, and every screen says so instead of offering
   // "Go online" (which the server refuses, SUPERVISOR_TAKES_NO_ORDERS).
   const supervisor = merchant?.isSupervisor === true;
+  // A merchant account's sub-member works the account's orders, but going
+  // online is the OWNER's (owner, 2026-10-11; the server answers OWNER_ONLY).
+  // They see whether the account is taking orders, with no switch.
+  const subMember = isSubMember(merchant);
   const online = !supervisor && !!merchant?.isOnline;
   const paused = !supervisor && !!merchant?.assignmentPausedAt;
   return {
     online,
     paused,
     supervisor,
+    subMember,
     /** Whether this account has an online switch at all. */
-    switchable: !supervisor,
+    switchable: !supervisor && !subMember,
+    /** What the header says in place of the switch, when there is none. */
+    badge: supervisor ? 'Supervisor' : 'Sub-member',
     /** Sidebar and profile. */
     short: supervisor ? 'Supervisor · takes no orders'
       : online ? (paused ? 'New orders paused' : 'Available for orders') : 'Not accepting',
     /** The Dashboard's status card. */
-    long: supervisor ? 'Supervisor · your members take the orders'
+    long: supervisor ? 'Supervisor · your agents take the orders'
       : online ? (paused ? 'Online · New orders paused' : 'Online · Accepting orders') : 'Offline · Not accepting',
   };
 }

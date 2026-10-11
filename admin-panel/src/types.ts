@@ -531,7 +531,8 @@ export interface TeamSupervisor {
 export interface TeamView {
   teamId: string; supervisorId: string; supervisorName: string; supervisorRef: string;
   name: string; rail: SupervisorRail; approvedCount: number; pendingCount: number; size: number;
-  strength: 'WORKING' | 'GRACE' | 'STOPPED'; shortSince: string | null; wasFull: boolean; createdAt: string;
+  /** WORKING with at least one approved member, else STOPPED (a team works with 1–10; Phase A). */
+  strength: 'WORKING' | 'STOPPED'; createdAt: string;
   /** The team's token pool, in paise (Step 2b). */
   poolAvailablePaise: number; poolHeldPaise: number;
   /** Team commission (Step 2e): mirrors `toSummary` in database/repositories/teamCommission.js — §5. */
@@ -545,6 +546,9 @@ export interface TeamView {
 // — §5: change them together.
 export interface TeamPoolRequest {
   requestId: string; teamId: string; teamName: string | null;
+  // AGENT: an agents' team, asked by its supervisor. DIRECT: a merchant
+  // (merchant account), asked by its owner (`toRequest`, teamPools.js).
+  teamKind: 'AGENT' | 'DIRECT';
   supervisorId: string; supervisorName: string | null;
   direction: 'BUY' | 'SELL'; tokenAmountPaise: number;
   status: 'PENDING' | 'FULFILLED' | 'REJECTED' | 'CANCELLED';
@@ -566,5 +570,7 @@ export interface TeamRedFlag {
 export interface TeamMemberView {
   merchantId: string; teamId: string; name: string; publicRef: string;
   status: 'PENDING' | 'APPROVED'; isOnline: boolean;
+  /** 1–5, the admin's; routing offers orders to the highest first (`setRoutingPriority`). */
+  routingPriority: number;
   addedBy: string; addedAt: string; approvedBy: string | null; approvedAt: string | null;
 }

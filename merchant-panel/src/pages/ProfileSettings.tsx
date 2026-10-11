@@ -17,6 +17,7 @@ import { Copy, Edit3, LogOut, Save } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
 import { availabilityOf } from '../utils/availability';
+import { actorOf, ROLE_LABEL } from '../utils/actor';
 import { api } from '../services/api';
 import { useViewport } from '../hooks/useViewport';
 import TelegramCard from '../components/TelegramCard';
@@ -29,7 +30,39 @@ import {
   Banner, Button, Card, CardTitle, Field, Toggle, Verified, cardStyle, copyText, inputStyle,
 } from '../components/ui';
 
-const ProfileSettings: React.FC = () => {
+/**
+ * A merchant account's SUB-MEMBER's profile (owner, 2026-10-11): their own
+ * Telegram (every sign-in is approved there; `req.userId` is their own login),
+ * who they are and their roles, and Log out. The account's identity, bank
+ * details, preferences and online switch are the owner's (OWNER_ONLY), and the
+ * owner's mobile is not theirs to see (CLAUDE.md §24), so none is shown.
+ */
+export const SubMemberProfile: React.FC = () => {
+  const { merchant, logout } = useAuth();
+  const actor = actorOf(merchant);
+  if (actor.isOwner) return null;
+  return (
+    <div style={{ maxWidth: 840, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <TelegramCard />
+      <Card>
+        <CardTitle title="Signed in as a sub-member" sub={`Of the merchant account ${merchant?.username ?? ''}`.trim()} />
+        <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)' }}>{actor.name}</div>
+        <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)', marginTop: 4 }}>
+          {actor.roles.map((r) => ROLE_LABEL[r]).join(' · ')}
+        </div>
+        <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', lineHeight: 1.5, margin: '10px 0 0' }}>
+          The account owner manages the profile, payment accounts and online status, and decides which
+          accounts you work.
+        </p>
+        <Button variant="outline" tone="danger" full onClick={logout} style={{ marginTop: 14 }}>
+          <LogOut size={16} /> Log out
+        </Button>
+      </Card>
+    </div>
+  );
+};
+
+const OwnerProfileSettings: React.FC = () => {
   const { merchant, logout, refreshProfile } = useAuth();
   const { isMobile } = useViewport();
   const rail = railOf(merchant);
@@ -415,7 +448,7 @@ const ProfileSettings: React.FC = () => {
         {availability.supervisor ? (
           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-2)', lineHeight: 1.5 }}>
             You are a supervisor: you run teams and take no orders yourself, so there is nothing to choose
-            here. Your members choose which orders they take from their own accounts.
+            here. Your agents choose which orders they take from their own accounts.
           </div>
         ) : (<>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -477,6 +510,12 @@ const ProfileSettings: React.FC = () => {
       </Card>
     </div>
   );
+};
+
+/** The owner's profile, or a sub-member's own (above). */
+const ProfileSettings: React.FC = () => {
+  const { merchant } = useAuth();
+  return actorOf(merchant).isOwner ? <OwnerProfileSettings /> : <SubMemberProfile />;
 };
 
 export default ProfileSettings;

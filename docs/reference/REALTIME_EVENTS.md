@@ -126,6 +126,7 @@ client and round this is ~260 B less per transport, before compression.
 | `merchant_limits_updated` | SSE | server→admin | `merchant.admin.routes.js` |
 | `merchant_config_updated` | socket.io | server→merchant | `merchant.admin.routes.js` |
 | `merchant_score_update` | emitter | server→merchant | `merchant.routes.js` (after a completed order) |
+| `merchant_flag_raised` | SSE | server→admin | `merchantProblems.service.js` (a merchant account reached its daily problem threshold; owner, 2026-10-11) |
 
 ### Configuration & content
 

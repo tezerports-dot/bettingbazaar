@@ -2,8 +2,8 @@
 /**
  * Working teams for tests (PROJECT_STATUS §3.10, Step 2c).
  *
- * Every order now reaches a MEMBER of a WORKING team (ten approved members)
- * whose supervisor is on the order's rail, and a buy holds its tokens in that
+ * Every order now reaches an APPROVED MEMBER of a team (a team works with one
+ * to ten; owner, Phase A) whose supervisor is on the order's rail, and a buy holds its tokens in that
  * team's pool. A test that wants an order served by a particular merchant
  * therefore needs that merchant inside such a team, online, with the pool
  * funded — built through the real repositories, never by writing rows a
@@ -15,7 +15,8 @@
  *   afterAll(() => teams.cleanup());   // before closePg()
  *
  * `include` puts existing merchants in the team (they must be ACTIVE and
- * APPROVED); the team is padded to ten with fresh ones. `online` names who is
+ * APPROVED); the team is padded to a full ten with fresh ones, so a suite has
+ * bystanders to route around. `online` names who is
  * online among EVERY team member in the database — by default the included
  * merchants when there are any, otherwise all ten — so routing is
  * deterministic even when an earlier suite left a team behind.

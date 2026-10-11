@@ -3,7 +3,7 @@
  * The Users screen offers each control only to an account whose AREA admits it.
  *
  * The screen is the players area (canManageUsers). Add/Deduct are
- * canAdjustBalances and Phantom Access is canManagePhantomAgents — and a
+ * canAdjustBalances and House-Bettor Access is canManagePhantomAgents — and a
  * sub-admin given the players area alone was shown all three, then refused on
  * press. Measured by opening the panel as that account
  * (BB_PROFILE=subadmin-players) and by sweeping every admin screen for calls
@@ -39,13 +39,13 @@ const as = (admin: Record<string, unknown>) => useAuthStore.setState({
 describe('Users screen controls, by area', () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
-  it('shows a full admin Add Balance, Deduct and Phantom Access', async () => {
+  it('shows a full admin Add Balance, Deduct and House-Bettor Access', async () => {
     as({ isAdmin: true });
     render(<UsersList />);
     await screen.findByText('player1');
     expect(screen.getByTitle('Add Balance')).toBeInTheDocument();
     expect(screen.getByTitle('Deduct')).toBeInTheDocument();
-    expect(screen.getByTitle('Phantom Access')).toBeInTheDocument();
+    expect(screen.getByTitle('House-Bettor Access')).toBeInTheDocument();
   });
 
   it('hides them from a sub-admin given the players area alone', async () => {
@@ -54,7 +54,7 @@ describe('Users screen controls, by area', () => {
     await screen.findByText('player1');
     expect(screen.queryByTitle('Add Balance')).not.toBeInTheDocument();
     expect(screen.queryByTitle('Deduct')).not.toBeInTheDocument();
-    expect(screen.queryByTitle('Phantom Access')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('House-Bettor Access')).not.toBeInTheDocument();
     // The players area's own controls stay.
     expect(screen.getByTitle('Details')).toBeInTheDocument();
   });
@@ -64,7 +64,7 @@ describe('Users screen controls, by area', () => {
     render(<UsersList />);
     await screen.findByText('player1');
     expect(screen.getByTitle('Add Balance')).toBeInTheDocument();
-    expect(screen.queryByTitle('Phantom Access')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('House-Bettor Access')).not.toBeInTheDocument();
   });
 
   // ── Delete Account: a feature with no button until 2026-10-01 ─────────────
@@ -85,7 +85,7 @@ describe('Users screen controls, by area', () => {
 
   // A balance and phantom access are a PLAYER's; both routes refuse a staff or
   // merchant login (409), so the controls are not offered on those rows.
-  it('offers Add Balance, Deduct and Phantom Access on a PLAYER row only', async () => {
+  it('offers Add Balance, Deduct and House-Bettor Access on a PLAYER row only', async () => {
     as({ isAdmin: true });
     const row = (userId: string, username: string, accountType: string) => ({ userId, username, mobile: '9876543210', status: 'ACTIVE', accountType, depositBalance: 0, winningsBalance: 0, lockedBalance: 0 });
     (api.users.getAll as any).mockResolvedValueOnce({
@@ -96,7 +96,7 @@ describe('Users screen controls, by area', () => {
     render(<UsersList />);
     await screen.findByText('player1');
     const playerRow = screen.getByText('player1').closest('tr')!;
-    for (const title of ['Add Balance', 'Deduct', 'Phantom Access']) {
+    for (const title of ['Add Balance', 'Deduct', 'House-Bettor Access']) {
       expect(within(playerRow).getByTitle(title)).toBeInTheDocument();
       for (const other of ['colleague', 'trader']) {
         expect(within(screen.getByText(other).closest('tr')!).queryByTitle(title)).not.toBeInTheDocument();

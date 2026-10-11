@@ -27,7 +27,9 @@
 import { pgQuery } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 import { deriveOrderHmac } from '../../backend/middleware/order-crypto-access.js';
-import { paymentModeFor } from './orderRails.js';
+import { paymentModeFor, inrRoutingFor } from './orderRails.js';
+import { getSystemConfig } from './config.js';
+import { inrRoutingOf } from '../../backend/domains/merchant/denominations.js';
 
 const num = (v) => Number(v ?? 0);
 const rupees = (v) => paiseToRupees(num(v));
@@ -136,6 +138,16 @@ export function toOrder(r) {
     // else, and a chain that moved after assignment would point a player at an
     // address on a network they cannot reach.
     usdtChain: r.usdt_chain ?? null,
+
+    // Who serves it, for an INR order: AGENTS (supervisors' teams) or
+    // MERCHANTS (merchant accounts), stamped at creation from the admin's
+    // switch; null on USDT (owner, 2026-10-11). Routing branches on THIS.
+    inrRouting: r.inr_routing ?? null,
+    // On a merchant-account buy, the payment account the player pays into
+    // (chosen at assignment); on a merchant-account sell, the account it was
+    // paid from (named at Paid). Neither is SETTABLE: each has one writer.
+    payAccountId: r.pay_account_id ?? null,
+    paidFromAccountId: r.paid_from_account_id ?? null,
 
     // When the player claimed their minute to fetch the UTR. Null until they
     // do, and non-null forever after: the grace is claimable once, and the row
@@ -335,11 +347,16 @@ async function newOrderStatement({
   // is no platform-wide switch to read and no parameter a caller could forget
   // or a fixture could set to a rail the order's size would never get (§32
   // S16). The row is immutable afterwards (order_states_mode_immutable).
-  const paymentMode = paymentModeFor({ currency: detail.currency, tokenAmountPaise: tokenPaise });
+  //
+  // An INR order is also born under the admin's routing mode (owner,
+  // 2026-10-11), read here from the config row and stamped with it: the rail
+  // follows from the mode, and routing reads the order's own stamp.
+  const inrRouting = inrRoutingFor({ currency: detail.currency, mode: inrRoutingOf(await getSystemConfig()) });
+  const paymentMode = paymentModeFor({ currency: detail.currency, tokenAmountPaise: tokenPaise, inrRouting });
   const columns = ['order_id', 'user_id', 'order_type', 'state', 'token_amount_paise', 'fiat_amount_paise',
-    'payment_mode', 'usdt_chain', 'order_hmac'];
+    'payment_mode', 'inr_routing', 'usdt_chain', 'order_hmac'];
   const params = [String(orderId), String(userId), type, state, tokenPaise, rupeesToPaise(fiatAmountRupees),
-    paymentMode, usdtChain, deriveOrderHmac(orderId)];
+    paymentMode, inrRouting, usdtChain, deriveOrderHmac(orderId)];
 
   // The same allowlist `setOrderFields` uses, so a field this create accepts is
   // one an update accepts and vice versa — and an unknown one is refused here
@@ -382,6 +399,49 @@ export async function queuedOrdersForAssignment({ limit = 200 } = {}) {
     [], 'orders_queued_for_assignment',
   );
   return rows.map(toOrder);
+}
+
+/**
+ * Move the INR orders still WAITING for a first taker to a routing mode
+ * (owner, 2026-10-11): the admin switched INR between agents and merchant
+ * accounts, and an order nobody has taken goes to whoever serves INR now. Its
+ * rail moves with it, by the one rule (`paymentModeFor`): a cash size queued
+ * under agents becomes a UPI/bank order under merchant accounts, and back.
+ *
+ * Waiting means: PENDING_QUEUE, on no team, holding nothing in a pool, with no
+ * cash QR. An order already assigned, accepted or paid finishes where it is.
+ * The guards are in each UPDATE's WHERE (trap 18), and the row's trigger
+ * refuses the same move anywhere else (`bb_forbid_order_mode_change`). USDT
+ * orders carry no `inr_routing` and are never touched. Convergent: re-running
+ * it moves nothing that already matches.
+ *
+ * `orderId` narrows it to one order (the assignment path re-rails the order in
+ * hand before it routes it).
+ *
+ * @returns {Promise<string[]>} the order ids moved
+ */
+export async function rerailWaitingOrders(mode, { orderId = null, limit = 500 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT order_id, token_amount_paise, currency FROM order_states
+      WHERE state = 'PENDING_QUEUE' AND inr_routing IS NOT NULL AND inr_routing <> $1
+        AND team_id IS NULL AND pool_held_paise = 0 AND cash_link IS NULL
+        AND ($2::text IS NULL OR order_id = $2)
+      ORDER BY created_at LIMIT $3`,
+    [String(mode), orderId === null ? null : String(orderId), Math.min(Math.max(Number(limit) || 500, 1), 5000)],
+    'orders_rerail_candidates');
+  const moved = [];
+  for (const r of rows) {
+    const paymentMode = paymentModeFor({
+      currency: r.currency, tokenAmountPaise: Number(r.token_amount_paise), inrRouting: mode,
+    });
+    const { rowCount } = await pgQuery(
+      `UPDATE order_states SET inr_routing = $2, payment_mode = $3, updated_at = now()
+        WHERE order_id = $1 AND state = 'PENDING_QUEUE' AND inr_routing IS NOT NULL AND inr_routing <> $2
+          AND team_id IS NULL AND pool_held_paise = 0 AND cash_link IS NULL`,
+      [r.order_id, String(mode), paymentMode], 'orders_rerail');
+    if (rowCount) moved.push(r.order_id);
+  }
+  return moved;
 }
 
 /**
@@ -1333,7 +1393,9 @@ export async function releaseUtr(utr, orderId) {
  * a no-op lock in the query would suggest the coordination lives here, and the
  * next reader would trust it.
  */
-export async function findExpiredOrders({ limit = 100, assignmentWaitSeconds = 1500 } = {}) {
+export async function findExpiredOrders({
+  limit = 100, assignmentWaitSeconds = 1500, merchantAssignmentWaitSeconds = 1500,
+} = {}) {
   // ── Two due sets, one query ───────────────────────────────────────────────
   //
   // 1. Past its own deadline. `expires_at` is set at ASSIGNMENT, from the rail
@@ -1351,8 +1413,9 @@ export async function findExpiredOrders({ limit = 100, assignmentWaitSeconds = 1
   //    query: the state list admitted the order, the deadline test threw it back
   //    out. Every check here was green.
   //
-  //    The window is `SystemConfig.teamRouting.assignmentWaitSeconds`, passed
-  //    in by the caller.
+  //    The window is `SystemConfig.teamRouting.assignmentWaitSeconds` for an
+  //    order agents serve and `merchantRouting.assignmentWaitSeconds` for one
+  //    merchant accounts serve (its own `inr_routing`), passed in by the caller.
   const { rows } = await pgQuery(
     `SELECT o.* FROM order_states o
       WHERE o.state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING')
@@ -1360,12 +1423,14 @@ export async function findExpiredOrders({ limit = 100, assignmentWaitSeconds = 1
               (o.expires_at IS NOT NULL AND o.expires_at <= now())
               OR (o.expires_at IS NULL
                   AND o.state = 'PENDING_QUEUE'
-                  AND o.created_at < now() - make_interval(secs => $2))
+                  AND o.created_at < now() - make_interval(secs =>
+                        CASE WHEN o.inr_routing = 'MERCHANTS' THEN $3::double precision ELSE $2::double precision END))
             )
       ORDER BY COALESCE(o.expires_at, o.created_at) ASC LIMIT $1`,
     [
       Math.min(Math.max(Number(limit) || 100, 1), 500),
       Math.max(Number(assignmentWaitSeconds) || 1500, 1),
+      Math.max(Number(merchantAssignmentWaitSeconds) || 1500, 1),
     ],
     'order_find_expired',
   );
@@ -1380,11 +1445,24 @@ export async function findExpiredOrders({ limit = 100, assignmentWaitSeconds = 1
 export async function merchantVisibleOrders({
   merchantId, state = null, orderType = null,
   limit = 50, offset = 0,
+  // A merchant account's sub-member sees less than the owner (owner,
+  // 2026-10-11; `listScopeFor`): the buys paid into their deposit accounts,
+  // and — with withdrawal accounts — the sells not yet paid or paid from one
+  // of theirs. Null: every order of the merchant. In the WHERE (trap 16).
+  scope = null,
 }) {
   const params = [String(merchantId)];
   const filters = [];
   if (state) { params.push(String(state)); filters.push(`state = $${params.length}`); }
   if (orderType) { params.push(String(orderType)); filters.push(`order_type = $${params.length}`); }
+  if (scope) {
+    params.push(scope.depositAccountIds ?? []);
+    const dep = `(order_type = 'DEPOSIT' AND pay_account_id = ANY($${params.length}::text[]))`;
+    params.push(scope.withdrawalAccountIds ?? null);
+    const wd = `(order_type = 'WITHDRAWAL' AND $${params.length}::text[] IS NOT NULL
+                 AND (paid_from_account_id IS NULL OR paid_from_account_id = ANY($${params.length}::text[])))`;
+    filters.push(`(${dep} OR ${wd})`);
+  }
 
   const size = Math.min(Math.max(Number(limit) || 50, 1), 100);
   const skip = Math.max(Number(offset) || 0, 0);

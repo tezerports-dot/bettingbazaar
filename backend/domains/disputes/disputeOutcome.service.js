@@ -45,6 +45,7 @@ import { db } from '#db';
 import { FAULT_PARTIES, HIGH_RISK_LOSSES } from '#db/repositories/disputeFaults.js';
 import { notify } from '../communication/communication.service.js';
 import { sendAlert } from '../../services/alerting.service.js';
+import { announceMerchantFlag } from '../merchant/merchantProblems.service.js';
 
 /** The states a payment dispute is raised from, per order type. */
 export const PAYMENT_DISPUTE_FROM = Object.freeze({
@@ -114,8 +115,13 @@ export async function recordDisputeLoser(order, { completed, decision, by = null
 
   // Everything below narrates a suspension that has COMMITTED (§21): none of
   // it may undo or block the decision.
+  // A merchant account is not suspended for a loss: its loss is a problem
+  // that may have flagged it (owner, 2026-10-11).
+  if (recorded.problem?.flagged) announceMerchantFlag(recorded.problem.flag);
   await db.audit.recordDetailed({
-    performedBy: by ? String(by) : 'system', action: 'DISPUTE_LOST_SUSPENDED', category: 'DISPUTE',
+    performedBy: by ? String(by) : 'system',
+    action: recorded.suspended === false ? 'DISPUTE_LOST_RECORDED' : 'DISPUTE_LOST_SUSPENDED',
+    category: 'DISPUTE',
     targetType: party === FAULT_PARTIES.PLAYER ? 'User' : 'Merchant',
     targetId: String(party === FAULT_PARTIES.PLAYER ? order.userId : order.merchantId),
     details: { orderId: order.orderId, decision, lostDisputes: recorded.lostCount, highRisk: recorded.highRisk },

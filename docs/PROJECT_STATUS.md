@@ -708,12 +708,14 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     policy's column defaults, and the per-member concurrency
     (CASH 1, UPI_BANK 3, USDT 3).
   - *Routing* is one query in `database/repositories/teamRouting.js`: approved
-    members of a team whose supervisor's rail is the order's and whose
-    strength is WORKING or GRACE; member ACTIVE, APPROVED, online, not
+    members of a team whose supervisor's rail is the order's (a team works with
+    one to ten approved members, Phase A); member ACTIVE, APPROVED, online, not
     assignment-paused, not barred for this order or player, under the cap, on
     USDT holding an address on the order's chain; a CASH buy needs **Ready**;
     a CASH member with an open buy gets no sell; for a buy, the team's pool
-    must cover it. Ordered by open orders, then least recently assigned.
+    must cover it. Ordered by the admin's routing priority (1–5, Phase A),
+    then the fastest average response, then open orders, then least recently
+    assigned.
   - *The hold is the assignment*: one transaction locks the pool row, moves
     the buy's tokens available → held (refused in the UPDATE's WHERE),
     transitions the order with `team_id`, stamps the member's
@@ -807,8 +809,9 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   CDM receipts deleted); USDT 100–10,000 step 100; the QR cash link.
 - **2d status (2026-10-03): BUILT on `claude/busy-wright-cy111a`.**
   - *Order sizes.* An INR order is one of seven sizes (`ORDER_SIZES`); the
-    admin's Settings screen ticks which are offered (`SystemConfig.orderSizes`),
-    and the player picks from those. Min/max deposit and withdrawal limits are
+    admin's Settings screen ticks which are offered, separately for buys and
+    sells (`SystemConfig.buyOrderSizes`, `sellOrderSizes`; Phase A), and the
+    player picks from the list for the tab they are on. Min/max deposit and withdrawal limits are
     gone; a size that is not offered is refused naming the ones that are.
   - *USDT.* A buy is 100–10,000 USDT in steps of 100 (`SystemConfig.usdtBuy`,
     admin-editable); tokens follow from the frozen rate. No USDT sell.
@@ -1292,6 +1295,78 @@ and tier, this section's numbers.
 - USDT order maximum 10,000 USDT.
 - "Until the next day" means until 00:00 IST.
 - The security deposit is recorded in rupees.
+
+## 3.11 Merchants and agents, Phase A (owner-approved plan) — **BUILT on branch `claude/agents-phase-a` (2026-10-11)**
+
+Phase B's server and database half is built (§3.12); its panels and Phase C
+(names on screen) are not started. The plan and its open decisions are the
+owner's document. Phase A, five small changes,
+internal names kept (merchant, member):
+
+1. **Separate buy and sell size lists.** `SystemConfig.buyOrderSizes` and
+   `sellOrderSizes` replace `orderSizes` (each the seven by default, at least
+   one). The risk gate judges an order by its direction's list
+   (`offeredSizes(cfg, direction)`); the player payload sends
+   `orderSizes: { buy, sell }` per rail; Settings › Order Sizes has two lists;
+   the wallet's Buy tab offers the buy list and the Sell tab the sell list.
+2. **A team works with one to ten approved members.** The grace day and the
+   midnight stop are gone, with `teams.short_since` and `teams.was_full`.
+   `strength` is WORKING with at least one approved member, else STOPPED, and
+   is display only: routing asks the member row (APPROVED). `TEAM_SIZE` 10 and
+   `MAX_TEAMS` 4 stay the maxima.
+3. **Smarter assignment.** `merchants.routing_priority` (1–5, default 3), set
+   by an admin on the Teams screen (`PUT /api/admin/merchants/:id/priority`,
+   `canManageTeams`), written only by `setRoutingPriority`. Routing orders by
+   priority, then `avg_response_minutes`, then open orders, then least
+   recently assigned. The average has one writer, `recordCompletedOrder`, fed
+   the response time stamped on the order at accept when the order is
+   confirmed (the accept route's own EMA write is gone).
+4. **Each size states how it is paid.** `RAIL_PAYMENT_METHOD`
+   (`denominations.js`), sent as `orderSizeMethods: { buy, sell }` to the
+   player and as `orderSizeRails` to the admin card; both panels render the
+   server's sentence.
+5. **QR for the cash pay link on a larger screen.** `PayLinkQr` draws the
+   order's `upi://pay` link as a QR in the browser (`qrcode`) at
+   `(min-width: 768px)`; the PAY NOW button stays on every screen.
+
+## 3.12 Merchants and agents, Phase B: merchant accounts — **SERVER AND DATABASE BUILT on `claude/agents-phase-a` (2026-10-11); panels NOT built**
+
+Owner decisions of 2026-10-11 (DECISION_LOG). What exists:
+
+1. **The switch.** `SystemConfig.inrRoutingMode` AGENTS|MERCHANTS (default
+   AGENTS), saved through `PUT /api/admin/system/config`. Each INR order is
+   stamped `order_states.inr_routing` with its rail; USDT is never stamped and
+   always goes to agents. On a flip the waiting INR orders are re-railed
+   (`rerailWaitingOrders`) and offered at once; assigned ones finish where they
+   are. Under MERCHANTS every size is UPI or bank, and the payload's
+   `orderSizes` keep their per-rail shape with every size under `UPI_BANK`.
+2. **Merchant accounts.** A DIRECT team (`teams.kind`, `owner_merchant_id`),
+   made by `POST /api/admin/merchant-accounts` or `POST /merchants/create`
+   with `kind: 'DIRECT'`; listed by `GET /api/admin/merchant-accounts`.
+3. **Payment accounts** (`merchant_payment_accounts`): UPI_QR (static QR
+   scanned) or BANK, per-direction switches, pause, remove. A buy is assigned
+   with the least recently used deposit account and its tokens held in the
+   account's pool; the player is shown a `upi://pay` link with the order's
+   amount, or the bank account. A sell is marked paid FROM one of its accounts
+   (`paidFromAccountId`, required).
+4. **Sub-members** (`merchant_staff`): own MERCHANT logins with roles
+   DEPOSITS / WITHDRAWALS / AUDIT and accounts assigned per duty; owner-only
+   account writes; a role change or removal ends their sessions.
+5. **Problems and flags**: refusals, expiries counted against it and lost
+   disputes are problems; at `directMerchants.dailyProblemFlagThreshold` (5) per
+   IST day the admin is alerted (`merchant_flag_raised`); never suspended.
+   `GET /api/admin/merchant-flags`.
+6. **Commission**: `directMerchants.commissionPercent` (10) into the account's
+   own pool, one OWNER share.
+7. **Reports**: `GET /api/merchant/account/reports` (per account and
+   sub-member) and `/account/reports/orders.csv`, owner and AUDIT.
+8. **Routing settings**: `SystemConfig.merchantRouting` (concurrency per
+   direction, waiting window, processing windows).
+
+Not built: every panel screen for the above (admin switch, merchant-account
+admin, the merchant panel's accounts / sub-members / reports / paid-from
+picker, the player's UPI link button); "House bettors" wording (Phase C).
+SSE pushes are per merchant, not filtered per sub-member.
 
 ## 4. How to pick this up
 

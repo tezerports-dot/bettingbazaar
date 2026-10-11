@@ -23,7 +23,8 @@ import { fmt } from '../redesign/format';
 import { UnlockBar } from '../redesign/BoardExtras';
 import { useBoardExtras } from '../services/GameContext';
 // The INR sizes, as tiles grouped by the rail each size is on (Step 2d).
-import OrderSizePicker, { railOfSize, type OrderSizes } from '../components/OrderSizePicker';
+import OrderSizePicker, { railOfSize, type OrderSizes, type OrderSizeMethods } from '../components/OrderSizePicker';
+import PayLinkQr from '../components/PayLinkQr';
 // The USDT rail: whole steps of USDT between the admin's bounds, served by a
 // team member, on the network the player chooses.
 import UsdtBuyPanel, { type UsdtBuyBounds } from '../components/UsdtBuyPanel';
@@ -203,10 +204,14 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
    *              pay. Used verbatim.
    *   bank buy   `bankAccount`, the member's account, paid by bank transfer
    *              with the UTR given back (owner, 2026-10-03).
+   *   UPI buy    `paymentLink` on a non-cash buy: a UPI scanner the server
+   *              built the link for, with the order's amount in it (owner,
+   *              2026-10-11). Paid in a UPI app, then the UTR, as a bank buy.
    */
   const cashLink = onCashRail ? (payTo?.paymentLink ?? '') : '';
-  const bank = onCashRail ? undefined : payTo?.bankAccount;
-  const somewhereToPay = onCashRail ? Boolean(cashLink) : Boolean(bank?.accountNo);
+  const upiLink = onCashRail ? '' : (payTo?.paymentLink ?? '');
+  const bank = onCashRail || upiLink ? undefined : payTo?.bankAccount;
+  const somewhereToPay = onCashRail ? Boolean(cashLink) : Boolean(upiLink || bank?.accountNo);
 
   useEffect(() => {
     if (order.status === 'PAID' && order.paidAt) {
@@ -393,6 +398,21 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
           <p style={{ fontSize: 11, color: 'var(--text3)', textAlign: 'center', margin: 0, lineHeight: 1.5 }}>
             This pays the cash machine the member is standing at, with the amount filled in.
           </p>
+          {/* On a laptop or tablet, the same link as a QR drawn here, to scan
+              with a phone (Phase A). Nothing on a narrow screen. */}
+          <PayLinkQr link={cashLink} amountLabel={fmtINR(order.fiatAmount)} />
+        </div>
+      )}
+      {!awaitingReference && !onCashRail && upiLink && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <a href={upiLink} style={{ width: '100%', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', fontWeight: 800, padding: '15px 12px', borderRadius: 13, fontSize: 15, textAlign: 'center', display: 'block', textDecoration: 'none' }}>
+            PAY NOW · {fmtINR(order.fiatAmount)}
+          </a>
+          <p style={{ fontSize: 11, color: 'var(--text3)', textAlign: 'center', margin: 0, lineHeight: 1.5 }}>
+            Opens your UPI app with the amount filled in. After paying, enter the UTR / UPI reference below.
+          </p>
+          {/* On a laptop or tablet, the same link as a QR to scan with a phone. */}
+          <PayLinkQr link={upiLink} amountLabel={fmtINR(order.fiatAmount)} />
         </div>
       )}
       {!awaitingReference && !onCashRail && bank && (
@@ -492,11 +512,16 @@ const WalletPage: React.FC = () => {
   // can edit — and one that drifts from the gate is a player offered an amount
   // that will be refused.
   //
-  // The sizes come grouped by the rail each is on, the same for buys and sells
-  // (Step 2d; backend/domains/configuration/systemConfigPayload.js, built from
-  // the module `assessFundingOrder` and `paymentModeFor` read).
+  // The sizes come per direction (Phase A: the Buy tab offers the buy list,
+  // the Sell tab the sell list), grouped by the rail each is on, with the
+  // sentence saying how each rail is paid (Step 2d; backend/domains/
+  // configuration/systemConfigPayload.js, built from the module
+  // `assessFundingOrder` and `paymentModeFor` read).
   const [rail, setRail]                 = useState<{
-    sizes: OrderSizes;
+    buySizes: OrderSizes;
+    sellSizes: OrderSizes;
+    buyMethods: OrderSizeMethods;
+    sellMethods: OrderSizeMethods;
     // The USDT rail's bounds and the networks it is served on. From the
     // server, for the same reason the INR sizes are: both are money rules,
     // and a panel holding its own copy offers what the gate refuses.
@@ -506,7 +531,9 @@ const WalletPage: React.FC = () => {
     usdtTokensPerUnit: number | null;
     usdtChains: { chain: string; label: string }[];
   }>({
-    sizes: { CASH: [], UPI_BANK: [] },
+    buySizes: { CASH: [], UPI_BANK: [] },
+    sellSizes: { CASH: [], UPI_BANK: [] },
+    buyMethods: {}, sellMethods: {},
     usdtBuy: null, usdtTokensPerUnit: null, usdtChains: [],
   });
   const [activeBuyOrder, setActiveBuyOrder] = useState<PaymentOrder | null>(null);
@@ -532,11 +559,15 @@ const WalletPage: React.FC = () => {
       // (domains/configuration/systemConfigPayload.js).
       const sys: any = await platform.systemConfig();
       if (sys?.config) {
+        const sizesOf = (side: 'buy' | 'sell'): OrderSizes => ({
+          CASH: sys.config.orderSizes?.[side]?.CASH ?? [],
+          UPI_BANK: sys.config.orderSizes?.[side]?.UPI_BANK ?? [],
+        });
         setRail({
-          sizes: {
-            CASH: sys.config.orderSizes?.CASH ?? [],
-            UPI_BANK: sys.config.orderSizes?.UPI_BANK ?? [],
-          },
+          buySizes: sizesOf('buy'),
+          sellSizes: sizesOf('sell'),
+          buyMethods: sys.config.orderSizeMethods?.buy ?? {},
+          sellMethods: sys.config.orderSizeMethods?.sell ?? {},
           usdtBuy: sys.config.usdtBuy ?? null,
           usdtTokensPerUnit: sys.config.usdtTokensPerUnit ?? null,
           usdtChains: sys.config.usdtChains ?? [],
@@ -715,8 +746,8 @@ const WalletPage: React.FC = () => {
   // Read off the server's own grouping, which is the rule `paymentModeFor`
   // stamps the order with: nothing here decides it (§3).
   const buyAmount = buyTokens ?? 0;
-  const buyRail = railOfSize(rail.sizes, buyTokens);
-  const sellRail = railOfSize(rail.sizes, sellTokens);
+  const buyRail = railOfSize(rail.buySizes, buyTokens);
+  const sellRail = railOfSize(rail.sellSizes, sellTokens);
 
   // The USDT purchase in flight, if there is one. Found by CURRENCY on the
   // orders already loaded rather than by a second request: one list, one truth
@@ -825,7 +856,7 @@ const WalletPage: React.FC = () => {
                       player picks an amount and sees which rail it is on in
                       the same glance. Nothing is typed: an amount that is not
                       a size is not an order. */}
-                  <OrderSizePicker idPrefix="buy-size" sizes={rail.sizes} value={buyTokens} onChange={setBuyTokens} />
+                  <OrderSizePicker idPrefix="buy-size" sizes={rail.buySizes} methods={rail.buyMethods} value={buyTokens} onChange={setBuyTokens} />
                   {/* Which rail this size is on, said as it is chosen. A
                       `status` region so a screen reader hears it too (§32 S44). */}
                   <div role="status" style={{ fontSize: 11, lineHeight: 1.5, marginBottom: 8, color: 'var(--text3)' }}>
@@ -833,7 +864,7 @@ const WalletPage: React.FC = () => {
                       <><b style={{ color: 'var(--text)' }}>Cash purchase.</b> A cash-team member at a cash machine serves it: when they send the payment link, pay it, tap “I’ve paid” straight away, then add the UTR.</>
                     )}
                     {buyRail === 'UPI_BANK' && (
-                      <><b style={{ color: 'var(--text)' }}>UPI / bank purchase.</b> Paid to a team member from your UPI or bank app, then you submit the UTR.</>
+                      <><b style={{ color: 'var(--text)' }}>UPI / bank purchase.</b> Paid from your UPI or bank app to where the order shows, then you submit the UTR.</>
                     )}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>You pay <b style={{ color: 'var(--gold-ink)' }}>{fmtINR(buyAmount)}</b> · 1 token = ₹1</div>
@@ -876,10 +907,10 @@ const WalletPage: React.FC = () => {
                 <>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(49,196,110,.09)', border: '1px solid rgba(49,196,110,.22)', borderRadius: 11, padding: '11px 13px', marginBottom: 14 }}><span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text2)' }}>Sellable (winnings only)</span><span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--green)' }}>{fmtT(balances.winningsBalance)}</span></div>
                   <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--text2)', marginBottom: 9 }}>Tokens to sell</div>
-                  {/* The same sizes as a buy (Step 2d). A size above the
-                      winnings is shown but disabled; the server refuses it
-                      either way. */}
-                  <OrderSizePicker idPrefix="sell-size" sizes={rail.sizes} value={sellTokens} onChange={setSellTokens}
+                  {/* The sell list (Phase A: its own, beside the buy list).
+                      A size above the winnings is shown but disabled; the
+                      server refuses it either way. */}
+                  <OrderSizePicker idPrefix="sell-size" sizes={rail.sellSizes} methods={rail.sellMethods} value={sellTokens} onChange={setSellTokens}
                     maxAllowed={balances.winningsBalance} accent="var(--green)" />
                   <div role="status" style={{ fontSize: 11, lineHeight: 1.5, marginBottom: 8, color: 'var(--text3)' }}>
                     {sellRail && (

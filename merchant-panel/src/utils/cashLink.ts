@@ -50,3 +50,35 @@ export function readCashLink(raw: string, orderAmountRupees: number): CashLinkRe
   }
   return { ok: true, link: text, payee, amountRupees: am };
 }
+
+// ── A merchant account's own UPI QR (owner, 2026-10-11) ─────────────────────
+// The STATIC QR a shop prints: a payee and a name, no amount (each order's
+// link carries its own amount, built on the server). The same preview as
+// above, against the server's `checkStaticUpiLink` (backend/domains/payment/
+// cashLink.js), which decides and refuses with INVALID_UPI_QR. §11: UI-only.
+
+export type StaticUpiReading =
+  | { ok: true; link: string; payee: string; name: string }
+  | { ok: false; message: string };
+
+export function readStaticUpiLink(raw: string): StaticUpiReading {
+  const text = String(raw ?? '').trim();
+  if (text.slice(0, PREFIX.length).toLowerCase() !== PREFIX) {
+    return { ok: false, message: 'That QR is not a UPI payment QR. Scan the UPI QR your bank or UPI app gives your shop.' };
+  }
+  const params = new URLSearchParams(text.slice(PREFIX.length));
+  const payee = params.get('pa') ?? '';
+  const name = (params.get('pn') ?? '').trim();
+  if (!payee) return { ok: false, message: 'That QR names no UPI ID. Scan your shop\'s UPI QR.' };
+  if (MOBILE_IN_HANDLE.test(payee.split('@')[0])) {
+    return { ok: false, message: 'That UPI ID is a mobile number, and players would see it. Use a UPI ID that is not your mobile number.' };
+  }
+  if (!name) return { ok: false, message: 'That QR has no payee name. Scan your shop\'s UPI QR.' };
+  if (['pn', 'tn'].some((key) => MOBILE_IN_TEXT.test(params.get(key) ?? ''))) {
+    return { ok: false, message: 'That QR has a mobile number in its name or note, and players would see it.' };
+  }
+  if (params.has('am')) {
+    return { ok: false, message: 'That QR is for one fixed amount. Scan your shop\'s static UPI QR, which has no amount.' };
+  }
+  return { ok: true, link: text, payee, name };
+}

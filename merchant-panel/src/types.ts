@@ -159,6 +159,13 @@ export interface PaymentOrder {
   /** A buy this member rejected as unpaid: until when the player may dispute it (`merchantOrderView.js`, 2c+). */
   disputeWindowUntil?: string | null;
   bbTokenAmount?: number; // alias for tokenAmount
+
+  // A merchant account's order (owner, 2026-10-11; merchantOrderView.js):
+  // who serves it, the payment account a buy is paid into, and the one a sell
+  // was paid from — the merchant's own accounts, by id.
+  inrRouting?: 'AGENTS' | 'MERCHANTS' | null;
+  payAccountId?: string | null;
+  paidFromAccountId?: string | null;
 }
 
 export interface MerchantProfile {
@@ -274,6 +281,14 @@ export interface MerchantProfile {
   };
   
   createdAt?: Date | string;
+
+  // ── Who is signed in (owner, 2026-10-11) ─────────────────────────────────
+  // Sent BESIDE `merchant` on GET /profile (merchant.routes.js), not inside it,
+  // and merged in by `getMerchantProfile` (services/api.ts) so every screen
+  // reads one object. `actor` also arrives on the login answer (roles only).
+  actor?: MerchantActor;
+  /** Whether this merchant runs a merchant account (a DIRECT team). GET /profile only. */
+  isMerchantAccount?: boolean;
 }
 
 export interface AuthResponse {
@@ -289,6 +304,8 @@ export interface AuthResponse {
   telegram?: TelegramLink | null;
   code?: string;
   message?: string;
+  /** Who signed in: the owner, or a merchant account's sub-member (routes.js `issueMerchantSession`). */
+  actor?: MerchantActor;
 }
 
 /**
@@ -438,7 +455,8 @@ export type SupervisorRail = 'CASH' | 'UPI_BANK' | 'USDT';
 export interface Team {
   teamId: string; supervisorId: string; supervisorName: string; supervisorRef: string;
   name: string; rail: SupervisorRail; approvedCount: number; pendingCount: number; size: number;
-  strength: 'WORKING' | 'GRACE' | 'STOPPED'; shortSince: string | null; wasFull: boolean; createdAt: string;
+  /** WORKING with at least one approved member, else STOPPED (a team works with 1–10; Phase A). */
+  strength: 'WORKING' | 'STOPPED'; createdAt: string;
   /** The team's token pool, in paise (Step 2b). */
   poolAvailablePaise: number; poolHeldPaise: number;
   /** Team commission (Step 2e): `toSummary` in database/repositories/teamCommission.js. */
@@ -517,3 +535,94 @@ export type MyTeam =
   | { role: 'MEMBER'; publicRef: string; status: 'PENDING' | 'APPROVED'; team: Team;
       commissions: TeamCommission[]; myCommissionPaise: number; performance: TeamPerformance | null }
   | { role: 'NONE'; publicRef: string };
+
+// ── Merchant accounts (owner, 2026-10-11 — Phase B of the merchants-and-agents plan) ──
+// A MERCHANT ACCOUNT is a merchant with no supervisor: its own token pool, its
+// own payment accounts and its own sub-members. Mirrors
+// database/repositories/merchantPaymentAccounts.js (`toAccount`,
+// ACCOUNT_KINDS, ACCOUNT_STATUSES), merchantStaff.js (`toStaff`, STAFF_ROLES,
+// STAFF_DUTIES), merchantProblems.js (`toFlag`), teams.js (`toDirectTeam`) and
+// backend/domains/merchant/merchantAccount.routes.js — §5: change them together.
+
+/** STAFF_ROLES (merchantStaff.js). */
+export type StaffRole = 'DEPOSITS' | 'WITHDRAWALS' | 'AUDIT';
+/** STAFF_DUTIES (merchantStaff.js): which direction an assigned account is worked for. */
+export type StaffDuty = 'DEPOSIT' | 'WITHDRAWAL';
+
+/**
+ * Who is signed in (`actor` on the login answer and on GET /profile,
+ * merchant.routes.js / routes.js `issueMerchantSession`): the owner, or a
+ * merchant account's sub-member with their roles. The account ids arrive on
+ * GET /profile only; the login answer carries the roles alone.
+ */
+export type MerchantActor =
+  | { isOwner: true }
+  | {
+      isOwner: false; staffId: string; name: string; roles: StaffRole[];
+      depositAccountIds?: string[]; withdrawalAccountIds?: string[];
+    };
+
+export type PaymentAccountKind = 'UPI_QR' | 'BANK';
+export type PaymentAccountStatus = 'ACTIVE' | 'PAUSED' | 'REMOVED';
+
+/** `toAccount` (merchantPaymentAccounts.js). The UPI fields are set on a UPI_QR account only. */
+export interface PaymentAccount {
+  accountId: string; merchantId: string; kind: PaymentAccountKind; label: string;
+  upiId: string | null; upiName: string | null; upiLink: string | null;
+  holderName: string; accountNo: string; ifsc: string; bankName: string;
+  acceptsDeposits: boolean; paysWithdrawals: boolean; status: PaymentAccountStatus;
+  lastUsedAt: string | null; createdAt: string; updatedAt: string; removedAt: string | null;
+}
+
+/**
+ * `toStaff` (merchantStaff.js). `mobile` is sent to the owner and is never
+ * rendered: nobody is shown another person's mobile number (CLAUDE.md §24).
+ */
+export interface SubMember {
+  staffId: string; merchantId: string; userId: string; name: string; mobile: string | null;
+  roles: StaffRole[]; status: string; createdAt: string; removedAt: string | null;
+  assignments: Array<{ accountId: string; duty: StaffDuty }>;
+}
+
+/** `toDirectTeam` (teams.js): the merchant account itself, with its pool and commission. */
+export interface DirectTeam {
+  teamId: string; kind: 'DIRECT'; ownerMerchantId: string; ownerName: string; ownerRef: string;
+  ownerStatus: string; ownerApproval: string; ownerOnline: boolean; routingPriority: number;
+  name: string; poolAvailablePaise: number; poolHeldPaise: number;
+  commission: TeamCommissionSummary; createdAt: string;
+}
+
+/** `toFlag` (merchantProblems.js): a day the merchant's problems reached the threshold. It suspends nothing. */
+export interface MerchantFlag {
+  id: number; merchantId: string; merchantName?: string; publicRef?: string;
+  day: string; problemCount: number; threshold: number; createdAt: string;
+}
+
+/** GET /api/merchant/account. `staff` and `poolRequests` are the owner's only. */
+export interface MerchantAccountOverview {
+  success: boolean;
+  team: DirectTeam;
+  accounts: PaymentAccount[];
+  staff?: SubMember[];
+  poolRequests?: Array<TeamPoolRequest & { teamKind?: 'AGENT' | 'DIRECT' }>;
+  flags: MerchantFlag[];
+}
+
+/** One direction's figures in a report (`ZERO` in merchantAccount.routes.js). */
+export interface ReportFigures { orders: number; completed: number; completedPaise: number; disputed: number; disputesLost: number }
+
+/** GET /api/merchant/account/reports. */
+export interface MerchantReport {
+  success: boolean;
+  range: { from: string | null; to: string | null };
+  totals: { deposits: ReportFigures; withdrawals: ReportFigures };
+  byAccount: Array<{
+    accountId: string; label: string; kind: PaymentAccountKind; status: PaymentAccountStatus;
+    deposits: ReportFigures; withdrawals: ReportFigures;
+  }>;
+  bySubMember: Array<{
+    staffId: string; name: string; roles: StaffRole[]; status: string;
+    deposits: ReportFigures; withdrawals: ReportFigures;
+  }>;
+  unattributed: { deposits: ReportFigures; withdrawals: ReportFigures };
+}

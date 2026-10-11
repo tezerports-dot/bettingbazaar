@@ -7,7 +7,9 @@
  *   1. makes an approved merchant a SUPERVISOR on one rail (or removes the
  *      role from a supervisor who runs no teams);
  *   2. approves or rejects the members supervisors propose;
- *   3. removes a member from a team;
+ *   3. removes a member from a team, or sets a member's routing priority
+ *      (1–5, Phase A): routing offers an order to the highest priority
+ *      first, then the fastest average response, then the fewest open orders;
  *   4. sells tokens into a team's pool, or buys them back, when a supervisor
  *      asks — recording what was paid (Step 2b). That part is the money area
  *      canFundMerchants, so it is shown only to staff who hold it;
@@ -16,6 +18,7 @@
  *      the admin and the supervisor decide.
  *
  * Supervisors create their teams and propose members from the merchant panel.
+ * A team takes orders with any number of approved members from one to ten.
  * Every cap (4 teams, 10 members, one team per merchant) is enforced by the
  * server inside the write; this screen shows the server's refusal verbatim,
  * because it names what to do next (§32 S14).
@@ -38,8 +41,7 @@ const RAILS: Array<{ value: SupervisorRail; label: string }> = [
 
 const STRENGTH: Record<TeamView['strength'], { label: string; cls: string }> = {
   WORKING: { label: 'Working', cls: 'bg-green-500/20 text-green-400' },
-  GRACE:   { label: 'Short — works until midnight IST', cls: 'bg-yellow-500/20 text-yellow-400' },
-  STOPPED: { label: 'Not working — needs 10 members', cls: 'bg-red-500/20 text-red-400' },
+  STOPPED: { label: 'Not working: no approved agent yet', cls: 'bg-red-500/20 text-red-400' },
 };
 
 const messageOf = (err: any, fallback: string) => err?.response?.data?.message || fallback;
@@ -136,10 +138,10 @@ const PoolRequests: React.FC<{ onChanged: () => void }> = ({ onChanged }) => {
 
   return (
     <div className="bg-dark-800 border border-dark-600 rounded-xl p-4">
-      <h2 className="text-base font-semibold mb-1">Team token requests</h2>
+      <h2 className="text-base font-semibold mb-1">Pool token requests</h2>
       <p className="text-xs text-gray-400 mb-3">
-        A supervisor asks to buy tokens for a team's pool, or to sell them back. Fulfil only once
-        the money has changed hands, and record how much.
+        A supervisor asks to buy tokens for an agents' team pool, or a merchant for its own pool, or to sell
+        them back. Fulfil only once the money has changed hands, and record how much.
       </p>
       {loading ? <LoadingSpinner /> : requests.length === 0 ? (
         <p className="text-sm text-gray-400">No requests waiting.</p>
@@ -157,6 +159,7 @@ const PoolRequests: React.FC<{ onChanged: () => void }> = ({ onChanged }) => {
                   </span>
                   <span className="font-medium">{tokens(r.tokenAmountPaise)} tokens</span>
                   <span className="text-gray-400">for {r.teamName ?? r.teamId}</span>
+                  <span className="text-xs px-2 py-0.5 rounded-lg bg-dark-700 text-gray-300">{r.teamKind === 'DIRECT' ? 'Merchant' : 'Agents\' team'}</span>
                   <span className="text-xs text-gray-500">by {r.supervisorName ?? r.supervisorId}</span>
                   {r.note && <span className="text-xs text-gray-400 italic">“{r.note}”</span>}
                 </div>
@@ -212,6 +215,8 @@ export const TeamsManager: React.FC = () => {
   const [supervisors, setSupervisors] = useState<TeamSupervisor[]>([]);
   const [teams, setTeams] = useState<TeamView[]>([]);
   const [members, setMembers] = useState<TeamMemberView[]>([]);
+  // The server's range (ROUTING_PRIORITY); null until loaded, and then no picker.
+  const [priorityRange, setPriorityRange] = useState<{ MIN: number; MAX: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [newId, setNewId] = useState('');
@@ -225,6 +230,7 @@ export const TeamsManager: React.FC = () => {
       setSupervisors(res.supervisors || []);
       setTeams(res.teams || []);
       setMembers(res.members || []);
+      setPriorityRange(res.routingPriority ?? null);
     } catch (err) {
       toast.error(messageOf(err, 'Could not load teams'));
     } finally {
@@ -256,14 +262,14 @@ export const TeamsManager: React.FC = () => {
       {/* ── Make a supervisor ─────────────────────────────────────────── */}
       <div className="bg-dark-800 border border-dark-600 rounded-xl p-4">
         <div className="flex items-center justify-between mb-1">
-          <h2 className="text-base font-semibold">Make a merchant a supervisor</h2>
+          <h2 className="text-base font-semibold">Make an agent a supervisor</h2>
           <button onClick={() => void load()} className="p-1.5 rounded-lg hover:bg-dark-700" aria-label="Refresh">
             <RefreshCw size={15} className="text-gray-400" />
           </button>
         </div>
         <p className="text-xs text-gray-400 mb-3">
-          A supervisor runs up to 4 teams of exactly 10 members on ONE rail, and serves no orders
-          itself. The merchant must already be approved and must not be in a team.
+          A supervisor runs up to 4 teams of up to 10 agents on ONE rail, and serves no orders
+          itself. A team takes orders once it has one approved agent. The agent must already be approved and must not be in a team.
         </p>
         <form
           className="flex flex-wrap gap-2 items-end"
@@ -275,7 +281,7 @@ export const TeamsManager: React.FC = () => {
           }}
         >
           <div>
-            <label htmlFor="sup-id" className="block text-xs text-gray-400 mb-1">Merchant ID</label>
+            <label htmlFor="sup-id" className="block text-xs text-gray-400 mb-1">Agent ID</label>
             <input id="sup-id" value={newId} onChange={(e) => setNewId(e.target.value)}
               className="bg-dark-700 border border-dark-600 rounded-lg px-3 py-1.5 text-sm w-64" />
           </div>
@@ -298,14 +304,14 @@ export const TeamsManager: React.FC = () => {
 
       {/* ── Waiting for approval ──────────────────────────────────────── */}
       <div className="bg-dark-800 border border-dark-600 rounded-xl p-4">
-        <h2 className="text-base font-semibold mb-3">Members waiting for approval</h2>
+        <h2 className="text-base font-semibold mb-3">Agents waiting for approval</h2>
         {loading ? <LoadingSpinner /> : pending.length === 0 ? (
           <p className="text-sm text-gray-400">Nobody is waiting.</p>
         ) : (
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-gray-400 border-b border-dark-600">
-                <th className="py-2 pr-3 font-medium">Merchant</th>
+                <th className="py-2 pr-3 font-medium">Agent</th>
                 <th className="py-2 pr-3 font-medium">Team</th>
                 <th className="py-2 font-medium text-right">Decision</th>
               </tr>
@@ -337,7 +343,7 @@ export const TeamsManager: React.FC = () => {
       {/* ── Supervisors and their teams ───────────────────────────────── */}
       {loading ? null : supervisors.length === 0 ? (
         <EmptyState icon={Users} title="No supervisors yet"
-          description="Make an approved merchant a supervisor above. They then create their teams from the merchant panel." />
+          description="Make an approved agent a supervisor above. They then create their teams from the merchant panel." />
       ) : supervisors.map((s) => {
         const own = teams.filter((t) => t.supervisorId === s.merchantId);
         return (
@@ -363,7 +369,7 @@ export const TeamsManager: React.FC = () => {
               <div key={t.teamId} className="border border-dark-600 rounded-lg p-3 mb-2 last:mb-0">
                 <div className="flex items-center gap-2 flex-wrap mb-2">
                   <span className="font-medium">{t.name}</span>
-                  <span className="text-xs text-gray-400">{t.approvedCount}/{t.size} members{t.pendingCount ? ` · ${t.pendingCount} pending` : ''}</span>
+                  <span className="text-xs text-gray-400">{t.approvedCount}/{t.size} agents{t.pendingCount ? ` · ${t.pendingCount} pending` : ''}</span>
                   <span className={`text-xs px-2 py-0.5 rounded-lg ${STRENGTH[t.strength].cls}`}>{STRENGTH[t.strength].label}</span>
                   <span className="text-xs text-gray-400">
                     Pool: {tokens(t.poolAvailablePaise)} tokens{t.poolHeldPaise ? ` · ${tokens(t.poolHeldPaise)} held` : ''}
@@ -377,15 +383,40 @@ export const TeamsManager: React.FC = () => {
                     </span>
                   )}
                 </div>
+                {priorityRange && t.approvedCount > 0 && (
+                  <p className="text-xs text-gray-500 mb-1">
+                    Orders go to the highest priority first ({priorityRange.MAX} is highest), then the fastest
+                    average response, then the fewest open orders.
+                  </p>
+                )}
                 <ul className="text-sm space-y-1">
                   {members.filter((m) => m.teamId === t.teamId && m.status === 'APPROVED').map((m) => (
-                    <li key={m.merchantId} className="flex items-center justify-between">
+                    <li key={m.merchantId} className="flex items-center justify-between gap-2">
                       <span>{m.name} <span className="text-xs text-gray-500">{m.publicRef}</span></span>
-                      <button disabled={!!busy}
-                        onClick={() => void act(`del-${m.merchantId}`, () => api.teams.removeMember(m.merchantId), `${m.name} removed`, 'Could not remove')}
-                        className="text-xs px-2 py-0.5 rounded-lg bg-dark-700 text-red-400 disabled:opacity-50">
-                        Remove {m.name}
-                      </button>
+                      <span className="flex items-center gap-2">
+                        {priorityRange && (
+                          <>
+                            <label htmlFor={`prio-${m.merchantId}`} className="text-xs text-gray-400">
+                              Priority for {m.name}
+                            </label>
+                            <select id={`prio-${m.merchantId}`} value={m.routingPriority} disabled={!!busy}
+                              onChange={(e) => {
+                                const priority = Number(e.target.value);
+                                void act(`prio-${m.merchantId}`, () => api.teams.setPriority(m.merchantId, priority),
+                                  `${m.name}: priority ${priority}`, 'Could not set the priority');
+                              }}
+                              className="bg-dark-700 border border-dark-600 rounded-lg px-2 py-0.5 text-xs disabled:opacity-50">
+                              {Array.from({ length: priorityRange.MAX - priorityRange.MIN + 1 }, (_, i) => priorityRange.MIN + i)
+                                .map((p) => <option key={p} value={p}>{p}</option>)}
+                            </select>
+                          </>
+                        )}
+                        <button disabled={!!busy}
+                          onClick={() => void act(`del-${m.merchantId}`, () => api.teams.removeMember(m.merchantId), `${m.name} removed`, 'Could not remove')}
+                          className="text-xs px-2 py-0.5 rounded-lg bg-dark-700 text-red-400 disabled:opacity-50">
+                          Remove {m.name}
+                        </button>
+                      </span>
                     </li>
                   ))}
                 </ul>

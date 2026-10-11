@@ -9,6 +9,11 @@
  * lost dispute counts; the THIRD sends the account to HIGH-RISK review, where
  * only a full admin may lift the suspension.
  *
+ * A merchant ACCOUNT (a DIRECT team's owner, owner 2026-10-11) is the one
+ * exception: its loss is counted and recorded as a PROBLEM in the same
+ * transaction (merchantProblems.js), which may flag it; it is never suspended
+ * automatically. An admin may still suspend it by hand.
+ *
  * ── One writer, one transaction, once per dispute ──────────────────────────
  * The `dispute_faults` row is keyed by the ORDER, so a decision replayed (two
  * admins, a retried request, a route's idempotent branch) records nothing the
@@ -20,6 +25,8 @@
  * a record naming nobody is worse than none.
  */
 import { withTransaction } from '../client.js';
+import { getSystemConfig } from './config.js';
+import { recordProblemWithin, flagThresholdOf, PROBLEM_KINDS } from './merchantProblems.js';
 
 export const FAULT_PARTIES = Object.freeze({ PLAYER: 'PLAYER', MERCHANT: 'MERCHANT' });
 
@@ -82,18 +89,30 @@ export async function recordDisputeFault({ orderId, party, userId = null, mercha
             RETURNING lost_disputes, high_risk_at, high_risk_at = now() AS newly_high_risk`,
           [String(userId), reason, decidedBy ? String(decidedBy) : null, HIGH_RISK_LOSSES])
         : await client.query(
-          `UPDATE merchants SET
+          // A merchant ACCOUNT (a DIRECT team's owner) is not suspended for a
+          // lost dispute: the loss is counted and recorded as a problem below,
+          // and problems flag it (owner, 2026-10-11). An agent is suspended.
+          `WITH direct AS (SELECT EXISTS (SELECT 1 FROM teams WHERE owner_merchant_id = $1) AS yes)
+           UPDATE merchants SET
               lost_disputes = lost_disputes + 1,
-              status = 'SUSPENDED',
-              merchant_approval_status = 'SUSPENDED',
-              suspension_reason = $2,
+              status = CASE WHEN direct.yes THEN status ELSE 'SUSPENDED' END,
+              merchant_approval_status = CASE WHEN direct.yes THEN merchant_approval_status ELSE 'SUSPENDED' END,
+              suspension_reason = CASE WHEN direct.yes THEN suspension_reason ELSE $2 END,
               cash_ready = FALSE,
               high_risk_at = CASE WHEN lost_disputes + 1 >= $3 THEN COALESCE(high_risk_at, now()) ELSE high_risk_at END,
               updated_at = now()
+             FROM direct
             WHERE merchant_id = $1
-            RETURNING lost_disputes, high_risk_at, high_risk_at = now() AS newly_high_risk`,
+            RETURNING lost_disputes, high_risk_at, high_risk_at = now() AS newly_high_risk, direct.yes AS direct`,
           [String(merchantId), reason, HIGH_RISK_LOSSES]);
       if (!loser[0]) throw new Refused('party_missing');
+      // The merchant account's problem, in this transaction with its fault.
+      const problem = loser[0].direct === true
+        ? await recordProblemWithin(client, {
+          merchantId, kind: PROBLEM_KINDS.DISPUTE_LOST, orderId: oid,
+          threshold: flagThresholdOf(await getSystemConfig()),
+        })
+        : null;
 
       const lostCount = Number(loser[0].lost_disputes);
       const highRisk = loser[0].high_risk_at !== null;
@@ -105,7 +124,11 @@ export async function recordDisputeFault({ orderId, party, userId = null, mercha
       // Not "the count is exactly three": after a full admin lifts a review the
       // count stays, so the next loss re-opens review at four, and the alert
       // must go out again (security review, 2026-10-03).
-      return { ok: true, party, lostCount, highRisk, newlyHighRisk: loser[0].newly_high_risk === true };
+      return {
+        ok: true, party, lostCount, highRisk, newlyHighRisk: loser[0].newly_high_risk === true,
+        // Set only for a merchant account: it was flagged, not suspended.
+        problem, suspended: party === FAULT_PARTIES.PLAYER || loser[0].direct !== true,
+      };
     });
   } catch (e) {
     if (e instanceof Refused) return { ok: false, reason: e.reason };

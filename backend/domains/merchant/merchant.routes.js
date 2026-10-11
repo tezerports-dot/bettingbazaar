@@ -54,7 +54,10 @@ import {
 // The merchant's own view of their account, which sign-in answers with too.
 import { formatMerchant } from './merchantSelfView.js';
 import { toMerchantOrderView, toMerchantOrderViews } from './merchantOrderView.js';
-import { railOf, routingSettings, PAYMENT_MODES } from '#db/repositories/teamRouting.js';
+import {
+  railOf, routingSettings, merchantRoutingSettings, routedToMerchants, PAYMENT_MODES,
+} from '#db/repositories/teamRouting.js';
+import { listScopeFor, refuseWork, ownerOnly } from './merchantActor.js';
 // What a cash buy's ATM link may be (Step 2d).
 import { checkCashLink } from '../payment/cashLink.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
@@ -200,6 +203,9 @@ router.put('/telegram/two-factor', merchantAuth, telegramTwoFactor);
 
 // ─── PROFILE ─────────────────────────────────────────────────────────────────
 
+/** The owner's own details a merchant account's sub-member is never sent. */
+const OWNER_ONLY_PROFILE_FIELDS = ['mobile', 'email', 'username', 'bankDetails', 'usdtAddressTrc20', 'usdtAddressBep20'];
+
 router.get('/profile', merchantAuth, async (req, res) => {
     try {
         const merchant = await db.merchants.getMerchant(req.merchantId);
@@ -207,12 +213,31 @@ router.get('/profile', merchantAuth, async (req, res) => {
         // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
         // no buy/sell spread. Shape kept for merchant-panel compatibility;
         // merchant earnings are team commission (2e, teamCommission.js).
+        // A sub-member reads the merchant account's record, never the owner's
+        // own contact or payout details (§24: nobody is shown another
+        // person's mobile).
+        const view = formatMerchant(merchant, req.user);
+        if (req.merchantActor?.isOwner === false) {
+            for (const k of OWNER_ONLY_PROFILE_FIELDS) delete view[k];
+        }
         res.json({
             success: true,
             merchant: {
-                ...formatMerchant(merchant, req.user),
+                ...view,
                 prices: { buyPrice: 1, sellPrice: 1, profit: 0 },
             },
+            // Who is signed in (owner, 2026-10-11): the owner, or a merchant
+            // account's sub-member with their roles and assigned accounts.
+            actor: req.merchantActor?.isOwner === false
+                ? {
+                    isOwner: false, staffId: req.merchantActor.staffId, name: req.merchantActor.name,
+                    roles: req.merchantActor.roles,
+                    depositAccountIds: req.merchantActor.depositAccountIds,
+                    withdrawalAccountIds: req.merchantActor.withdrawalAccountIds,
+                }
+                : { isOwner: true },
+            // Whether this merchant runs a merchant account (a DIRECT team).
+            isMerchantAccount: Boolean(await db.teams.directTeamOf(merchant.merchantId)),
         });
     } catch (err) {
         console.error('GET /merchant/profile error:', err);
@@ -236,7 +261,7 @@ router.get('/profile', merchantAuth, async (req, res) => {
 // on the other. Holding both means orders on both chains are offered to them;
 // holding neither means they are offered none, which is why clearing the last
 // one is refused with a sentence rather than accepted silently.
-router.put('/profile', merchantAuth, async (req, res) => {
+router.put('/profile', merchantAuth, ownerOnly, async (req, res) => {
     try {
         const { bankDetails, usdtAddressTrc20, usdtAddressBep20 } = req.body;
         const submittedAddresses = { TRC20: usdtAddressTrc20, BEP20: usdtAddressBep20 };
@@ -361,7 +386,7 @@ async function refusedWrite(req, res) {
     return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
 }
 
-router.put('/online-status', merchantAuth, async (req, res) => {
+router.put('/online-status', merchantAuth, ownerOnly, async (req, res) => {
     try {
         const { isOnline } = req.body;
         if (typeof isOnline !== 'boolean') {
@@ -399,7 +424,7 @@ router.put('/online-status', merchantAuth, async (req, res) => {
  * for anybody who is not an approved member of a CASH team — Ready means
  * nothing on the other rails.
  */
-router.put('/cash-ready', merchantAuth, async (req, res) => {
+router.put('/cash-ready', merchantAuth, ownerOnly, async (req, res) => {
     try {
         const { ready } = req.body || {};
         if (typeof ready !== 'boolean') {
@@ -418,7 +443,7 @@ router.put('/cash-ready', merchantAuth, async (req, res) => {
     }
 });
 
-router.put('/preferences', merchantAuth, async (req, res) => {
+router.put('/preferences', merchantAuth, ownerOnly, async (req, res) => {
     try {
         const { acceptsDeposits, acceptsWithdrawals } = req.body;
         const update = {};
@@ -460,7 +485,7 @@ router.put('/preferences', merchantAuth, async (req, res) => {
  * they were trying to express already have owners: an order's CEILING is what
  * the team's pool holds, enforced by the hold taken the moment an order is
  * assigned (§3.10), and the SIZE is the platform's — one of the fixed order
- * sizes the admin has on offer (`SystemConfig.orderSizes`, Step 2d), the same
+ * sizes the admin has on offer (`SystemConfig.buyOrderSizes` and `sellOrderSizes`, Step 2d), the same
  * for everyone.
  */
 // ─── ORDERS ──────────────────────────────────────────────────────────────────
@@ -478,6 +503,7 @@ router.get('/orders', merchantAuth, async (req, res) => {
             orderType: type || null,
             limit: parsedLimit,
             offset: parsedSkip,
+            scope: listScopeFor(req.merchantActor),
         });
 
         res.json({ success: true, orders: toMerchantOrderViews(orders), pagination: { total, limit: parsedLimit, skip: parsedSkip } });
@@ -501,6 +527,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         if (!order.merchantId || String(order.merchantId) !== String(req.merchantId)) {
             return res.status(403).json({ success: false, message: 'This order is not assigned to you.' });
         }
+        if (refuseWork(req, res, order)) return;
         if (order.status !== 'ASSIGNED') {
             return res.status(400).json({ success: false, message: `Order cannot be accepted in status: ${order.status}` });
         }
@@ -525,8 +552,17 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
             }
         }
 
-        // The window is the order's own rail's (`teamRouting.processingWindowSeconds`).
-        const windowSeconds = routingSettings(await getSystemConfig()).processingWindowSeconds[railOf(order)];
+        // The window is the order's own rail's (`teamRouting.processingWindowSeconds`),
+        // or on an order merchant accounts serve its direction's
+        // (`merchantRouting.processingWindowSeconds`, owner 2026-10-11).
+        const cfg = await getSystemConfig();
+        const windowSeconds = routedToMerchants(order)
+            ? merchantRoutingSettings(cfg).processingWindowSeconds[order.type]
+            : routingSettings(cfg).processingWindowSeconds[railOf(order)];
+        // The payment account routing chose for a merchant-account buy: the
+        // snapshot is rebuilt with it, never with the merchant's profile.
+        const payAccount = order.payAccountId
+            ? await db.merchantPaymentAccounts.getAccountById(order.payAccountId) : null;
 
         const now        = new Date();
         const expiresAt  = new Date(now.getTime() + windowSeconds * 1000); // the window starts on accept
@@ -535,10 +571,13 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         // via the Payment domain's single builder — this route used to re-implement
         // it inline, which is how the USDT address would have been missed on the
         // accept path while assignment carried it (GOVERNANCE §4).
-        // Rolling avgResponseMinutes: EMA with α=0.2. Computed before the
-        // transition, applied after it — a merchant who lost the accept race
-        // should not have their response time recorded for an order they did
-        // not get.
+        //
+        // The response time — assignment to accept — is stamped on the ORDER
+        // with the move, so only the member who won the accept has one. It
+        // reaches the member's average once, when the order is confirmed, in
+        // `recordCompletedOrder` (the one writer of `avg_response_minutes`;
+        // routing orders members by it, CLAUDE.md §2). This route used to fold
+        // it into the average here too, a second writer with its own formula.
         const responseMinutes = order.assignedAt ? (now - new Date(order.assignedAt)) / 60000 : null;
 
         const accepted = await startOrder(order.orderId, {
@@ -552,7 +591,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
                 // (`playerOrderView`): the member's bank account on a bank
                 // buy, the order's chain address on USDT. A cash buy's QR is
                 // not in it; the member scans that onto the order.
-                merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order),
+                merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order, payAccount),
                 ...(responseMinutes === null ? {} : { merchantResponseMinutes: responseMinutes }),
             },
         });
@@ -566,15 +605,6 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         }
         Object.assign(order, accepted.order);
 
-        if (responseMinutes !== null) {
-            // Rolling average, EMA with α=0.2. Applied AFTER the transition —
-            // a merchant who lost the accept race must not have their response
-            // time recorded for an order they did not get.
-            const oldAvg = merchant.avgResponseMinutes ?? 2;
-            await db.merchants.updateMerchant(req.merchantId, {
-                avgResponseMinutes: (oldAvg * 0.8) + (responseMinutes * 0.2),
-            });
-        }
         // No counter to increment. The active order count is derived from the
         // orders, so accepting one IS the increment.
 
@@ -596,7 +626,9 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
                   + `${usdtAddressFor(merchant, order.usdtChain) || 'See payment details'}`
                 : order.paymentMode === PAYMENT_MODES.CASH_ATM
                     ? 'the cash machine QR the member scans'
-                    : 'the member\'s bank account shown on the order, by bank transfer';
+                    : payAccount?.kind === 'UPI_QR'
+                        ? 'the UPI payment link shown on the order'
+                        : 'the member\'s bank account shown on the order, by bank transfer';
             await sendSystemMessage(oid,
                 `✅ Order Accepted by Merchant\n` +
                 `📋 Order: ${order.orderId}\n` +
@@ -648,6 +680,9 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
     try {
         const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
+        // A merchant account's sub-member works only the orders on accounts
+        // assigned to them, for their role; AUDIT writes nothing (owner, 2026-10-11).
+        if (refuseWork(req, res, order)) return;
 
         const isDeposit = order.type === 'DEPOSIT';
 
@@ -723,6 +758,24 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // than returning a flag, and it runs BEFORE the transition so a refusal
         // leaves the order untouched.
         let payoutReference = null;
+        // ── Which of its accounts a merchant account paid from (owner, 2026-10-11)
+        // Required on a sell a merchant account serves: an ACTIVE account of
+        // theirs that pays withdrawals, and for a sub-member one assigned to
+        // them. Asked here, BEFORE the reference is claimed, so a wrong
+        // account costs the merchant nothing; written and asked again in the
+        // Paid transition itself (`stampPaidFromWithin`), where it counts.
+        const paidFromAccountId = !isDeposit && routedToMerchants(order)
+            ? String(req.body?.paidFromAccountId ?? '').trim() : null;
+        const allowedPayFrom = req.merchantActor?.isOwner === false ? req.merchantActor.withdrawalAccountIds : null;
+        if (paidFromAccountId !== null && !(await db.merchantPaymentAccounts.mayPayFrom(
+            req.merchantId, paidFromAccountId, { allowedAccountIds: allowedPayFrom }))) {
+            return res.status(400).json({
+                success: false,
+                code: 'PAID_FROM_ACCOUNT_REQUIRED',
+                message: 'Choose the account you paid this withdrawal from: an active account that pays withdrawals'
+                    + (allowedPayFrom ? ', assigned to you.' : '.'),
+            });
+        }
         if (!isDeposit) {
             const submitted = String(req.body?.utrNumber ?? '').trim();
             if (!submitted) {
@@ -823,6 +876,9 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             moved = await markOrderPaidState(order._id, {
                 expectFrom: ['PROCESSING', 'ASSIGNED'],
                 expectMerchant: req.merchantId,
+                within: paidFromAccountId === null ? null : (client) => db.merchantPaymentAccounts.stampPaidFromWithin(client, {
+                    orderId: order.orderId, accountId: paidFromAccountId, allowedAccountIds: allowedPayFrom,
+                }),
                 set: {
                     ...(payoutReference ? { utrNumber: payoutReference } : {}),
                     merchantCreditStatus:    'HELD',
@@ -880,10 +936,14 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // it: they feed the merchant's processed volume and their per-rail
         // counts, and passing neither meant every completed order was recorded
         // as a zero-value deposit — a merchant's volume never moved.
+        //
+        // The response time stamped on the order at accept goes with them, so
+        // the average routing ranks members by moves once per confirmed order.
         await updateMerchantStatsOnComplete(req.merchantId, true, {
             direction: order.type,
             amountRupees: order.tokenAmount,
             earningsRupees: order.merchantProfit || 0,
+            responseMinutes: order.merchantResponseMinutes ?? null,
         }).catch(() => {});
 
         // Notify merchant of updated score (GOVERNANCE §11: merchant_score_update)
@@ -1000,6 +1060,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
 
         const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
+        if (refuseWork(req, res, order)) return;
 
         // Only allowed if ASSIGNED (before user has paid) -- per spec Section 2C
         if (order.status !== 'ASSIGNED') {
@@ -1167,6 +1228,7 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
 
         const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
+        if (refuseWork(req, res, order)) return;
 
         if (['COMPLETED', 'CANCELLED'].includes(order.status)) {
             return res.status(400).json({ success: false, message: 'Cannot red-flag a completed or cancelled order.' });
@@ -1249,6 +1311,7 @@ router.post('/orders/:id/cash-link', merchantAuth, async (req, res) => {
     try {
         const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
+        if (refuseWork(req, res, order)) return;
         if (order.type !== 'DEPOSIT' || order.paymentMode !== PAYMENT_MODES.CASH_ATM) {
             return res.status(400).json({ success: false, code: 'NOT_A_CASH_BUY', message: 'Only a cash buy is paid through a cash machine\'s QR.' });
         }
@@ -1461,6 +1524,7 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         if (order.merchantId?.toString() !== req.merchantId?.toString()) {
             return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
         }
+        if (refuseWork(req, res, order)) return;
 
         // ── May this be said at all, before what it needs ────────────────────
         // A BUY, and one the player has tapped Paid on. "The player's money

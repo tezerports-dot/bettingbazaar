@@ -18,6 +18,9 @@
 export const ACCOUNT_IS_A_MOBILE_CONSTRAINTS = Object.freeze([
   'merchants_bank_account_not_a_mobile',
   'users_bank_account_not_a_mobile',
+  // A merchant account's payment accounts (owner, 2026-10-11), the UPI
+  // handle's name part and payee name included.
+  'merchant_payment_accounts_not_a_mobile',
 ]);
 
 export const ACCOUNT_IS_A_MOBILE_MESSAGE =

@@ -80,7 +80,9 @@ describe('the cash machine scanner', () => {
     render(<CashLinkScanner order={cashOrder()} busy={false} onClose={vi.fn()} onSend={onSend} />);
     fireEvent.change(screen.getByLabelText("Photo of the machine's QR"), { target: { files: [photo()] } });
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/₹5,000.*this order is ₹1,000/);
+    // The camera's own notice (no camera in jsdom) is an alert too until the
+    // photo is read; then the refusal is the one alert on screen.
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/₹5,000.*this order is ₹1,000/));
     expect(screen.queryByRole('button', { name: /Send to the player/ })).toBeNull();
     expect(onSend).not.toHaveBeenCalled();
     // And the way back is a fresh scan.

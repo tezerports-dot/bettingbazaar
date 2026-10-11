@@ -1,0 +1,287 @@
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
+/**
+ * A merchant account's screens (owner, 2026-10-11 — Phase B).
+ *
+ * What is pinned:
+ *   • who sees what: the Account nav for a merchant account's owner and
+ *     sub-members, never for an agent; an agent keeps Team; an AUDIT
+ *     sub-member gets no Sub-members tab and is told so on its route (S48),
+ *     and is offered no account control;
+ *   • the UPI scanner form: the scanned static QR and the bank details go to
+ *     the server under the kind UPI_QR; a QR with an amount is refused before
+ *     anything is sent; the server's refusal is announced (S44);
+ *   • sub-members: the add form sends name, mobile, password and the ticked
+ *     roles; ticking an account assigns it for that duty;
+ *   • pool and reports: the request and the CSV download reach their calls.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
+
+const auth = vi.hoisted(() => ({ merchant: null as Record<string, unknown> | null }));
+vi.mock('../../services/AuthContext', () => ({
+  useAuth: () => ({ merchant: auth.merchant, refreshProfile: vi.fn(), logout: vi.fn() }),
+}));
+vi.mock('../../services/ThemeContext', () => ({
+  useTheme: () => ({ theme: 'light', toggleTheme: vi.fn() }),
+}));
+const api = vi.hoisted(() => ({
+  getMerchantAccount: vi.fn(),
+  addPaymentAccount: vi.fn(),
+  updatePaymentAccount: vi.fn(),
+  removePaymentAccount: vi.fn(),
+  addSubMember: vi.fn(),
+  setSubMemberRoles: vi.fn(),
+  removeSubMember: vi.fn(),
+  assignSubMemberAccount: vi.fn(),
+  unassignSubMemberAccount: vi.fn(),
+  requestMerchantPool: vi.fn(),
+  cancelMerchantPoolRequest: vi.fn(),
+  getMerchantReport: vi.fn(),
+  downloadMerchantReportCsv: vi.fn(),
+  toggleOnlineStatus: vi.fn(),
+}));
+vi.mock('../../services/api', () => ({ api }));
+vi.mock('react-hot-toast', () => ({ default: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }));
+
+import PaymentAccountsPage from './PaymentAccountsPage';
+import SubMembersPage from './SubMembersPage';
+import PoolPage from './PoolPage';
+import ReportsPage from './ReportsPage';
+import Layout from '../../components/Layout';
+import { ROUTES } from '../../constants';
+
+const OWNER = { id: 'm-1', isOnline: true, acceptedCurrencies: ['INR'], status: 'ACTIVE', username: 'Shop', actor: { isOwner: true }, isMerchantAccount: true };
+const AGENT = { id: 'a-1', isOnline: true, acceptedCurrencies: ['INR'], status: 'ACTIVE', username: 'Agent', actor: { isOwner: true }, isMerchantAccount: false };
+const AUDITOR = {
+  ...OWNER, isMerchantAccount: true,
+  actor: { isOwner: false, staffId: 'mst_1', name: 'Asha', roles: ['AUDIT'], depositAccountIds: [], withdrawalAccountIds: [] },
+};
+
+const ACCOUNT = {
+  accountId: 'mpa_1', merchantId: 'm-1', kind: 'BANK', label: 'Shop HDFC', upiId: null, upiName: null, upiLink: null,
+  holderName: 'Shop Ltd', accountNo: '123456789012', ifsc: 'HDFC0001234', bankName: 'HDFC',
+  acceptsDeposits: true, paysWithdrawals: true, status: 'ACTIVE', lastUsedAt: null, createdAt: '', updatedAt: '', removedAt: null,
+};
+const OVERVIEW = {
+  success: true,
+  team: {
+    teamId: 't-d', kind: 'DIRECT', ownerMerchantId: 'm-1', ownerName: 'Shop', ownerRef: 'M1', ownerStatus: 'ACTIVE',
+    ownerApproval: 'APPROVED', ownerOnline: true, routingPriority: 3, name: 'Shop', poolAvailablePaise: 500000, poolHeldPaise: 100000,
+    commission: { teamId: 't-d', buysPaise: 0, sellsPaise: 0, matchedPaise: 0, highPaise: 0, paidPaise: 0, owedPaise: 0, commissionPercent: 10, supervisorSharePercent: 0 },
+    createdAt: '',
+  },
+  accounts: [ACCOUNT],
+  staff: [{ staffId: 'mst_1', merchantId: 'm-1', userId: 'u-9', name: 'Ravi', mobile: '9876543210', roles: ['DEPOSITS'], status: 'ACTIVE', createdAt: '', removedAt: null, assignments: [] }],
+  poolRequests: [],
+  flags: [],
+};
+
+const STATIC_QR = 'upi://pay?pa=shop.hdfc@okhdfc&pn=Shop%20Ltd&cu=INR';
+
+const at = (path: string, merchant: Record<string, unknown>, ui: React.ReactElement) => {
+  auth.merchant = merchant;
+  return render(<MemoryRouter initialEntries={[path]}>{ui}</MemoryRouter>);
+};
+
+const detectorReading = (raw: string) => {
+  (globalThis as any).BarcodeDetector = class { async detect() { return [{ rawValue: raw }]; } };
+  (globalThis as any).createImageBitmap = vi.fn(async () => ({ width: 800, height: 800, close() {} }));
+};
+const photo = () => new File(['x'], 'qr.jpg', { type: 'image/jpeg' });
+const width = window.innerWidth;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  api.getMerchantAccount.mockResolvedValue(OVERVIEW);
+  Object.defineProperty(navigator, 'mediaDevices', { value: undefined, configurable: true });
+});
+afterEach(() => {
+  delete (globalThis as any).BarcodeDetector;
+  delete (globalThis as any).createImageBitmap;
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+});
+
+describe('who sees the merchant account screens', () => {
+  const navLabels = () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 });
+    return screen.getAllByRole('button').map((b) => b.getAttribute('title')).filter(Boolean);
+  };
+
+  it('a merchant account owner gets Account and no Team', () => {
+    at('/dashboard', OWNER, <Layout><div /></Layout>);
+    const labels = navLabels();
+    expect(labels).toContain('Account');
+    expect(labels).not.toContain('Team');
+  });
+
+  it('an agent keeps Team and gets no Account', () => {
+    at('/dashboard', AGENT, <Layout><div /></Layout>);
+    const labels = navLabels();
+    expect(labels).toContain('Team');
+    expect(labels).not.toContain('Account');
+  });
+
+  it('a sub-member has no online switch: going online is the owner\'s', () => {
+    at('/dashboard', AUDITOR, <Layout><div /></Layout>);
+    expect(screen.queryByRole('button', { name: /^(Online|Offline)$/ })).toBeNull();
+    expect(screen.getByText('Sub-member')).toBeInTheDocument();
+  });
+
+  it('an auditor gets no Sub-members tab, and its route says who it is for', async () => {
+    at(ROUTES.ACCOUNT_SUB_MEMBERS, AUDITOR, <SubMembersPage />);
+    const tabs = screen.getByRole('navigation', { name: 'Merchant account' });
+    expect(within(tabs).queryByRole('button', { name: 'Sub-members' })).toBeNull();
+    expect(within(tabs).getByRole('button', { name: 'Reports' })).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(/for the merchant account owner/);
+    expect(api.addSubMember).not.toHaveBeenCalled();
+  });
+
+  it('an auditor reads the payment accounts and is offered no control on them', async () => {
+    at(ROUTES.ACCOUNT_PAYMENT_ACCOUNTS, AUDITOR, <PaymentAccountsPage />);
+    expect(await screen.findByText('Shop HDFC')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Add a UPI scanner|Add a bank account|Edit|Pause|Remove/ })).toBeNull();
+    expect(screen.queryByRole('switch')).toBeNull();
+  });
+
+  it('an agent opening an account screen is told these are for merchant accounts', () => {
+    at(ROUTES.ACCOUNT_POOL, AGENT, <PoolPage />);
+    expect(screen.getByRole('status')).toHaveTextContent(/for merchant accounts/);
+  });
+});
+
+describe('adding a UPI scanner account', () => {
+  const openForm = async () => {
+    at(ROUTES.ACCOUNT_PAYMENT_ACCOUNTS, OWNER, <PaymentAccountsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Add a UPI scanner/ }));
+  };
+  const fillBank = () => {
+    fireEvent.change(screen.getByLabelText('Account label'), { target: { value: 'Counter QR' } });
+    fireEvent.change(screen.getByLabelText('Account holder name'), { target: { value: 'Shop Ltd' } });
+    fireEvent.change(screen.getByLabelText('Account number'), { target: { value: '998877665544' } });
+    fireEvent.change(screen.getByLabelText('IFSC'), { target: { value: 'hdfc0001234' } });
+    fireEvent.change(screen.getByLabelText('Bank name'), { target: { value: 'HDFC' } });
+  };
+
+  it('scans the static QR, then sends it with the bank details behind it', async () => {
+    api.addPaymentAccount.mockResolvedValue({ ...ACCOUNT, accountId: 'mpa_2', kind: 'UPI_QR' });
+    detectorReading(STATIC_QR);
+    await openForm();
+    fireEvent.click(screen.getByRole('button', { name: /Scan your UPI QR/ }));
+    fireEvent.change(screen.getByLabelText('Photo of your UPI QR'), { target: { files: [photo()] } });
+    expect(await screen.findByText('shop.hdfc@okhdfc')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Use this QR' }));
+    fillBank();
+    fireEvent.click(screen.getByRole('button', { name: 'Add account' }));
+    await waitFor(() => expect(api.addPaymentAccount).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'UPI_QR', upiLink: STATIC_QR, label: 'Counter QR', accountNo: '998877665544', ifsc: 'HDFC0001234',
+      acceptsDeposits: true, paysWithdrawals: true,
+    })));
+  });
+
+  it('refuses a QR with a fixed amount before anything is sent', async () => {
+    detectorReading(`${STATIC_QR}&am=500.00`);
+    await openForm();
+    fireEvent.click(screen.getByRole('button', { name: /Scan your UPI QR/ }));
+    fireEvent.change(screen.getByLabelText('Photo of your UPI QR'), { target: { files: [photo()] } });
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/one fixed amount/));
+    expect(screen.queryByRole('button', { name: 'Use this QR' })).toBeNull();
+  });
+
+  it('will not add a UPI scanner with no QR scanned, and says so', async () => {
+    await openForm();
+    fillBank();
+    fireEvent.click(screen.getByRole('button', { name: 'Add account' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Scan your UPI QR first.');
+    expect(api.addPaymentAccount).not.toHaveBeenCalled();
+  });
+
+  it('announces the server\'s refusal in its words', async () => {
+    api.addPaymentAccount.mockRejectedValue(Object.assign(new Error('That UPI ID is already on another live account.'), { status: 409 }));
+    detectorReading(STATIC_QR);
+    await openForm();
+    fireEvent.click(screen.getByRole('button', { name: /Scan your UPI QR/ }));
+    fireEvent.change(screen.getByLabelText('Photo of your UPI QR'), { target: { files: [photo()] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Use this QR' }));
+    fillBank();
+    fireEvent.click(screen.getByRole('button', { name: 'Add account' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('That UPI ID is already on another live account.');
+  });
+
+  it('a bank account is a plain form, and its switches go with it', async () => {
+    api.addPaymentAccount.mockResolvedValue(ACCOUNT);
+    at(ROUTES.ACCOUNT_PAYMENT_ACCOUNTS, OWNER, <PaymentAccountsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Add a bank account/ }));
+    expect(screen.queryByRole('button', { name: /Scan your UPI QR/ })).toBeNull();
+    fillBank();
+    fireEvent.click(screen.getByRole('switch', { name: 'Pay withdrawals' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add account' }));
+    await waitFor(() => expect(api.addPaymentAccount).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'BANK', acceptsDeposits: true, paysWithdrawals: false,
+    })));
+  });
+
+  it('an existing account is paused and switched from its row', async () => {
+    api.updatePaymentAccount.mockResolvedValue(ACCOUNT);
+    at(ROUTES.ACCOUNT_PAYMENT_ACCOUNTS, OWNER, <PaymentAccountsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Pause/ }));
+    await waitFor(() => expect(api.updatePaymentAccount).toHaveBeenCalledWith('mpa_1', { status: 'PAUSED' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Accept deposits on Shop HDFC' }));
+    await waitFor(() => expect(api.updatePaymentAccount).toHaveBeenCalledWith('mpa_1', { acceptsDeposits: false }));
+  });
+});
+
+describe('sub-members', () => {
+  it('the add form sends the ticked roles; ticking an account assigns it for that duty', async () => {
+    api.addSubMember.mockResolvedValue(OVERVIEW.staff[0]);
+    api.assignSubMemberAccount.mockResolvedValue(OVERVIEW.staff[0]);
+    at(ROUTES.ACCOUNT_SUB_MEMBERS, OWNER, <SubMembersPage />);
+    expect(await screen.findByText('Ravi')).toBeInTheDocument();
+    // Nobody is shown another person's mobile (CLAUDE.md §24).
+    expect(screen.queryByText(/9876543210/)).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Meera' } });
+    fireEvent.change(screen.getByLabelText(/^Mobile/), { target: { value: '9123456789' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'a-long-pass-phrase' } });
+    fireEvent.click(document.getElementById('sm-new-role-WITHDRAWALS')!);
+    fireEvent.click(document.getElementById('sm-new-role-AUDIT')!);
+    fireEvent.click(screen.getByRole('button', { name: /Add sub-member/ }));
+    await waitFor(() => expect(api.addSubMember).toHaveBeenCalledWith({
+      mobile: '9123456789', password: 'a-long-pass-phrase', name: 'Meera', roles: ['WITHDRAWALS', 'AUDIT'],
+    }));
+
+    fireEvent.click(screen.getByLabelText('Shop HDFC'));
+    await waitFor(() => expect(api.assignSubMemberAccount).toHaveBeenCalledWith('mst_1', 'mpa_1', 'DEPOSIT'));
+  });
+});
+
+describe('pool and reports', () => {
+  it('the owner asks for tokens, in whole tokens', async () => {
+    api.requestMerchantPool.mockResolvedValue('req-1');
+    at(ROUTES.ACCOUNT_POOL, OWNER, <PoolPage />);
+    expect(await screen.findByText('5,000 BB')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Tokens (whole number)'), { target: { value: '2000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send request' }));
+    await waitFor(() => expect(api.requestMerchantPool).toHaveBeenCalledWith('BUY', 2000, ''));
+  });
+
+  it('the report shows the server\'s figures and the CSV downloads the same range', async () => {
+    const zero = { orders: 0, completed: 0, completedPaise: 0, disputed: 0, disputesLost: 0 };
+    api.getMerchantReport.mockResolvedValue({
+      success: true, range: { from: null, to: null },
+      totals: { deposits: { ...zero, orders: 7 }, withdrawals: zero },
+      byAccount: [{ accountId: 'mpa_1', label: 'Shop HDFC', kind: 'BANK', status: 'ACTIVE', deposits: zero, withdrawals: zero }],
+      bySubMember: [], unattributed: { deposits: zero, withdrawals: zero },
+    });
+    api.downloadMerchantReportCsv.mockResolvedValue(undefined);
+    at(ROUTES.ACCOUNT_REPORTS, AUDITOR, <ReportsPage />);
+    expect(await screen.findByText('The last seven days')).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Totals' })).toHaveTextContent('7');
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-10-01' } });
+    fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-10-07' } });
+    fireEvent.click(screen.getByRole('button', { name: /Download orders/ }));
+    await waitFor(() => expect(api.downloadMerchantReportCsv).toHaveBeenCalledWith('2026-10-01', '2026-10-07'));
+    fireEvent.click(screen.getByRole('button', { name: 'Show report' }));
+    await waitFor(() => expect(api.getMerchantReport).toHaveBeenLastCalledWith('2026-10-01', '2026-10-07'));
+  });
+});

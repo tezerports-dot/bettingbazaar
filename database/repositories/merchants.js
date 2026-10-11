@@ -30,6 +30,7 @@
 import { pgQuery, getPool, connectGuarded } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
+import { createDirectTeamWithin } from './teams.js';
 
 /** The reference players see. Random, not derived from anything identifying. */
 export function generateMerchantPublicRef() {
@@ -58,7 +59,7 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   consecutive_expiries, assignment_paused_at, assignment_pause_reason, cash_ready,
   lost_disputes, high_risk_at,
   total_orders_completed, total_orders_all, is_supervisor, supervisor_rail,
-  created_at, updated_at`;
+  routing_priority, created_at, updated_at`;
 
 /** node-postgres returns BIGINT as a STRING. Cast once, here, at the boundary. */
 const toInt = (v) => (v === null || v === undefined ? null : Number(v));
@@ -146,6 +147,9 @@ function toMerchant(row) {
 
     successRate: Number(row.success_rate),
     avgResponseMinutes: Number(row.avg_response_minutes),
+    // 1–5, the admin's; routing offers orders to the highest first (§2
+    // "Which member serves an order"). Written only by `setRoutingPriority`.
+    routingPriority: Number(row.routing_priority),
     disputeRate: Number(row.dispute_rate),
     consecutiveRejections: toInt(row.consecutive_rejections),
     consecutiveExpiries: toInt(row.consecutive_expiries),
@@ -310,6 +314,11 @@ export async function merchantCounts() {
  * one writer, `setOnline`, whose WHERE keeps a supervisor offline (CLAUDE.md
  * §2: a supervisor is never a member). A generic patch beside it would be a
  * second write path around that guard (§3).
+ *
+ * `avg_response_minutes` and `routing_priority` are absent for the same reason:
+ * routing orders members by both, so each has one writer —
+ * `recordCompletedOrder` for the average, `setRoutingPriority` for the
+ * admin's priority (CLAUDE.md §2 "Which member serves an order").
  */
 const UPDATABLE = new Set([
   'user_id', 'name', 'username', 'mobile', 'email',
@@ -321,7 +330,7 @@ const UPDATABLE = new Set([
   'rating', 'panel_url',
   'merchant_approval_status', 'merchant_approved_by', 'merchant_approved_at',
   'merchant_rejection_reason',
-  'success_rate', 'avg_response_minutes', 'dispute_rate',
+  'success_rate', 'dispute_rate',
 ]);
 
 /** camelCase → column, derived from the allowlist so the two cannot drift. */
@@ -497,6 +506,43 @@ export async function setOrderPreferences(merchantId, { acceptsDeposits, accepts
     'merchant_set_order_preferences',
   );
   return rows[0] ? toMerchant(rows[0]) : null;
+}
+
+/** The routing priorities an admin may give a member (owner, Phase A). */
+export const ROUTING_PRIORITY = Object.freeze({ MIN: 1, MAX: 5, DEFAULT: 3 });
+
+/**
+ * Set a member's routing priority, 1 to 5: routing offers an order to the
+ * highest first (`routingCandidates`). The one writer of `routing_priority`.
+ *
+ * A supervisor takes no orders, so a priority on their row would be a setting
+ * that sets nothing: refused in the WHERE, like `setOnline`. The row's CHECK
+ * holds the range for every writer; this answers a bad value as a 400 first,
+ * so the caller is told what to send rather than a constraint name (S35).
+ *
+ * Returns `{ ok: true, merchant }` or `{ ok: false, reason }` with reason
+ * `not_found` or `supervisor_no_priority`.
+ */
+export async function setRoutingPriority(merchantId, priority) {
+  const n = Number(priority);
+  if (!Number.isInteger(n) || n < ROUTING_PRIORITY.MIN || n > ROUTING_PRIORITY.MAX) {
+    throw Object.assign(
+      new Error(`Priority is a whole number from ${ROUTING_PRIORITY.MIN} to ${ROUTING_PRIORITY.MAX}.`),
+      { status: 400, code: 'BAD_PRIORITY' },
+    );
+  }
+  const { rows } = await pgQuery(
+    `UPDATE merchants SET routing_priority = $2, updated_at = now()
+      WHERE NOT is_supervisor AND merchant_id = $1
+      RETURNING ${COLUMNS}`,
+    [String(merchantId), n],
+    'merchant_set_routing_priority',
+  );
+  if (rows[0]) return { ok: true, merchant: toMerchant(rows[0]) };
+  const { rows: found } = await pgQuery(
+    'SELECT is_supervisor FROM merchants WHERE merchant_id = $1', [String(merchantId)],
+    'merchant_priority_refusal');
+  return { ok: false, reason: found[0] ? 'supervisor_no_priority' : 'not_found' };
 }
 
 /**
@@ -778,6 +824,10 @@ export async function deleteMerchant(merchantId) {
 export async function createMerchantAccount({
   userId, username, mobile, email = null, passwordHash,
   currency = 'INR', bankDetails = null, usdtAddressTrc20 = null, usdtAddressBep20 = null,
+  // A MERCHANT ACCOUNT (owner, 2026-10-11): its DIRECT team is created in this
+  // same transaction (`createDirectTeamWithin`), so there is no instant at
+  // which it is a merchant without its pool's team.
+  direct = false,
 }) {
   if (!mobile) throw new Error('createMerchantAccount requires a mobile');
   if (!passwordHash) throw new Error('createMerchantAccount requires a passwordHash');
@@ -838,6 +888,10 @@ export async function createMerchantAccount({
       currency, status: 'PENDING', bankDetails, usdtAddressTrc20, usdtAddressBep20,
       client,
     });
+    if (direct) {
+      const team = await createDirectTeamWithin(client, { merchantId: merchant.merchantId, name: merchant.name });
+      if (!team.ok) throw new Error(`createMerchantAccount: merchant account refused (${team.reason})`);
+    }
 
     await client.query('COMMIT');
     return { ok: true, merchant, userId: uid };

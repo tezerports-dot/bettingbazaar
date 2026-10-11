@@ -27,7 +27,7 @@ import { db } from '#db';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { MERCHANT_CURRENCY } from '../merchant/merchantCurrency.js';
 import {
-  offeredSizes, railForSize, usdtBuyBounds, isUsdtBuyAmount, USDT_BUY_STEP,
+  offeredSizes, railForSize, inrRoutingOf, usdtBuyBounds, isUsdtBuyAmount, USDT_BUY_STEP,
 } from '../merchant/denominations.js';
 // The bet-funding rule's arithmetic: one copy, which a casino BET applies too.
 import { reserveBasisPoints, splitStakeMinor, maxStakeMinor } from './stakeFunding.js';
@@ -309,9 +309,10 @@ export { getRiskRules };
  * built from (`systemConfigPayload`).
  *
  * ── The rules (owner, 2026-10-02; Step 2d) ─────────────────────────────────
- * 1. **An INR order, buy or sell, is one of the sizes on offer.** Seven fixed
- *    sizes exist (`denominations.js`); the admin chooses which are offered
- *    (`SystemConfig.orderSizes`). The size decides the rail: 500 to 10,000 is
+ * 1. **An INR order, buy or sell, is one of the sizes on offer for its
+ *    direction.** Seven fixed sizes exist (`denominations.js`); the admin
+ *    chooses which are offered to buy (`SystemConfig.buyOrderSizes`) and which
+ *    to sell (`SystemConfig.sellOrderSizes`). The size decides the rail: 500 to 10,000 is
  *    paid in cash at a machine, 50,000 and up by bank transfer. One size per order,
  *    no splitting, so an amount between sizes is unservable by construction.
  * 2. **A USDT buy is a whole number of 100 USDT** between the admin's minimum
@@ -327,7 +328,9 @@ function sizesLabel(sizes) {
 }
 
 function assertSizeIsOffered({ tokenAmount, type, cfg }) {
-  const offered = offeredSizes(cfg);
+  // The direction's own list: a size on offer to buy may be off for selling,
+  // and the reverse (`offeredSizes` throws on any other `type`).
+  const offered = offeredSizes(cfg, type);
   const verb = type === 'DEPOSIT' ? 'buy' : 'sell';
   // The first thing checked because it is the first thing used, and a caller's
   // mistake: a missing or non-numeric amount is a 400 that names the sizes,
@@ -339,8 +342,8 @@ function assertSizeIsOffered({ tokenAmount, type, cfg }) {
   if (!offered.includes(tokenAmount)) {
     // A size that exists but is switched off is told apart from a number that
     // is not a size at all, so the sentence is true either way.
-    const why = railForSize(tokenAmount)
-      ? `${tokenAmount.toLocaleString('en-IN')} tokens is not on offer right now.`
+    const why = railForSize(tokenAmount, inrRoutingOf(cfg))
+      ? `${tokenAmount.toLocaleString('en-IN')} tokens is not on offer to ${verb} right now.`
       : `${tokenAmount.toLocaleString('en-IN')} tokens is not an order size.`;
     throw Object.assign(new Error(`${why} Choose one of ${sizesLabel(offered)} tokens.`),
       { status: 400, code: 'NOT_AN_ORDER_SIZE', sizes: offered });

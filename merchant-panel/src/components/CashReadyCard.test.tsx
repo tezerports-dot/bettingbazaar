@@ -63,7 +63,7 @@ import Dashboard from '../pages/Dashboard';
 
 const team = (rail: string) => ({
   teamId: 't-1', supervisorId: 's-1', supervisorName: 'Sup', supervisorRef: 'MSUP', name: 'Alpha', rail,
-  approvedCount: 10, pendingCount: 0, size: 10, strength: 'WORKING', shortSince: null, wasFull: true,
+  approvedCount: 10, pendingCount: 0, size: 10, strength: 'WORKING',
   createdAt: '', poolAvailablePaise: 0, poolHeldPaise: 0,
 });
 const cashMember = { role: 'MEMBER', publicRef: 'M1', status: 'APPROVED', team: team('CASH') };

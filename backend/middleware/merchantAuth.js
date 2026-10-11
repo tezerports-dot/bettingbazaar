@@ -25,6 +25,7 @@ import {
   secondFactorMissing, refuseMissingSecondFactor,
 } from '../domains/identity/auth.middleware.js';
 import { isChallengeToken } from '../domains/identity/twoFactorChallenge.js';
+import { OWNER_ACTOR, actorForStaff } from '../domains/merchant/merchantActor.js';
 
 /**
  * Merchant authentication middleware
@@ -85,7 +86,7 @@ export const merchantAuth = async (req, res, next) => {
     // session issued before it is dead, on this door as on the other two. It
     // was checked on the player and staff doors only, so a reset evicted no
     // merchant session (R6, 2026-09-30).
-    const login = await merchantLoginRow(merchant);
+    const login = await merchantLoginRow(merchant, decoded);
     if (sessionSuperseded(login, decoded)) return refuseSupersededSession(res);
     // A merchant session is a password AND the merchant's own Telegram
     // (Step 3); one minted on the password alone is refused here as on every
@@ -94,7 +95,20 @@ export const merchantAuth = async (req, res, next) => {
 
     req.merchant   = merchant;
     req.merchantId = merchant._id;
-    req.userId     = merchant.userId; 
+    // ── Who is acting (owner, 2026-10-11) ───────────────────────────────
+    // The owner, or a sub-member of a merchant account with their roles and
+    // the accounts assigned to them, read fresh on every request (the row is
+    // the authority, never the token). `req.userId` is the LOGIN's own id, so
+    // a sub-member's Telegram screens are their own.
+    if (decoded.staffUserId) {
+      const staff = await db.merchantStaff.activeStaffByUser(decoded.staffUserId);
+      if (!staff || String(staff.merchantId) !== String(merchant.merchantId)) return refuseSupersededSession(res);
+      req.userId = staff.userId;
+      req.merchantActor = actorForStaff(staff);
+    } else {
+      req.userId = merchant.userId;
+      req.merchantActor = OWNER_ACTOR;
+    }
     next();
   } catch (error) {
     console.error('❌ Merchant auth error:', error);

@@ -8,7 +8,9 @@
  * scanner actually produces, goes through unchanged.
  */
 import { describe, it, expect } from 'vitest';
-import { checkCashLink, CASH_LINK_MAX_LENGTH } from '../../domains/payment/cashLink.js';
+import {
+  checkCashLink, CASH_LINK_MAX_LENGTH, checkStaticUpiLink, buildUpiPayLink, orderNoteFor,
+} from '../../domains/payment/cashLink.js';
 
 const ATM = 'upi://pay?pa=atm.cash%40icici&pn=ICICI%20ATM&am=1000.00&cu=INR&tr=ATM8812345&mc=6011';
 
@@ -109,5 +111,57 @@ describe('a cash link', () => {
 
   it('refuses an over-long link', () => {
     refusedWith(`upi://pay?pa=atm@sbi&am=500&tn=${'x'.repeat(CASH_LINK_MAX_LENGTH)}`, 500, /too long/);
+  });
+});
+
+/**
+ * A merchant account's static UPI QR (owner, 2026-10-11): the one place a UPI
+ * ID reaches a player, inside the link built for their order. Scanned, never
+ * typed; no amount (a QR with one is a single payment, not an account); and
+ * never a mobile in the UPI ID, the payee name or the note, which a UPI app
+ * shows the payer.
+ */
+describe("a merchant account's static UPI QR", () => {
+  const refused = (link, pattern) => {
+    let err;
+    try { checkStaticUpiLink(link); } catch (e) { err = e; }
+    expect(err, `accepted: ${link}`).toBeTruthy();
+    expect(err.status).toBe(400);
+    expect(err.code).toBe('INVALID_UPI_QR');
+    if (pattern) expect(err.message).toMatch(pattern);
+  };
+
+  it('keeps the payee and the name of a static QR', () => {
+    expect(checkStaticUpiLink('upi://pay?pa=shop.counter@okaxis&pn=Shop%20Counter&cu=INR'))
+      .toEqual({ link: 'upi://pay?pa=shop.counter@okaxis&pn=Shop%20Counter&cu=INR', pa: 'shop.counter@okaxis', pn: 'Shop Counter' });
+  });
+
+  it('refuses a UPI ID that is a mobile, in any spelling', () => {
+    refused('upi://pay?pa=9876543210@ybl&pn=Shop', /mobile/);
+    refused('upi://pay?pa=919876543210@paytm&pn=Shop', /mobile/);
+  });
+
+  it('refuses a mobile in the payee name or the note', () => {
+    refused('upi://pay?pa=shop@okaxis&pn=Ravi%2098765%2043210', /mobile/);
+    refused('upi://pay?pa=shop@okaxis&pn=Shop&tn=call%209876543210', /mobile/);
+  });
+
+  it('refuses a QR that fixes an amount, names no payee name, or is not in rupees', () => {
+    refused('upi://pay?pa=shop@okaxis&pn=Shop&am=500.00', /fixed amount/);
+    refused('upi://pay?pa=shop@okaxis', /payee name/);
+    refused('upi://pay?pa=shop@okaxis&pn=Shop&cu=USD', /rupees/);
+    refused('upi://pay?pa=shop@okaxis&pa=other@okaxis&pn=Shop', /twice/);
+    refused('https://example.com/pay', /not a UPI payment link/);
+  });
+
+  it('builds the player\'s link with THIS order\'s amount and a note naming the order', () => {
+    const link = buildUpiPayLink({ pa: 'shop.counter@okaxis', pn: 'Shop Counter', amountRupees: 1000, orderId: 'DEP-abc-123456789' });
+    expect(link.startsWith('upi://pay?')).toBe(true);
+    expect(link).not.toContain('+');
+    const q = new URLSearchParams(link.slice('upi://pay?'.length));
+    expect(Object.fromEntries(q)).toEqual({
+      pa: 'shop.counter@okaxis', pn: 'Shop Counter', am: '1000.00', cu: 'INR', tn: orderNoteFor('DEP-abc-123456789'),
+    });
+    expect(orderNoteFor('DEP-abc-123456789')).toBe('BB 23456789');
   });
 });

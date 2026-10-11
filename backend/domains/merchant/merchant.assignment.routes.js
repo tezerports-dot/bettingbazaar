@@ -4,12 +4,14 @@
  * over who serves an order.
  *
  * ── There is no picker any more ─────────────────────────────────────────────
- * Every order reaches a member of a working team through team routing
- * (`db.teamRouting.assignToTeam`, PROJECT_STATUS §3.10 2c): fewest open orders,
- * then least recently assigned, on the order's rail, with a buy's tokens held
- * in the team's pool in the same transaction. A queue manager hand-picking a
- * merchant would bypass every one of those checks — the pool, the cap, Ready,
- * the team's strength — so the levers left are the ones that go THROUGH it:
+ * Every order reaches an approved team member through team routing
+ * (`db.teamRouting.assignToTeam`, PROJECT_STATUS §3.10 2c, §3.11): the admin's
+ * routing priority, then the fastest average response, then fewest open
+ * orders, then least recently assigned, on the order's rail, with a buy's
+ * tokens held in the team's pool in the same transaction. A queue manager
+ * hand-picking a merchant would bypass every one of those checks — the pool,
+ * the cap, Ready, the approval — so the levers left are the ones that go
+ * THROUGH it:
  *
  *   POST /queue/assign/:orderId          offer a queued order to the teams now
  *   POST /payment-orders/:id/reassign    take an assigned order off its member

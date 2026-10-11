@@ -43,7 +43,10 @@ describePg('the dispute queue speaks one vocabulary with its screen', () => {
   const teams = teamFixture();
   const made = [];
   const oid = () => `dq-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
-  const nextUtr = () => String(470000000000 + (seq * 7919) + Math.floor(Math.random() * 7000));
+  // Unique across runs: `utr_registry` keeps every claimed reference for good,
+  // so a random pick from a small range collided with an earlier run's claim.
+  const utrBase = (Date.now() % 100_000_000) * 100;
+  const nextUtr = () => String(470000000000 + ((utrBase + seq) % 10_000_000_000));
   /** The orders this file made, by what was done to them. */
   const o = {};
 
