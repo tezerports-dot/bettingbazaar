@@ -29,7 +29,7 @@ export function attachSocketHandlers(io) {
       const cookieHeader = socket.handshake.headers?.cookie || '';
       const cookieToken  = cookieHeader.split(';').map(s => s.trim())
         .find(s => s.startsWith('auth_token='))?.split('=')[1];
-      return cookieToken || socket.handshake.auth?.token;
+      return socket.handshake.auth?.token || cookieToken;
     };
 
     const loadActiveUser = async (decoded) => {

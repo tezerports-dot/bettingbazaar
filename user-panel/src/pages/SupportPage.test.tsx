@@ -27,6 +27,7 @@ vi.mock('../services/backend.service', () => ({
   getBackend: () => ({ getSupportLinks: () => Promise.resolve({ links: { telegram: 'bb_support' } }) }),
 }));
 vi.mock('react-router', () => ({ useNavigate: () => vi.fn() }));
+vi.mock('../redesign/RedesignShell', () => ({ useShell: () => ({ isAuthenticated: true, openAuth: vi.fn(), openMenu: vi.fn() }) }));
 
 import SupportPage from './SupportPage';
 

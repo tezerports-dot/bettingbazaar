@@ -102,6 +102,13 @@ describe('one session issuer, and a door that says who it admits', () => {
     expect((routes.match(/res\.cookie\('auth_token'/g) || []).length).toBe(1);
   });
 
+  it('puts only a player session in the cookie, and reads the bearer header first', () => {
+    // Every panel is served from one origin: a staff cookie would reach the
+    // player app and be refused there as WRONG_PANEL.
+    expect(routes).toMatch(/if \(user\.accountType === 'PLAYER'\) res\.cookie\('auth_token'/);
+    expect(routes).toMatch(/return req\.headers\.authorization\?\.replace\('Bearer ', ''\)\s*\|\| req\.cookies\?\.auth_token/);
+  });
+
   it('states the guest list as a DOOR rather than a hardcoded predicate', () => {
     // Two doors now — staff and player — and they differ in exactly one thing.
     // Writing the second as a second handler would copy the password read, the
