@@ -78,7 +78,7 @@ function loadScript(): Promise<void> {
  *
  * @param timeoutMs give up and submit without a token after this long.
  */
-export async function getCaptchaToken(timeoutMs = 8000): Promise<string | null> {
+export async function getCaptchaToken(timeoutMs = 30_000): Promise<string | null> {
   lastFailure = null;
   const key = siteKey();
   if (!key) return null;
