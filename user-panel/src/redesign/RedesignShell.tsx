@@ -80,7 +80,7 @@ const TABS = [
   { label: 'Game', icon: '🎲', path: '/' },
   { label: 'Results', icon: '📊', path: '/results' },
   { label: 'Wallet', icon: '💰', path: '/wallet' },
-  { label: 'Promo', icon: '💡', path: '/promo' },
+  { label: 'Tips', icon: '💡', path: '/promo' },
   // The last tab opens the menu drawer (owner, 2026-10-10): the header lost
   // its bell to make room for the profile pill, and Profile lives in the menu.
   { label: 'Menu', icon: '☰', path: '#menu', action: 'menu' as const },
@@ -341,15 +341,9 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
                 {theme === 'dark' ? '☀️' : '🌙'}
               </button>
             )}
-            {laptop
-              ? <NotificationBell isAuthenticated={isAuthenticated} />
-              : (
-                <button onClick={openMenu} aria-label="Menu" style={{ ...iconBtn, color: 'var(--text)' }}>
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
-                    <line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="20" y2="17" />
-                  </svg>
-                </button>
-              )}
+            {/* Phones and tablets open the menu from the bottom tab bar's Menu
+                tab, so the header carries no second menu button. */}
+            <NotificationBell isAuthenticated={isAuthenticated} />
           </div>
         </header>
 
@@ -446,16 +440,6 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             }}>
               <div style={{ flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 20px 16px', borderBottom: '1px solid var(--line)' }}>
                 <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, letterSpacing: '.14em', color: 'var(--gold-ink)', textTransform: 'uppercase' }}>Menu</span>
-                {/*
-                  The notification inbox, moved here from the header (owner,
-                  2026-10-10) so the header has room for the profile pill.
-                  `notify()` persists real events (an admin blocking an account
-                  writes the explanation meant for that player), so the inbox
-                  must stay reachable (§28): it is the first thing in the menu.
-                */}
-                <div style={{ marginLeft: 'auto', marginRight: 8 }}>
-                  <NotificationBell isAuthenticated={isAuthenticated} />
-                </div>
                 <button onClick={() => setMenuOpen(false)} style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 13 }}>✕</button>
               </div>
               <nav className="bb-noscroll" style={{ flex: 1, overflowY: 'auto', padding: '12px 10px' }}>

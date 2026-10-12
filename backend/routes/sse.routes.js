@@ -161,8 +161,8 @@ export function initSSERoutes(sseManager, cycleGenerator) {
     // session cutoff, closed or blocked account, wrong panel — not a copy of
     // it: the socket's `join_user_room` was a second door that once admitted
     // on the signature alone (R6). The query token is presented to it as the
-    // bearer header; a cookie, when the browser sends one, is read first by
-    // the middleware exactly as on every other player route.
+    // bearer header, which the middleware reads before any cookie, exactly as
+    // on every other player route.
     router.get('/player/events', authenticatePlayer, async (req, res) => {
         initSSEResponse(res);
         const clientId = sseManager.addClient(res);

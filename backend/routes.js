@@ -61,9 +61,11 @@ const COOKIE_OPTS = {
 };
 
 // Helper — extract token from cookie OR Authorization header
+// The bearer header wins: every panel is served from one origin, so a cookie
+// can belong to another panel's sign-in in the same browser.
 function extractToken(req) {
-  return req.cookies?.auth_token
-    || req.headers.authorization?.replace('Bearer ', '')
+  return req.headers.authorization?.replace('Bearer ', '')
+    || req.cookies?.auth_token
     || null;
 }
 
@@ -237,7 +239,9 @@ export async function issueSession(user, res, { amr = ['pwd'] } = {}) {
     phantomAccess: user.phantomAccess || 'NONE',
   };
 
-  res.cookie('auth_token', token, COOKIE_OPTS);
+  // Only a player session rides in the cookie. The admin panel sends its
+  // bearer header; on one origin a staff cookie would reach the player app.
+  if (user.accountType === 'PLAYER') res.cookie('auth_token', token, COOKIE_OPTS);
   return res.json({
     success: true, token, user: userPayload,
     // The staff bootstrap (§33): no Mini App bot yet, so this staff session is

@@ -11,13 +11,6 @@ import ScreenShell, { card } from '../redesign/Screen';
 const backend = getBackend();
 interface FAQ { id: string; question: string; answer: string; category: string; }
 
-const FALLBACK: FAQ[] = [
-  { id: 'f1', category: 'Gameplay', question: 'How does Delhi vs Bombay Bazaar work?', answer: 'Each cycle you back either Delhi or Bombay with chips. When bets close, the side holding the smaller real-money pool is declared the winner and everyone on it is paid 2× their stake.' },
-  { id: 'f2', category: 'Gameplay', question: 'What are the two cycle types?', answer: '30-Min cycles resolve every 30 minutes with smaller chip values. Full-Day cycles resolve once per day with larger chips. Bets, pools and results are tracked separately per cycle type.' },
-  { id: 'f3', category: 'Gameplay', question: 'Why did the pools disappear before results?', answer: 'A few minutes before each result the two pools merge into one hidden total. This blind window keeps late betting fair — you can still bet, but you cannot see the split.' },
-  { id: 'f4', category: 'Withdrawals', question: 'When can I withdraw my winnings?', answer: 'Winnings are withdrawable by bank transfer to the account saved in your Profile once a cycle settles. Deposit balance used for betting clears normal wagering first.' },
-  { id: 'f5', category: 'Gameplay', question: 'Is there a minimum bet?', answer: 'Yes — ₹10 for 30-min cycles and ₹100 for full-day cycles, matching the smallest chip in each mode.' },
-];
 
 const FaqPage: React.FC = () => {
   const navigate = useNavigate();
@@ -31,8 +24,9 @@ const FaqPage: React.FC = () => {
   }, []);
 
   const categories = ['All', ...Array.from(new Set(faqs.map(f => f.category)))];
-  const source = faqs.length > 0 ? faqs : FALLBACK;
-  const list = cat === 'All' ? source : source.filter(f => f.category === cat);
+  // Only what the admin published. How the boards work is the Rules page's,
+  // served by the engine's own rules (§2), never a copy kept here.
+  const list = cat === 'All' ? faqs : faqs.filter(f => f.category === cat);
 
   return (
     <ScreenShell icon="❓" title="Help Center" sub="Answers to common questions">
@@ -48,6 +42,12 @@ const FaqPage: React.FC = () => {
         <div style={{ textAlign: 'center', padding: 40 }}><span className="bb-spin" style={{ display: 'inline-block', width: 28, height: 28, border: '2px solid var(--line2)', borderTopColor: 'var(--gold)', borderRadius: '50%' }} /></div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+          {list.length === 0 && (
+            <div style={{ ...card, textAlign: 'center', padding: 20 }}>
+              <p style={{ fontSize: 13, color: 'var(--text2)', margin: 0 }}>No help articles yet. How each board works is on the Rules page.</p>
+              <button onClick={() => navigate('/rules')} style={{ marginTop: 8, color: 'var(--gold-ink)', fontWeight: 800, fontSize: 13, background: 'none', border: 'none', cursor: 'pointer' }}>Rules &amp; How to Play →</button>
+            </div>
+          )}
           {list.map(f => {
             const open = openId === f.id;
             return (

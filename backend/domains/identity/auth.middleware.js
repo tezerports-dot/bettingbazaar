@@ -278,14 +278,11 @@ export function refuseWrongPanel(res, user) {
  */
 const makeAuthenticate = ({ accountTypes = ['PLAYER', 'STAFF'] } = {}) => async (req, res, next) => {
   try {
-    // Accept token from httpOnly cookie (user panel) OR Authorization header (admin/merchant panels)
-    let token = req.cookies?.auth_token;
-    if (!token) {
-      const authHeader = req.headers.authorization;
-      if (authHeader?.startsWith('Bearer ')) {
-        token = authHeader.substring(7);
-      }
-    }
+    // The Authorization header first, the httpOnly cookie second: every panel
+    // is served from one origin, so a cookie may be another panel's sign-in.
+    const authHeader = req.headers.authorization;
+    let token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null;
+    if (!token) token = req.cookies?.auth_token;
     if (!token) {
       return res.status(401).json({ success: false, message: 'No authorization token provided' });
     }
