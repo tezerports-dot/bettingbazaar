@@ -14,13 +14,15 @@
  * implicit):
  *   X-Content-Type-Options: nosniff        — stop MIME sniffing
  *   X-Frame-Options: SAMEORIGIN            — no cross-site framing of panels
- *   Referrer-Policy: no-referrer           — don't leak bet/wallet URLs
  *   Strict-Transport-Security (prod https) — pin https once seen
  *   X-DNS-Prefetch-Control: off, X-Download-Options: noopen,
  *   Cross-Origin-Opener-Policy: same-origin, X-XSS-Protection: 0 (modern)
- * Non-default choices we make explicitly: CSP directives below and
+ * Non-default choices we make explicitly: CSP directives below,
  * crossOriginEmbedderPolicy=false (provider iframes/CDN images break under
- * COEP require-corp — deliberate).
+ * COEP require-corp — deliberate), and Referrer-Policy: strict-origin. With
+ * helmet's no-referrer the Turnstile frame cannot tell which site embeds it,
+ * never answers, and every captcha-gated sign-in fails. strict-origin sends
+ * the bare origin over https only, never a path (the panels route by hash).
  */
 
 // ── Content-Security-Policy — the only non-default helmet section ────────────
@@ -54,6 +56,7 @@ export const CSP_DIRECTIVES = {
 export const HELMET_OPTIONS = {
   contentSecurityPolicy: { directives: CSP_DIRECTIVES },
   crossOriginEmbedderPolicy: false, // provider game iframes + CDN images
+  referrerPolicy: { policy: 'strict-origin' }, // Turnstile needs the origin (above)
 };
 
 /**
