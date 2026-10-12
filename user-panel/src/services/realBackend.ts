@@ -39,7 +39,7 @@ import {
 // Bot-mitigation token, attached to credential submits only. Resolves null and
 // submits without one when Turnstile is unconfigured or unreachable — the
 // server applies the policy, so an outage there must not block the form here.
-import { getCaptchaToken } from './captcha';
+import { getCaptchaToken, captchaFailure } from './captcha';
 import { secureFetch, openEventStream, type EventStream } from './secureTransport';
 
 const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
@@ -195,6 +195,16 @@ class SSEEventBridge extends EventTarget {
   }
 }
 
+/**
+ * A sign-in refused for its captcha says WHY the browser had no token (the
+ * Cloudflare code), so the player, or whoever runs the site, can act on it.
+ */
+function explainCaptcha(err: unknown): never {
+  const why = captchaFailure();
+  if (why && (err as { code?: string })?.code === 'CAPTCHA_REQUIRED') (err as Error).message = why;
+  throw err;
+}
+
 export class RealBackend implements Backend {
   public  sseBridge: SSEEventBridge;
 
@@ -336,7 +346,8 @@ export class RealBackend implements Backend {
     const res = await this.request<{
       success: boolean; verificationAvailable?: boolean; challengeToken?: string | null;
       telegram?: TelegramBlock | null; message?: string }>(
-      '/v1/auth/register', { method: 'POST', body: JSON.stringify({ ...form, captchaToken }) });
+      '/v1/auth/register', { method: 'POST', body: JSON.stringify({ ...form, captchaToken }) })
+      .catch(explainCaptcha);
     if (res.verificationAvailable === false || !res.challengeToken) {
       return { kind: 'unavailable', message: res.message || 'Your account is created. Sign in later to verify it in Telegram.' };
     }
@@ -365,7 +376,7 @@ export class RealBackend implements Backend {
         return { kind: 'telegram', leg: 'challenge', challengeToken: e.data.challengeToken,
           telegram: e.data.telegram ?? null, message: e.data.message || '' };
       }
-      throw err;
+      return explainCaptcha(err);
     }
     if (res.twoFactorRequired && res.challengeToken) {
       return { kind: 'telegram', leg: 'challenge', challengeToken: res.challengeToken,
