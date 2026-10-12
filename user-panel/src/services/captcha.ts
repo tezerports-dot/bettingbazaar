@@ -10,9 +10,10 @@
  * client-only sends a token nobody checks.
  *
  * ── Invisible by default ───────────────────────────────────────────────────
- * Rendered in `execute` mode rather than as a visible checkbox, so a real
+ * Rendered in `execute` mode with `interaction-only` appearance, so a real
  * player normally sees nothing at all — the challenge resolves from browser
- * signals. Only a genuinely suspicious client is shown an interaction. That is
+ * signals. When Cloudflare does want a tap, the checkbox appears at the foot
+ * of the screen (never in a hidden box, where it could not be pressed). That is
  * the whole reason for choosing Turnstile over reCAPTCHA here: the anti-abuse
  * control should cost an honest user zero taps on a betting form.
  *
@@ -39,6 +40,14 @@ function siteKey(): string {
 
 
 let scriptPromise: Promise<void> | null = null;
+
+/** Why the last attempt produced no token, said so the player can act on it. */
+let lastFailure: string | null = null;
+
+/** The reason the last `getCaptchaToken` came back empty, or null. */
+export function captchaFailure(): string | null {
+  return lastFailure;
+}
 
 /** Load the Turnstile script once, on first use — never on page load. */
 function loadScript(): Promise<void> {
@@ -70,6 +79,7 @@ function loadScript(): Promise<void> {
  * @param timeoutMs give up and submit without a token after this long.
  */
 export async function getCaptchaToken(timeoutMs = 8000): Promise<string | null> {
+  lastFailure = null;
   const key = siteKey();
   if (!key) return null;
 
@@ -81,32 +91,53 @@ export async function getCaptchaToken(timeoutMs = 8000): Promise<string | null> 
   try {
     await loadScript();
     const api = turnstile();
-    if (!api) return null;
+    if (!api) { lastFailure = 'The security check could not load. Check your connection and try again.'; return null; }
 
     return await new Promise<string | null>((resolve) => {
+      let timer: ReturnType<typeof setTimeout>;
       const done = (v: string | null) => {
         clearTimeout(timer);
         try { if (widgetId) api.remove(widgetId); } catch { /* already gone */ }
         container?.remove();
         resolve(v);
       };
-      const timer = setTimeout(() => done(null), timeoutMs);
+      const giveUp = () => {
+        lastFailure = 'The security check did not finish. Please try again.';
+        done(null);
+      };
+      timer = setTimeout(giveUp, timeoutMs);
 
+      // On the page, not display:none: when Cloudflare wants a tap (a Managed
+      // widget does, for some visitors) the checkbox must be somewhere the
+      // player can press it. `interaction-only` keeps it hidden otherwise.
       container = document.createElement('div');
-      container.style.display = 'none';
+      container.setAttribute('role', 'dialog');
+      container.setAttribute('aria-label', 'Security check');
+      Object.assign(container.style, {
+        position: 'fixed', left: '50%', bottom: '24px', transform: 'translateX(-50%)',
+        zIndex: '2147483000',
+      });
       document.body.appendChild(container);
 
       widgetId = api.render(container, {
         sitekey: key,
-        execution: 'execute',   // invisible unless the client looks suspicious
+        execution: 'execute',
+        appearance: 'interaction-only',
         callback: (token: string) => done(token),
-        'error-callback': () => done(null),
-        'timeout-callback': () => done(null),
+        // A person is now being asked to tap: give them time to do it.
+        'before-interactive-callback': () => { clearTimeout(timer); timer = setTimeout(giveUp, 120_000); },
+        'error-callback': (code: string) => {
+          lastFailure = `The security check failed (Cloudflare code ${code}). Refresh the page and try again.`;
+          done(null);
+          return true;
+        },
+        'timeout-callback': giveUp,
       });
       api.execute(widgetId);
     });
   } catch {
     container?.remove();
+    lastFailure = 'The security check could not load. Check your connection and try again.';
     return null;
   }
 }
