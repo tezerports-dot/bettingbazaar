@@ -1,11 +1,11 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * identity.js — revoked tokens, and the signup that creates a player account.
+ * identity.js — revoked tokens, and the writer of a new player account.
  *
  * ── No identity data is collected ───────────────────────────────────────────
  * KYC (the Aadhaar number, its hash and ciphertext, the verification queue)
- * was removed 2026-10-02 (owner). An account is a mobile and a password; the
- * Telegram contact share proves the mobile belongs to its holder.
+ * was removed 2026-10-02 (owner). A player account is a mobile proved by a
+ * Telegram contact share; it has no password (owner, 2026-10-13).
  *
  * ── Expiry is enforced by the read ───────────────────────────────────────────
  * `isTokenRevoked` filters on `expires_at`, and `sweepExpired` only reclaims
@@ -58,23 +58,17 @@ export async function sweepExpired() {
 
 
 /**
- * Create an account from the SIGNUP FORM, before Telegram has met the person.
+ * Create a player account: "Continue with Telegram" for a Telegram account
+ * with no player account yet (owner, 2026-10-13).
  *
- * The website form creates the account BEFORE Telegram is involved, and the
- * contact share in the Mini App later proves the mobile is theirs
- * (`telegram.answerChallenge`). The Mini App's own signup creates it in the
- * transaction that links it, passing that transaction's `client`
- * (`telegram.signUpVerifiedPlayer`), so both paths write the row here. The
- * unique index on `(mobile, account_type)` refuses a second player account for
- * one number — that is the guarantee, and the route's read before this is only
- * a courtesy that produces the right sentence.
- *
- * `passwordHash` is null for an account made by "Continue with Telegram"
- * (owner, 2026-10-13): Telegram is how it signs in.
+ * Written inside the transaction that approves the sign-in and links the
+ * account (`telegram.answerChallenge`, its `client`), so the account, its link,
+ * its joining number and its referrer's earnings commit together. No password:
+ * Telegram is how a player signs in. The unique index on `(mobile,
+ * account_type)` refuses a second player account for one number.
  */
 export async function createAccountFromSignup({
-  userId, username, mobile, passwordHash,
-  referralCode = null, referredBy = null, client = null,
+  userId, username, mobile, referralCode = null, referredBy = null, client = null,
 }) {
   if (!userId || !mobile) throw new Error('createAccountFromSignup requires a userId and a mobile');
 
@@ -85,13 +79,13 @@ export async function createAccountFromSignup({
       ? (text, params) => client.query(text, params)
       : (text, params) => pgQuery(text, params, 'identity_signup');
     const { rows } = await run(
-      `INSERT INTO users (user_id, username, mobile, password_hash, referral_code,
+      `INSERT INTO users (user_id, username, mobile, referral_code,
                           referred_by, status, account_type)
-       VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', 'PLAYER')
+       VALUES ($1, $2, $3, $4, $5, 'ACTIVE', 'PLAYER')
        ON CONFLICT (mobile, account_type) DO NOTHING
        RETURNING user_id`,
       [String(userId), username || `player${String(mobile).slice(-4)}`, String(mobile),
-       passwordHash ? String(passwordHash) : null, referralCode, referredBy ? String(referredBy) : null],
+       referralCode, referredBy ? String(referredBy) : null],
     );
     if (!rows[0]) return { ok: false, reason: 'mobile_taken' };
     return { ok: true, userId: String(userId) };

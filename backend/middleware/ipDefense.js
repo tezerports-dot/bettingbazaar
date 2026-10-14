@@ -93,6 +93,13 @@ export function startIpDefenseConfigRefresh(everyMs = 30_000) {
 export function _ipDefenseConfig() { return { ...cfg }; }
 export function _setIpDefenseConfig(p) { cfg = { ...cfg, ...p }; } // tests only
 
+/**
+ * Whether a request made an account: the handler says so in
+ * `res.locals.accountCreated`. The account-creation budgets count only these,
+ * so a sign-in on the same door is never counted (owner, 2026-10-14).
+ */
+export const accountWasCreated = (_req, res) => res.statusCode < 400 && res.locals?.accountCreated === true;
+
 // ── Layer 1: per-subnet limiter ──────────────────────────────────────────────
 /**
  * createSubnetLimiter — a subnet-keyed backstop for a sensitive tier. Chain it
@@ -126,6 +133,9 @@ export function createSubnetLimiter(tierName, { countOnly = 'all' } = {}) {
   return rateLimit({
     store: createRateLimitStore(`rl:subnet:${tierName}:`),
     skipFailedRequests: countOnly === 'successes',
+    // A "success" is what the request ACHIEVED: for account creation, an
+    // account made (`res.locals.accountCreated`), never a sign-in beside it.
+    ...(countOnly === 'successes' ? { requestWasSuccessful: accountWasCreated } : {}),
     windowMs: tier.windowMs,
     max: () => (cfg.enabled ? Math.max(1, Math.round(tier.max * cfg.subnetMultiplier)) : 1e9),
     standardHeaders: true,

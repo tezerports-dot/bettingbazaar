@@ -56,10 +56,10 @@ export const merchantAuth = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Token has been invalidated. Please login again.' });
     }
 
-    // A 2FA challenge proves only that the password was accepted. It carries
-    // no isMerchant/merchantId claim, so the guard below would already reject
-    // it — but with a misleading "Merchant token required." Answer the real
-    // question instead, so the panel knows to finish the OTP step.
+    // A challenge token proves only that a sign-in was opened. It carries no
+    // isMerchant/merchantId claim, so the guard below would already reject it
+    // — but with a misleading "Merchant token required." Answer the real
+    // question instead, so the panel knows to finish signing in.
     if (isChallengeToken(decoded)) {
       return res.status(401).json({ success: false, twoFactorRequired: true,
         message: 'Two-factor authentication required. Complete the login before using this token.' });
@@ -82,15 +82,15 @@ export const merchantAuth = async (req, res, next) => {
       return res.status(403).json({ success: false,
         message: statusMsgs[merchant.status] || 'Account not approved.' });
 
-    // A password reset moves the login row's `sessions_valid_from`; every
-    // session issued before it is dead, on this door as on the other two. It
-    // was checked on the player and staff doors only, so a reset evicted no
-    // merchant session (R6, 2026-09-30).
+    // A change of a sub-member's roles, or their removal, moves the login
+    // row's `sessions_valid_from`; every session issued before it is dead, on
+    // this door as on the other two (R6, 2026-09-30).
     const login = await merchantLoginRow(merchant, decoded);
     if (sessionSuperseded(login, decoded)) return refuseSupersededSession(res);
-    // A merchant session is a password AND the merchant's own Telegram
-    // (Step 3); one minted on the password alone is refused here as on every
-    // other path that honours a session (auth.middleware.js).
+    // A merchant session is the merchant's own Telegram sign-in (`amr` 'tg',
+    // owner 2026-10-14): that IS its second factor. One minted without it is
+    // refused here as on every other path that honours a session
+    // (auth.middleware.js).
     if (secondFactorMissing('MERCHANT', decoded)) return refuseMissingSecondFactor(res);
 
     req.merchant   = merchant;

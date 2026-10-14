@@ -1,22 +1,21 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * domains/identity/telegramChallenge.service.js — asking the Mini App.
+ * domains/identity/telegramChallenge.service.js — "Continue with Telegram".
  *
- * Every time the platform needs Telegram to answer for an account (Step 3,
- * owner 2026-10-07) it opens a challenge here and hands the browser two things:
+ * Every player and merchant sign-in (and signup: the same action, owner
+ * 2026-10-13) opens a challenge here and hands the browser:
  *
  *   • `telegram` — `{ url, botUsername, expiresAt }`: the deep link that opens
  *     the Mini App on this challenge. Shown or opened by the panel.
  *   • `challengeToken` — the signed token the browser polls with and nobody
  *     else holds (twoFactorChallenge.js).
+ *   • `delivery`, and for MATCH the `matchNumber` the browser shows.
  *
- * The windows (CLAUDE.md §2, "Telegram challenge"):
- *   VERIFY                       15 minutes — a new account's first step,
- *                                which may mean installing Telegram.
- *   LOGIN, TELEGRAM_LOGIN,        5 minutes — a person at a screen, waiting.
- *   RELINK, TWO_FACTOR_OFF
+ * The windows:
+ *   a sign-in                     5 minutes — a person at a screen, waiting.
  *   an approval, to be redeemed   2 minutes — the polling browser takes it
  *                                within seconds.
+ *   a handoff ticket              60 seconds — the Mini App opens it at once.
  */
 import crypto from 'crypto';
 import { db } from '#db';
@@ -25,13 +24,8 @@ import { issueChallenge } from './twoFactorChallenge.js';
 import { refusal } from '../../shared/httpError.js';
 import { publicAppOrigin } from '../../config/publicAppOrigin.js';
 
-export const CHALLENGE_TTL_SECONDS = Object.freeze({
-  VERIFY: 15 * 60,
-  LOGIN: 5 * 60,
-  TELEGRAM_LOGIN: 5 * 60,
-  RELINK: 5 * 60,
-  TWO_FACTOR_OFF: 5 * 60,
-});
+/** How long a sign-in waits for Verify. */
+export const CHALLENGE_TTL_SECONDS = 5 * 60;
 
 /** How long an approved challenge waits to be redeemed. */
 export const REDEEM_WINDOW_SECONDS = 2 * 60;
@@ -117,44 +111,37 @@ export function telegramBlock(bot, challenge) {
 }
 
 /**
- * Open a challenge and mint its token.
+ * Open a "Continue with Telegram" sign-in and mint its token.
  *
  * @param {object} o
- * @param {string} o.purpose   VERIFY | LOGIN | TELEGRAM_LOGIN | RELINK | TWO_FACTOR_OFF
  * @param {'PLAYER'|'MERCHANT'} o.door  (staff have no Telegram: the CHECK refuses STAFF)
- * @param {string|null} o.userId
  * @param {import('express').Request} [o.req]  for the address and device the
  *   Mini App shows the person approving
- * @param {string|null} [o.loginType]
- * @returns {Promise<{challengeToken: string, telegram: object, challengeId: string}>}
+ * @param {'MATCH'|'HANDOFF'} [o.delivery]
+ * @param {string|null} [o.referralCode]  a player's invite, used only if the
+ *   sign-in creates the account
+ * @returns {Promise<{challengeToken: string, telegram: object, challengeId: string,
+ *   delivery: string, matchNumber: number|null}>}
  * @throws 503 TELEGRAM_UNAVAILABLE when no bot is configured
  */
-export async function openChallenge({
-  purpose, door, userId = null, req = null, loginType = null,
-  delivery = 'MATCH', referralCode = null,
-}) {
+export async function openChallenge({ door, req = null, delivery = 'MATCH', referralCode = null }) {
   const bot = await miniAppBot();
   if (!bot) throw telegramUnavailable();
-  const ttlSeconds = CHALLENGE_TTL_SECONDS[purpose];
-  if (!ttlSeconds) throw new Error(`openChallenge: unknown purpose ${purpose}`);
-  // Only a Telegram sign-in is handed off or number-matched: every other
-  // purpose is answered to the browser that polls it.
-  const signIn = purpose === 'TELEGRAM_LOGIN';
-  const how = signIn && delivery === 'HANDOFF' ? 'HANDOFF' : 'MATCH';
-  const match = signIn && how === 'MATCH' ? drawMatch() : null;
+  const how = delivery === 'HANDOFF' ? 'HANDOFF' : 'MATCH';
+  const match = how === 'MATCH' ? drawMatch() : null;
   const challenge = await db.telegram.createChallenge({
     challengeId: newChallengeId(),
-    purpose, audience: door, userId, ttlSeconds,
+    audience: door, ttlSeconds: CHALLENGE_TTL_SECONDS,
     requestedIp: req?.ip || '',
     requestedAgent: req?.get?.('user-agent') || '',
     delivery: how, match,
-    referralCode: signIn && door === 'PLAYER' ? referralCode : null,
+    referralCode: door === 'PLAYER' ? referralCode : null,
   });
   return {
     challengeId: challenge.challengeId,
     challengeToken: issueChallenge({
-      userId, door, challengeId: challenge.challengeId, loginType,
-      ttlSeconds: ttlSeconds + REDEEM_WINDOW_SECONDS,
+      door, challengeId: challenge.challengeId,
+      ttlSeconds: CHALLENGE_TTL_SECONDS + REDEEM_WINDOW_SECONDS,
     }),
     telegram: telegramBlock(bot, challenge),
     delivery: how,

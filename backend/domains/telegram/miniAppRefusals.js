@@ -3,8 +3,7 @@
  * domains/telegram/miniAppRefusals.js — what a person is told when Telegram's
  * proof is not enough.
  *
- * One table for every route that takes a Mini App proof (the Mini App's own
- * routes and "Login with Telegram"), so the same refusal reads the same
+ * One table for every route that takes a Mini App proof, so the same refusal reads the same
  * wherever it is met (§5). Each sentence says what the reader can do next
  * (§32 S14); the `code` is what a panel branches on (CLAUDE.md §33, the Step 3
  * contract in docs/PROJECT_STATUS.md).
@@ -20,9 +19,7 @@ const TABLE = {
   CONTACT_NOT_OWN: [403, 'Share your OWN contact — the one of the Telegram account you are using.'],
   CONTACT_MISMATCH: [403, 'Your Telegram account\'s number is not the mobile number of this account. Use the Telegram account on that number.'],
   TELEGRAM_ALREADY_LINKED: [409, 'This Telegram account already verifies another account on this panel. Use the Telegram account on this account\'s mobile number.'],
-  TELEGRAM_NOT_LINKED: [403, 'This account is not linked to a Telegram account yet.'],
-  NO_ACCOUNT: [404, 'There is no account with this mobile number on this panel. Sign up first.'],
-  NO_LINKED_ACCOUNT: [404, 'No account on this panel is linked to this Telegram account. Sign in with your mobile number and password instead.'],
+  NO_ACCOUNT: [404, 'There is no account with this mobile number on this panel.'],
   ACCOUNT_BLOCKED: [403, 'This account is blocked. Contact support.'],
   ACCOUNT_CLOSED: [403, 'This account has been closed. Contact support.'],
   CHALLENGE_EXPIRED: [410, 'This request has expired. Go back to the website or app and start again.'],

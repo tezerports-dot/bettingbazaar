@@ -8,17 +8,17 @@
  *
  * ── Where it goes (Step 3, owner 2026-10-07: "telegram mini app ... for
  * signup and referal code basis") ─────────────────────────────────────────
- *   a bot is configured → the Mini App, opened with `ref-<CODE>`, where the
- *                          person signs up with the code locked and their
- *                          mobile verified by the same contact share
- *   no bot              → the player app's signup form with `?ref=<CODE>`,
- *                          which pre-fills and locks the code; the account
- *                          verifies when a bot exists (their next sign-in)
+ *   a bot is configured → the Mini App, opened with `ref-<CODE>`: one Verify
+ *                          shares the contact (Telegram's verified number)
+ *                          and makes the account with the code locked
+ *   no bot              → the player app with `?ref=<CODE>`, which keeps the
+ *                          code for "Continue with Telegram"; that screen says
+ *                          plainly that Telegram is not available yet
  *
  * Not an open redirect: the destination is always t.me with our bot, or our
  * own player origin; the only thing taken from the URL is the code, validated
  * against the referral alphabet before it is used. A code of the wrong shape is
- * dropped, and the visitor still reaches signup.
+ * dropped, and the visitor still reaches the site.
  */
 import express from 'express';
 import { miniAppBot, miniAppLink } from '../domains/telegram/telegramClient.js';
@@ -38,7 +38,7 @@ router.get('/r/:code', async (req, res) => {
   try {
     bot = await miniAppBot();
   } catch (err) {
-    // A lookup that throws must not become a broken link: the form still works.
+    // A lookup that throws must not become a broken link: the site still opens.
     console.error('[referral-redirect] could not read the bot:', err.message);
   }
 

@@ -57,9 +57,9 @@ import { registerFundingEventSubscribers } from './domains/funding/fundingEvents
 import authRoutes from './routes.js';
 // The staff sign-in door's legs, each with the staff door's limits (§33).
 import { doorRoute } from './domains/identity/loginDoors.js';
-// The player's form signup and the player sign-in door. Separate from
-// `authRoutes` because they submit a CREDENTIAL and carry the credential chain
-// per route — see the mount below, and §32 S27.
+// The player sign-in door: Continue with Telegram (owner, 2026-10-14). Separate
+// from `authRoutes` because its legs carry their own limits per route — see the
+// mount below, and §32 S27.
 import playerAuthRoutes from './domains/identity/playerAuth.routes.js';
 import adminRoutes        from './routes/admin/index.js';      // ← new modular index
 import betRoutes          from './domains/markets/bet.routes.js';
@@ -114,10 +114,10 @@ import { requestContext } from './middleware/requestContext.js'; // X-6: correla
 import { tlsFingerprintDefense, startTlsFingerprintDefenseConfigRefresh } from './middleware/tlsFingerprintDefense.js';
 import { ipBlocklist, startIpBlocklistRefresh, realtimeAdmission } from './middleware/ipBlocklist.js';
 import { rejectAmbiguousFraming } from './middleware/headerNormalization.js';
-import { authLimiter, signupLimiter, securityMonitor } from './middleware/security.js';
+import { authLimiter, securityMonitor } from './middleware/security.js';
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
-import { createSubnetLimiter, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
+import { startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
 import GameEngine         from './domains/markets/gameEngine.js';
 import CycleGenerator     from './domains/markets/cycleGenerator.service.js';
 import SSEManager         from './domains/notification/sseManager.service.js';
@@ -524,14 +524,12 @@ app.get('/api/v1/health', legacyHealth);
 // until an admin sets a ceiling) catches distributed rotation across subnets.
 if (runtime.acceptsHttpApi) {
 startIpDefenseConfigRefresh();
-// ── The player's form signup, the player sign-in door, the player's Telegram ─
+// ── The player sign-in door (Continue with Telegram) ────────────────────────
 // Mounted BEFORE the session router so its own routes are matched first.
 //
-// The credential chain (pace → failure budget → subnet → captcha) is INSIDE
-// this router, per route, rather than on this mount — deliberately. The router
-// also carries the Telegram polls and the player's own Telegram link, which
-// check no password: a chain on the mount would make a poll consume a
-// login-failure budget and hand a captcha to a screen with no form (§32 S27).
+// Each leg's limits are INSIDE this router, per route (loginDoors.js), rather
+// than on this mount: a chain on the mount would make a poll consume another
+// leg's budget (§32 S27).
 app.use('/api/v1/auth', playerAuthRoutes);
 // Session lifecycle: /me, /logout, /health. No captcha here — every page load
 // calls /me to restore the session, so gating this router would 403 every user
@@ -602,36 +600,10 @@ app.use('/api/telegram',  miniAppRoutes);
 app.use('/api/bet',       betRoutes);
 app.use('/api',           userRoutes);
 // The merchant sign-in door's limits are ON its routes (merchant.routes.js,
-// loginDoors.js), never on a path prefix: the prefix mount that was here also
-// caught `/auth/login/2fa`, so its captcha refused every second factor once
-// Turnstile was switched on (§32 S28).
+// loginDoors.js), never on a path prefix (§32 S28).
 
-// ── Merchant SIGNUP, guarded the way player signup is ─────────────────────
-//
-// It had nothing. MEASURED on a running server with the captcha switched on: a
-// merchant registration carrying NO captcha token answered 200 "Application
-// submitted", while the player signup beside it answered 403 CAPTCHA_REQUIRED.
-// One form is scriptable and the other is not, and the difference was an
-// omission rather than a decision (§32 S32 — the same check on one of the two
-// paths that need it).
-//
-// The guards are the ones §33.4 settled for player signup, and for its reasons:
-//
-//   · NO pace limiter and NO auth limiter. A registration submits no secret —
-//     nobody learns anything by sending the form — so there is nothing to slow
-//     down, and pacing it punishes somebody correcting a typo.
-//   · `signupLimiter` and a subnet limiter counting SUCCESSES ONLY, because
-//     what has to be bounded is how many ACCOUNTS one address ends up with. A
-//     mistyped form must never cost the next attempt (§32 S13).
-//   · No captcha (owner, 2026-10-08: merchants "only need 2FA"). An
-//     application is unusable until its mobile is verified by a Telegram
-//     contact share, which is what stops a script filling the admin approval
-//     queue with applications nobody submitted.
-app.use(
-  '/api/merchant/auth/signup',
-  signupLimiter,
-  createSubnetLimiter('signup', { countOnly: 'successes' }),
-);
+// Merchants have no signup form: a merchant applies by Continue with Telegram,
+// whose Mini App approve makes the application (owner, 2026-10-14).
 app.use('/api/merchant',  merchantRoutes);
 app.use('/api/merchant',  teamMerchantRoutes);
 app.use('/api/merchant',  merchantAccountRoutes);

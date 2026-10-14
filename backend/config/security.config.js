@@ -210,9 +210,6 @@ export const RATE_LIMIT_TIERS = {
   // Admin and sub-admin login — 4 failures / hour. Privileged accounts move
   // money and, per §F, are the highest-value credential on the platform.
   adminAuth: tier(60 * 60 * 1000, 4),
-  // Merchant login — 4 failures / hour. Same tier as admin: a merchant account
-  // settles real INR and USDT, so it is not a player-grade credential.
-  merchantAuth: tier(60 * 60 * 1000, 4),
   // ── PACING, not lockout (owner directive 2026-09-08) ─────────────────────
   // One credential submission per 10 seconds, per actor. This is a DIFFERENT
   // control from the failure budgets below and sits alongside them, because the
@@ -252,8 +249,8 @@ export const RATE_LIMIT_TIERS = {
   // a 6-digit code, where 10 tries is 1-in-100,000 rather than 1-in-a-million.
   twoFactor: tier(15 * 60 * 1000, 5),
   // ── Waiting on Telegram (Step 3, 2026-10-07) ──────────────────────────────
-  // A browser that opened the Mini App polls `/login/2fa` or
-  // `/login/telegram/complete` every two or three seconds until the person
+  // A browser that opened the Mini App polls `/login/telegram/complete`
+  // every two or three seconds until the person
   // taps approve. Each poll checks no secret — the signed challenge token names
   // the one row it may read — so the credential pace (one per 10 s) would
   // refuse the very wait it exists to serve. This bounds load only: forty a

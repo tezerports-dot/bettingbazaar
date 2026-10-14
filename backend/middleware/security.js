@@ -13,6 +13,7 @@ import { betBehaviorLimiter } from './behavioralRateLimit.js';
 // The deposit pace is a business number an operator sets, so the limiter reads
 // it at request time rather than baking it into a tier constant.
 import { getSystemConfig } from '#db/repositories/config.js';
+import { accountWasCreated } from './ipDefense.js';
 
 // ==================== AUTHENTICATION RATE LIMITERS ====================
 
@@ -75,8 +76,8 @@ export const authLimiter = rateLimit({
      * other failure still counts. What changed is that a rejected SESSION check
      * on a path that verifies no credential no longer spends the budget meant
      * for guessed passwords. The real doors are elsewhere and always were:
-     * `/api/admin/login` carries `adminAuthLimiter` and
-     * `/api/merchant/auth/login` `merchantAuthLimiter`, each with its own store.
+     * `/api/admin/login` carries `adminAuthLimiter`, with its own store, and
+     * players and merchants have no password (owner, 2026-10-14).
      */
     requestWasSuccessful: (req, res) => res.statusCode < 400
         || (res.statusCode === 401 && SESSION_PATHS.has(req.path)),
@@ -143,38 +144,6 @@ export const adminAuthLimiter = rateLimit({
 
 // Rate limiter for bet placement
 // Prevents rapid-fire betting and potential abuse
-// Merchant login. Deliberately its own limiter rather than sharing the player
-// tier: a merchant account settles real INR and USDT, so a brute-force against
-// it is an attack on the settlement rail, not on one player's balance.
-export const merchantAuthLimiter = rateLimit({
-    store: createRateLimitStore('rl:merchantauth:'),
-    ...RATE_LIMIT_TIERS.merchantAuth, // 4 FAILED / hour
-    message: {
-        success: false,
-        message: "Too many failed merchant login attempts. Please try again in an hour.",
-        retryAfter: 3600
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-    skipSuccessfulRequests: true,
-    keyGenerator: (req) => ipKeyGenerator(req.ip),
-    handler: (req, res) => {
-        console.error('🚨 SECURITY ALERT: Merchant auth rate limit exceeded', {
-            ip: req.ip, path: req.path, timestamp: new Date().toISOString(),
-        });
-        db.audit.record({
-            adminId: 'SYSTEM_SECURITY',
-            action: 'MERCHANT_RATE_LIMIT_EXCEEDED',
-            details: { message: `Multiple failed merchant login attempts from ${req.ip}` },
-            ip: req.ip,
-        });
-        res.status(429).json({
-            success: false,
-            message: "Too many failed merchant login attempts. Please try again in an hour.",
-            retryAfter: 3600,
-        });
-    },
-});
 
 // Second-factor submission, once the password has already been accepted.
 // Counted separately from the password tier because the search space is very
@@ -241,7 +210,7 @@ export function actorAccount(req) {
  * One credential submission per 10 seconds (owner directive 2026-09-08).
  *
  * ── Why this exists next to the failure budgets, not instead of them ────────
- * `adminAuthLimiter`, `merchantAuthLimiter` and `twoFactorLimiter` all set
+ * `adminAuthLimiter` and `twoFactorLimiter` both set
  * `skipSuccessfulRequests`, so they count FAILURES and act as a lockout. This
  * one counts EVERY attempt and acts as a pace. An attacker is only ever
  * failing, so the budgets see them — but between two failures they may submit
@@ -318,11 +287,14 @@ export const signupLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     skipFailedRequests: true,
+    // Counted only when the handler says it made an account: the Mini App
+    // doors that create also sign returning people in (owner, 2026-10-14).
+    requestWasSuccessful: accountWasCreated,
     keyGenerator: actorKey,
     message: {
         success: false,
         // Names the real limit and the real wait. "Too many requests" would send
-        // somebody who mistyped their Aadhaar into a retry loop against a
+        // somebody who was refused into a retry loop against a
         // counter their typos never touched.
         message: 'Too many accounts have been created from this connection. Please try again later.',
         retryAfter: 3600,

@@ -138,7 +138,7 @@ export async function actor({
   // authenticator code (owner, 2026-10-13), so a staff actor's token says so;
   // a player's is the password.
   const staff = isAdmin || isSubAdmin || isQueueManager || roles.length > 0;
-  const token = signToken({ userId: id, amr: staff ? ['pwd', 'otp'] : ['pwd'] });
+  const token = signToken({ userId: id, amr: staff ? ['pwd', 'otp'] : ['tg'] });
   return { userId: id, mobile, token, auth: `Bearer ${token}` };
 }
 
@@ -175,7 +175,7 @@ export async function merchantActor({
   if (status === 'SUSPENDED') await updateMerchant(merchantId, { status, suspensionReason });
   if (approval !== 'PENDING') await updateMerchant(merchantId, { merchantApprovalStatus: approval });
   // A merchant session is a password AND Telegram (Step 3), as the login mints it.
-  const token = signToken({ merchantId, userId: merchantId, mobile, isMerchant: true, isAdmin: false, amr: ['pwd', 'tg'] });
+  const token = signToken({ merchantId, userId: merchantId, mobile, isMerchant: true, isAdmin: false, amr: ['tg'] });
   return { merchantId, mobile, token, auth: `Bearer ${token}` };
 }
 

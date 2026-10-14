@@ -6,7 +6,7 @@ import { express, authenticate, hasPermission } from '../../routes/admin/_adminS
 import { db } from '#db';
 import { MERCHANT_CURRENCY, MERCHANT_CURRENCIES } from './merchantCurrency.js';
 import { assertExternalHttpsUrl } from '../../shared/storedUrl.js';
-import { assertStaffPassword } from '../identity/passwordPolicy.js';
+import { normalisePhone, isValidMobile } from '../identity/signupFields.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
 import { NAME_IS_A_MOBILE_MESSAGE } from '../identity/mobileInText.js';
 
@@ -440,24 +440,25 @@ router.put('/merchants/:merchantId/reject', authenticate, hasPermission('canMana
 });
 
 // Create merchant account — FIX B6-c: also create Merchant doc (was User-only, broke all merchant APIs)
+//
+// No password (owner, 2026-10-14): the merchant signs in with "Continue with
+// Telegram" on the merchant panel, and their first Verify shares their contact,
+// which links this login — so the mobile must be the one on their Telegram,
+// ten digits, as `telegram_link_phone_is_mobile` compares it.
 router.post('/merchants/create', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
-    // AQ-8: hash via the password authority (argon2id).
-    const { hashPassword } = await import('../identity/password.util.js');
-    const { username, mobile, password, email } = req.body;
-    if (!username || !mobile || !password) return res.status(400).json({ success: false, message: 'username, mobile, password required' });
-    // ONE transaction for the account, the merchant and the wallet — the same
-    // fix as the self-signup path, and for the same reason: a failure on the
-    // second write left an account flagged as a merchant with no merchant
-    // record behind it, holding a mobile nobody could reuse.
-    // The same floor as merchant self-signup. An admin creating the account is
-    // not a reason for a weaker password — it is the same credential, on the
-    // same rail, holding the same float.
-    try {
-      assertStaffPassword(password, { mobile, username }, 'merchant');
-    } catch (e) {
-      return res.status(e.status || 400).json({ success: false, code: e.code, message: e.message });
+    const { username, email } = req.body ?? {};
+    if (!username || !req.body?.mobile) {
+      return res.status(400).json({ success: false, code: 'FIELDS_REQUIRED', message: 'Enter the merchant\'s name and mobile number.' });
     }
+    if (!isValidMobile(req.body.mobile)) {
+      return res.status(400).json({ success: false, code: 'MOBILE_INVALID',
+        message: 'Enter the merchant\'s 10-digit mobile number — the one on their Telegram account — without +91.' });
+    }
+    const mobile = normalisePhone(req.body.mobile);
+    // ONE transaction for the account, the merchant and the wallet: a failure
+    // on the second write used to leave an account flagged as a merchant with
+    // no merchant record behind it, holding a mobile nobody could reuse.
 
     // `kind: 'DIRECT'` creates a MERCHANT ACCOUNT (owner, 2026-10-11): INR,
     // with its own pool's team, in the same transaction.
@@ -468,7 +469,6 @@ router.post('/merchants/create', authenticate, hasPermission('canManageMerchants
     const created = await db.merchants.createMerchantAccount({
       userId: db.users.newUserId(),
       username, mobile, email: email || null,
-      passwordHash: await hashPassword(password),
       direct: kind === 'DIRECT',
     });
     if (!created.ok && created.reason === 'NAME_IS_A_MOBILE') {
