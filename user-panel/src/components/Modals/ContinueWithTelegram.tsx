@@ -90,7 +90,7 @@ const ContinueWithTelegram: React.FC<Props> = ({ onDone }) => {
 
   const token = waiting?.challengeToken ?? null;
   const poll = useMemo(
-    () => (token ? () => pollTelegramStep('telegramLogin', token) : null),
+    () => (token ? () => pollTelegramStep(token) : null),
     [token, pollTelegramStep],
   );
   useTelegramPoll(error || handedOff ? null : poll, onDone,

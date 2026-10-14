@@ -41,6 +41,6 @@ describe('the ticket page', () => {
     at('/tg/used');
     expect((await screen.findByRole('alert')).textContent).toMatch(/already been used/);
     screen.getByRole('button', { name: /continue with telegram/i }).click();
-    expect(openAuth).toHaveBeenCalledWith('login');
+    expect(openAuth).toHaveBeenCalledWith();
   });
 });

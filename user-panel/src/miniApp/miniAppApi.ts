@@ -45,16 +45,7 @@ export function shareContact(app: WebApp): Promise<string | null> {
 /** The panels Telegram serves (`TELEGRAM_AUDIENCES`, database/repositories/telegram.js). Staff have none (owner, 2026-10-13). */
 export type Panel = 'PLAYER' | 'MERCHANT';
 
-/**
- * The shortest password each panel's account takes. A UI hint only (§11): it
- * keeps Telegram's contact prompt from opening for a password the server will
- * refuse. The server decides (`backend/domains/identity/passwordPolicy.js`,
- * PLAYER_PASSWORD_MIN_LENGTH and STAFF_PASSWORD_MIN_LENGTH, which a merchant
- * is held to).
- */
-export const PASSWORD_FLOOR: Record<Panel, number> = { PLAYER: 8, MERCHANT: 12 };
-export type StartKind = 'VERIFY' | 'LOGIN' | 'TELEGRAM_LOGIN' | 'RELINK' | 'TWO_FACTOR_OFF'
-  | 'RESET' | 'CONTINUE' | 'UNKNOWN';
+export type StartKind = 'TELEGRAM_LOGIN' | 'CONTINUE' | 'UNKNOWN';
 
 /** Whose account Verify enters (`accountFor`, miniApp.routes.js). */
 export interface VerifyAccount { panel: Panel; isNew: boolean; mobileHint: string }
@@ -90,7 +81,7 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<T> 
     body: JSON.stringify(body), credentials: 'omit',
   });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok || (json?.success === false && !json?.passwordRequired)) {
+  if (!res.ok || json?.success === false) {
     throw new MiniAppRefusal(json?.message || 'Something went wrong. Please try again.', json?.code || '', res.status);
   }
   return json as T;
@@ -100,7 +91,7 @@ export const miniApi = {
   context: (initData: string) => post<MiniAppContext>('/api/telegram/mini-app/context', { initData }),
 
   approve: (initData: string, decision: 'approve' | 'deny', contact?: string | null, pick?: number | null) =>
-    post<{ kind: StartKind; panel: Panel; approved: boolean; message: string; redirectUrl?: string | null }>(
+    post<{ panel: Panel; approved: boolean; created: boolean; message: string; redirectUrl?: string | null }>(
       '/api/telegram/mini-app/approve',
       { initData, decision, ...(contact ? { contact } : {}), ...(typeof pick === 'number' ? { pick } : {}) }),
 
@@ -109,15 +100,4 @@ export const miniApi = {
     post<{ redirectUrl: string; message: string; created: boolean }>(
       '/api/telegram/mini-app/continue', { initData, ...(contact ? { contact } : {}) }),
 
-  signup: (initData: string, form: { contact: string; password: string; confirmPassword: string; referralCode?: string }) =>
-    post<{ token: string }>('/api/telegram/mini-app/signup', { initData, ...form }),
-
-  /** Forgot password: the new password is set here, for every panel; nobody is signed in. */
-  passwordReset: (initData: string, contact: string, form: { password: string; confirmPassword: string; panel?: Panel }) =>
-    post<{ changed: true; message: string; panel: Panel }>(
-      '/api/telegram/mini-app/password-reset', { initData, contact, ...form }),
-
-  /** Login with Telegram, from inside Telegram: a player is signed in on the proof alone. */
-  playerLogin: (initData: string) =>
-    post<{ token: string }>('/api/v1/auth/login/telegram', { initData }),
 };

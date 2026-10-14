@@ -43,7 +43,7 @@ const TelegramTicketPage: React.FC = () => {
         {error ? (
           <>
             <p role="alert" style={{ fontSize: 14, fontWeight: 700, color: 'var(--red)', margin: '0 0 16px' }}>{error}</p>
-            <button type="button" onClick={() => openAuth('login')}
+            <button type="button" onClick={() => openAuth()}
               style={{ width: '100%', padding: 12, borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 800, color: 'var(--bg)', background: 'var(--gold)' }}>
               Continue with Telegram
             </button>

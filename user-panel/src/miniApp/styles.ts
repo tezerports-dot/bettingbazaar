@@ -18,9 +18,4 @@ export const PRIMARY: React.CSSProperties = {
 export const SECONDARY: React.CSSProperties = {
   ...PRIMARY, background: 'var(--tg-theme-secondary-bg-color, ButtonFace)', color: 'var(--tg-theme-text-color, ButtonText)',
 };
-export const INPUT: React.CSSProperties = {
-  width: '100%', height: 44, boxSizing: 'border-box', borderRadius: 10, padding: '0 12px', fontSize: 15,
-  border: '1px solid var(--tg-theme-hint-color, GrayText)', background: 'var(--tg-theme-secondary-bg-color, Field)',
-  color: 'var(--tg-theme-text-color, FieldText)',
-};
 export const HINT: React.CSSProperties = { color: 'var(--tg-theme-hint-color, GrayText)', fontSize: 13 };

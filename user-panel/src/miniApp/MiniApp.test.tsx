@@ -7,12 +7,12 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
-const { context, approve, continueToSite, passwordReset } = vi.hoisted(() => ({
-  context: vi.fn(), approve: vi.fn(), continueToSite: vi.fn(), passwordReset: vi.fn(),
+const { context, approve, continueToSite } = vi.hoisted(() => ({
+  context: vi.fn(), approve: vi.fn(), continueToSite: vi.fn(),
 }));
 vi.mock('./miniAppApi', async (orig) => ({
   ...(await orig<typeof import('./miniAppApi')>()),
-  miniApi: { context, approve, continueToSite, passwordReset },
+  miniApi: { context, approve, continueToSite },
 }));
 
 import MiniApp from './MiniApp';
@@ -27,7 +27,7 @@ const ctx = (start: object, accounts: object[] = []) => ({
 });
 
 beforeEach(() => {
-  [context, approve, continueToSite, passwordReset].forEach((f) => f.mockReset());
+  [context, approve, continueToSite].forEach((f) => f.mockReset());
 });
 
 describe('the Mini App', () => {
@@ -36,90 +36,54 @@ describe('the Mini App', () => {
     expect(screen.getByRole('alert').textContent).toMatch(/inside the telegram app/i);
   });
 
-  it('verifies with the SIGNED contact string', async () => {
-    context.mockResolvedValue(ctx({ kind: 'VERIFY', panel: 'PLAYER', needsContact: true, state: 'PENDING', mobileHint: '••••••3210' }));
-    approve.mockResolvedValue({ kind: 'VERIFY', panel: 'PLAYER', approved: true, message: 'Done. Go back to the website or app.' });
-    const a = app();
-    render(<MiniApp app={a} />);
-    fireEvent.click(await screen.findByRole('button', { name: /share contact and approve/i }));
-    expect(await screen.findByText(/go back to the website/i)).toBeTruthy();
-    expect(approve).toHaveBeenCalledWith(a.initData, 'approve', SIGNED);
+  // Verify is the only thing the page does (owner, 2026-10-14): no separate
+  // verification, approval, relink or password reset screen.
+  const newAccount = (extra: object = {}) => ctx({
+    kind: 'TELEGRAM_LOGIN', panel: 'PLAYER', needsContact: true, state: 'PENDING', delivery: 'HANDOFF',
+    destination: 'bettingbazaar.com', account: { panel: 'PLAYER', isNew: true, mobileHint: '' }, ...extra,
   });
 
-  it('shows a mismatched contact as the server words it', async () => {
-    context.mockResolvedValue(ctx({ kind: 'VERIFY', panel: 'PLAYER', needsContact: true, state: 'PENDING' }));
-    approve.mockRejectedValue(new Error('This Telegram account is on another number.'));
+  it('shows a mismatched or refused contact as the server words it', async () => {
+    context.mockResolvedValue(newAccount());
+    approve.mockRejectedValue(new Error('Share your own contact: the one Telegram sent belongs to another Telegram account.'));
     render(<MiniApp app={app()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /share contact and approve/i }));
-    expect((await screen.findByRole('alert')).textContent).toBe('This Telegram account is on another number.');
+    fireEvent.click(await screen.findByRole('button', { name: /share contact and verify/i }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Share your own contact: the one Telegram sent belongs to another Telegram account.');
   });
 
   it('sends nothing when the contact share is declined', async () => {
-    context.mockResolvedValue(ctx({ kind: 'VERIFY', panel: 'PLAYER', needsContact: true, state: 'PENDING' }));
+    context.mockResolvedValue(newAccount());
     render(<MiniApp app={app(false)} />);
-    fireEvent.click(await screen.findByRole('button', { name: /share contact and approve/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /share contact and verify/i }));
     expect((await screen.findByRole('alert')).textContent).toMatch(/share your contact/i);
     expect(approve).not.toHaveBeenCalled();
   });
 
-  it('lets a sign-in be denied, with no contact', async () => {
-    context.mockResolvedValue(ctx({ kind: 'LOGIN', panel: 'MERCHANT', needsContact: false, state: 'PENDING',
-      request: { at: '2026-10-08T05:00:00Z', ip: '203.0.113.9', device: 'Chrome' } }));
-    approve.mockResolvedValue({ kind: 'LOGIN', panel: 'MERCHANT', approved: false, message: 'Refused. Nobody was signed in.' });
-    render(<MiniApp app={app()} />);
-    expect(await screen.findByText(/203\.0\.113\.9/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /^deny$/i }));
-    expect(await screen.findByText(/nobody was signed in/i)).toBeTruthy();
-    expect(approve).toHaveBeenCalledWith(expect.any(String), 'deny', null);
+  it('says a new merchant Verify submits an application an admin approves', async () => {
+    context.mockResolvedValue(newAccount({ panel: 'MERCHANT', account: { panel: 'MERCHANT', isNew: true, mobileHint: '' } }));
+    approve.mockResolvedValue({ panel: 'MERCHANT', approved: true, created: true, redirectUrl: null,
+      message: 'Your merchant application is submitted. An admin will review it; once approved, Continue with Telegram signs you in.' });
+    const a = app();
+    render(<MiniApp app={a} />);
+    expect((await screen.findByTestId('verify-account')).textContent).toMatch(/merchant application.*admin approves/i);
+    fireEvent.click(screen.getByRole('button', { name: /share contact and verify/i }));
+    expect(await screen.findByText(/application is submitted/i)).toBeTruthy();
+    expect(a.openLink).not.toHaveBeenCalled();
   });
 
-  it('says an expired request is expired, and offers no button', async () => {
-    context.mockResolvedValue(ctx({ kind: 'LOGIN', panel: 'PLAYER', needsContact: false, state: 'EXPIRED' }));
+  it('says an expired sign-in is expired, and offers no button', async () => {
+    context.mockResolvedValue(newAccount({ state: 'EXPIRED' }));
     render(<MiniApp app={app()} />);
     expect((await screen.findByRole('status')).textContent).toMatch(/expired/i);
-    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /verify/i })).toBeNull();
   });
 
-  it('sets the new password in the Mini App for a merchant, at the merchant floor, with the signed contact', async () => {
-    context.mockResolvedValue(ctx({ kind: 'RESET', panel: 'MERCHANT', needsContact: true }));
-    passwordReset.mockResolvedValue({ panel: 'MERCHANT', changed: true, message: 'Your password has been changed. Sign in with the new password now.' });
-    const a = app();
-    render(<MiniApp app={a} />);
-    const box = await screen.findByLabelText(/^new password$/i);
-    const go = () => screen.getByRole('button', { name: /share contact and reset/i }) as HTMLButtonElement;
-    // Eleven characters: a player's password, not a merchant's.
-    fireEvent.change(box, { target: { value: 'Eleven-char' } });
-    fireEvent.change(screen.getByLabelText(/confirm new password/i), { target: { value: 'Eleven-char' } });
-    expect(screen.getByText(/at least 12 characters/i)).toBeTruthy();
-    expect(go().disabled).toBe(true);
-    fireEvent.change(box, { target: { value: 'Twelve-chars' } });
-    fireEvent.change(screen.getByLabelText(/confirm new password/i), { target: { value: 'Twelve-chars' } });
-    fireEvent.click(go());
-    expect(await screen.findByText(/sign in with the new password/i)).toBeTruthy();
-    expect(passwordReset).toHaveBeenCalledWith(a.initData, SIGNED, { password: 'Twelve-chars', confirmPassword: 'Twelve-chars' });
-    expect(screen.queryByRole('button', { name: /choose a new password/i })).toBeNull();
-  });
-
-  it('does not open the contact prompt when the two passwords differ', async () => {
-    context.mockResolvedValue(ctx({ kind: 'RESET', panel: 'PLAYER', needsContact: true }));
-    const a = app();
-    render(<MiniApp app={a} />);
-    fireEvent.change(await screen.findByLabelText(/^new password$/i), { target: { value: 'first-password' } });
-    fireEvent.change(screen.getByLabelText(/confirm new password/i), { target: { value: 'second-password' } });
-    fireEvent.click(screen.getByRole('button', { name: /share contact and reset/i }));
-    expect((await screen.findByRole('alert')).textContent).toMatch(/do not match/i);
-    expect(a.requestContact).not.toHaveBeenCalled();
-    expect(passwordReset).not.toHaveBeenCalled();
-  });
-
-  it("shows the server's refusal of the password as it is worded", async () => {
-    context.mockResolvedValue(ctx({ kind: 'RESET', panel: 'MERCHANT', needsContact: true }));
-    passwordReset.mockRejectedValue(new Error('That password is one repeated or sequential run of characters.'));
+  it('offers no password and no reset, whatever it was opened with', async () => {
+    context.mockResolvedValue(ctx({ kind: 'UNKNOWN', panel: null, needsContact: false }));
     render(<MiniApp app={app()} />);
-    fireEvent.change(await screen.findByLabelText(/^new password$/i), { target: { value: 'aaaaaaaaaaaa' } });
-    fireEvent.change(screen.getByLabelText(/confirm new password/i), { target: { value: 'aaaaaaaaaaaa' } });
-    fireEvent.click(screen.getByRole('button', { name: /share contact and reset/i }));
-    expect((await screen.findByRole('alert')).textContent).toBe('That password is one repeated or sequential run of characters.');
+    expect((await screen.findByRole('status')).textContent).toMatch(/expired/i);
+    expect(document.querySelector('input')).toBeNull();
+    expect(screen.queryByText(/password/i)).toBeNull();
   });
 });
 

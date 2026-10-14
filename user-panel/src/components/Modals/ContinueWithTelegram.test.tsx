@@ -21,7 +21,7 @@ vi.mock('../../services/nativeLifecycle', () => ({ isNativeShell: () => native }
 const { default: ContinueWithTelegram, deliveryHere } = await import('./ContinueWithTelegram');
 
 const STEP = (delivery: 'MATCH' | 'HANDOFF', matchNumber: number | null) => ({
-  kind: 'telegram', leg: 'telegramLogin', challengeToken: 'chal-1', delivery, matchNumber,
+  kind: 'telegram', challengeToken: 'chal-1', delivery, matchNumber,
   telegram: { url: 'https://t.me/bb_bot?startapp=cabc', botUsername: 'bb_bot', expiresAt: '' }, message: '',
 });
 
@@ -60,7 +60,7 @@ describe('Continue with Telegram', () => {
     expect(screen.getByRole('img', { name: /qr code that opens telegram/i })).toBeTruthy();
     expect(screen.getByRole('link', { name: /open telegram/i }).getAttribute('href')).toBe('https://t.me/bb_bot?startapp=cabc');
     await vi.waitFor(() => expect(onDone).toHaveBeenCalled(), { timeout: 5000 });
-    expect(pollTelegramStep).toHaveBeenCalledWith('telegramLogin', 'chal-1');
+    expect(pollTelegramStep).toHaveBeenCalledWith('chal-1');
   });
 
   it('a phone that hands off shows no number, and says where the session went', async () => {

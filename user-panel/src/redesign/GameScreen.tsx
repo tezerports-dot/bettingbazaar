@@ -245,7 +245,7 @@ const GameScreen: React.FC = () => {
   };
 
   const handleBet = (side: BettingSide) => {
-    if (!isAuthenticated) { openAuth('login'); return; }
+    if (!isAuthenticated) { openAuth(); return; }
     if (isClosed || isResult) return;
     // Stop offering the bet slightly before the server's cutoff. A stake tapped
     // at T-5.2s does not ARRIVE at T-5.2s — it crosses a mobile network first

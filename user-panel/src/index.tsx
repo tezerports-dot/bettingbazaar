@@ -4,12 +4,14 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
 import { captureReferralCode } from './services/referralCapture';
+import { listenForInstallPrompt } from './services/installPrompt';
 
 // Grab ?ref=CODE before anything else touches the URL. A visitor who arrives on
 // an invite link rarely signs up in that first second — they look around first —
 // and by the time they open the bot the URL has long since changed. Capturing at
 // boot is what makes the referrer's ₹25 actually land.
 captureReferralCode();
+listenForInstallPrompt();
 
 // --- INTELLIGENT SERVICE WORKER HANDLER ---
 // The native Android shell (Capacitor) serves this bundle from the app package
