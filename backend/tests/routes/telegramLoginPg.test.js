@@ -79,7 +79,7 @@ describePg('Continue with Telegram at the merchant door; none at the staff door'
 
   const post = (path, body) => request(app).post(path).set('X-Forwarded-For', from()).send(body);
   const startParam = (opened) => new URL(opened.telegram.url).searchParams.get('startapp');
-  const open = (door, delivery = 'MATCH') => post(`${DOOR[door]}/login/telegram`, { delivery }).then((r) => r.body);
+  const open = (door, delivery = 'MATCH') => post(`${DOOR[door]}/login/telegram`, { delivery, returnOrigin: SITE }).then((r) => r.body);
   const complete = (door, opened) => post(`${DOOR[door]}/login/telegram/complete`, { challengeToken: opened.challengeToken });
   const redeem = (door, ticket) => post(`${DOOR[door]}/login/telegram/ticket`, { ticket });
   const ticketOf = (url) => new URL(url).hash.replace(/^#\/tg\//, '');

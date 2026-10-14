@@ -128,6 +128,7 @@ import { getSystemConfig } from '#db/repositories/config.js';
 import { db } from '#db';
 import { isDatabaseReachable } from '#db/client.js';
 import { mountSpaFallbacks } from './startup/spaFallbacks.js';
+import { isServableOrigin } from './config/servedHosts.js';
 
 // ─── APP SETUP ────────────────────────────────────────────────────────────────
 const runtime = runtimeProfile();
@@ -143,7 +144,14 @@ function corsOriginCheck(origin, callback) {
   if (!origin) return callback(null, true);
   if (process.env.NODE_ENV !== 'production') return callback(null, true);
   if (allowedOrigins.includes(origin)) return callback(null, true);
-  return callback(new Error(`CORS: origin not allowed — ${origin}`));
+  // A host this deployment serves (DOMAINS, the API hosts, the player site, the
+  // offline-signed gateway document's standby pool) is admitted as
+  // https://<host>, so a standby put live by DNS alone is not refused
+  // (config/servedHosts.js, docs/governance/DOMAIN_FAILOVER.md).
+  return isServableOrigin(origin).then(
+    (ok) => (ok ? callback(null, true) : callback(new Error(`CORS: origin not allowed — ${origin}`))),
+    () => callback(new Error(`CORS: origin not allowed — ${origin}`)),
+  );
 }
 
 const backendMtlsConfig = ['BACKEND_MTLS_CERT', 'BACKEND_MTLS_KEY', 'BACKEND_MTLS_CA'];

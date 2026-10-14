@@ -1,24 +1,27 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * TelegramBot.tsx — the one bot (Step 3, owner 2026-10-07).
+ * TelegramBot.tsx — the bot and its standbys (Step 3, owner 2026-10-07;
+ * standbys, owner 2026-10-14).
  *
- * One bot carries the Mini App that verifies every player and merchant and
- * approves every merchant sign-in (staff sign in with an authenticator app,
- * owner 2026-10-13). Telegram suspends gambling bots, so replacing it
- * is this form, not a deploy: paste a new token from @BotFather and save.
- * Links survive a swap — they key on the person's Telegram id, which belongs
- * to Telegram, not to the bot.
+ * The primary bot carries the Mini App that verifies every player and merchant
+ * and approves their sign-ins (staff sign in with an authenticator app, owner
+ * 2026-10-13). Up to three standby bots, each with its own Mini App, wait
+ * beside it: Telegram suspends gambling bots, and when it refuses the bot in
+ * use the server suspends it and every new link names the next standby, with
+ * nobody at the keyboard. Links survive any swap — they key on the person's
+ * Telegram id, which belongs to Telegram, not to the bot.
  *
- * Server: `GET|PUT /api/admin/telegram/bot` (backend/routes/admin/
+ * Server: `GET|PUT /api/admin/telegram/bot`, `DELETE /api/admin/telegram/bot/:slot`,
+ * `POST /api/admin/telegram/bot/:slot/resume` (backend/routes/admin/
  * telegram.admin.routes.js), area `canManageTelegram`. The token is
  * write-only: the server never sends one back, so this form never shows or
  * pre-fills one. The bot's id and @username are Telegram's answer to the
  * token, never typed here.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { Bot, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Bot, CheckCircle2, AlertTriangle, PauseCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
-import api, { type TelegramBot as BotView } from '../../services/api';
+import api, { type TelegramBot as BotView, type TelegramBotSlot } from '../../services/api';
 import { formatters } from '../../utils/formatters';
 import { refusalText } from '../../utils/refusal';
 
@@ -42,127 +45,205 @@ const Fact: React.FC<{ name: string; children: React.ReactNode }> = ({ name, chi
   </div>
 );
 
-export const TelegramBot: React.FC = () => {
-  const [bot, setBot] = useState<BotView | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+/** What a slot is called on screen. */
+const slotName = (slot: number) => (slot === 1 ? 'Primary bot' : `Standby ${slot - 1}`);
+
+/**
+ * One slot: what it holds and the form that fills or replaces it. Module
+ * level (§32 S23). `inUse` marks the bot every new link names.
+ */
+const SlotCard: React.FC<{
+  slot: number;
+  bot: TelegramBotSlot | undefined;
+  inUse: boolean;
+  onChanged: () => Promise<void>;
+}> = ({ slot, bot, inUse, onChanged }) => {
+  const name = slotName(slot);
   const [token, setToken] = useState('');
-  const [shortName, setShortName] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [shortName, setShortName] = useState(bot?.miniAppShortName || '');
+  const [busy, setBusy] = useState<'save' | 'resume' | 'remove' | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  useEffect(() => { setShortName(bot?.miniAppShortName || ''); }, [bot?.miniAppShortName]);
+
+  const run = async (what: 'save' | 'resume' | 'remove', act: () => Promise<string>, fallback: string) => {
+    setBusy(what);
+    setError(null);
     try {
-      const view = await api.telegram.getBot();
-      setBot(view);
-      setShortName(view.miniAppShortName || '');
-      setLoadError(null);
+      toast.success(await act());
+      await onChanged();
     } catch (err) {
-      setLoadError(refusalText(err, 'Could not read the Telegram bot.'));
-    }
-  }, []);
-
-  useEffect(() => { void load(); }, [load]);
-
-  const save = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const body: { token?: string; miniAppShortName: string } = { miniAppShortName: shortName.trim() };
-      if (token.trim()) body.token = token.trim();
-      const view = await api.telegram.saveBot(body);
-      setBot(view);
-      setShortName(view.miniAppShortName || '');
-      setToken('');
-      toast.success(`Saved. The bot is @${view.botUsername}.`);
-    } catch (err) {
-      setSaveError(refusalText(err, 'Could not save the bot.'));
+      setError(refusalText(err, fallback));
     } finally {
-      setSaving(false);
+      setBusy(null);
     }
   };
 
-  if (!bot && !loadError) {
-    return <div role="status" style={{ padding: 40, textAlign: 'center', color: 'var(--muted)' }}>Loading…</div>;
-  }
+  const save = (e: React.FormEvent) => {
+    e.preventDefault();
+    void run('save', async () => {
+      const body: { slot?: number; token?: string; miniAppShortName: string } = { miniAppShortName: shortName.trim() };
+      if (slot !== 1) body.slot = slot;
+      if (token.trim()) body.token = token.trim();
+      const view = await api.telegram.saveBot(body);
+      setToken('');
+      return `Saved. ${name} is @${view.botUsername}.`;
+    }, 'Could not save the bot.');
+  };
 
+  const status = !bot
+    ? { icon: <AlertTriangle size={18} style={{ color: slot === 1 ? 'var(--danger)' : 'var(--muted)' }} />, text: 'Empty' }
+    : bot.suspended
+      ? { icon: <PauseCircle size={18} style={{ color: 'var(--danger)' }} />, text: 'Suspended' }
+      : { icon: <CheckCircle2 size={18} style={{ color: 'var(--success)' }} />, text: inUse ? 'In use' : 'Ready' };
+
+  const id = `tg-bot-${slot}`;
   return (
-    <div className="om-fade" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {loadError && <div role="alert" style={alertStyle}>{loadError}</div>}
+    <section className="card" aria-label={name} style={{ padding: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <Bot size={18} style={{ color: 'var(--gold-ink)' }} />
+        <div style={{ fontSize: 15, fontWeight: 800 }}>{name}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 700 }}>
+          {status.icon}{status.text}
+        </div>
+      </div>
 
       {bot && (
-        <div className="card" style={{ padding: '16px 18px', display: 'flex', alignItems: 'center', gap: 22, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {bot.configured
-              ? <CheckCircle2 size={20} style={{ color: 'var(--success)' }} />
-              : <AlertTriangle size={20} style={{ color: 'var(--danger)' }} />}
-            <div style={{ fontSize: 14, fontWeight: 800 }}>
-              {bot.configured ? 'Bot configured' : 'No bot saved'}
-            </div>
-          </div>
-          <Fact name="Bot">{bot.botUsername ? `@${bot.botUsername}` : '—'}</Fact>
+        <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', marginBottom: 14 }}>
+          <Fact name="Bot">@{bot.botUsername}</Fact>
           <Fact name="Mini App short name">{bot.miniAppShortName || '(main Mini App)'}</Fact>
           <Fact name="Updated">{bot.updatedAt ? formatters.datetime(bot.updatedAt) : '—'}</Fact>
           <Fact name="Updated by">{bot.updatedBy || '—'}</Fact>
         </div>
       )}
-
-      {bot && !bot.configured && (
-        <div className="card" style={{ padding: '14px 18px', fontSize: 12.5, lineHeight: 1.6, color: 'var(--text-2)' }}>
-          Until a bot is saved, no player or merchant can verify their account, and no merchant can
-          approve a sign-in. Staff sign-in does not use Telegram.
+      {bot?.suspended && (
+        <div role="status" style={{ ...alertStyle, marginBottom: 14 }}>
+          Suspended {bot.suspendedAt ? formatters.datetime(bot.suspendedAt) : ''}: {bot.suspendedReason || 'no reason given'}.
+          New links use the next standby. Save a new token, or resume it if Telegram has lifted the ban.
         </div>
       )}
 
-      <div className="card" style={{ padding: 22 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-          <Bot size={18} style={{ color: 'var(--gold-ink)' }} />
-          <div style={{ fontSize: 15, fontWeight: 800 }}>{bot?.configured ? 'Replace or update the bot' : 'Save the bot'}</div>
+      <form onSubmit={save} style={{ display: 'grid', gap: 12, maxWidth: 560 }}>
+        <div>
+          <label htmlFor={`${id}-token`} style={label}>{name} token</label>
+          <input
+            id={`${id}-token`}
+            type="password"
+            autoComplete="off"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder={bot ? 'Leave empty to keep this bot' : '123456789:AA…'}
+            className="font-mono"
+            style={input}
+          />
         </div>
-        <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 18, lineHeight: 1.5 }}>
-          The token comes from @BotFather. Telegram is asked about it before it is stored, and it is
-          never shown again. Leave it empty to change only the Mini App short name.
+        <div>
+          <label htmlFor={`${id}-short`} style={label}>{name} Mini App short name</label>
+          <input
+            id={`${id}-short`}
+            type="text"
+            value={shortName}
+            onChange={(e) => setShortName(e.target.value)}
+            placeholder="Empty for the bot's main Mini App"
+            className="font-mono"
+            style={input}
+          />
         </div>
 
-        <form onSubmit={save} style={{ display: 'grid', gap: 14, maxWidth: 560 }}>
-          <div>
-            <label htmlFor="tg-bot-token" style={label}>Bot token</label>
-            <input
-              id="tg-bot-token"
-              type="password"
-              autoComplete="off"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder={bot?.configured ? 'Leave empty to keep the current bot' : '123456789:AA…'}
-              className="font-mono"
-              style={input}
-            />
-          </div>
-          <div>
-            <label htmlFor="tg-mini-app-short-name" style={label}>Mini App short name</label>
-            <input
-              id="tg-mini-app-short-name"
-              type="text"
-              value={shortName}
-              onChange={(e) => setShortName(e.target.value)}
-              placeholder="Empty for the bot's main Mini App"
-              className="font-mono"
-              style={input}
-            />
-            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 5 }}>
-              The part after the bot in t.me/&lt;bot&gt;/&lt;short name&gt;: letters, digits and _.
-            </div>
-          </div>
+        {error && <div role="alert" style={alertStyle}>{error}</div>}
 
-          {saveError && <div role="alert" style={alertStyle}>{saveError}</div>}
-
-          <div>
-            <button type="submit" className="btn btn-primary" disabled={saving} style={{ opacity: saving ? 0.6 : 1 }}>
-              {saving ? 'Asking Telegram…' : 'Save'}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button type="submit" className="btn btn-primary" disabled={busy !== null} aria-label={`Save ${name}`} style={{ opacity: busy ? 0.6 : 1 }}>
+            {busy === 'save' ? 'Asking Telegram…' : 'Save'}
+          </button>
+          {bot?.suspended && (
+            <button type="button" className="btn" disabled={busy !== null} aria-label={`Resume ${name}`}
+              onClick={() => void run('resume', async () => {
+                const view = await api.telegram.resumeBot(slot);
+                return `@${view.botUsername} is back in use.`;
+              }, 'Could not resume the bot.')}>
+              {busy === 'resume' ? 'Asking Telegram…' : 'Resume'}
             </button>
+          )}
+          {bot && slot !== 1 && (
+            <button type="button" className="btn" disabled={busy !== null} aria-label={`Remove ${name}`}
+              onClick={() => {
+                if (!window.confirm(`Remove @${bot.botUsername} from ${name}?`)) return;
+                void run('remove', async () => {
+                  await api.telegram.removeBot(slot);
+                  setShortName('');
+                  return `${name} removed.`;
+                }, 'Could not remove the bot.');
+              }}>
+              Remove
+            </button>
+          )}
+        </div>
+      </form>
+    </section>
+  );
+};
+
+export const TelegramBot: React.FC = () => {
+  const [view, setView] = useState<BotView | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setView(await api.telegram.getBot());
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(refusalText(err, 'Could not read the Telegram bots.'));
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  if (!view && !loadError) {
+    return <div role="status" style={{ padding: 40, textAlign: 'center', color: 'var(--muted)' }}>Loading…</div>;
+  }
+
+  const slots = Array.from({ length: view?.slots || 4 }, (_, i) => i + 1);
+  const bots = view?.bots ?? [];
+  return (
+    <div className="om-fade" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {loadError && <div role="alert" style={alertStyle}>{loadError}</div>}
+
+      {view && (
+        <div className="card" style={{ padding: '16px 18px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {view.configured
+            ? <CheckCircle2 size={20} style={{ color: 'var(--success)' }} />
+            : <AlertTriangle size={20} style={{ color: 'var(--danger)' }} />}
+          <div style={{ fontSize: 14, fontWeight: 800 }}>
+            {view.configured ? `In use: @${view.botUsername} (${slotName(view.slot ?? 1)})` : 'No bot in use'}
           </div>
-        </form>
+        </div>
+      )}
+
+      {view && !view.configured && (
+        <div className="card" style={{ padding: '14px 18px', fontSize: 12.5, lineHeight: 1.6, color: 'var(--text-2)' }}>
+          Until a bot is saved and working, no player or merchant can verify their account or sign
+          in with Telegram. Staff sign-in does not use Telegram.
+        </div>
+      )}
+
+      <div className="card" style={{ padding: '14px 18px', fontSize: 12, lineHeight: 1.6, color: 'var(--muted)' }}>
+        Each token comes from @BotFather and is asked of Telegram before it is stored; it is never
+        shown again. Give every standby its own Mini App at the same page as the primary
+        (https://&lt;site&gt;/mini-app.html). When Telegram refuses the bot in use, it is suspended within
+        seconds and new sign-ins and links use the next standby. Accounts belong to the person's
+        Telegram, so every bot already knows everyone.
       </div>
+
+      {slots.map((slot) => (
+        <SlotCard
+          key={slot}
+          slot={slot}
+          bot={bots.find((b) => b.slot === slot)}
+          inUse={view?.slot === slot}
+          onChanged={load}
+        />
+      ))}
     </div>
   );
 };

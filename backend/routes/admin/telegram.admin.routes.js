@@ -1,16 +1,19 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * routes/admin/telegram.admin.routes.js — the one bot and the referral batches.
+ * routes/admin/telegram.admin.routes.js — the bot, its standbys, and the referral batches.
  * A staff account has no Telegram of its own (owner, 2026-10-13: staff sign in
  * with an authenticator app, account.admin.routes.js).
  *
- * ── The one bot (Step 3, owner 2026-10-07) ─────────────────────────────────
- * One bot carries the Mini App that verifies every player and merchant account
- * and approves merchant sign-ins. Telegram suspends gambling bots, so replacing it must
- * be a form an operator fills at 3am, not a deploy: PUT a new token here. Links
- * survive a swap — they key on the PERSON's Telegram id, which belongs to
- * Telegram, not to the bot. The fleet, the channels, the recovery bots and the
- * bot messages that used to be configured here are gone.
+ * ── The bot and its standbys (Step 3, owner 2026-10-07; standbys 2026-10-14) ─
+ * Slot 1 carries the Mini App that verifies every player and merchant account
+ * and approves their sign-ins; slots 2-4 hold standby bots registered ahead of
+ * time. Telegram suspends gambling bots, so the switch must not wait for an
+ * operator: the health check (`telegram-bot-health`) suspends a bot whose token
+ * Telegram refuses and new links move to the next slot at once. Replacing a bot
+ * is still a form, not a deploy: PUT a new token to its slot. Links survive any
+ * swap — they key on the PERSON's Telegram id, which belongs to Telegram, not
+ * to the bot. The channels, the recovery bots and the bot messages that used
+ * to be configured here are gone.
  *
  * ── Two areas, each granted on its own ────────────────────────────────────
  * Telegram setup (`canManageTelegram`) holds the key that signs every Mini App
@@ -19,7 +22,7 @@
 import express from 'express';
 import { authenticate, hasPermission } from '../../domains/identity/auth.middleware.js';
 import { encryptField } from '../../domains/identity/fieldCrypto.util.js';
-import { verifyBotToken, invalidateBotCache } from '../../domains/telegram/telegramClient.js';
+import { verifyBotToken, invalidateBotCache, miniAppBots } from '../../domains/telegram/telegramClient.js';
 import { db } from '#db';
 import { disburse, programmeStats } from '../../domains/referral/referral.service.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
@@ -28,21 +31,50 @@ import { serverError, respondError, refusal } from '../../shared/httpError.js';
 const router = express.Router();
 
 // ═══════════════════════════════════════════════════════════════════════════
-// THE ONE BOT
+// THE BOT AND ITS STANDBYS
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** GET /api/admin/telegram/bot — the bot, never its token. */
+const botView = (b) => ({
+  slot: b.slot,
+  botId: b.botId,
+  botUsername: b.botUsername,
+  miniAppShortName: b.miniAppShortName || '',
+  suspended: Boolean(b.suspendedAt),
+  suspendedAt: b.suspendedAt || null,
+  suspendedReason: b.suspendedReason || '',
+  updatedAt: b.updatedAt || null,
+  updatedBy: b.updatedBy || null,
+});
+
+/** The slot in the path or body, 1..BOT_SLOTS, or a refusal. */
+function slotOf(raw, { fallback = 1 } = {}) {
+  const slot = raw === undefined || raw === null || raw === '' ? fallback : Number(raw);
+  if (!Number.isInteger(slot) || slot < 1 || slot > db.telegram.BOT_SLOTS) {
+    throw refusal(400, 'SLOT_INVALID', `slot must be 1 (the primary) to ${db.telegram.BOT_SLOTS}.`);
+  }
+  return slot;
+}
+
+/**
+ * GET /api/admin/telegram/bot — every saved bot, never a token. The top-level
+ * fields describe the bot IN USE (the lowest slot not suspended), as before;
+ * `bots` lists every slot that holds one.
+ */
 router.get('/telegram/bot', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
-    const bot = await db.telegram.getBot();
+    const bots = await db.telegram.getBots();
+    const bot = bots.find((b) => !b.suspendedAt) ?? null;
     return res.json({
       success: true,
       configured: Boolean(bot),
+      slot: bot?.slot ?? null,
       botId: bot?.botId || null,
       botUsername: bot?.botUsername || '',
       miniAppShortName: bot?.miniAppShortName || '',
       updatedAt: bot?.updatedAt || null,
       updatedBy: bot?.updatedBy || null,
+      slots: db.telegram.BOT_SLOTS,
+      bots: bots.map(botView),
     });
   } catch (err) {
     return serverError(res, err, 'GET /admin/telegram/bot');
@@ -53,15 +85,19 @@ router.get('/telegram/bot', authenticate, hasPermission('canManageTelegram'), as
 const SHORT_NAME = /^[A-Za-z0-9_]{0,64}$/;
 
 /**
- * PUT /api/admin/telegram/bot `{ token?, miniAppShortName? }`.
+ * PUT /api/admin/telegram/bot `{ slot?, token?, miniAppShortName? }` (slot 1
+ * when left out).
  *
  * A token is asked of Telegram (`getMe`) BEFORE it is stored, and the bot's id
  * and @username are Telegram's answer, never typed: a token for the wrong bot,
  * or no bot, is refused by name. Stored encrypted (IDENTITY_ENCRYPTION_KEY).
- * The cache on this instance is dropped at once; others follow within 30 s.
+ * A new token lifts the slot's suspension. One bot sits in one slot: saving
+ * a bot already in another is refused (409 BOT_IN_OTHER_SLOT). The cache on
+ * this instance is dropped at once; others follow within 5 s.
  */
 router.put('/telegram/bot', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
+    const slot = slotOf(req.body?.slot);
     const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
     const short = req.body?.miniAppShortName;
     if (short !== undefined && (typeof short !== 'string' || !SHORT_NAME.test(short))) {
@@ -82,26 +118,64 @@ router.put('/telegram/bot', authenticate, hasPermission('canManageTelegram'), as
         throw refusal(400, 'TOKEN_INVALID', `Telegram did not accept that token (${me.error}). Copy it again from @BotFather.`);
       }
       saved = await db.telegram.saveBot({
-        botId: me.id, botUsername: me.username, tokenEncrypted: encryptField(token),
+        slot, botId: me.id, botUsername: me.username, tokenEncrypted: encryptField(token),
         miniAppShortName: short, updatedBy: req.user.userId,
       });
+      if (saved?.conflict) {
+        throw refusal(409, 'BOT_IN_OTHER_SLOT',
+          `@${me.username} is already saved in slot ${saved.conflict}. A standby must be a different bot.`);
+      }
     } else {
-      saved = await db.telegram.saveBot({ miniAppShortName: short, updatedBy: req.user.userId });
+      saved = await db.telegram.saveBot({ slot, miniAppShortName: short, updatedBy: req.user.userId });
       if (!saved) throw refusal(409, 'NO_BOT', 'Save a bot token first; the short name belongs to a bot.');
     }
     invalidateBotCache();
-    console.warn(`[telegram] bot @${saved.botUsername} saved by ${req.user.userId}`);
-    return res.json({
-      success: true,
-      configured: true,
-      botId: saved.botId,
-      botUsername: saved.botUsername,
-      miniAppShortName: saved.miniAppShortName,
-      updatedAt: saved.updatedAt,
-      updatedBy: saved.updatedBy,
-    });
+    console.warn(`[telegram] bot @${saved.botUsername} saved in slot ${slot} by ${req.user.userId}`);
+    return res.json({ success: true, configured: true, ...botView(saved) });
   } catch (err) {
     return respondError(res, err, 'PUT /admin/telegram/bot', { message: 'Could not save the bot.' });
+  }
+});
+
+/**
+ * DELETE /api/admin/telegram/bot/:slot — remove a standby. The primary (slot
+ * 1) is replaced with PUT, never removed: removing it would leave no bot.
+ */
+router.delete('/telegram/bot/:slot', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
+  try {
+    const slot = slotOf(req.params.slot);
+    if (slot === 1) throw refusal(400, 'PRIMARY_NOT_REMOVABLE', 'The primary bot is replaced with a new token, never removed.');
+    if (!(await db.telegram.removeBot(slot))) throw refusal(404, 'NO_BOT', `Slot ${slot} holds no bot.`);
+    invalidateBotCache();
+    console.warn(`[telegram] standby bot in slot ${slot} removed by ${req.user.userId}`);
+    return res.json({ success: true, slot });
+  } catch (err) {
+    return respondError(res, err, 'DELETE /admin/telegram/bot/:slot', { message: 'Could not remove the bot.' });
+  }
+});
+
+/**
+ * POST /api/admin/telegram/bot/:slot/resume — put a suspended bot back in
+ * use. Telegram is asked first: a token it still refuses stays suspended.
+ */
+router.post('/telegram/bot/:slot/resume', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
+  try {
+    const slot = slotOf(req.params.slot);
+    const bot = (await miniAppBots({ force: true })).find((b) => b.slot === slot);
+    if (!bot) throw refusal(404, 'NO_BOT', `Slot ${slot} holds no bot.`);
+    if (!bot.suspended) throw refusal(409, 'NOT_SUSPENDED', `@${bot.botUsername} is already in use.`);
+    const me = await verifyBotToken(bot.token);
+    if (!me.ok) {
+      throw refusal(409, 'TOKEN_STILL_REFUSED',
+        `Telegram still refuses @${bot.botUsername}'s token (${me.error}). Save a new token from @BotFather instead.`);
+    }
+    const row = await db.telegram.setBotSuspended({ slot, reason: null, botId: bot.botId, updatedBy: req.user.userId });
+    if (!row) throw refusal(409, 'NOT_SUSPENDED', 'The bot changed meanwhile; reload.');
+    invalidateBotCache();
+    console.warn(`[telegram] bot @${row.botUsername} in slot ${slot} resumed by ${req.user.userId}`);
+    return res.json({ success: true, ...botView(row) });
+  } catch (err) {
+    return respondError(res, err, 'POST /admin/telegram/bot/:slot/resume', { message: 'Could not resume the bot.' });
   }
 });
 

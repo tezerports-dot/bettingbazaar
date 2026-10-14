@@ -501,20 +501,38 @@ export const queueManager = {
 
 // --- TELEGRAM -----------------------------------------------------------------
 /**
- * One bot carries the Mini App that verifies every player and merchant account
- * and approves merchant sign-ins (Step 3). Staff have no Telegram (owner,
- * 2026-10-13). Server: backend/routes/admin/telegram.admin.routes.js.
+ * Slot 1 carries the Mini App that verifies every player and merchant account
+ * and approves their sign-ins (Step 3); slots 2-4 hold standby bots that take
+ * over when Telegram refuses the one in use (owner, 2026-10-14). Staff have no
+ * Telegram (owner, 2026-10-13). Server: backend/routes/admin/telegram.admin.routes.js.
  */
 
-/** `GET|PUT /api/admin/telegram/bot` — the bot, never its token. */
+/** One saved bot, never its token. */
+export interface TelegramBotSlot {
+  slot: number;
+  botId: string;
+  botUsername: string;
+  miniAppShortName: string;
+  suspended: boolean;
+  suspendedAt: string | null;
+  suspendedReason: string;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+/** `GET /api/admin/telegram/bot` — the bot in use (top level) and every saved bot. */
 export interface TelegramBot {
   success: boolean;
   configured: boolean;
+  slot: number | null;
   botId: string | null;
   botUsername: string;
   miniAppShortName: string;
   updatedAt: string | null;
   updatedBy: string | null;
+  /** How many slots there are: the primary and the standbys. */
+  slots: number;
+  bots: TelegramBotSlot[];
 }
 
 export const telegram = {
@@ -524,12 +542,25 @@ export const telegram = {
   },
 
   /**
-   * Either field may be sent alone. The token is asked of Telegram before it
-   * is stored; a refusal (400 TOKEN_INVALID, SHORT_NAME_INVALID, 409 NO_BOT)
-   * arrives as an axios error carrying the server's `message`.
+   * Either field may be sent alone; `slot` is 1 when left out. The token is
+   * asked of Telegram before it is stored; a refusal (400 TOKEN_INVALID,
+   * SHORT_NAME_INVALID, SLOT_INVALID, 409 NO_BOT, BOT_IN_OTHER_SLOT) carries
+   * the server's own words.
    */
-  saveBot: async (body: { token?: string; miniAppShortName?: string }) => {
-    const res = await api.put<TelegramBot>('/api/admin/telegram/bot', body);
+  saveBot: async (body: { slot?: number; token?: string; miniAppShortName?: string }) => {
+    const res = await api.put<TelegramBotSlot & { success: boolean }>('/api/admin/telegram/bot', body);
+    return res.data;
+  },
+
+  /** Remove a standby (slot 2+). */
+  removeBot: async (slot: number) => {
+    const res = await api.delete<{ success: boolean; slot: number }>(`/api/admin/telegram/bot/${slot}`);
+    return res.data;
+  },
+
+  /** Put a suspended bot back in use; refused (409 TOKEN_STILL_REFUSED) while Telegram still refuses it. */
+  resumeBot: async (slot: number) => {
+    const res = await api.post<TelegramBotSlot & { success: boolean }>(`/api/admin/telegram/bot/${slot}/resume`);
     return res.data;
   },
 };

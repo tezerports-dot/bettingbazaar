@@ -15,6 +15,14 @@
 # ready yet will fail issuance and hold up the others — add it after DNS
 # propagates, not before.
 #
+# STANDBY hosts are not listed here. They are the hosts of the gateway document
+# signed offline (docs/governance/DOMAIN_FAILOVER.md), and Caddy takes their
+# certificate the first time a visitor reaches one (`on_demand_tls`), after
+# asking the api role whether the name is served here
+# (GET /api/v1/client/tls-allowed). So putting a standby live is one DNS record
+# pointed at this server: no edit here, no restart, and a stranger's name
+# pointed at this address gets no certificate.
+#
 # Multi-domain is plain redundancy: every hostname serves the same app, the same
 # routes, the same behaviour (backend/config/network.config.js). Nothing here
 # takes client IP, geo or ISP as an input, and no per-domain logic exists —
@@ -23,13 +31,19 @@
 
 {
 	email {$ACME_EMAIL}
+	# Standby hosts: a certificate on first use, only for a name the api role
+	# says this deployment serves (config/servedHosts.js).
+	on_demand_tls {
+		ask http://api:8080/api/v1/client/tls-allowed
+	}
 	# Uncomment to rehearse against Let's Encrypt staging. Do this if you are
 	# unsure about DNS: the production endpoint rate-limits failed issuance to
 	# 5 per hostname per hour, and hitting that costs you the launch window.
 	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
 }
 
-{$SITE_ADDRESS} {
+# Everything a site answers, shared by the listed domains and the standby pool.
+(app_routes) {
 	encode zstd gzip
 
 	header {
@@ -78,4 +92,17 @@
 	handle {
 		reverse_proxy api:8080
 	}
+}
+
+{$SITE_ADDRESS} {
+	import app_routes
+}
+
+# Any other name: the standby pool. Caddy asks the api role first (above), and
+# a name it refuses gets no certificate and no answer.
+https:// {
+	tls {
+		on_demand
+	}
+	import app_routes
 }

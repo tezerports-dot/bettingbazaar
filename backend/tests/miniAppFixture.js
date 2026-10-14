@@ -17,6 +17,9 @@ import crypto from 'crypto';
 /** A token shaped like a real one and valid for nothing. */
 export const TEST_BOT_TOKEN = '7000000001:TEST-only-token-never-a-real-bot_0123456789';
 export const TEST_BOT = { botId: '7000000001', username: 'bb_test_miniapp_bot' };
+/** A standby bot's (owner, 2026-10-14): a second fake token, for slot 2. */
+export const STANDBY_BOT_TOKEN = '7000000002:TEST-only-standby-never-a-real-bot_0123456';
+export const STANDBY_BOT = { botId: '7000000002', username: 'bb_test_standby_bot' };
 
 function sign(fields, token) {
   const params = new URLSearchParams();
@@ -71,18 +74,21 @@ export function freshTelegramUserId() {
 }
 
 /**
- * Store the test token as the platform's one bot (through the repository: the
+ * Store the test token as the platform's bot in `slot` (1 unless a standby is
+ * meant; through the repository: the
  * admin route would ask Telegram's `getMe`) and drop the client's cache.
  */
-export async function saveTestBot({ miniAppShortName = '' } = {}) {
+export async function saveTestBot({
+  miniAppShortName = '', slot = 1, bot = TEST_BOT, token = TEST_BOT_TOKEN,
+} = {}) {
   const [{ saveBot }, { encryptField }, { invalidateBotCache }] = await Promise.all([
     import('../../database/repositories/telegram.js'),
     import('../domains/identity/fieldCrypto.util.js'),
     import('../domains/telegram/telegramClient.js'),
   ]);
   const saved = await saveBot({
-    botId: TEST_BOT.botId, botUsername: TEST_BOT.username,
-    tokenEncrypted: encryptField(TEST_BOT_TOKEN), miniAppShortName,
+    slot, botId: bot.botId, botUsername: bot.username,
+    tokenEncrypted: encryptField(token), miniAppShortName,
   });
   invalidateBotCache();
   return saved;

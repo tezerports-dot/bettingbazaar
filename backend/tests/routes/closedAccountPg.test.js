@@ -77,7 +77,7 @@ describePg('a deleted account is closed', () => {
   };
   const startParam = (opened) => new URL(opened.telegram.url).searchParams.get('startapp');
   /** "Continue with Telegram" at the player door: the browser's first leg. */
-  const open = (delivery = 'MATCH') => post('/api/v1/auth/login/telegram', { delivery }).then((r) => r.body);
+  const open = (delivery = 'MATCH') => post('/api/v1/auth/login/telegram', { delivery, returnOrigin: SITE }).then((r) => r.body);
   const complete = (opened) => post('/api/v1/auth/login/telegram/complete', { challengeToken: opened.challengeToken });
   /** The account's own Telegram presses Verify in the Mini App. */
   const verify = (opened, who) => post('/api/telegram/mini-app/approve', {

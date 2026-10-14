@@ -24,7 +24,7 @@
 import { verifyAsync } from '@noble/ed25519';
 
 export const GATEWAY_FORMAT = 'bb-gateway-config/1';
-export const GATEWAY_MAX_HOSTS = 8;
+export const GATEWAY_MAX_HOSTS = 16;
 export const GATEWAY_MAX_DOCUMENT_BYTES = 4096;
 export const GATEWAY_MAX_LIFETIME_DAYS = 400;
 export const GATEWAY_CLOCK_SKEW_MS = 86_400_000;

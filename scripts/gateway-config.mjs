@@ -10,9 +10,12 @@
  *       and GATEWAY_CONFIG_PUBLIC_KEY.
  *
  *   node scripts/gateway-config.mjs sign --key <path> --version <n>
- *       --hosts a.example.com,b.example.com (--expires <ISO instant> | --days <n>)
- *       [--out <file>]
+ *       (--hosts a.example.com,b.example.com | --hosts-file <file>)
+ *       (--expires <ISO instant> | --days <n>) [--out <file>]
  *       Signs a document issued now and prints it (or writes it to --out).
+ *       A hosts file lists one host per line, live hosts first, then the
+ *       STANDBY pool (`#` starts a comment): order is the app's preference.
+ *       Publish the result with scripts/gateway-publish.mjs.
  *
  *   node scripts/gateway-config.mjs verify --public-key <base64url> [--floor <n>] <file>
  *       Verifies a document as the app would; exits 1 with the reason if not.
@@ -26,7 +29,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  GATEWAY_FORMAT, rawPublicKey, signGatewayPayload, verifyGatewayDocument,
+  GATEWAY_FORMAT, GATEWAY_MAX_DOCUMENT_BYTES, rawPublicKey, signGatewayPayload, verifyGatewayDocument,
 } from '../backend/domains/configuration/gatewayConfig.js';
 
 const DAY_MS = 86_400_000;
@@ -90,7 +93,7 @@ function sign({ flags }, out, now) {
   assertOutsideRepo(flags.key);
   const version = Number(flags.version);
   if (!flags.version || !Number.isSafeInteger(version)) throw fail('sign needs --version <integer>, higher than the last one signed');
-  if (!flags.hosts) throw fail('sign needs --hosts a.example.com,b.example.com');
+  if (Boolean(flags.hosts) === Boolean(flags['hosts-file'])) throw fail('sign needs exactly one of --hosts a.example.com,b.example.com or --hosts-file <file>');
   if (Boolean(flags.expires) === Boolean(flags.days)) throw fail('sign needs exactly one of --expires <ISO instant> or --days <n>');
   const issued = new Date(now);
   const expires = flags.expires ? new Date(flags.expires) : new Date(now + Number(flags.days) * DAY_MS);
@@ -103,16 +106,26 @@ function sign({ flags }, out, now) {
     version,
     issuedAt: issued.toISOString(),
     expiresAt: expires.toISOString(),
-    hosts: flags.hosts.split(',').map((h) => h.trim()).filter(Boolean),
+    hosts: flags.hosts ? flags.hosts.split(',').map((h) => h.trim()).filter(Boolean) : readHostsFile(flags['hosts-file']),
   }, privateKey);
-  // Prove it verifies as the app will verify it before anyone ships it.
-  verifyGatewayDocument(document, rawPublicKey(privateKey), { now });
-
   const text = `${JSON.stringify(document)}\n`;
+  // Prove it verifies as the app will verify it, size cap included, before anyone ships it.
+  if (Buffer.byteLength(text.trimEnd(), 'utf8') > GATEWAY_MAX_DOCUMENT_BYTES) throw fail(`the signed document is over ${GATEWAY_MAX_DOCUMENT_BYTES} bytes; use fewer or shorter hosts`);
+  verifyGatewayDocument(text.trimEnd(), rawPublicKey(privateKey), { now });
+
   if (flags.out) {
     writeFileSync(resolve(flags.out), text);
     out(`signed version ${version} written to ${resolve(flags.out)}`);
   } else out(text.trimEnd());
+}
+
+/** One host per line; blank lines and `#` comments ignored. Order is kept: it is the app's preference. */
+export function parseHostsFile(text) {
+  return String(text).split(/\r?\n/).map((line) => line.replace(/#.*/, '').trim()).filter(Boolean);
+}
+
+function readHostsFile(path) {
+  return parseHostsFile(readFileSync(resolve(path), 'utf8'));
 }
 
 function verifyCmd({ flags, positional }, out, now) {

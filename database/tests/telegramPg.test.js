@@ -19,7 +19,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { createUser, getUser, newUserId } from '../repositories/users.js';
 import {
-  getBot, getBotSecrets, saveBot,
+  getBot, getBots, getBotSecrets, saveBot, removeBot, setBotSuspended,
   getLinkByUserId, getLinkByTelegramId, listLinksForTelegramUser,
   createChallenge, getChallenge, redeemChallenge, redeemTicket,
   answerChallenge, sweepExpired, DELIVERY,
@@ -78,20 +78,21 @@ describePg('Telegram, Continue with Telegram (PostgreSQL)', () => {
                    RESTART IDENTITY CASCADE`);
   });
 
-  describe('the one bot', () => {
-    it('is absent until saved, and saving twice keeps one row', async () => {
+  describe('the bot and its standbys', () => {
+    it('is absent until saved, and saving a slot twice keeps one row', async () => {
       expect(await getBot()).toBeNull();
       await saveBot({ botId: '1', botUsername: 'bb_bot', tokenEncrypted: 'c1', miniAppShortName: 'app' });
       await saveBot({ botId: '2', botUsername: 'bb2_bot', tokenEncrypted: 'c2' });
       expect(await count('telegram_bot')).toBe(1);
       // A token change keeps the short name it was not given.
-      expect(await getBot()).toMatchObject({ botId: '2', botUsername: 'bb2_bot', miniAppShortName: 'app' });
+      expect(await getBot()).toMatchObject({ slot: 1, botId: '2', botUsername: 'bb2_bot', miniAppShortName: 'app' });
     });
 
     it('never returns the token from the read a screen renders', async () => {
       await saveBot({ botId: '1', botUsername: 'bb_bot', tokenEncrypted: 'cipher' });
       expect(JSON.stringify(await getBot())).not.toContain('cipher');
-      expect((await getBotSecrets()).tokenEncrypted).toBe('cipher');
+      expect(JSON.stringify(await getBots())).not.toContain('cipher');
+      expect((await getBotSecrets())[0]).toMatchObject({ slot: 1, tokenEncrypted: 'cipher', suspended: false });
     });
 
     it('changes the short name alone only when a bot exists', async () => {
@@ -100,13 +101,35 @@ describePg('Telegram, Continue with Telegram (PostgreSQL)', () => {
       expect((await saveBot({ miniAppShortName: 'play' })).miniAppShortName).toBe('play');
     });
 
-    it('refuses a second row and a short name Telegram would not accept', async () => {
-      await expect(pgQuery(`INSERT INTO telegram_bot (id, bot_id, username, token_encrypted) VALUES (2,'x','y','z')`))
-        .rejects.toThrow(/telegram_bot_one_row/);
+    it('holds standbys in slots 2 to 4, one slot per bot, and removes only a standby', async () => {
+      await saveBot({ botId: '1', botUsername: 'bb_bot', tokenEncrypted: 'c1' });
+      await saveBot({ slot: 3, botId: '3', botUsername: 'bb3_bot', tokenEncrypted: 'c3' });
+      expect((await getBots()).map((b) => b.slot)).toEqual([1, 3]);
+      expect((await getBotSecrets()).map((b) => b.slot)).toEqual([1, 3]);
+      expect(await saveBot({ slot: 2, botId: '1', botUsername: 'bb_bot', tokenEncrypted: 'again' })).toEqual({ conflict: 1 });
+      await expect(saveBot({ slot: 5, botId: '5', botUsername: 'b5', tokenEncrypted: 'c5' })).rejects.toThrow(/telegram_bot_slots/);
+      expect(await removeBot(1)).toBe(false);
+      expect(await removeBot(3)).toBe(true);
+      expect(await count('telegram_bot')).toBe(1);
+    });
+
+    it('suspends and lifts a bot once, guarded by its id, and a new token lifts it too', async () => {
+      await saveBot({ botId: '1', botUsername: 'bb_bot', tokenEncrypted: 'c1' });
+      expect(await setBotSuspended({ slot: 1, reason: 'refused', botId: 'other' })).toBeNull();
+      expect(await setBotSuspended({ slot: 1, reason: 'refused', botId: '1' })).toMatchObject({ suspendedReason: 'refused' });
+      expect(await setBotSuspended({ slot: 1, reason: 'again' })).toBeNull();
+      expect((await getBotSecrets())[0].suspended).toBe(true);
+      expect(await setBotSuspended({ slot: 1, reason: null })).toMatchObject({ suspendedAt: null, suspendedReason: '' });
+      await setBotSuspended({ slot: 1, reason: 'refused' });
+      expect(await saveBot({ botId: '1', botUsername: 'bb_bot', tokenEncrypted: 'new' })).toMatchObject({ suspendedAt: null });
+    });
+
+    it('refuses a short name Telegram would not accept', async () => {
       await expect(saveBot({ botId: '1', botUsername: 'b', tokenEncrypted: 'c', miniAppShortName: 'bad name!' }))
         .rejects.toThrow(/telegram_bot_short_name_shape/);
     });
   });
+
 
   describe('the first Verify on a panel: the contact share', () => {
     it('links the account whose mobile the shared phone is, and books the joining number', async () => {

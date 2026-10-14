@@ -62,6 +62,20 @@ function trustedOrigins(): string[] {
 }
 
 /**
+ * The address at which a link opens THIS app: in the Android shell the host its
+ * App Link filter claims (`VITE_APP_ORIGIN`, baked into the APK), in a browser
+ * or an installed web app the page's own origin. "Continue with Telegram"
+ * sends it so the server grants a HANDOFF only when Verify's link would come
+ * back here (`deliveryFor`, backend telegramChallenge.service.js).
+ */
+export function returnOriginHere(): string {
+  if (isNativeShell()) {
+    try { return new URL(readEnv('VITE_APP_ORIGIN')).origin; } catch { return ''; }
+  }
+  return typeof location !== 'undefined' && location.origin !== 'null' ? location.origin : '';
+}
+
+/**
  * The in-app route a deep link asks for, or null if it asks for nothing this
  * app should act on.
  *

@@ -52,6 +52,7 @@ import NativeUpdateGate from './components/NativeUpdateGate';
 import { RejectedBuyPopup } from './components/DisputeWindow';
 import { isNativeShell } from './services/nativeLifecycle';
 import { bootstrapApiEndpoint, endpointState } from './services/originFailover';
+import { refreshTelegramEntry, rememberedTelegramEntries } from './services/telegramEntry';
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '0.0.0';
 
 const backend = getBackend();
@@ -153,7 +154,12 @@ const UpdateRequiredScreen = ({ latest }: { latest: string }) => (
  * Nothing trusted answered: the discovery service and every configured origin
  * failed. Say so and offer a retry — never connect somewhere unvalidated.
  */
-const ConnectionErrorScreen = ({ onRetry, retrying }: { onRetry: () => void; retrying: boolean }) => (
+const ConnectionErrorScreen = ({ onRetry, retrying }: { onRetry: () => void; retrying: boolean }) => {
+  // Telegram's addresses, remembered from the last time we connected: they open
+  // the app's way in even when every address of ours is blocked. The first is
+  // the bot in use; the rest are standby bots, for when Telegram banned it.
+  const [telegram, ...backups] = rememberedTelegramEntries();
+  return (
   <div role="alert" className="flex flex-col items-center justify-center h-full p-8 text-center" style={{ background: 'var(--app-bg, #0A0E17)', color: 'var(--text)' }}>
     <img
       src={brandLogo('logo.png')}
@@ -172,8 +178,31 @@ const ConnectionErrorScreen = ({ onRetry, retrying }: { onRetry: () => void; ret
     >
       {retrying ? 'CONNECTING…' : 'TRY AGAIN'}
     </button>
+    {telegram && (
+      <p className="text-xs mt-6 leading-relaxed max-w-xs mx-auto" style={{ color: 'var(--text2)' }}>
+        Still not connecting? This Telegram link always opens Betting Bazaar:{' '}
+        <a href={telegram} target="_blank" rel="noopener noreferrer" className="font-bold underline" style={{ color: 'var(--brand-primary, #D4AF37)' }}>
+          Open in Telegram
+        </a>
+        {backups.length > 0 && (
+          <>
+            <br />
+            If that link doesn't open, try a backup:{' '}
+            {backups.map((url, i) => (
+              <React.Fragment key={url}>
+                {i > 0 && ' · '}
+                <a href={url} target="_blank" rel="noopener noreferrer" className="font-bold underline" style={{ color: 'var(--brand-primary, #D4AF37)' }}>
+                  Backup {i + 1}
+                </a>
+              </React.Fragment>
+            ))}
+          </>
+        )}
+      </p>
+    )}
   </div>
-);
+  );
+};
 
 // ── EndpointGate ─────────────────────────────────────────────────────────────
 // Step one of the startup order (services/originFailover.ts): discover and
@@ -187,6 +216,8 @@ const EndpointGate: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   const attempt = React.useCallback(async () => {
     setRetrying(true);
     const origin = await bootstrapApiEndpoint();
+    // Learn (or refresh) the Telegram link the "Can't connect" screen offers next time.
+    if (origin !== null) void refreshTelegramEntry();
     setRetrying(false);
     setPhase(origin === null ? 'failed' : 'ready');
   }, []);

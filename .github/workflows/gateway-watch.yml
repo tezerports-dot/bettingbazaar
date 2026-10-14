@@ -1,0 +1,38 @@
+# GOVERNANCE: Read CLAUDE.md before editing this file.
+# Weekly: does every mirror of the signed gateway document still serve a valid,
+# current copy, and is it far from expiry? (docs/governance/DOMAIN_FAILOVER.md)
+#
+# A lapsed document drops every install back to its build-time hosts, which is
+# exactly when a blocked domain hurts most, and nothing else would say so. This
+# needs no secret: it reads the public mirrors and verifies against the public
+# key, the same repository variables the Android build already uses. With
+# either variable unset it says so and passes, so a repository that has not
+# set up the gateway yet is not red.
+name: Gateway watch
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with: { node-version: '22' }
+      - name: Check every mirror
+        env:
+          KEY: ${{ vars.ANDROID_GATEWAY_CONFIG_PUBLIC_KEY }}
+          URLS: ${{ vars.ANDROID_GATEWAY_CONFIG_URLS }}
+        run: |
+          if [ -z "$KEY" ] || [ -z "$URLS" ]; then
+            echo "::notice::ANDROID_GATEWAY_CONFIG_PUBLIC_KEY or ANDROID_GATEWAY_CONFIG_URLS is not set; nothing to check yet."
+            exit 0
+          fi
+          node scripts/gateway-publish.mjs check --public-key "$KEY" --urls "$URLS" --warn-days 21

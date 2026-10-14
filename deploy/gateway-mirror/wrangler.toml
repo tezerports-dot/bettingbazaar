@@ -1,0 +1,10 @@
+# GOVERNANCE: Read CLAUDE.md before editing this file.
+# The gateway mirror Worker (worker.js). Replace the id with your namespace's:
+#   npx wrangler kv namespace create GATEWAY
+name = "bb-gateway"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+[[kv_namespaces]]
+binding = "GATEWAY"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"

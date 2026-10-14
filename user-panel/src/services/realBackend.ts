@@ -40,6 +40,7 @@ import {
 // submits without one when Turnstile is unconfigured or unreachable — the
 // server applies the policy, so an outage there must not block the form here.
 import { getCaptchaToken, captchaFailure } from './captcha';
+import { returnOriginHere } from './nativeDeepLink';
 import { secureFetch, openEventStream, type EventStream } from './secureTransport';
 
 const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
@@ -348,9 +349,13 @@ export class RealBackend implements Backend {
    */
   async loginWithTelegram(opts: { delivery?: TelegramDelivery; referralCode?: string } = {}): Promise<SignInStep> {
     const captchaToken = (await getCaptchaToken()) ?? undefined;
+    // Where Verify's link would open THIS app: the server grants a HANDOFF only
+    // when it is the site's own address, else MATCH (`deliveryFor`), so an app
+    // left on a retired address is never waiting for a session sent elsewhere.
+    const returnOrigin = returnOriginHere();
     const res = await this.request<{ challengeToken?: string; telegram?: TelegramBlock; message?: string;
       delivery?: TelegramDelivery; matchNumber?: number | null }>(
-      '/v1/auth/login/telegram', { method: 'POST', body: JSON.stringify({ ...opts, captchaToken }) })
+      '/v1/auth/login/telegram', { method: 'POST', body: JSON.stringify({ ...opts, returnOrigin, captchaToken }) })
       .catch(explainCaptcha);
     if (!res.challengeToken) {
       return { kind: 'unavailable', message: res.message || 'Telegram sign-in is not available right now.' };

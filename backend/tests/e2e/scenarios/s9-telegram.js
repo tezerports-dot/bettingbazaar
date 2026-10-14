@@ -146,7 +146,10 @@ async function playerContinueWithTelegram() {
     again.status >= 400 && !again.body.token);
 
   // ── A phone: the handoff ticket ────────────────────────────────────────
-  const phone = await post('/api/v1/auth/login/telegram', { delivery: 'HANDOFF' });
+  // A HANDOFF is granted only to an app that opens at the site's own address
+  // (deliveryFor): the one run.js gives the server.
+  const site = process.env.PUBLIC_APP_ORIGIN || 'https://e2e.bettingbazaar.test';
+  const phone = await post('/api/v1/auth/login/telegram', { delivery: 'HANDOFF', returnOrigin: site });
   const handed = await answer(phone.body.telegram, tgId);
   const t = ticketOf(handed.body.redirectUrl);
   check(A, 'mini app', 'Verify a phone sign-in', '200, opens the site with a one-time ticket in the fragment',

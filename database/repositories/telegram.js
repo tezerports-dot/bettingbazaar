@@ -73,72 +73,122 @@ async function acting(fn) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// THE ONE BOT
+// THE BOT AND ITS STANDBYS — one row per slot, 1 (primary) to 4
 // ═══════════════════════════════════════════════════════════════════════════
+
+/** How many bots may be saved: the primary and three standbys (CHECK telegram_bot_slots). */
+export const BOT_SLOTS = 4;
+
+const BOT_COLUMNS = 'id, bot_id, username, mini_app_short_name, suspended_at, suspended_reason, updated_at, updated_by';
 
 const toBot = (r) => (r ? {
   configured: true,
+  slot: Number(r.id),
   botId: r.bot_id,
   botUsername: r.username,
   miniAppShortName: r.mini_app_short_name,
+  suspendedAt: r.suspended_at,
+  suspendedReason: r.suspended_reason,
   updatedAt: r.updated_at,
   updatedBy: r.updated_by,
 } : null);
 
-/** The bot, without its token: what an admin screen renders. Null when none. */
-export async function getBot() {
+/** The bot in `slot`, without its token: what an admin screen renders. Null when none. */
+export async function getBot(slot = 1) {
   const { rows } = await pgQuery(
-    `SELECT bot_id, username, mini_app_short_name, updated_at, updated_by
-       FROM telegram_bot WHERE id = 1`, [], 'tg_bot_get',
+    `SELECT ${BOT_COLUMNS} FROM telegram_bot WHERE id = $1`, [Number(slot)], 'tg_bot_get',
   );
   return toBot(rows[0]);
 }
 
-/**
- * The bot WITH its token ciphertext. Separate, and named for it: whoever holds
- * the token can sign Mini App data — sign anybody in — so no route that renders
- * the bot calls this.
- */
-export async function getBotSecrets() {
-  const { rows } = await pgQuery(
-    `SELECT bot_id, username, token_encrypted, mini_app_short_name
-       FROM telegram_bot WHERE id = 1`, [], 'tg_bot_secrets',
-  );
-  const r = rows[0];
-  return r ? {
-    botId: r.bot_id, botUsername: r.username,
-    tokenEncrypted: r.token_encrypted, miniAppShortName: r.mini_app_short_name,
-  } : null;
+/** Every saved bot, slot order, without tokens. */
+export async function getBots() {
+  const { rows } = await pgQuery(`SELECT ${BOT_COLUMNS} FROM telegram_bot ORDER BY id`, [], 'tg_bots_get');
+  return rows.map(toBot);
 }
 
 /**
- * Save the bot. With a token, the whole row (Telegram's `getMe` has already
- * named the bot); without one, only the Mini App short name of the bot that is
- * there — refused (null) when there is none to update.
+ * Every saved bot WITH its token ciphertext, slot order. Separate, and named
+ * for it: whoever holds a token can sign Mini App data — sign anybody in — so
+ * no route that renders a bot calls this.
+ */
+export async function getBotSecrets() {
+  const { rows } = await pgQuery(
+    `SELECT id, bot_id, username, token_encrypted, mini_app_short_name, suspended_at
+       FROM telegram_bot ORDER BY id`, [], 'tg_bot_secrets',
+  );
+  return rows.map((r) => ({
+    slot: Number(r.id), botId: r.bot_id, botUsername: r.username,
+    tokenEncrypted: r.token_encrypted, miniAppShortName: r.mini_app_short_name,
+    suspended: r.suspended_at !== null,
+  }));
+}
+
+/**
+ * Save the bot in `slot`. With a token, the whole row (Telegram's `getMe` has
+ * already named the bot), and a new token lifts any suspension; without one,
+ * only the Mini App short name of the bot that is there — refused (null) when
+ * there is none to update. A bot already saved in another slot is refused
+ * (`{ conflict: slot }`) by `telegram_bot_one_slot_per_bot`.
  */
 export async function saveBot({
-  botId, botUsername, tokenEncrypted, miniAppShortName, updatedBy = null,
+  slot = 1, botId, botUsername, tokenEncrypted, miniAppShortName, updatedBy = null,
 }) {
+  const id = Number(slot);
   if (tokenEncrypted) {
+    const { rows: other } = await pgQuery(
+      'SELECT id FROM telegram_bot WHERE bot_id = $1 AND id <> $2', [String(botId), id], 'tg_bot_other_slot',
+    );
+    if (other[0]) return { conflict: Number(other[0].id) };
     const { rows } = await pgQuery(
       `INSERT INTO telegram_bot (id, bot_id, username, token_encrypted, mini_app_short_name, updated_at, updated_by)
-       VALUES (1, $1, $2, $3, COALESCE($4, ''), now(), $5)
+       VALUES ($6, $1, $2, $3, COALESCE($4, ''), now(), $5)
        ON CONFLICT (id) DO UPDATE
           SET bot_id = EXCLUDED.bot_id, username = EXCLUDED.username,
               token_encrypted = EXCLUDED.token_encrypted,
               mini_app_short_name = COALESCE($4, telegram_bot.mini_app_short_name),
+              suspended_at = NULL, suspended_reason = '',
               updated_at = now(), updated_by = EXCLUDED.updated_by
-       RETURNING bot_id, username, mini_app_short_name, updated_at, updated_by`,
+       RETURNING ${BOT_COLUMNS}`,
       [String(botId), String(botUsername), String(tokenEncrypted),
-        miniAppShortName ?? null, updatedBy], 'tg_bot_save',
+        miniAppShortName ?? null, updatedBy, id], 'tg_bot_save',
     );
     return toBot(rows[0]);
   }
   const { rows } = await pgQuery(
     `UPDATE telegram_bot SET mini_app_short_name = $1, updated_at = now(), updated_by = $2
-      WHERE id = 1
-      RETURNING bot_id, username, mini_app_short_name, updated_at, updated_by`,
-    [String(miniAppShortName ?? ''), updatedBy], 'tg_bot_short_name',
+      WHERE id = $3
+      RETURNING ${BOT_COLUMNS}`,
+    [String(miniAppShortName ?? ''), updatedBy, id], 'tg_bot_short_name',
+  );
+  return toBot(rows[0]);
+}
+
+/** Remove a STANDBY (slot 2+); the primary is replaced, never removed. True when a row went. */
+export async function removeBot(slot) {
+  const { rowCount } = await pgQuery(
+    'DELETE FROM telegram_bot WHERE id = $1 AND id > 1', [Number(slot)], 'tg_bot_remove',
+  );
+  return rowCount === 1;
+}
+
+/**
+ * Suspend the bot in `slot` with a reason (Telegram refused its token, or an
+ * admin), or lift it (`reason: null`). Only a bot that is THERE and not
+ * already in that state moves (the guard is the WHERE, §20 trap 18). Returns
+ * the row, or null when nothing moved.
+ */
+export async function setBotSuspended({ slot, reason, botId = null, updatedBy = null }) {
+  const suspend = reason !== null && reason !== undefined;
+  const { rows } = await pgQuery(
+    `UPDATE telegram_bot
+        SET suspended_at = CASE WHEN $2 THEN now() ELSE NULL END,
+            suspended_reason = CASE WHEN $2 THEN $3 ELSE '' END,
+            updated_at = now(), updated_by = COALESCE($5, updated_by)
+      WHERE id = $1 AND (suspended_at IS NULL) = $2
+        AND ($4::text IS NULL OR bot_id = $4::text)
+      RETURNING ${BOT_COLUMNS}`,
+    [Number(slot), suspend, String(reason ?? '').slice(0, 300), botId, updatedBy], 'tg_bot_suspend',
   );
   return toBot(rows[0]);
 }

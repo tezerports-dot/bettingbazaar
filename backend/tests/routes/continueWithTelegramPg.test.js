@@ -21,7 +21,9 @@ import { verifyJwt } from '../../domains/identity/jwt.util.js';
 import { ticketHash } from '../../domains/identity/telegramChallenge.service.js';
 import {
   saveTestBot, removeTestBot, linkTelegram, signInitData, signContact, freshTelegramUserId,
+  STANDBY_BOT, STANDBY_BOT_TOKEN,
 } from '../miniAppFixture.js';
+import { invalidateBotCache } from '../../domains/telegram/telegramClient.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 const SITE = 'https://bb.example';
@@ -157,9 +159,27 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
 
   // ── HANDOFF: the session lands where Verify was pressed ────────────────
   describe('handoff ticket', () => {
+    // After a blocked domain is retired, an APK or installed web app still at
+    // the old address would never be the one Verify opens: it gets a MATCH,
+    // and the number reaches it wherever it runs (deliveryFor).
+    it('a HANDOFF asked from any address but the site\'s own is opened as a MATCH, and the MATCH signs that app in', async () => {
+      const p = await player();
+      for (const returnOrigin of [undefined, 'https://retired.example', 'https://localhost', `${SITE}.evil.example`]) {
+        const opened = (await open({ delivery: 'HANDOFF', ...(returnOrigin ? { returnOrigin } : {}) })).body;
+        expect(opened.delivery).toBe('MATCH');
+        expect(opened.matchNumber).toEqual(expect.any(Number));
+      }
+      const opened = (await open({ delivery: 'HANDOFF', returnOrigin: 'https://retired.example' })).body;
+      const ok = await approve(opened, p.tgId, { pick: opened.matchNumber });
+      expect(ok.body).toMatchObject({ approved: true, redirectUrl: null });
+      const done = await post('/api/v1/auth/login/telegram/complete', { challengeToken: opened.challengeToken });
+      expect(done.status).toBe(200);
+      expect(done.body.token).toEqual(expect.any(String));
+    });
+
     it('Verify answers the site with a ticket; the asking browser can never spend it; the ticket signs in once', async () => {
       const p = await player();
-      const opened = (await open({ delivery: 'HANDOFF' })).body;
+      const opened = (await open({ delivery: 'HANDOFF', returnOrigin: SITE })).body;
       expect(opened).toMatchObject({ delivery: 'HANDOFF', matchNumber: null });
 
       const initData = signInitData({ telegramUserId: p.tgId, startParam: startParam(opened.telegram) });
@@ -192,7 +212,7 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
 
     it('ten tabs presenting one ticket at once get one session', async () => {
       const p = await player();
-      const opened = (await open({ delivery: 'HANDOFF' })).body;
+      const opened = (await open({ delivery: 'HANDOFF', returnOrigin: SITE })).body;
       const ticket = ticketOf((await approve(opened, p.tgId)).body.redirectUrl);
       const answers = await Promise.all(Array.from({ length: 10 }, () => redeem(ticket)));
       expect(answers.filter((r) => r.status === 200)).toHaveLength(1);
@@ -201,7 +221,7 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
 
     it('an expired ticket, a made-up ticket and a ticket of a refused challenge sign nobody in', async () => {
       const p = await player();
-      const opened = (await open({ delivery: 'HANDOFF' })).body;
+      const opened = (await open({ delivery: 'HANDOFF', returnOrigin: SITE })).body;
       const ticket = ticketOf((await approve(opened, p.tgId)).body.redirectUrl);
       await pgQuery(`UPDATE telegram_handoff_tickets SET expires_at = now() - interval '1 second' WHERE ticket_hash = $1`, [ticketHash(ticket)]);
       expect((await redeem(ticket)).body.code).toBe('TICKET_INVALID');
@@ -209,7 +229,7 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
       expect((await redeem('')).body.code).toBe('TICKET_INVALID');
 
       // A live ticket whose challenge is no longer APPROVED (wrong challenge state) is refused.
-      const again = (await open({ delivery: 'HANDOFF' })).body;
+      const again = (await open({ delivery: 'HANDOFF', returnOrigin: SITE })).body;
       const t2 = ticketOf((await approve(again, p.tgId)).body.redirectUrl);
       await pgQuery(`UPDATE telegram_challenges SET status = 'DENIED' WHERE challenge_id = $1`, [startParam(again.telegram)]);
       expect((await redeem(t2)).body.code).toBe('TICKET_INVALID');
@@ -217,7 +237,7 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
 
     it('no website address configured: Verify says so instead of sending the person nowhere', async () => {
       const p = await player();
-      const opened = (await open({ delivery: 'HANDOFF' })).body;
+      const opened = (await open({ delivery: 'HANDOFF', returnOrigin: SITE })).body;
       delete process.env.PUBLIC_APP_ORIGIN;
       try {
         const res = await approve(opened, p.tgId);
@@ -234,7 +254,7 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
     it('a Telegram account with no player account shares its contact once: the account, link and referral commit with the approval, with no password', async () => {
       const referrer = await player();
       const code = (await db.users.getUser(referrer.userId)).referralCode;
-      const opened = (await open({ delivery: 'HANDOFF', referralCode: code })).body;
+      const opened = (await open({ delivery: 'HANDOFF', returnOrigin: SITE, referralCode: code })).body;
       const tgId = freshTelegramUserId();
       const mobile = freshMobile('9');
 
@@ -328,6 +348,61 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
     });
   });
 
+  // ── Standby bots (owner, 2026-10-14) ────────────────────────────────────
+  describe('a standby bot', () => {
+    const suspendPrimary = async (on) => {
+      await db.telegram.setBotSuspended({ slot: 1, reason: on ? 'test: refused' : null });
+      invalidateBotCache();
+    };
+
+    it('opens the same account, and takes every new sign-in once the primary is suspended', async () => {
+      await saveTestBot({ slot: 2, bot: STANDBY_BOT, token: STANDBY_BOT_TOKEN });
+      try {
+        const p = await player();
+        // A Mini App opened from the standby is proved by the standby's token: same person, same account.
+        const initData = signInitData({ telegramUserId: p.tgId, token: STANDBY_BOT_TOKEN });
+        const res = await post('/api/telegram/mini-app/continue', { initData });
+        expect(res.body, JSON.stringify(res.body)).toMatchObject({ success: true, created: false });
+        expect(verifyJwt((await redeem(ticketOf(res.body.redirectUrl))).body.token).userId).toBe(p.userId);
+
+        // New links name the primary while it works, the standby once it is suspended.
+        expect((await open({ delivery: 'MATCH' })).body.telegram.url).toContain('/bb_test_miniapp_bot');
+        await suspendPrimary(true);
+        const opened = (await open({ delivery: 'MATCH' })).body;
+        expect(opened.telegram.url).toContain(`/${STANDBY_BOT.username}`);
+        // A Mini App from the suspended primary, opened on an older link, is still ours and still proved.
+        const old = signInitData({ telegramUserId: p.tgId });
+        expect((await context(old)).body.success).toBe(true);
+      } finally {
+        await suspendPrimary(false);
+        await db.telegram.removeBot(2);
+        invalidateBotCache();
+      }
+    });
+
+    it('a contact must be signed by the bot whose Mini App sent it', async () => {
+      await saveTestBot({ slot: 2, bot: STANDBY_BOT, token: STANDBY_BOT_TOKEN });
+      try {
+        const tgId = freshTelegramUserId();
+        const mobile = freshMobile('9');
+        const res = await post('/api/telegram/mini-app/continue', {
+          initData: signInitData({ telegramUserId: tgId, token: STANDBY_BOT_TOKEN }),
+          contact: signContact({ telegramUserId: tgId, phone: mobile }),
+        });
+        expect(res.body.success).toBe(false);
+        expect(await getUserByMobile(mobile, 'PLAYER')).toBeNull();
+      } finally {
+        await db.telegram.removeBot(2);
+        invalidateBotCache();
+      }
+    });
+
+    it('a string signed by no saved bot is refused', async () => {
+      const res = await context(signInitData({ telegramUserId: freshTelegramUserId(), token: '7000000009:not-ours-at-all_0123456789abcdef' }));
+      expect(res.body.success).toBe(false);
+    });
+  });
+
   describe('who asked, on the Verify screen', () => {
     it('names the city only from the header the operator declared', async () => {
       const prior = process.env.GEO_CITY_HEADER;
@@ -349,7 +424,7 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
   describe('what the database holds to', () => {
     it("a player's ticket opens nothing at the merchant door, and is gone once tried there", async () => {
       const p = await player();
-      const opened = (await open({ delivery: 'HANDOFF' })).body;
+      const opened = (await open({ delivery: 'HANDOFF', returnOrigin: SITE })).body;
       const ok = await approve(opened, p.tgId);
       const hash = ticketHash(ticketOf(ok.body.redirectUrl));
       expect((await db.telegram.redeemTicket({ ticketHash: hash, audience: 'MERCHANT' })).ok).toBe(false);
@@ -358,7 +433,7 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
 
     it('a database from before Telegram-only sign-in converges when the schema is applied twice', async () => {
       const p = await player();
-      const opened = (await open({ delivery: 'HANDOFF' })).body;
+      const opened = (await open({ delivery: 'HANDOFF', returnOrigin: SITE })).body;
       const challengeId = startParam(opened.telegram);
       // What that database held: a player password, the merchant approval
       // switch, challenge purposes (one a password reset), the reset table.

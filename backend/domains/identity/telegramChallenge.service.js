@@ -87,6 +87,23 @@ export function destinationFor(audience, ticket = null) {
   return ticket ? `${base}#/tg/${ticket}` : base;
 }
 
+/**
+ * How the approval of a new sign-in reaches its browser (§33.2), decided here.
+ * HANDOFF only when the caller asks for it AND says it opens again at the
+ * address Verify sends people to (`returnOrigin` equal to `PUBLIC_APP_ORIGIN`);
+ * MATCH otherwise. After a blocked domain is retired the site moves to a
+ * standby, and an Android app or installed web app still answering at its old
+ * address would never be the one Verify opens: it would wait for a session
+ * that landed in the browser instead. MATCH reaches it wherever it runs
+ * (docs/governance/DOMAIN_FAILOVER.md). Downgrading is always safe: a MATCH
+ * is approved only with the number its own screen shows.
+ */
+export function deliveryFor(requested, returnOrigin) {
+  if (requested !== 'HANDOFF') return 'MATCH';
+  const site = publicAppOrigin();
+  return site && typeof returnOrigin === 'string' && returnOrigin.replace(/\/+$/, '') === site ? 'HANDOFF' : 'MATCH';
+}
+
 /** A challenge id: also the Mini App's start parameter, so `[A-Za-z0-9_-]`. */
 export function newChallengeId() {
   return `c${crypto.randomBytes(16).toString('hex')}`;

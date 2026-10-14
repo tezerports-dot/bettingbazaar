@@ -14,6 +14,7 @@ import { registerRecurring } from '../services/jobQueue.service.js';
 // Item 38 (2026-07-13): money-critical failures page a human via the
 // admin-configured webhook; item 33: reconcile failures are counted for /metrics.
 import { sendAlert } from '../services/alerting.service.js';
+import { checkBotHealth, BOT_HEALTH_EVERY_MS } from '../domains/telegram/telegramClient.js';
 import { ledgerReconcileErrors } from '../services/metrics.service.js';
 
 export function registerCronJobs(rebuildLeaderboard) {
@@ -145,6 +146,27 @@ export function registerCronJobs(rebuildLeaderboard) {
       sendAlert('rejected-buy-window-failed',
         'Rejected-buy window sweep failed — team tokens stay in escrow after their window closed', { error: e.message })
         .catch(() => {});
+    }
+  });
+
+  // ── Telegram bots, asked whether they still work — every second ─────────
+  // A bot whose token Telegram refuses (banned, revoked) is suspended so new
+  // links name the next standby at once (owner, 2026-10-14). An outage at
+  // Telegram suspends nothing (checkBotHealth).
+  if (!(BOT_HEALTH_EVERY_MS > 0)) {
+    console.warn('[telegram] TELEGRAM_BOT_HEALTH_MS=0: a banned bot will NOT be switched to its standby (test servers only)');
+  } else registerRecurring('telegram-bot-health', BOT_HEALTH_EVERY_MS, async () => {
+    try {
+      await checkBotHealth({
+        onSuspended: (bot, me) => {
+          console.warn(`[telegram] bot @${bot.botUsername} in slot ${bot.slot} suspended: ${me.error}`);
+          sendAlert('telegram-bot-suspended',
+            `Telegram refused bot @${bot.botUsername} (slot ${bot.slot}); new links use the next standby`,
+            { slot: bot.slot, error: me.error }).catch(() => {});
+        },
+      });
+    } catch (e) {
+      console.error('[telegram-bot-health] cron error:', e.message);
     }
   });
 

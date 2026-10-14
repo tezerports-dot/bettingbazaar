@@ -20,6 +20,11 @@
  *            for the phone to scan.
  * Either is safe whichever the device claims: a HANDOFF is never spent by a
  * poll, so a page that asked for one cannot collect somebody else's Verify.
+ * The server grants a HANDOFF only when this app opens at the site's own
+ * address (`returnOriginHere`, sent by `loginWithTelegram`), and answers MATCH
+ * otherwise: an APK or installed web app left on a retired address after a
+ * domain was blocked gets the number, which reaches it wherever it runs.
+ * This screen renders whichever the server answered (`waiting.delivery`).
  */
 import React, { useMemo, useState } from 'react';
 import { useGame } from '../../services/GameContext';
