@@ -8,6 +8,7 @@ import { currentOrigin } from '../../services/originFailover';
 import { isNativeShell } from '../../services/nativeLifecycle';
 import { brandLogo, fallBackToMark } from '../../services/brandAssets';
 import { SystemConfigData } from '../../types';
+import { refreshTelegramEntry, rememberedTelegramEntry } from '../../services/telegramEntry';
 
 const backend = getBackend();
 
@@ -19,8 +20,12 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
   const [config, setConfig] = useState<SystemConfigData | null>(null);
   const [copied, setCopied] = useState('');
 
+  // The Telegram link that keeps working if the site's address is ever blocked.
+  const [telegram, setTelegram] = useState(rememberedTelegramEntry);
+
   useEffect(() => {
     backend.getSystemConfig().then(setConfig).catch(console.error);
+    void refreshTelegramEntry().then(setTelegram);
   }, []);
 
   const handleShare = async (title: string, url: string) => {
@@ -132,6 +137,22 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
                     <span>⬇️</span> Download
                 </button>
             </div>
+
+            {/* OPTION: TELEGRAM — Telegram's address, so it survives a blocked domain. */}
+            {telegram && (
+              <div className="bg-slate-800/60 p-4 rounded-xl border border-slate-700 flex items-center justify-between group hover:border-sky-500/50 transition-colors">
+                <div className="text-left">
+                    <div className="text-white font-bold text-sm">Open in Telegram</div>
+                    <div className="text-[10px] text-slate-500">Always works, even if the website address changes</div>
+                </div>
+                <button
+                    onClick={() => handleCopy(telegram, 'telegram')}
+                    className="bg-slate-700 hover:bg-slate-600 text-white font-bold px-4 py-2 rounded-lg text-xs border border-slate-600 transition-transform active:scale-95"
+                >
+                    {copied === 'telegram' ? 'Copied!' : 'Copy Link'}
+                </button>
+              </div>
+            )}
 
             {/* OPTION 3: iOS — only when configured. */}
             {iosUrl && (

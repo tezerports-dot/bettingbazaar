@@ -22,6 +22,12 @@
  *                            each adopted origin's /api/v1/client/gateway-config
  *                            is asked too
  *
+ * A web build (the site, and the installed web app on Android and iPhone) that
+ * ships a gateway key and no VITE_API_URL counts its OWN page origin as its
+ * primary (`selfOrigin`), so it fails over too: an installed web app whose
+ * address is blocked still opens from its service worker's cache and moves its
+ * API calls to a signed standby host (docs/governance/DOMAIN_FAILOVER.md).
+ *
  * The one runtime addition: the hosts of a gateway document signed OFFLINE and
  * verified against the build-time key (`gatewayConfig.ts`). Nothing unsigned —
  * discovery, a server, a saved setting — can add a host.
@@ -49,6 +55,7 @@ import {
   GATEWAY_MAX_DOCUMENT_BYTES, acceptGatewayDocument, loadStoredGateway, parsePublicKey, signedHosts,
 } from './gatewayConfig';
 import { secureFetch } from './secureTransport';
+import { isNativeShell } from './nativeLifecycle';
 
 /** How long a single origin gets to answer the health probe. */
 const PROBE_TIMEOUT_MS = 4000;
@@ -128,6 +135,21 @@ function configuredOrigin(name: string, production: boolean): string {
   return validateApiOrigin(raw.replace(/\/+$/, ''), { allowedHosts: [hostOf(raw)], production }) ?? '';
 }
 
+/**
+ * The page's own origin as the primary, for a web build with a gateway key and
+ * no configured API origin; '' otherwise. Without it such a build is a
+ * same-origin deploy with nothing to fail over to, and never asks for the
+ * signed document at all. Never in the native shell, whose page is the phone's
+ * own `https://localhost` (refused in production by `validateApiOrigin` too).
+ */
+function selfOrigin(production: boolean): string {
+  if (isNativeShell() || !gatewayPublicKey()) return '';
+  if (readEnv('VITE_API_URL').trim() || readEnv('VITE_API_BACKUP_URL').trim()) return '';
+  const here = typeof location !== 'undefined' ? location.origin : '';
+  if (!here || here === 'null') return '';
+  return validateApiOrigin(here, { allowedHosts: [hostOf(here)], production }) ?? '';
+}
+
 export function originPolicy(): OriginPolicy {
   const production = isProductionBuild();
   const listed = readEnv('VITE_API_ALLOWED_HOSTS')
@@ -135,16 +157,15 @@ export function originPolicy(): OriginPolicy {
     // An entry that is not a plain hostname (a wildcard, a URL, an address)
     // is dropped, never interpreted.
     .filter((h) => /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(h) && !IPV4.test(h));
-  const fromConfig = [configuredOrigin('VITE_API_URL', production), configuredOrigin('VITE_API_BACKUP_URL', production)]
-    .filter(Boolean).map(hostOf);
+  const fromConfig = configuredOrigins().map(hostOf);
   return { allowedHosts: Array.from(new Set([...fromConfig, ...listed, ...signedHosts()])), production };
 }
 
-/** Primary then backup — the explicitly configured origins, in order. */
+/** Primary then backup — the explicitly configured origins, in order (or the page's own, `selfOrigin`). */
 export function configuredOrigins(): string[] {
   const production = isProductionBuild();
   return Array.from(new Set(
-    [configuredOrigin('VITE_API_URL', production), configuredOrigin('VITE_API_BACKUP_URL', production)].filter(Boolean),
+    [configuredOrigin('VITE_API_URL', production), configuredOrigin('VITE_API_BACKUP_URL', production), selfOrigin(production)].filter(Boolean),
   ));
 }
 
@@ -305,6 +326,20 @@ async function withTimeout<T>(ms: number, run: (signal: AbortSignal) => Promise<
   try { return await run(controller.signal); } finally { clearTimeout(timer); }
 }
 
+/**
+ * The first of `candidates`, in their order, that answers the probe, or null.
+ * All are probed AT ONCE and read in order, so the answer is the one asking
+ * them one after another would give, but a pool of blocked hosts that each
+ * time out costs one probe timeout, not one per host.
+ */
+export async function firstAnswering(candidates: string[]): Promise<string | null> {
+  const answers = candidates.map((c) => probe(c));
+  for (let i = 0; i < candidates.length; i += 1) {
+    if (await answers[i]) return candidates[i];
+  }
+  return null;
+}
+
 /** Is this origin reachable? A cheap, idempotent, unauthenticated GET. */
 export async function probe(origin: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
   try {
@@ -422,16 +457,13 @@ export function bootstrapApiEndpoint(): Promise<string | null> {
       }
     }
 
-    const tried = new Set<string>();
-    for (const candidate of candidateOrder()) {
-      tried.add(candidate);
-      if (await probe(candidate)) return adopt(candidate, candidate === discovered ? 'discovery' : 'configured');
-    }
+    const tried = candidateOrder();
+    const first = await firstAnswering(tried);
+    if (first) return adopt(first, first === discovered ? 'discovery' : 'configured');
     const mirrors = gatewayConfigUrls();
     if (key && mirrors.length > 0 && await refreshGatewayConfig(key, mirrors)) {
-      for (const candidate of candidateOrder()) {
-        if (!tried.has(candidate) && await probe(candidate)) return adopt(candidate, 'configured');
-      }
+      const fresh = await firstAnswering(candidateOrder().filter((c) => !tried.includes(c)));
+      if (fresh) return adopt(fresh, 'configured');
     }
     // A single configured origin with no discovery: nothing to compare it
     // with, so adopt it and let requests report the outage (the old behaviour).
@@ -467,14 +499,13 @@ export function reportOriginUnreachable(origin: string): Promise<string | null> 
   lastSearchAt = Date.now();
 
   const search = (async () => {
-    for (const candidate of candidateOrder()) {
-      if (await probe(candidate)) {
-        if (candidate !== active) {
-          record({ kind: 'failover', from: active, to: candidate });
-          adopt(candidate, candidate === discovered ? 'discovery' : 'configured');
-        }
-        return candidate;
+    const candidate = await firstAnswering(candidateOrder());
+    if (candidate) {
+      if (candidate !== active) {
+        record({ kind: 'failover', from: active, to: candidate });
+        adopt(candidate, candidate === discovered ? 'discovery' : 'configured');
       }
+      return candidate;
     }
     record({ kind: 'failover', from: active, to: null });
     return null;   // reported with the next successful adoption

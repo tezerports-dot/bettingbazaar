@@ -65,3 +65,4 @@ graphify-out/
 # Admin-uploaded App Assets land here at runtime (server.js). Never commit them:
 # a stray 1x1 test upload here once replaced the real header logo and app icon.
 backend/app-assets/
+deploy/vps/gateway/gateway.json

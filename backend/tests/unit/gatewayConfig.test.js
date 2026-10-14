@@ -7,7 +7,7 @@
  *   · a document signed by the CLI verifies, and every byte of it matters
  *     (payload, signature, key);
  *   · the format: exact keys, bb-gateway-config/1, an integer version, ISO
- *     instants in order, 1–8 plain lowercase hostnames, no repeats;
+ *     instants in order, 1–16 plain lowercase hostnames, no repeats;
  *   · an expired document and one below the version floor are refused, and
  *     the opposite cases (just before expiry, at the floor) still pass;
  *   · the CLI refuses a private key inside a git checkout and never
@@ -192,6 +192,29 @@ describe('scripts/gateway-config.mjs', () => {
       .toMatchObject({ code: 1, err: expect.stringMatching(/GATEWAY_BAD_TIME/) });
   });
 
+  it('signs a standby pool from a hosts file, in its order, comments ignored', () => {
+    const key = join(dir, 'pool.pem');
+    const pub = run(['keygen', '--out', key]).out.match(/public key: (\S+)/)[1];
+    const list = join(dir, 'pool.txt');
+    writeFileSync(list, '# live\napi.example.com\n\n# standby pool\nsb1.example.net  # registered, no DNS yet\nsb2.example.org\n');
+    const docFile = join(dir, 'pool.json');
+    expect(run(['sign', '--key', key, '--version', '2', '--hosts-file', list, '--days', '90', '--out', docFile]).code).toBe(0);
+    expect(verifyGatewayDocument(readFileSync(docFile, 'utf8'), pub, { now: NOW }).hosts)
+      .toEqual(['api.example.com', 'sb1.example.net', 'sb2.example.org']);
+    expect(run(['sign', '--key', key, '--version', '3', '--hosts', 'a.example.com', '--hosts-file', list, '--days', '1']))
+      .toMatchObject({ code: 1, err: expect.stringMatching(/exactly one of --hosts/) });
+  });
+
+  it(`signs a full pool of ${GATEWAY_MAX_HOSTS} hosts, and refuses one that would not fit the app's size cap`, () => {
+    const key = join(dir, 'size.pem');
+    run(['keygen', '--out', key]);
+    const full = Array.from({ length: GATEWAY_MAX_HOSTS }, (_, i) => `standby-${i}.bettingbazaar-mirror.example.com`).join(',');
+    expect(run(['sign', '--key', key, '--version', '1', '--hosts', full, '--days', '1']).code).toBe(0);
+    const long = Array.from({ length: GATEWAY_MAX_HOSTS }, (_, i) => `${'a'.repeat(60)}.${'b'.repeat(60)}.${'c'.repeat(60)}.h${i}.example.com`).join(',');
+    expect(run(['sign', '--key', key, '--version', '2', '--hosts', long, '--days', '1']))
+      .toMatchObject({ code: 1, err: expect.stringMatching(/over 4096 bytes/) });
+  });
+
   it('refuses a document the format refuses (an uppercase host) without writing it', () => {
     const key = join(dir, 'fmt.pem');
     run(['keygen', '--out', key]);
@@ -262,3 +285,64 @@ describe('GET /api/v1/client/gateway-config', () => {
     expect(await gatewayDocumentStatus()).toMatchObject({ state: 'NOT_SERVING', code: 'GATEWAY_EXPIRED' });
   });
 });
+
+describe('hosts this deployment serves: the standby pool reaches the edge and CORS', () => {
+  let dir; let app;
+  const saved = Object.fromEntries(['GATEWAY_CONFIG_FILE', 'GATEWAY_CONFIG_PUBLIC_KEY', 'API_ALLOWED_HOSTS', 'PUBLIC_APP_ORIGIN'].map((k) => [k, process.env[k]]));
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'bb-gateway-served-'));
+    app = express().use('/api', (await import('../../routes/clientEndpoint.routes.js')).default);
+  });
+  afterEach(() => {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+  });
+  afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  const servePool = (hosts, name, times = {}) => {
+    const file = join(dir, name);
+    const issuedAt = times.issuedAt || new Date().toISOString();
+    const expiresAt = times.expiresAt || new Date(Date.now() + 86_400_000).toISOString();
+    writeFileSync(file, `${JSON.stringify(signGatewayPayload(payload({ hosts, issuedAt, expiresAt }), privateKey))}\n`);
+    process.env.GATEWAY_CONFIG_FILE = file;
+    process.env.GATEWAY_CONFIG_PUBLIC_KEY = PUBLIC;
+  };
+  const ask = (domain) => request(app).get('/api/v1/client/tls-allowed').query(domain === undefined ? {} : { domain });
+
+  it('answers the edge 200 for a signed standby, the API hosts and the player site; 404 for anything else', async () => {
+    servePool(['live.example.com', 'standby.example.net'], 'pool.json');
+    process.env.API_ALLOWED_HOSTS = 'api2.example.com';
+    process.env.PUBLIC_APP_ORIGIN = 'https://play.example.com';
+    const { servedGatewayHosts } = await import('../../domains/configuration/gatewayConfig.js');
+    expect(await servedGatewayHosts()).toEqual(['live.example.com', 'standby.example.net']);
+
+    for (const host of ['standby.example.net', 'live.example.com', 'api2.example.com', 'play.example.com']) {
+      expect((await ask(host)).status).toBe(200);
+    }
+    for (const host of ['stranger.example.com', 'STANDBY.example.net.evil.com', '', '1.2.3.4', 'sub.standby.example.net']) {
+      expect((await ask(host)).status).toBe(404);
+    }
+    expect((await ask(undefined)).status).toBe(404);
+    expect((await ask('standby.example.net')).headers['cache-control']).toBe('no-store');
+  });
+
+  it('forgets a standby once the document expires or stops verifying', async () => {
+    servePool(['standby.example.net'], 'old.json', { issuedAt: '2020-01-01T00:00:00.000Z', expiresAt: '2020-02-01T00:00:00.000Z' });
+    expect((await ask('standby.example.net')).status).toBe(404);
+    servePool(['standby.example.net'], 'other-key.json');
+    process.env.GATEWAY_CONFIG_PUBLIC_KEY = other;
+    expect((await ask('standby.example.net')).status).toBe(404);
+  });
+
+  it('admits exactly https://<served host> as a browser origin, nothing looser', async () => {
+    servePool(['standby.example.net'], 'cors.json');
+    const { isServableOrigin } = await import('../../config/servedHosts.js');
+    expect(await isServableOrigin('https://standby.example.net')).toBe(true);
+    for (const origin of ['http://standby.example.net', 'https://standby.example.net:8443', 'https://standby.example.net/',
+      'https://evil.standby.example.net', 'https://standby.example.net.evil.com', 'null', '']) {
+      expect(await isServableOrigin(origin)).toBe(false);
+    }
+  });
+});
+

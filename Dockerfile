@@ -45,6 +45,15 @@ COPY merchant-panel ./merchant-panel
 # --build-arg (deploy/vps/docker-compose.prod.yml reads it from .env).
 ARG VITE_TURNSTILE_SITE_KEY=
 ENV VITE_TURNSTILE_SITE_KEY=$VITE_TURNSTILE_SITE_KEY
+# The signed gateway document's PUBLIC key and its mirrors, baked into the
+# player panel so the site and the installed web app fail over to a signed
+# standby host when their own address is blocked (originFailover.ts,
+# docs/governance/DOMAIN_FAILOVER.md). Both public. Unset: a plain same-origin
+# deploy that cannot move.
+ARG VITE_GATEWAY_CONFIG_PUBLIC_KEY=
+ENV VITE_GATEWAY_CONFIG_PUBLIC_KEY=$VITE_GATEWAY_CONFIG_PUBLIC_KEY
+ARG VITE_GATEWAY_CONFIG_URLS=
+ENV VITE_GATEWAY_CONFIG_URLS=$VITE_GATEWAY_CONFIG_URLS
 # `sourcemap: 'hidden'` still writes the .map files into dist/, and the
 # runtime serves dist/ as it is, so they would be downloadable by anyone (the
 # whole admin panel's source). They stay on the builder stage only.

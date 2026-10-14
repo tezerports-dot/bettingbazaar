@@ -16,7 +16,7 @@
  *
  *   { "format": "bb-gateway-config/1", "version": <integer ≥ 1, rising>,
  *     "issuedAt": "<ISO-8601 UTC>", "expiresAt": "<ISO-8601 UTC>",
- *     "hosts": ["api.example.com", …] }   // 1–8 plain lowercase hostnames
+ *     "hosts": ["api.example.com", …] }   // 1–16 plain lowercase hostnames
  *
  * The player app's mirror of these rules is `user-panel/src/services/gatewayConfig.ts`
  * (§5: a change here changes it in the same commit).
@@ -32,7 +32,14 @@ import { readFile, stat } from 'node:fs/promises';
 import { isPlainHostname } from '../../config/apiHosts.js';
 
 export const GATEWAY_FORMAT = 'bb-gateway-config/1';
-export const GATEWAY_MAX_HOSTS = 8;
+/**
+ * Enough for the hosts in use plus a pool of STANDBY hosts signed ahead of
+ * time: a standby is registered and named here before anyone blocks the live
+ * one, so moving installs onto it needs a DNS record, not a signature
+ * (docs/governance/DOMAIN_FAILOVER.md). The app probes them all at once
+ * (`originFailover.ts`), so a long list of blocked hosts does not hold startup.
+ */
+export const GATEWAY_MAX_HOSTS = 16;
 /** The longest a document may live (expiresAt − issuedAt), so a signed document cannot outlast a rotation by years. */
 export const GATEWAY_MAX_LIFETIME_DAYS = 400;
 /** How far issuedAt may lie ahead of the verifier's clock (a phone's clock is not ours). */
@@ -171,6 +178,17 @@ export async function gatewayDocumentStatus({ now = Date.now() } = {}) {
   }
   if (read.error) return { state: 'NOT_SERVING', code: read.error.code || 'ERROR', message: read.error.message };
   return { state: 'NOT_CONFIGURED' };
+}
+
+/**
+ * The hosts of the document this server serves now, or [] (none configured,
+ * expired, not verifying). The operator signed every one of them offline, so
+ * each may serve this deployment: CORS admits its https origin (server.js) and
+ * the edge may take a certificate for it on first use (`tls-allowed` route).
+ */
+export async function servedGatewayHosts({ now = Date.now() } = {}) {
+  const read = await readGatewayDocument({ now });
+  return read.payload ? read.payload.hosts : [];
 }
 
 /** The one read both answers share: `{ text, payload }`, `{ error }`, or `{}` when nothing is configured. */

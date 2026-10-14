@@ -42,6 +42,9 @@ x-app-base: &app-base
     args:
       # Public; baked into the player panel (Dockerfile). Read from .env here.
       VITE_TURNSTILE_SITE_KEY: ${VITE_TURNSTILE_SITE_KEY:-}
+      # Public; the web app's way off a blocked address (docs/governance/DOMAIN_FAILOVER.md).
+      VITE_GATEWAY_CONFIG_PUBLIC_KEY: ${VITE_GATEWAY_CONFIG_PUBLIC_KEY:-}
+      VITE_GATEWAY_CONFIG_URLS: ${VITE_GATEWAY_CONFIG_URLS:-}
   image: bettingbazaar:local
   restart: unless-stopped
   env_file: [.env]
@@ -71,6 +74,13 @@ x-app-base: &app-base
     # like the proxy, and per-IP rate limits then apply to your whole user base
     # at once — four wrong passwords from anyone would lock out everyone.
     TRUST_PROXY: "1"
+    # The offline-signed gateway document, served at /api/v1/client/gateway-config
+    # and read for the standby pool (docs/governance/DOMAIN_FAILOVER.md). Put the
+    # signed file at deploy/vps/gateway/gateway.json; it is re-read within 60 s.
+    GATEWAY_CONFIG_FILE: /app/gateway/gateway.json
+  # Read-only: the server only serves the file, it can never write or sign one.
+  volumes:
+    - ./gateway:/app/gateway:ro
   depends_on:
     migrate:    { condition: service_completed_successfully }
     pgbouncer:  { condition: service_healthy }

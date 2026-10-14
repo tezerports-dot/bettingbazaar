@@ -20,6 +20,8 @@ import { db } from '#db';
 import { apiOriginFor } from '../config/apiHosts.js';
 import { servedGatewayDocument } from '../domains/configuration/gatewayConfig.js';
 import { serverError } from '../shared/httpError.js';
+import { isServableHost } from '../config/servedHosts.js';
+import { miniAppBot, miniAppEntryLink } from '../domains/telegram/telegramClient.js';
 
 /** How long a client or cache may reuse the answer. A change of host reaches apps within this. */
 export const ENDPOINT_MAX_AGE_SECONDS = 60;
@@ -53,6 +55,45 @@ router.get('/v1/client/gateway-config', async (req, res) => {
     return res.type('application/json').send(text);
   } catch (err) {
     return serverError(res, err, 'client gateway config');
+  }
+});
+
+/**
+ * GET /api/v1/client/telegram-entry — the Telegram link that always opens the
+ * player app's way in (`miniAppEntryLink`): `{"url": "https://t.me/…"}`, or
+ * 404 with no bot saved. The app remembers it, and its "Can't connect" screen
+ * and its Invite screen show it, so a player whose site address was blocked
+ * still has a way back (docs/governance/DOMAIN_FAILOVER.md).
+ */
+router.get('/v1/client/telegram-entry', async (req, res) => {
+  try {
+    const url = miniAppEntryLink(await miniAppBot());
+    res.set('Cache-Control', `public, max-age=${ENDPOINT_MAX_AGE_SECONDS}`);
+    if (!url) return res.status(404).json({ success: false, code: 'TELEGRAM_UNAVAILABLE', message: 'Telegram is not set up yet' });
+    return res.json({ url });
+  } catch (err) {
+    return serverError(res, err, 'client telegram entry');
+  }
+});
+
+/**
+ * GET /api/v1/client/tls-allowed?domain=<host> — the edge's question before it
+ * takes a certificate for a name on first use (Caddy's `on_demand_tls` `ask`,
+ * deploy/vps/Caddyfile.vps). 200 when the host is one this deployment serves
+ * (`servableHosts`: DOMAINS, the API hosts, the player site, the signed
+ * document's standby pool), 404 otherwise, so a standby goes live when its DNS
+ * points here, and a stranger's name pointed at this address gets nothing.
+ * Public because the edge asks over the internal network the same way a
+ * stranger would; it reveals no more than the signed document already lists.
+ */
+router.get('/v1/client/tls-allowed', async (req, res) => {
+  try {
+    const ok = await isServableHost(typeof req.query.domain === 'string' ? req.query.domain : '');
+    res.set('Cache-Control', 'no-store');
+    if (!ok) return res.status(404).json({ success: false, code: 'NOT_SERVED_HERE', message: 'This host is not served here' });
+    return res.json({ success: true });
+  } catch (err) {
+    return serverError(res, err, 'client tls allowed');
   }
 });
 

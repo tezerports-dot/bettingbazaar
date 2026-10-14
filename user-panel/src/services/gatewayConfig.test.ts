@@ -111,7 +111,7 @@ describe('checkGatewayPayload — the same rules as the backend', () => {
     ['a lifetime over 400 days', payload({ issuedAt: issued, expiresAt: new Date(Date.parse(issued) + 400 * DAY + 1).toISOString() }), 'GATEWAY_BAD_TIME'],
     ['a year-9999 expiry', payload({ expiresAt: '9999-12-31T00:00:00.000Z' }), 'GATEWAY_BAD_TIME'],
     ['no hosts', payload({ hosts: [] }), 'GATEWAY_BAD_HOSTS'],
-    ['nine hosts', payload({ hosts: Array.from({ length: GATEWAY_MAX_HOSTS + 1 }, (_, i) => `h${i}.example.com`) }), 'GATEWAY_BAD_HOSTS'],
+    ['one host too many', payload({ hosts: Array.from({ length: GATEWAY_MAX_HOSTS + 1 }, (_, i) => `h${i}.example.com`) }), 'GATEWAY_BAD_HOSTS'],
     ['an uppercase host', payload({ hosts: ['Api.example.com'] }), 'GATEWAY_BAD_HOSTS'],
     ['a URL', payload({ hosts: ['https://api.example.com'] }), 'GATEWAY_BAD_HOSTS'],
     ['a port', payload({ hosts: ['api.example.com:443'] }), 'GATEWAY_BAD_HOSTS'],
@@ -124,10 +124,10 @@ describe('checkGatewayPayload — the same rules as the backend', () => {
     expect(() => checkGatewayPayload(p)).toThrow(want);
   });
 
-  it('accepts exactly 8 hosts and exactly 400 days', () => {
+  it(`accepts exactly ${GATEWAY_MAX_HOSTS} hosts and exactly 400 days`, () => {
     const hosts = Array.from({ length: GATEWAY_MAX_HOSTS }, (_, i) => `h${i}.example.com`);
     const expiresAt = new Date(Date.parse(issued) + 400 * DAY).toISOString();
-    expect(checkGatewayPayload(payload({ hosts, issuedAt: issued, expiresAt })).hosts).toHaveLength(8);
+    expect(checkGatewayPayload(payload({ hosts, issuedAt: issued, expiresAt })).hosts).toHaveLength(GATEWAY_MAX_HOSTS);
   });
 });
 

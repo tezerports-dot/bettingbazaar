@@ -49,7 +49,7 @@ import {
 } from './domains/identity/totp.service.js';
 import { currentBranding } from './domains/branding/brandingPayload.js';
 import { normalisePhone, normaliseReferralCode } from './domains/identity/signupFields.js';
-import { openChallenge, ticketHash } from './domains/identity/telegramChallenge.service.js';
+import { deliveryFor, openChallenge, ticketHash } from './domains/identity/telegramChallenge.service.js';
 import { respondError, refusal } from './shared/httpError.js';
 import { TELEGRAM_AUDIENCES } from '#db/repositories/telegram.js';
 import { formatMerchant } from './domains/merchant/merchantSelfView.js';
@@ -461,8 +461,10 @@ function notRedeemed(res, state) {
  * POST {door}/login/telegram `{ delivery?, referralCode? }` — "Continue with
  * Telegram": opens the sign-in and gives the browser its Mini App link.
  *
- * How the approval will reach a browser is the caller's to say (`delivery`):
- * HANDOFF on the phone that will open Telegram itself, MATCH elsewhere. Either
+ * How the approval will reach a browser is the caller's to ask (`delivery`):
+ * HANDOFF on the phone that will open Telegram itself, MATCH elsewhere, and a
+ * HANDOFF only where the caller opens again at the site's own address
+ * (`returnOrigin`, `deliveryFor`); the answer's `delivery` is what it got. Either
  * is safe whoever asks: a HANDOFF is never spent by this browser's poll, only
  * by the ticket Verify opens on the device that pressed it
  * (repositories/telegram.js, `redeemTicket`), and a MATCH is approved only
@@ -475,7 +477,7 @@ export async function telegramLoginHandler(req, res) {
     const isPlayer = door.accountType === 'PLAYER';
     const opened = await openChallenge({
       door: door.accountType, req,
-      delivery: req.body?.delivery === 'HANDOFF' ? 'HANDOFF' : 'MATCH',
+      delivery: deliveryFor(req.body?.delivery, req.body?.returnOrigin),
       referralCode: isPlayer ? normaliseReferralCode(req.body?.referralCode) : null,
     });
     return res.status(200).json({

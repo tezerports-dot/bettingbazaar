@@ -91,6 +91,20 @@ export function miniAppLink(bot, param) {
 }
 
 /**
+ * The bot's Mini App with no start parameter: the link that opens the player
+ * app's way in from Telegram whatever has happened to our own domains, because
+ * it is Telegram's address and the Mini App's URL is set in BotFather
+ * (docs/governance/DOMAIN_FAILOVER.md). Verify there signs the person in and
+ * opens the site at its current address. Null with no bot saved.
+ */
+export function miniAppEntryLink(bot) {
+  if (!bot?.botUsername) return null;
+  const name = encodeURIComponent(String(bot.botUsername).replace(/^@/, ''));
+  // A named Mini App opens at its own path; without one, `?startapp` opens the bot's main Mini App.
+  return bot.miniAppShortName ? `https://t.me/${name}/${encodeURIComponent(bot.miniAppShortName)}` : `https://t.me/${name}?startapp`;
+}
+
+/**
  * One Bot API call.
  *
  * @returns {{ok: true, result: any} | {ok: false, error: string, status?: number, retryAfter?: number}}

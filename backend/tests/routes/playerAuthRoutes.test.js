@@ -291,7 +291,7 @@ describePg('the player door (PostgreSQL)', () => {
       const ip = from();
       const { max } = RATE_LIMIT_TIERS.signup;
       const approveNew = async () => {
-        const opened = (await post('/api/v1/auth/login/telegram', { delivery: 'HANDOFF' })).body;
+        const opened = (await post('/api/v1/auth/login/telegram', { delivery: 'HANDOFF', returnOrigin: 'https://bb.example' })).body;
         const tgId = freshTelegramUserId();
         const mobile = freshMobile('9');
         const res = await post('/api/telegram/mini-app/approve', {

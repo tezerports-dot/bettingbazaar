@@ -19,7 +19,7 @@ The app adopts a host only from a document whose signature verifies against the 
 | `GET /api/v1/client/gateway-config` | Every API server, public, 60 s cache | Serves that file as signed; 404 when unset, expired or not verifying |
 | `VITE_GATEWAY_CONFIG_URLS` | Each app build | HTTPS mirrors of the document (static host or CDN off the API hosts) |
 
-Each document is `{"payload": "<base64url JSON>", "signature": "<base64url>"}`. The payload carries format `bb-gateway-config/1`, a version, issuedAt, expiresAt and 1 to 8 plain lowercase hostnames, and may live at most 400 days.
+Each document is `{"payload": "<base64url JSON>", "signature": "<base64url>"}`. The payload carries format `bb-gateway-config/1`, a version, issuedAt, expiresAt and 1 to 16 plain lowercase hostnames (the live hosts, then the standby pool: `DOMAIN_FAILOVER.md`), and may live at most 400 days.
 
 The app:
 
@@ -47,11 +47,11 @@ Generate two keys, a primary and a standby, on a machine you trust (not a server
 Do this whenever hosts change, and at least 3 weeks before the live document expires.
 
 1. Check the live document's version and expiry: `curl -s https://<api host>/api/v1/client/gateway-config > live.json` then `npm run gateway-config -- verify --public-key <the build's key> live.json`.
-2. On the offline machine, decrypt the key and run `npm run gateway-config -- sign --key <pem> --version <current + 1> --hosts api1.example.com,api2.example.net --days 90 --out gateway-vN.json`. Hosts are plain lowercase hostnames, up to 8, no scheme, port, path or IP. Give exactly one of `--days <n>` or `--expires <ISO instant>`; the lifetime may not exceed 400 days. The tool verifies its own output before writing it.
+2. On the offline machine, decrypt the key and run `npm run gateway-config -- sign --key <pem> --version <current + 1> --hosts api1.example.com,api2.example.net --days 90 --out gateway-vN.json` (or `--hosts-file pool.txt`, one host per line, live first, then the standby pool). Hosts are plain lowercase hostnames, up to 16, no scheme, port, path or IP. Give exactly one of `--days <n>` or `--expires <ISO instant>`; the lifetime may not exceed 400 days. The tool verifies its own output before writing it.
 3. Run `npm run gateway-config -- verify --public-key <the build's key> --floor <current> gateway-vN.json`. It prints the version, expiry and hosts.
 4. Re-encrypt or shred the decrypted key.
-5. Copy the file to the `GATEWAY_CONFIG_FILE` path on every API server. Each server re-reads it within 60 seconds and serves it only if it verifies.
-6. Copy the same bytes to every `VITE_GATEWAY_CONFIG_URLS` mirror.
+5. Copy the file to the `GATEWAY_CONFIG_FILE` path on every API server (`deploy/vps/gateway/gateway.json` on the VPS). Each server re-reads it within 60 seconds and serves it only if it verifies.
+6. Put the same bytes on every `VITE_GATEWAY_CONFIG_URLS` mirror: `npm run gateway-publish -- publish --public-key <key> --document gateway-vN.json` (`DOMAIN_FAILOVER.md` sets the mirrors up). It never needs the private key.
 7. Apps pick it up on their next launch or connection, within the 60 second cache. Confirm with `curl` on a server and on each mirror.
 
 Never reuse or skip back a version number. Versions only rise, and an install refuses a second document under a version it already holds.
@@ -101,6 +101,5 @@ Found reviewing the original design. Remove any row the code now addresses.
 | 4 | `keygen` writes an unencrypted PEM | A copied laptop or backup leaks the key | Passphrase-protect the PEM, or pipe straight into `age` |
 | 5 | Each server and mirror serves one document | Old-key and new-key builds cannot both get fresh hosts during rotation | Multi-signature envelope, or one document per key id |
 | 6 | No way to tell an old build to distrust a key | Leak response depends on users updating | Signed revocation list, or a minimum-build check that forces the update |
-| 7 | No automated expiry monitoring | A missed renewal silently drops every install to build-time origins | A weekly check that runs `verify` on the live document and flags expiry within 21 days |
 
-Items 2 (version floor with no ceiling, not tied to a key) and 3 (no issuedAt or lifetime check in the app) are fixed: the app holds its floor per public key, and refuses a document issued over a day ahead of its clock or meant to live over 400 days (`gatewayConfig.ts`, mirrored in `gatewayConfig.js`).
+Item 7 (no expiry monitoring) is fixed: `.github/workflows/gateway-watch.yml` checks every mirror weekly and fails within 21 days of expiry. Items 2 (version floor with no ceiling, not tied to a key) and 3 (no issuedAt or lifetime check in the app) are fixed: the app holds its floor per public key, and refuses a document issued over a day ahead of its clock or meant to live over 400 days (`gatewayConfig.ts`, mirrored in `gatewayConfig.js`).

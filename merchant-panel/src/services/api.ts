@@ -212,7 +212,9 @@ export interface TelegramSignIn {
 export const startTelegramSignIn = async (delivery: TelegramDelivery): Promise<TelegramSignIn> =>
   request<TelegramSignIn>(ENDPOINTS.AUTH.LOGIN_TELEGRAM, {
     method: 'POST',
-    body: JSON.stringify({ delivery }),
+    // Where Verify's link would open this panel: the server grants a HANDOFF
+    // only at the site's own address, else MATCH (`deliveryFor`, backend).
+    body: JSON.stringify({ delivery, returnOrigin: window.location.origin }),
   });
 
 /**
