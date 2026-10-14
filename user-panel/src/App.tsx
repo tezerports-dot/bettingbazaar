@@ -52,7 +52,7 @@ import NativeUpdateGate from './components/NativeUpdateGate';
 import { RejectedBuyPopup } from './components/DisputeWindow';
 import { isNativeShell } from './services/nativeLifecycle';
 import { bootstrapApiEndpoint, endpointState } from './services/originFailover';
-import { refreshTelegramEntry, rememberedTelegramEntry } from './services/telegramEntry';
+import { refreshTelegramEntry, rememberedTelegramEntries } from './services/telegramEntry';
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '0.0.0';
 
 const backend = getBackend();
@@ -155,9 +155,10 @@ const UpdateRequiredScreen = ({ latest }: { latest: string }) => (
  * failed. Say so and offer a retry — never connect somewhere unvalidated.
  */
 const ConnectionErrorScreen = ({ onRetry, retrying }: { onRetry: () => void; retrying: boolean }) => {
-  // Telegram's address, remembered from the last time we connected: it opens
-  // the app's way in even when every address of ours is blocked.
-  const telegram = rememberedTelegramEntry();
+  // Telegram's addresses, remembered from the last time we connected: they open
+  // the app's way in even when every address of ours is blocked. The first is
+  // the bot in use; the rest are standby bots, for when Telegram banned it.
+  const [telegram, ...backups] = rememberedTelegramEntries();
   return (
   <div role="alert" className="flex flex-col items-center justify-center h-full p-8 text-center" style={{ background: 'var(--app-bg, #0A0E17)', color: 'var(--text)' }}>
     <img
@@ -183,6 +184,20 @@ const ConnectionErrorScreen = ({ onRetry, retrying }: { onRetry: () => void; ret
         <a href={telegram} target="_blank" rel="noopener noreferrer" className="font-bold underline" style={{ color: 'var(--brand-primary, #D4AF37)' }}>
           Open in Telegram
         </a>
+        {backups.length > 0 && (
+          <>
+            <br />
+            If that link doesn't open, try a backup:{' '}
+            {backups.map((url, i) => (
+              <React.Fragment key={url}>
+                {i > 0 && ' · '}
+                <a href={url} target="_blank" rel="noopener noreferrer" className="font-bold underline" style={{ color: 'var(--brand-primary, #D4AF37)' }}>
+                  Backup {i + 1}
+                </a>
+              </React.Fragment>
+            ))}
+          </>
+        )}
       </p>
     )}
   </div>

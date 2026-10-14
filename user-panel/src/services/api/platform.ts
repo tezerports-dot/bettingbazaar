@@ -33,6 +33,6 @@ export const reportCrash = (report: Record<string, unknown>): void => {
   apiClient.post('/api/internal/error-report', report).catch(() => {});
 };
 
-/** The Telegram link that always opens the app's way in, or a 404 with no bot (telegramEntry.ts keeps it). */
-export const telegramEntry = (): Promise<{ url?: string }> =>
+/** The Telegram links (bot in use, then standbys) that always open the app's way in, or a 404 with no bot (telegramEntry.ts keeps them). */
+export const telegramEntry = (): Promise<{ url?: string; urls?: string[] }> =>
   apiClient.get('/api/v1/client/telegram-entry');

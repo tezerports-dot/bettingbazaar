@@ -21,7 +21,9 @@ import { verifyJwt } from '../../domains/identity/jwt.util.js';
 import { ticketHash } from '../../domains/identity/telegramChallenge.service.js';
 import {
   saveTestBot, removeTestBot, linkTelegram, signInitData, signContact, freshTelegramUserId,
+  STANDBY_BOT, STANDBY_BOT_TOKEN,
 } from '../miniAppFixture.js';
+import { invalidateBotCache } from '../../domains/telegram/telegramClient.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 const SITE = 'https://bb.example';
@@ -343,6 +345,61 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
       });
       expect(res.body.code).toBe('CONTACT_NOT_OWN');
       expect(await getUserByMobile(mobile, 'PLAYER')).toBeNull();
+    });
+  });
+
+  // ── Standby bots (owner, 2026-10-14) ────────────────────────────────────
+  describe('a standby bot', () => {
+    const suspendPrimary = async (on) => {
+      await db.telegram.setBotSuspended({ slot: 1, reason: on ? 'test: refused' : null });
+      invalidateBotCache();
+    };
+
+    it('opens the same account, and takes every new sign-in once the primary is suspended', async () => {
+      await saveTestBot({ slot: 2, bot: STANDBY_BOT, token: STANDBY_BOT_TOKEN });
+      try {
+        const p = await player();
+        // A Mini App opened from the standby is proved by the standby's token: same person, same account.
+        const initData = signInitData({ telegramUserId: p.tgId, token: STANDBY_BOT_TOKEN });
+        const res = await post('/api/telegram/mini-app/continue', { initData });
+        expect(res.body, JSON.stringify(res.body)).toMatchObject({ success: true, created: false });
+        expect(verifyJwt((await redeem(ticketOf(res.body.redirectUrl))).body.token).userId).toBe(p.userId);
+
+        // New links name the primary while it works, the standby once it is suspended.
+        expect((await open({ delivery: 'MATCH' })).body.telegram.url).toContain('/bb_test_miniapp_bot');
+        await suspendPrimary(true);
+        const opened = (await open({ delivery: 'MATCH' })).body;
+        expect(opened.telegram.url).toContain(`/${STANDBY_BOT.username}`);
+        // A Mini App from the suspended primary, opened on an older link, is still ours and still proved.
+        const old = signInitData({ telegramUserId: p.tgId });
+        expect((await context(old)).body.success).toBe(true);
+      } finally {
+        await suspendPrimary(false);
+        await db.telegram.removeBot(2);
+        invalidateBotCache();
+      }
+    });
+
+    it('a contact must be signed by the bot whose Mini App sent it', async () => {
+      await saveTestBot({ slot: 2, bot: STANDBY_BOT, token: STANDBY_BOT_TOKEN });
+      try {
+        const tgId = freshTelegramUserId();
+        const mobile = freshMobile('9');
+        const res = await post('/api/telegram/mini-app/continue', {
+          initData: signInitData({ telegramUserId: tgId, token: STANDBY_BOT_TOKEN }),
+          contact: signContact({ telegramUserId: tgId, phone: mobile }),
+        });
+        expect(res.body.success).toBe(false);
+        expect(await getUserByMobile(mobile, 'PLAYER')).toBeNull();
+      } finally {
+        await db.telegram.removeBot(2);
+        invalidateBotCache();
+      }
+    });
+
+    it('a string signed by no saved bot is refused', async () => {
+      const res = await context(signInitData({ telegramUserId: freshTelegramUserId(), token: '7000000009:not-ours-at-all_0123456789abcdef' }));
+      expect(res.body.success).toBe(false);
     });
   });
 

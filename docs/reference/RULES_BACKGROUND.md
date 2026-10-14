@@ -1990,6 +1990,18 @@ the widget serves one domain per bot, and three panels plus the app are not one
 domain. Why staff keep the password with "Login with Telegram": a stolen or
 borrowed phone must not be a staff session on its own.
 
+**2026-10-14, the owner: "add option to backup for telegram mini app in case
+one is not working we can add multiple".** Asked whether that changes "one bot",
+the owner chose standby bots over several Mini Apps on one bot: Telegram bans
+a gambling BOT, and a second Mini App on a banned bot dies with it. So up to
+three standbys sit in slots 2-4 of `telegram_bot`. They are not the old fleet:
+nobody is assigned a bot, no bot converses, and the choice is not a rotation
+but a fall-through (the lowest slot not suspended). Why every saved bot proves
+`initData`: a Mini App opened from a link minted before the switch still comes
+back signed by the old bot, and refusing it would strand the person mid
+sign-in. Why only 401/403/404 suspends: Telegram's outages and rate limits
+would otherwise move every link off a healthy bot every few minutes.
+
 Found while building it (2026-10-08): the staff security alerts posted through
 `activeConfig`, which the channel removal deleted; the import failed inside a
 catch and every alert went nowhere. And the referral report lost an import in

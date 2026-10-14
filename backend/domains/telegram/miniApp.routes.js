@@ -26,7 +26,7 @@
  */
 import express from 'express';
 import { db } from '#db';
-import { miniAppBot } from './telegramClient.js';
+import { miniAppBot, miniAppBots } from './telegramClient.js';
 import { verifyInitData, verifyContact } from './miniAppAuth.js';
 import { miniAppRefusal } from './miniAppRefusals.js';
 import {
@@ -48,13 +48,22 @@ function refuseWith(reasonOrCode, opts) {
   return refusal(r.status, r.code, r.message);
 }
 
-/** The bot and the proved `initData`, or a refusal. */
+/**
+ * The bot whose Mini App sent this, and the proved `initData`, or a refusal.
+ * Every saved bot is asked, primary first (owner, 2026-10-14): a Mini App
+ * opened from a standby, or from a link minted before a switch, is proved by
+ * its own bot's token. Only a signature by one of OUR bots passes.
+ */
 async function proveInitData(req) {
-  const bot = await miniAppBot();
-  if (!bot) throw telegramUnavailable();
-  const proof = verifyInitData(req.body?.initData, { botToken: bot.token });
-  if (!proof.ok) throw refuseWith(proof.reason);
-  return { bot, proof };
+  const bots = await miniAppBots();
+  if (!bots.some((b) => !b.suspended)) throw telegramUnavailable();
+  let first = null;
+  for (const bot of bots) {
+    const proof = verifyInitData(req.body?.initData, { botToken: bot.token });
+    if (proof.ok) return { bot, proof };
+    first ??= proof;
+  }
+  throw refuseWith(first.reason);
 }
 
 /** The shared contact, proved, or a refusal (null when none was sent and none is needed). */

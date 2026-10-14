@@ -8,10 +8,10 @@ import { describe, it, expect, vi, beforeAll } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 
-const bot = { current: null };
+const bots = { current: [] };
 vi.mock('../../domains/telegram/telegramClient.js', async (orig) => ({
   ...(await orig()),
-  miniAppBot: async () => bot.current,
+  miniAppBots: async () => bots.current,
 }));
 
 let app;
@@ -30,12 +30,19 @@ describe('miniAppEntryLink', () => {
 });
 
 describe('GET /api/v1/client/telegram-entry', () => {
-  it('answers the link, or 404 with no bot saved', async () => {
-    bot.current = { botUsername: 'BazaarBot', miniAppShortName: 'play' };
+  it('answers the bot in use and every standby not suspended, or 404 with none', async () => {
+    bots.current = [
+      { slot: 1, botUsername: 'BazaarBot', miniAppShortName: 'play', suspended: true },
+      { slot: 2, botUsername: 'BazaarTwoBot', miniAppShortName: 'play', suspended: false },
+      { slot: 3, botUsername: 'BazaarThreeBot', miniAppShortName: '', suspended: false },
+    ];
     const ok = await request(app).get('/api/v1/client/telegram-entry');
     expect(ok.status).toBe(200);
-    expect(ok.body).toEqual({ url: 'https://t.me/BazaarBot/play' });
-    bot.current = null;
+    expect(ok.body).toEqual({
+      url: 'https://t.me/BazaarTwoBot/play',
+      urls: ['https://t.me/BazaarTwoBot/play', 'https://t.me/BazaarThreeBot?startapp'],
+    });
+    bots.current = [{ slot: 1, botUsername: 'BazaarBot', miniAppShortName: 'play', suspended: true }];
     const none = await request(app).get('/api/v1/client/telegram-entry');
     expect(none.status).toBe(404);
     expect(none.body.code).toBe('TELEGRAM_UNAVAILABLE');

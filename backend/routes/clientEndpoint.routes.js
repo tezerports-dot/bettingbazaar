@@ -21,7 +21,7 @@ import { apiOriginFor } from '../config/apiHosts.js';
 import { servedGatewayDocument } from '../domains/configuration/gatewayConfig.js';
 import { serverError } from '../shared/httpError.js';
 import { isServableHost } from '../config/servedHosts.js';
-import { miniAppBot, miniAppEntryLink } from '../domains/telegram/telegramClient.js';
+import { miniAppBots, miniAppEntryLink } from '../domains/telegram/telegramClient.js';
 
 /** How long a client or cache may reuse the answer. A change of host reaches apps within this. */
 export const ENDPOINT_MAX_AGE_SECONDS = 60;
@@ -59,18 +59,20 @@ router.get('/v1/client/gateway-config', async (req, res) => {
 });
 
 /**
- * GET /api/v1/client/telegram-entry — the Telegram link that always opens the
- * player app's way in (`miniAppEntryLink`): `{"url": "https://t.me/…"}`, or
- * 404 with no bot saved. The app remembers it, and its "Can't connect" screen
- * and its Invite screen show it, so a player whose site address was blocked
+ * GET /api/v1/client/telegram-entry — the Telegram links that always open the
+ * player app's way in (`miniAppEntryLink`): `{"url": "https://t.me/…", "urls":
+ * [...]}`, `url` the bot in use and `urls` every bot not suspended, in slot
+ * order (the standbys, owner 2026-10-14), or 404 with no bot in use. The app
+ * remembers them, and its "Can't connect" screen and its Invite screen show
+ * them, so a player whose site address was blocked, or whose bot was banned,
  * still has a way back (docs/governance/DOMAIN_FAILOVER.md).
  */
 router.get('/v1/client/telegram-entry', async (req, res) => {
   try {
-    const url = miniAppEntryLink(await miniAppBot());
+    const urls = (await miniAppBots()).filter((b) => !b.suspended).map(miniAppEntryLink).filter(Boolean);
     res.set('Cache-Control', `public, max-age=${ENDPOINT_MAX_AGE_SECONDS}`);
-    if (!url) return res.status(404).json({ success: false, code: 'TELEGRAM_UNAVAILABLE', message: 'Telegram is not set up yet' });
-    return res.json({ url });
+    if (!urls.length) return res.status(404).json({ success: false, code: 'TELEGRAM_UNAVAILABLE', message: 'Telegram is not set up yet' });
+    return res.json({ url: urls[0], urls });
   } catch (err) {
     return serverError(res, err, 'client telegram entry');
   }

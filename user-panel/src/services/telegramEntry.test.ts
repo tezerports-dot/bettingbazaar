@@ -36,6 +36,18 @@ describe('telegramEntry', () => {
     expect(rememberedTelegramEntry()).toBe('');
   });
 
+  it('keeps the standby bots after the bot in use, and reads a list of one kept before them', async () => {
+    const { refreshTelegramEntry, rememberedTelegramEntries } = await import('./telegramEntry');
+    localStorage.setItem('bb_telegram_entry', 'https://t.me/BazaarBot/play');
+    expect(rememberedTelegramEntries()).toEqual(['https://t.me/BazaarBot/play']);
+    get.mockResolvedValueOnce({
+      url: 'https://t.me/BazaarTwoBot/play',
+      urls: ['https://t.me/BazaarTwoBot/play', 'https://evil.example/phish', 'https://t.me/BazaarThreeBot?startapp'],
+    });
+    expect(await refreshTelegramEntry()).toBe('https://t.me/BazaarTwoBot/play');
+    expect(rememberedTelegramEntries()).toEqual(['https://t.me/BazaarTwoBot/play', 'https://t.me/BazaarThreeBot?startapp']);
+  });
+
   it('never keeps or shows a link of another shape, from the server or from storage', async () => {
     const { refreshTelegramEntry, rememberedTelegramEntry } = await import('./telegramEntry');
     get.mockResolvedValueOnce({ url: 'https://evil.example/phish' });

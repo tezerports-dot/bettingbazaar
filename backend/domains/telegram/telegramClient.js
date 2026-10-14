@@ -1,17 +1,21 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * domains/telegram/telegramClient.js — the one bot, and the Bot API.
+ * domains/telegram/telegramClient.js — the bot, its standbys, and the Bot API.
  *
- * Step 3 (owner, 2026-10-07) left ONE bot: it carries the Mini App that
- * verifies every player and merchant, approves merchant sign-ins, signs players
- * in with "Login with Telegram" and resets passwords. Staff have no Telegram
- * (owner, 2026-10-13), so it messages nobody. There is no fleet, no channel,
- * no recovery bot, no webhook.
+ * Step 3 (owner, 2026-10-07) left one bot carrying the Mini App that verifies
+ * every player and merchant and approves their sign-ins. Since 2026-10-14
+ * (owner) up to three STANDBY bots, each with its own Mini App, are saved
+ * beside it: the bot in use is the lowest slot Telegram has not refused
+ * (`checkBotHealth` suspends one whose token Telegram rejects), and a Mini App
+ * opened from any saved bot is proved by that bot's token. Accounts key on
+ * the PERSON's Telegram id, so every bot knows every account. Staff have no
+ * Telegram (owner, 2026-10-13), so no bot messages anybody. No channel, no
+ * webhook.
  *
  * ── Why the bot is read per call, through a short cache ───────────────────
  * Telegram suspends gambling bots, so an admin replaces the token at runtime
  * (PUT /api/admin/telegram/bot). A module that captured the token at import
- * would need a restart to follow the swap. `miniAppBot()` reads the one row and
+ * would need a restart to follow the swap. `miniAppBots()` reads the rows and
  * keeps it for `BOT_TTL_MS`; the admin route drops the cache on the instance
  * that saved, and the other instances follow within the window (stated in
  * CLAUDE.md §2, "Live bot").
@@ -38,30 +42,40 @@ export function invalidateBotCache() {
 }
 
 /**
- * The bot, token decrypted, or null when none is configured.
+ * Every saved bot, token decrypted, slot order (1 = primary, 2-4 standbys;
+ * owner, 2026-10-14). A token that no longer decrypts is left out (logged, so
+ * the operator learns the key changed).
  *
- * Null is a normal answer: a fresh deployment, or a token that no longer
- * decrypts (logged, so the operator learns the key changed). Every caller
- * reads it as "Telegram is not available", never as an error to retry.
- *
- * @returns {Promise<null | {botId: string, botUsername: string, token: string,
- *   miniAppShortName: string}>}
+ * @returns {Promise<Array<{slot: number, botId: string, botUsername: string,
+ *   token: string, miniAppShortName: string, suspended: boolean}>>}
  */
-export async function miniAppBot({ force = false } = {}) {
-  if (!force && _cache && Date.now() - _cache.at < BOT_TTL_MS) return _cache.bot;
-  const row = await db.telegram.getBotSecrets();
-  let bot = null;
-  if (row) {
+export async function miniAppBots({ force = false } = {}) {
+  if (!force && _cache && Date.now() - _cache.at < BOT_TTL_MS) return _cache.bots;
+  const rows = await db.telegram.getBotSecrets();
+  const bots = [];
+  for (const row of rows) {
     const token = safeDecrypt(row.tokenEncrypted);
     if (token) {
-      bot = {
-        botId: row.botId, botUsername: row.botUsername, token,
-        miniAppShortName: row.miniAppShortName || '',
-      };
+      bots.push({
+        slot: row.slot, botId: row.botId, botUsername: row.botUsername, token,
+        miniAppShortName: row.miniAppShortName || '', suspended: row.suspended,
+      });
     }
   }
-  _cache = { at: Date.now(), bot };
-  return bot;
+  _cache = { at: Date.now(), bots };
+  return bots;
+}
+
+/**
+ * The bot in use: the lowest slot not suspended, token decrypted, or null when
+ * none is. Every new link (a sign-in, a referral, the entry link) names it.
+ *
+ * Null is a normal answer: a fresh deployment, every bot suspended, or a token
+ * that no longer decrypts. Every caller reads it as "Telegram is not
+ * available", never as an error to retry.
+ */
+export async function miniAppBot({ force = false } = {}) {
+  return (await miniAppBots({ force })).find((b) => !b.suspended) ?? null;
 }
 
 function safeDecrypt(ciphertext) {
@@ -136,6 +150,33 @@ export async function callApi(token, method, payload = {}, { timeoutMs = 10_000 
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Telegram's answers that mean a token is dead for good (revoked, bot
+ * deleted or banned), as opposed to an outage or a rate limit.
+ */
+const TOKEN_REFUSED = new Set([401, 403, 404]);
+
+/**
+ * Ask Telegram about every bot in use; suspend one whose token it REFUSES, so
+ * new links move to the next standby at once (owner, 2026-10-14). A timeout,
+ * a 5xx or a 429 is Telegram's weather and suspends nothing. Returns the
+ * slots suspended. Run by the scheduler (`telegram-bot-health`).
+ */
+export async function checkBotHealth({ verify = verifyBotToken, onSuspended = () => {} } = {}) {
+  const suspended = [];
+  for (const bot of await miniAppBots({ force: true })) {
+    if (bot.suspended) continue;
+    const me = await verify(bot.token);
+    if (me.ok || !TOKEN_REFUSED.has(me.status)) continue;
+    const row = await db.telegram.setBotSuspended({
+      slot: bot.slot, botId: bot.botId, reason: `Telegram refused the token: ${me.error}`, updatedBy: 'system:bot-health',
+    });
+    if (row) { suspended.push(bot.slot); onSuspended(bot, me); }
+  }
+  if (suspended.length) invalidateBotCache();
+  return suspended;
 }
 
 /** Ask Telegram who a token belongs to: the only way a bot is ever named. */

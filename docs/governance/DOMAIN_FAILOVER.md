@@ -159,6 +159,16 @@ The app then shows the link (`https://t.me/<bot>/<app>`) on the Invite screen
 and on its "Can't connect" screen, and remembers it. Announce it to players as
 the address that always works.
 
+Then register up to three **standby bots** the same way (each its own bot in
+BotFather, each with a Mini App at the same page) and save them in the
+Standby slots of the same screen. Every account belongs to the person's
+Telegram, so each standby already knows everyone. Every five minutes the
+server asks Telegram about the bot in use; when Telegram refuses its token
+(banned or revoked), it is suspended, an alert is sent, and every new sign-in
+and link names the next standby. The app remembers every working bot's link,
+and its "Can't connect" screen offers the standbys as backups. Nothing to do on
+the day except, later, replace the banned bot with a fresh one.
+
 ### 7. Keep retired addresses allowed
 
 Never remove an address from `ALLOWED_ORIGINS` after it is retired. Installed
@@ -175,7 +185,7 @@ No signing, no build, no app update:
    `https://<that host>`, add the host to `DOMAINS`, keep the old origin in
    `ALLOWED_ORIGINS`, and restart: `docker compose -f docker-compose.prod.yml up -d`.
 3. In BotFather, `/myapps` › your app › Edit Web App URL ›
-   `https://<that host>/mini-app.html`.
+   `https://<that host>/mini-app.html`, for the bot AND every standby bot.
 4. Tell players: open the Telegram link, or just reopen the app.
 
 Installed apps (APK and web) find the new host by themselves on their next
@@ -195,4 +205,5 @@ to the end (or dropped) and a fresh standby added, and publish it the same way.
 - [ ] `GATEWAY_CONFIG_PUBLIC_KEY` on the server
 - [ ] Gateway watch workflow green
 - [ ] Bot and Mini App saved; Telegram link announced
+- [ ] Standby bots (each with its Mini App) saved in the Standby slots
 - [ ] Retired origins kept in `ALLOWED_ORIGINS`

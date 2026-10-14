@@ -148,6 +148,26 @@ export function registerCronJobs(rebuildLeaderboard) {
     }
   });
 
+  // ── Telegram bots, asked whether they still work — every 5 minutes ───────
+  // A bot whose token Telegram refuses (banned, revoked) is suspended so new
+  // links name the next standby at once (owner, 2026-10-14). An outage at
+  // Telegram suspends nothing (checkBotHealth).
+  registerRecurring('telegram-bot-health', 5 * 60 * 1000, async () => {
+    try {
+      const { checkBotHealth } = await import('../domains/telegram/telegramClient.js');
+      await checkBotHealth({
+        onSuspended: (bot, me) => {
+          console.warn(`[telegram] bot @${bot.botUsername} in slot ${bot.slot} suspended: ${me.error}`);
+          sendAlert('telegram-bot-suspended',
+            `Telegram refused bot @${bot.botUsername} (slot ${bot.slot}); new links use the next standby`,
+            { slot: bot.slot, error: me.error }).catch(() => {});
+        },
+      });
+    } catch (e) {
+      console.error('[telegram-bot-health] cron error:', e.message);
+    }
+  });
+
   registerRecurring('withdrawal-hold-settle', 60 * 1000, async () => {
     try {
       const { settleDueHolds } = await import('../domains/payment/withdrawalHold.service.js');

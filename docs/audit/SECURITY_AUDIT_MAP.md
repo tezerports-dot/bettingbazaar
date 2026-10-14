@@ -3540,9 +3540,9 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 306 |
+| Route declarations in `backend/**` | 308 |
 | Reachable with **no auth middleware** | 41 |
-| Staff routes carrying an **area** (permission key) | 169 |
+| Staff routes carrying an **area** (permission key) | 171 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 8 |
 
 A count moving is not by itself a defect — it is a prompt to read the
@@ -3611,9 +3611,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 454 |
-| Parameters only (safe by construction) | 301 |
-| Interpolating into statement text (each needs a reading) | 147 |
+| `pgQuery` call sites | 458 |
+| Parameters only (safe by construction) | 300 |
+| Interpolating into statement text (each needs a reading) | 152 |
 | Statement text built elsewhere and passed in (each needs a reading) | 6 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>

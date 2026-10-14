@@ -3239,9 +3239,13 @@ BEGIN
   END IF;
 END $$;
 
--- ── The one bot ───────────────────────────────────────────────────────────
--- One row. Saved by an admin (`canManageTelegram`) after Telegram's `getMe`
--- confirmed the token, so the @username and id are Telegram's answer, not a
+-- ── The bot, and its standbys ─────────────────────────────────────────────
+-- One row per SLOT, 1 to 4 (owner, 2026-10-14): slot 1 is the primary, 2-4
+-- standby bots registered ahead of time. The bot in use is the lowest slot not
+-- suspended; a Mini App opened from ANY saved bot is proved by that bot's
+-- token, so links minted before a switch keep working. A bot is suspended
+-- when Telegram refuses its token (the health check) or by an admin. Saved
+-- by an admin (`canManageTelegram`) after Telegram's `getMe` confirmed the token, so the @username and id are Telegram's answer, not a
 -- typed value. The token is ciphertext (IDENTITY_ENCRYPTION_KEY): whoever holds
 -- it can sign Mini App data, which is to say sign anybody in. It is replaceable
 -- at runtime because Telegram suspends gambling bots; links survive a swap,
@@ -3257,8 +3261,13 @@ CREATE TABLE IF NOT EXISTS telegram_bot (
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_by          TEXT
 );
+ALTER TABLE telegram_bot ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;
+ALTER TABLE telegram_bot ADD COLUMN IF NOT EXISTS suspended_reason TEXT NOT NULL DEFAULT '';
 ALTER TABLE telegram_bot DROP CONSTRAINT IF EXISTS telegram_bot_one_row;
-ALTER TABLE telegram_bot ADD CONSTRAINT telegram_bot_one_row CHECK (id = 1);
+ALTER TABLE telegram_bot DROP CONSTRAINT IF EXISTS telegram_bot_slots;
+ALTER TABLE telegram_bot ADD CONSTRAINT telegram_bot_slots CHECK (id BETWEEN 1 AND 4);
+-- One bot, one slot: a standby that is the primary again protects nothing.
+CREATE UNIQUE INDEX IF NOT EXISTS telegram_bot_one_slot_per_bot ON telegram_bot (bot_id);
 ALTER TABLE telegram_bot DROP CONSTRAINT IF EXISTS telegram_bot_short_name_shape;
 ALTER TABLE telegram_bot ADD CONSTRAINT telegram_bot_short_name_shape
   CHECK (mini_app_short_name ~ '^[A-Za-z0-9_]{0,64}$');
