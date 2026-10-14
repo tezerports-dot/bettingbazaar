@@ -3,9 +3,10 @@
 //
 // Every other scenario MINTS its sessions (harness.js says why). This one
 // earns them, the way a person does: a signup form, Telegram's Mini App
-// verifying the mobile, a password sign-in, the staff and merchant approval in
-// Telegram, Login with Telegram, and a forgotten password set in the Mini App
-// (Step 3, owner 2026-10-07 and 2026-10-08).
+// verifying the mobile, a password sign-in, the merchant approval in Telegram,
+// Login with Telegram, and a forgotten password set in the Mini App (Step 3,
+// owner 2026-10-07 and 2026-10-08); and a staff sign-in, which is a password
+// and an authenticator code with no Telegram (owner, 2026-10-13).
 //
 // ── What stands in for Telegram ─────────────────────────────────────────────
 // Telegram itself is never reached. The Mini App's signed strings are signed
@@ -25,6 +26,7 @@ import { pgQuery } from '#db/client.js';
 import { db } from '#db';
 import { createMerchantAccount } from '#db/repositories/merchants.js';
 import { hashPassword } from '../../../domains/identity/password.util.js';
+import { base32Decode, totp } from '../../../domains/identity/totp.service.js';
 import { tryVerifyPaseto } from '../../../domains/identity/paseto.util.js';
 import { generateReferralCode } from '../../../domains/referral/referral.service.js';
 import {
@@ -178,42 +180,46 @@ async function playerSignupAndSignIn() {
   check(A, 'player', 'sign in with the new password', '200', `${fresh.status}`, fresh.status === 200);
 }
 
-// ── Staff: the password, then the approval in Telegram ───────────────────────
+// ── Staff: the password, then an authenticator code; never Telegram ─────────
+// (owner, 2026-10-13). The first sign-in enrols the app; later ones type a code.
 async function staffSignIn() {
-  const staff = async () => {
-    const userId = rid('staff');
-    const m = mobile().replace(/^9/, '8');
-    await db.users.createUser({ userId, username: userId, mobile: m, passwordHash: await hashPassword(PW), accountType: 'STAFF', isAdmin: true });
-    await db.users.setRoles(userId, ['admin']);
-    return { userId, mobile: m, tgId: await linkTelegram(userId) };
-  };
+  const userId = rid('staff');
+  const m = mobile().replace(/^9/, '8');
+  await db.users.createUser({ userId, username: userId, mobile: m, passwordHash: await hashPassword(PW), accountType: 'STAFF', isAdmin: true });
+  await db.users.setRoles(userId, ['admin']);
 
-  const s = await staff();
-  const first = await post('/api/admin/login', { mobile: s.mobile, password: PW });
-  check(A, 'staff', 'sign in with the password, no captcha', '200 twoFactorRequired, with a Telegram step, no session',
-    `${first.status} ${first.body.code ?? ''} twoFactorRequired=${first.body.twoFactorRequired} token=${Boolean(first.body.token)}`,
-    first.status === 200 && first.body.twoFactorRequired === true && !first.body.token && Boolean(startParam(first.body.telegram)));
-  const pending = await post('/api/admin/login/2fa', { challengeToken: first.body.challengeToken });
-  check(A, 'staff', 'the login page polls before the approval', '202', `${pending.status}`, pending.status === 202);
+  const first = await post('/api/admin/login', { mobile: m, password: PW });
+  check(A, 'staff', 'sign in with the password, no captcha, no authenticator yet', '200 totpSetupRequired, no Telegram step, no session',
+    `${first.status} totpSetupRequired=${first.body.totpSetupRequired} telegram=${Boolean(first.body.telegram)} token=${Boolean(first.body.token)}`,
+    first.status === 200 && first.body.totpSetupRequired === true && !first.body.telegram && !first.body.token);
+  const tg = await post('/api/admin/login/2fa', { challengeToken: first.body.challengeToken });
+  check(A, 'staff', 'the old Telegram leg', 'no sign-in leg there: no session, no Telegram step',
+    `${tg.status} token=${Boolean(tg.body?.token)} telegram=${Boolean(tg.body?.telegram)}`,
+    tg.status >= 400 && !tg.body?.token && !tg.body?.telegram);
 
-  const stranger = await answer(first.body.telegram, freshTelegramUserId());
-  check(A, 'attacker', "approve a staff sign-in from another Telegram account", 'refused', `${stranger.status} ${stranger.body.code}`,
-    stranger.status >= 400);
-  const ok = await answer(first.body.telegram, s.tgId);
-  const session = await post('/api/admin/login/2fa', { challengeToken: first.body.challengeToken });
-  check(A, 'staff', 'approve in Telegram, then the page polls', '200 a session proved by password and Telegram',
-    `${ok.status}; ${session.status} amr=${JSON.stringify(amrOf(session.body.token))}`,
-    ok.status === 200 && session.status === 200 && same(amrOf(session.body.token), ['pwd', 'tg']));
-  const mine = await get('/api/admin/account/telegram', session.body.token);
-  check(A, 'staff', 'the session opens a staff screen', '200', `${mine.status}`, mine.status === 200);
+  const setup = await post('/api/admin/login/totp/setup', { challengeToken: first.body.challengeToken });
+  const secret = base32Decode(setup.body.secret || '');
+  const session = await post('/api/admin/login/totp/activate', {
+    challengeToken: first.body.challengeToken, code: totp(secret),
+  });
+  check(A, 'staff', 'scan the QR, type the first code', '200 a session proved by password and authenticator, ten recovery codes',
+    `${setup.status} qr=${String(setup.body.qrDataUrl || '').slice(0, 15)}; ${session.status} amr=${JSON.stringify(amrOf(session.body.token))} codes=${session.body.recoveryCodes?.length}`,
+    setup.status === 200 && String(setup.body.qrDataUrl).startsWith('data:image/png')
+      && session.status === 200 && same(amrOf(session.body.token), ['pwd', 'otp']) && session.body.recoveryCodes?.length === 10);
+  const mine = await get('/api/admin/account/2fa', session.body.token);
+  check(A, 'staff', 'the session opens a staff screen', '200 enrolled', `${mine.status} ${mine.body.enrolled}`,
+    mine.status === 200 && mine.body.enrolled === true);
 
-  const d = await staff();
-  const second = await post('/api/admin/login', { mobile: d.mobile, password: PW });
-  const denied = await answer(second.body.telegram, d.tgId, { decision: 'deny' });
-  const refused = await post('/api/admin/login/2fa', { challengeToken: second.body.challengeToken });
-  check(A, 'staff', 'deny a sign-in in Telegram', '401 TWO_FACTOR_DENIED, no session',
-    `${denied.status}; ${refused.status} ${refused.body.code}`,
-    denied.status === 200 && refused.status === 401 && refused.body.code === 'TWO_FACTOR_DENIED' && !refused.body.token);
+  const second = await post('/api/admin/login', { mobile: m, password: PW });
+  const replay = await post('/api/admin/login/totp', { challengeToken: second.body.challengeToken, code: totp(secret) });
+  check(A, 'attacker', 'replay the code that was just used', '401 TOTP_INVALID, no session',
+    `${second.body.totpRequired}; ${replay.status} ${replay.body.code}`,
+    second.body.totpRequired === true && replay.status === 401 && replay.body.code === 'TOTP_INVALID' && !replay.body.token);
+  const recovery = await post('/api/admin/login/totp', {
+    challengeToken: second.body.challengeToken, code: session.body.recoveryCodes[0],
+  });
+  check(A, 'staff', 'sign in with a recovery code', '200, nine left', `${recovery.status} ${recovery.body.recoveryCodesLeft}`,
+    recovery.status === 200 && recovery.body.recoveryCodesLeft === 9);
 }
 
 // ── A merchant: form signup, sign-in, and a forgotten password ───────────────

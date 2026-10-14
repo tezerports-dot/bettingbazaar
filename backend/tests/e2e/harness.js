@@ -55,10 +55,11 @@ export function summary() {
 // route, guard and middleware after authentication — which is where the
 // behaviour under test lives — without pretending the captcha was solved.
 export const playerToken   = (u) => signToken({ userId: u.userId, mobile: u.mobile, role: 'user', isAdmin: false, isSubAdmin: false, amr: ['pwd'], permissions: {} });
-// Staff and merchant sessions are a password AND Telegram's approval (Step 3,
-// `amr`); a token without `tg` is refused on every path, as in production.
+// A merchant session is a password AND Telegram's approval (`tg`), a staff
+// session a password AND an authenticator code (`otp`, owner 2026-10-13); a
+// token without its factor is refused on every path, as in production.
 export const merchantToken = (m) => signToken({ merchantId: m._id ?? m.merchantId, userId: m.userId ?? m._id ?? m.merchantId, mobile: m.mobile, isMerchant: true, isAdmin: false, amr: ['pwd', 'tg'] });
-export const adminToken    = (u) => signToken({ userId: u.userId, mobile: u.mobile, role: 'admin', isAdmin: true, isSubAdmin: false, isQueueManager: true, amr: ['pwd', 'tg'], permissions: {} });
+export const adminToken    = (u) => signToken({ userId: u.userId, mobile: u.mobile, role: 'admin', isAdmin: true, isSubAdmin: false, isQueueManager: true, amr: ['pwd', 'otp'], permissions: {} });
 
 /**
  * One request, as one of the three actors.

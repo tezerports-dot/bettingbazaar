@@ -134,10 +134,11 @@ export async function actor({
   // 2026-10-08); a test of that gate asks for a player who has not.
   if (accountType === 'PLAYER' && boardRules) await acceptBoardRules(id, BOARD_RULES_VERSION);
 
-  // What the sign-in would have proved (Step 3): staff approve every sign-in in
-  // Telegram, so a staff actor's token says so; a player's is the password.
+  // What the sign-in would have proved: a staff sign-in ends with an
+  // authenticator code (owner, 2026-10-13), so a staff actor's token says so;
+  // a player's is the password.
   const staff = isAdmin || isSubAdmin || isQueueManager || roles.length > 0;
-  const token = signToken({ userId: id, amr: staff ? ['pwd', 'tg'] : ['pwd'] });
+  const token = signToken({ userId: id, amr: staff ? ['pwd', 'otp'] : ['pwd'] });
   return { userId: id, mobile, token, auth: `Bearer ${token}` };
 }
 
