@@ -294,9 +294,11 @@ describe('the login form', () => {
     expect(screen.queryByRole('link', { name: /open telegram/i })).toBeNull();
   });
 
-  it('offers Log in with Telegram, polled on its own route', async () => {
+  it('offers Continue with Telegram (ContinueWithTelegram.test.tsx proves the rest)', async () => {
+    signInWithTelegram.mockResolvedValue({ ...STEP, leg: 'telegramLogin', delivery: 'MATCH', matchNumber: 47 });
+    pollTelegramStep.mockResolvedValue('pending');
     open('login');
-    await userEvent.click(await screen.findByRole('button', { name: /log in with telegram/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /continue with telegram/i }));
     expect(signInWithTelegram).toHaveBeenCalled();
     expect(await screen.findByRole('link', { name: /open telegram/i })).toBeTruthy();
   });
@@ -312,7 +314,7 @@ describe('the login form', () => {
     open('login');
     await screen.findByRole('button', { name: /^log in$/i });
     await Promise.resolve();
-    expect(screen.queryByRole('button', { name: /log in with telegram/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /continue with telegram/i })).toBeNull();
     expect(screen.queryByRole('link', { name: /forgot password/i })).toBeNull();
   });
 

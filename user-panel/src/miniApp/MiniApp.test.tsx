@@ -7,19 +7,19 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
-const { context, approve, signup, passwordReset, playerLogin } = vi.hoisted(() => ({
-  context: vi.fn(), approve: vi.fn(), signup: vi.fn(), passwordReset: vi.fn(), playerLogin: vi.fn(),
+const { context, approve, continueToSite, passwordReset } = vi.hoisted(() => ({
+  context: vi.fn(), approve: vi.fn(), continueToSite: vi.fn(), passwordReset: vi.fn(),
 }));
 vi.mock('./miniAppApi', async (orig) => ({
   ...(await orig<typeof import('./miniAppApi')>()),
-  miniApi: { context, approve, signup, passwordReset, playerLogin },
+  miniApi: { context, approve, continueToSite, passwordReset },
 }));
 
 import MiniApp from './MiniApp';
 
 const SIGNED = 'contact=%7B%7D&auth_date=1&hash=abc';
 const app = (shared = true) => ({
-  initData: 'query_id=1&hash=x', ready: vi.fn(), expand: vi.fn(), close: vi.fn(),
+  initData: 'query_id=1&hash=x', ready: vi.fn(), expand: vi.fn(), close: vi.fn(), openLink: vi.fn(),
   requestContact: vi.fn((cb) => cb(shared, shared ? { response: SIGNED, responseUnsafe: { contact: {} } } : undefined)),
 });
 const ctx = (start: object, accounts: object[] = []) => ({
@@ -27,7 +27,7 @@ const ctx = (start: object, accounts: object[] = []) => ({
 });
 
 beforeEach(() => {
-  [context, approve, signup, passwordReset, playerLogin].forEach((f) => f.mockReset());
+  [context, approve, continueToSite, passwordReset].forEach((f) => f.mockReset());
 });
 
 describe('the Mini App', () => {
@@ -80,14 +80,6 @@ describe('the Mini App', () => {
     expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
   });
 
-  it('locks the referral code on a signup opened from a referral link', async () => {
-    context.mockResolvedValue(ctx({ kind: 'SIGNUP', panel: 'PLAYER', needsContact: true, referral: { code: 'ALICE1', invitedBy: 'alice' } }));
-    render(<MiniApp app={app()} />);
-    const box = await screen.findByLabelText(/invite code/i) as HTMLInputElement;
-    expect(box.value).toBe('ALICE1');
-    expect(box.disabled).toBe(true);
-  });
-
   it('sets the new password in the Mini App for a merchant, at the merchant floor, with the signed contact', async () => {
     context.mockResolvedValue(ctx({ kind: 'RESET', panel: 'MERCHANT', needsContact: true }));
     passwordReset.mockResolvedValue({ panel: 'MERCHANT', changed: true, message: 'Your password has been changed. Sign in with the new password now.' });
@@ -106,20 +98,6 @@ describe('the Mini App', () => {
     expect(await screen.findByText(/sign in with the new password/i)).toBeTruthy();
     expect(passwordReset).toHaveBeenCalledWith(a.initData, SIGNED, { password: 'Twelve-chars', confirmPassword: 'Twelve-chars' });
     expect(screen.queryByRole('button', { name: /choose a new password/i })).toBeNull();
-  });
-
-  it('asks a player opening it plainly for the player floor, and names the panel', async () => {
-    context.mockResolvedValue(ctx({ kind: 'NONE', panel: null, needsContact: false }));
-    passwordReset.mockResolvedValue({ panel: 'PLAYER', changed: true, message: 'Changed.' });
-    const a = app();
-    render(<MiniApp app={a} />);
-    fireEvent.click(await screen.findByRole('button', { name: /forgot password/i }));
-    expect(screen.getByText(/at least 8 characters/i)).toBeTruthy();
-    fireEvent.change(screen.getByLabelText(/^new password$/i), { target: { value: 'Eight-ch' } });
-    fireEvent.change(screen.getByLabelText(/confirm new password/i), { target: { value: 'Eight-ch' } });
-    fireEvent.click(screen.getByRole('button', { name: /share contact and reset/i }));
-    expect(await screen.findByText('Changed.')).toBeTruthy();
-    expect(passwordReset).toHaveBeenCalledWith(a.initData, SIGNED, { password: 'Eight-ch', confirmPassword: 'Eight-ch', panel: 'PLAYER' });
   });
 
   it('does not open the contact prompt when the two passwords differ', async () => {
@@ -142,5 +120,86 @@ describe('the Mini App', () => {
     fireEvent.change(screen.getByLabelText(/confirm new password/i), { target: { value: 'aaaaaaaaaaaa' } });
     fireEvent.click(screen.getByRole('button', { name: /share contact and reset/i }));
     expect((await screen.findByRole('alert')).textContent).toBe('That password is one repeated or sequential run of characters.');
+  });
+});
+
+describe('the Verify screen (Continue with Telegram)', () => {
+  const signIn = (extra: object = {}) => ctx({
+    kind: 'TELEGRAM_LOGIN', panel: 'PLAYER', needsContact: false, state: 'PENDING',
+    destination: 'bettingbazaar.com', account: { panel: 'PLAYER', isNew: false, mobileHint: '••••••3210' },
+    request: { at: '2026-10-13T05:00:00Z', ip: '203.0.113.9', device: 'Chrome on Windows' }, ...extra,
+  });
+
+  it('names where Verify sends them and whose account it enters, and approves only on a press', async () => {
+    context.mockResolvedValue(signIn({ delivery: 'HANDOFF', choices: null }));
+    approve.mockResolvedValue({ approved: true, message: 'Opening…', redirectUrl: 'https://bettingbazaar.com/#/tg/abc' });
+    const a = app();
+    render(<MiniApp app={a} />);
+    expect(await screen.findByText(/you will be sent to bettingbazaar\.com/i)).toBeTruthy();
+    expect(screen.getByTestId('verify-account').textContent).toMatch(/3210/);
+    expect(screen.getByText(/203\.0\.113\.9/)).toBeTruthy();
+    expect(approve).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /^verify$/i }));
+    expect(await screen.findByText(/opening bettingbazaar\.com/i)).toBeTruthy();
+    expect(approve).toHaveBeenCalledWith(a.initData, 'approve', null, null);
+    expect(a.openLink).toHaveBeenCalledWith('https://bettingbazaar.com/#/tg/abc');
+  });
+
+  it('a MATCH needs one of the three numbers chosen, and sends the one chosen', async () => {
+    context.mockResolvedValue(signIn({ delivery: 'MATCH', choices: [31, 47, 82], strikesLeft: 3 }));
+    approve.mockResolvedValue({ approved: true, message: 'Done. Go back to the website or app — it will continue on its own.', redirectUrl: null });
+    const a = app();
+    render(<MiniApp app={a} />);
+    const verify = await screen.findByRole('button', { name: /^verify$/i }) as HTMLButtonElement;
+    expect(verify.disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '47' }));
+    expect(screen.getByRole('button', { name: '47' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(verify);
+    expect(await screen.findByText(/go back to the website/i)).toBeTruthy();
+    expect(approve).toHaveBeenCalledWith(a.initData, 'approve', null, 47);
+    expect(a.openLink).not.toHaveBeenCalled();
+  });
+
+  it('shows a wrong number as the server words it', async () => {
+    context.mockResolvedValue(signIn({ delivery: 'MATCH', choices: [31, 47, 82], strikesLeft: 3 }));
+    approve.mockRejectedValue(new Error('That is not the number on the screen you are signing in on. 2 tries left.'));
+    render(<MiniApp app={app()} />);
+    fireEvent.click(await screen.findByRole('button', { name: '31' }));
+    fireEvent.click(screen.getByRole('button', { name: /^verify$/i }));
+    expect((await screen.findByRole('alert')).textContent).toMatch(/2 tries left/);
+  });
+
+  it('a new account shares the SIGNED contact at Verify, once', async () => {
+    context.mockResolvedValue(signIn({ delivery: 'HANDOFF', needsContact: true, account: { panel: 'PLAYER', isNew: true, mobileHint: '' } }));
+    approve.mockResolvedValue({ approved: true, message: 'Opening…', redirectUrl: 'https://bettingbazaar.com/#/tg/abc' });
+    const a = app();
+    render(<MiniApp app={a} />);
+    expect((await screen.findByTestId('verify-account')).textContent).toMatch(/creates your player account/i);
+    fireEvent.click(screen.getByRole('button', { name: /share contact and verify/i }));
+    expect(await screen.findByText(/opening/i)).toBeTruthy();
+    expect(approve).toHaveBeenCalledWith(a.initData, 'approve', SIGNED, null);
+  });
+
+  it('Deny refuses the sign-in', async () => {
+    context.mockResolvedValue(signIn({ delivery: 'MATCH', choices: [31, 47, 82] }));
+    approve.mockResolvedValue({ approved: false, message: 'Refused. Nobody was signed in.' });
+    render(<MiniApp app={app()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^deny$/i }));
+    expect(await screen.findByText(/nobody was signed in/i)).toBeTruthy();
+    expect(approve).toHaveBeenCalledWith(expect.any(String), 'deny', null);
+  });
+
+  it('opened from the bot itself, Verify continues to the site', async () => {
+    context.mockResolvedValue(ctx({ kind: 'CONTINUE', panel: 'PLAYER', needsContact: false,
+      destination: 'bettingbazaar.com', account: { panel: 'PLAYER', isNew: false, mobileHint: '••••••3210' },
+      referral: { code: 'ALICE1', invitedBy: 'alice' } }));
+    continueToSite.mockResolvedValue({ redirectUrl: 'https://bettingbazaar.com/#/tg/xyz', message: 'Opening…', created: false });
+    const a = app();
+    render(<MiniApp app={a} />);
+    expect(await screen.findByText(/invited by/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^verify$/i }));
+    expect(await screen.findByText(/opening bettingbazaar\.com/i)).toBeTruthy();
+    expect(continueToSite).toHaveBeenCalledWith(a.initData, null);
+    expect(a.openLink).toHaveBeenCalledWith('https://bettingbazaar.com/#/tg/xyz');
   });
 });
