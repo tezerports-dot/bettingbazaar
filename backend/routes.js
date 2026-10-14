@@ -47,9 +47,9 @@ import {
   beginEnrolment, completeEnrolment, checkSignInCode,
 } from './domains/identity/totp.service.js';
 import { currentBranding } from './domains/branding/brandingPayload.js';
-import { normalisePhone } from './domains/identity/signupFields.js';
+import { normalisePhone, normaliseReferralCode } from './domains/identity/signupFields.js';
 import {
-  openChallenge, newChallengeId, telegramUnavailable, REDEEM_WINDOW_SECONDS,
+  openChallenge, newChallengeId, telegramUnavailable, REDEEM_WINDOW_SECONDS, ticketHash,
 } from './domains/identity/telegramChallenge.service.js';
 import { miniAppBot } from './domains/telegram/telegramClient.js';
 import { verifyInitData } from './domains/telegram/miniAppAuth.js';
@@ -573,12 +573,26 @@ export async function telegramLoginHandler(req, res) {
 
     const raw = req.body?.initData;
     if (!raw) {
-      const opened = await openChallenge({ purpose: 'TELEGRAM_LOGIN', door: door.accountType, userId: null, req });
+      // How the approval will reach a browser is the caller's to say
+      // (`delivery`): HANDOFF on the phone that will open Telegram itself,
+      // MATCH elsewhere. Either is safe whoever asks: a HANDOFF is never
+      // spent by this browser's poll, only by the ticket Verify opens on the
+      // device that pressed it (repositories/telegram.js, `redeemTicket`).
+      const handoff = door.accountType === 'PLAYER' && req.body?.delivery === 'HANDOFF';
+      const opened = await openChallenge({
+        purpose: 'TELEGRAM_LOGIN', door: door.accountType, userId: null, req,
+        delivery: handoff ? 'HANDOFF' : 'MATCH',
+        referralCode: door.accountType === 'PLAYER' ? normaliseReferralCode(req.body?.referralCode) : null,
+      });
       return res.status(200).json({
         success: false, pending: true,
         challengeToken: opened.challengeToken,
         telegram: opened.telegram,
-        message: 'Open Telegram to sign in, then come back here.',
+        delivery: opened.delivery,
+        matchNumber: opened.matchNumber,
+        message: opened.delivery === 'HANDOFF'
+          ? 'Open Telegram and press Verify. It brings you back here signed in.'
+          : 'Open Telegram, choose the number shown here, and press Verify.',
       });
     }
 
@@ -640,6 +654,19 @@ export async function telegramLoginCompleteHandler(req, res) {
       });
     }
 
+    // A HANDOFF is never this browser's to spend: its session went to the
+    // device that pressed Verify, through the ticket. Say that it happened.
+    const row = await db.telegram.getChallenge(challenge.challengeId);
+    if (row?.delivery === 'HANDOFF' && row.audience === door.accountType) {
+      if (row.status === 'APPROVED' || row.status === 'REDEEMED') {
+        return res.status(200).json({
+          success: false, handedOff: true,
+          message: 'Verified in Telegram. You are signed in where Telegram opened the site.',
+        });
+      }
+      return notRedeemed(res, db.telegram.stateOf(row, { audience: door.accountType, purposes: ['TELEGRAM_LOGIN'] }));
+    }
+
     const spent = await db.telegram.redeemChallenge({
       challengeId: challenge.challengeId, audience: door.accountType, purposes: ['TELEGRAM_LOGIN'],
     });
@@ -650,6 +677,36 @@ export async function telegramLoginCompleteHandler(req, res) {
     return sessionFor(door, user, res, { amr: ['tg'] });
   } catch (e) {
     return respondError(res, e, 'auth/login/telegram/complete', { message: 'Telegram sign-in failed. Please try again.' });
+  }
+}
+
+/**
+ * POST {door}/login/telegram/ticket `{ ticket }` — the site, opened by the Mini
+ * App at `#/tg/<ticket>`, exchanges the ticket for the session.
+ *
+ * The ticket is spent once, with its HANDOFF challenge, at this door
+ * (`redeemTicket`). Every account question is asked again: the approval is
+ * seconds old, and an admin may have blocked the account in those seconds.
+ */
+export async function telegramTicketHandler(req, res) {
+  try {
+    const door = telegramDoor(req);
+    const ticket = String(req.body?.ticket || '');
+    const spent = ticket ? await db.telegram.redeemTicket({ ticketHash: ticketHash(ticket), audience: door.accountType }) : { ok: false };
+    if (!spent.ok) {
+      return send(res, {
+        status: 401, code: 'TICKET_INVALID',
+        message: 'This sign-in link has already been used or has expired. Press Continue with Telegram again.',
+      });
+    }
+    const user = await db.users.getUser(spent.userId);
+    const refused = accountRefusal(door, user);
+    if (refused) return send(res, refused);
+    const { merchant, staff, refusal: notActive } = await merchantRefusal(door, user);
+    if (notActive) return send(res, notActive);
+    return sessionFor(door, user, res, { amr: ['tg'], merchant, staff });
+  } catch (e) {
+    return respondError(res, e, 'auth/login/telegram/ticket', { message: 'Telegram sign-in failed. Please try again.' });
   }
 }
 

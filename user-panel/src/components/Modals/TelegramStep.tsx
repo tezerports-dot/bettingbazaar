@@ -17,48 +17,9 @@
  * On a refusal (denied, expired), on unmount and on Back. A poll that outlived
  * its screen would keep asking a server about a sign-in nobody is waiting for.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
+import { useTelegramPoll } from '../../hooks/useTelegramPoll';
 import type { TelegramBlock } from '../../services/backend.interface';
-
-/** Every three seconds: the contract's "every 2-3 s", and the poll limiter's budget. */
-export const TELEGRAM_POLL_MS = 3000;
-
-/**
- * Ask `poll` every TELEGRAM_POLL_MS until it answers `done` or throws.
- *
- * Module-level so a second screen (Profile's relink) reuses it
- * rather than writing a second loop that forgets to stop (§5). One request in
- * flight at a time: a slow answer must not stack a second poll behind it.
- */
-export function useTelegramPoll(
-  poll: (() => Promise<'pending' | 'done'>) | null,
-  onDone: () => void,
-  onError: (message: string) => void,
-) {
-  const busy = useRef(false);
-  const latest = useRef({ onDone, onError });
-  latest.current = { onDone, onError };
-
-  useEffect(() => {
-    if (!poll) return undefined;
-    let stopped = false;
-    const tick = async () => {
-      if (stopped || busy.current) return;
-      busy.current = true;
-      try {
-        const r = await poll();
-        if (!stopped && r === 'done') { stopped = true; latest.current.onDone(); }
-      } catch (err) {
-        if (!stopped) {
-          stopped = true;
-          latest.current.onError((err as Error)?.message || 'This Telegram step did not finish. Please start again.');
-        }
-      } finally { busy.current = false; }
-    };
-    const id = window.setInterval(tick, TELEGRAM_POLL_MS);
-    return () => { stopped = true; window.clearInterval(id); };
-  }, [poll]);
-}
 
 const BUTTON: React.CSSProperties = {
   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9,

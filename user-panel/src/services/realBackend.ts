@@ -25,7 +25,7 @@
  *            Required by WinnersPage, FaqPage, SupportPage, and app-init branding fetch.
  */
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import { Backend, SignInStep, PollResult, TelegramSetup, MyTelegram, TelegramBlock } from './backend.interface';
+import { Backend, SignInStep, PollResult, TelegramSetup, MyTelegram, TelegramBlock, TelegramDelivery } from './backend.interface';
 import {
   User, Bet, BettingSide,
   PromoContent, PromoLocation, HomePromoCard, PromoDevice,
@@ -393,20 +393,37 @@ export class RealBackend implements Backend {
    */
   async pollSignIn(leg: 'challenge' | 'telegramLogin', challengeToken: string): Promise<PollResult> {
     const path = leg === 'challenge' ? '/v1/auth/login/2fa' : '/v1/auth/login/telegram/complete';
-    const res = await this.request<{ success: boolean; pending?: boolean; token?: string; user?: User }>(
+    const res = await this.request<{ success: boolean; pending?: boolean; token?: string; user?: User;
+      handedOff?: boolean; message?: string }>(
       path, { method: 'POST', body: JSON.stringify({ challengeToken }) }, 0);
     if (res.success && res.token && res.user) { this.seat(res); return { state: 'done', user: res.user }; }
+    if (res.handedOff) return { state: 'handedOff', message: res.message || '' };
     return { state: 'pending' };
   }
 
-  async loginWithTelegram(): Promise<SignInStep> {
-    const res = await this.request<{ challengeToken?: string; telegram?: TelegramBlock; message?: string }>(
-      '/v1/auth/login/telegram', { method: 'POST', body: '{}' });
+  async loginWithTelegram(opts: { delivery?: TelegramDelivery; referralCode?: string } = {}): Promise<SignInStep> {
+    const res = await this.request<{ challengeToken?: string; telegram?: TelegramBlock; message?: string;
+      delivery?: TelegramDelivery; matchNumber?: number | null }>(
+      '/v1/auth/login/telegram', { method: 'POST', body: JSON.stringify(opts) });
     if (!res.challengeToken) {
       return { kind: 'unavailable', message: res.message || 'Telegram sign-in is not available right now.' };
     }
     return { kind: 'telegram', leg: 'telegramLogin', challengeToken: res.challengeToken,
-      telegram: res.telegram ?? null, message: res.message || '' };
+      telegram: res.telegram ?? null, message: res.message || '',
+      delivery: res.delivery, matchNumber: res.matchNumber ?? null };
+  }
+
+  /**
+   * The ticket the Mini App opened this site with, exchanged once for the
+   * session, which is seated through the one seater. A used or expired
+   * ticket throws the server's sentence.
+   */
+  async redeemTelegramTicket(ticket: string): Promise<User> {
+    const res = await this.request<{ success: boolean; token?: string; user?: User; message?: string }>(
+      '/v1/auth/login/telegram/ticket', { method: 'POST', body: JSON.stringify({ ticket }) }, 0);
+    if (!res.success || !res.token || !res.user) throw new Error(res.message || 'Could not sign you in. Please try again.');
+    this.seat(res);
+    return res.user;
   }
 
   async getTelegramSetup(): Promise<TelegramSetup> {

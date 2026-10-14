@@ -169,6 +169,7 @@ router.post('/login', ...doorRoute('PLAYER', 'login'));
 router.post('/login/2fa', ...doorRoute('PLAYER', 'twoFactor'));
 router.post('/login/telegram', ...doorRoute('PLAYER', 'telegram'));
 router.post('/login/telegram/complete', ...doorRoute('PLAYER', 'telegramComplete'));
+router.post('/login/telegram/ticket', ...doorRoute('PLAYER', 'telegramTicket'));
 
 // ── The player's own Telegram link (accountTelegram.js) ─────────────────────
 router.get('/telegram', authenticatePlayer, telegramStatus);

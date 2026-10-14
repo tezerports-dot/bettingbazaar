@@ -12,7 +12,8 @@
  *
  *   GET  /api/telegram/mini-app?panel=     is there a bot; the reset link
  *   POST /api/telegram/mini-app/context    what was this opened for (reads only)
- *   POST /api/telegram/mini-app/approve    answer a challenge
+ *   POST /api/telegram/mini-app/approve    answer a challenge (Verify / Deny)
+ *   POST /api/telegram/mini-app/continue   Verify, opened from the bot itself
  *   POST /api/telegram/mini-app/signup     a player signs up inside Telegram
  *   POST /api/telegram/mini-app/password-reset  forgot password, by contact,
  *                                          set right there for every panel
@@ -30,7 +31,10 @@ import { db } from '#db';
 import { miniAppBot, miniAppLink } from './telegramClient.js';
 import { verifyInitData, verifyContact } from './miniAppAuth.js';
 import { miniAppRefusal } from './miniAppRefusals.js';
-import { CHALLENGE_PARAM, telegramUnavailable, REDEEM_WINDOW_SECONDS } from '../identity/telegramChallenge.service.js';
+import {
+  CHALLENGE_PARAM, telegramUnavailable, REDEEM_WINDOW_SECONDS, CHALLENGE_TTL_SECONDS,
+  TICKET_TTL_SECONDS, destinationFor, newTicket, newChallengeId,
+} from '../identity/telegramChallenge.service.js';
 import { resetFromMiniApp } from '../identity/passwordReset.service.js';
 import { hashPassword } from '../identity/password.util.js';
 import { assertPlayerPassword } from '../identity/passwordPolicy.js';
@@ -79,6 +83,40 @@ const mobileHint = (mobile) => (mobile ? `••••••${String(mobile).sli
 // staff account around its authenticator (owner, 2026-10-13).
 const RESET_PARAM = /^reset-(PLAYER|MERCHANT)$/;
 const REFERRAL_PARAM = /^ref-([A-Za-z0-9_-]{4,32})$/;
+
+/** "bettingbazaar.com" or "bettingbazaar.com/merchant": the sentence above Verify. */
+function destinationLabel(audience) {
+  const url = new URL(destinationFor(audience));
+  return `${url.host}${url.pathname.replace(/\/+$/, '')}`;
+}
+
+/**
+ * The account Verify will enter, named so the person can see it is theirs
+ * (login-CSRF: a sign-in somebody else started enters the account of the
+ * Telegram that presses Verify, and this says which). `isNew` when this
+ * Telegram account has none on that panel yet: Verify will ask for the
+ * contact, and either find the account of that number or create one.
+ */
+async function accountFor(tgId, audience) {
+  const link = await db.telegram.getLinkByTelegramId(tgId, audience);
+  if (!link) return { panel: audience, isNew: true, mobileHint: '' };
+  const user = await db.users.getUser(link.userId);
+  return { panel: audience, isNew: false, mobileHint: mobileHint(user?.mobile) };
+}
+
+/** A referral code to the referrer it names; an unknown code is reported, never used. */
+async function referrerFor(rawCode) {
+  const code = normaliseReferralCode(rawCode);
+  if (!code) return { code: null, referrer: null };
+  const referrer = await db.users.getUserByReferralCode(code);
+  return { code, referrer };
+}
+
+/** What a new player account would be, should this approval create one. */
+async function signupFor(rawCode) {
+  const { referrer } = await referrerFor(rawCode);
+  return { userId: db.users.newUserId(), referralCode: generateReferralCode(), referredBy: referrer?.userId ?? null };
+}
 
 /**
  * GET /api/telegram/mini-app?panel=PLAYER|MERCHANT — public.
@@ -147,17 +185,36 @@ router.post('/mini-app/context', miniAppLimiter, async (req, res) => {
           mobileHint: mobileHint(account?.mobile),
           request: { at: ch.createdAt, ip: ch.requestedIp, device: ch.requestedAgent },
         };
+        if (ch.purpose === 'TELEGRAM_LOGIN') {
+          // The Verify screen: where Verify sends them, whose account it
+          // enters, and for a MATCH the three numbers, never which is right.
+          const invite = ch.referralCode ? await referrerFor(ch.referralCode) : null;
+          start = {
+            ...start,
+            delivery: ch.delivery,
+            choices: ch.delivery === 'MATCH' ? ch.matchChoices : null,
+            strikesLeft: ch.delivery === 'MATCH' ? Math.max(0, 3 - ch.matchStrikes) : null,
+            destination: destinationLabel(ch.audience),
+            account: await accountFor(tg.id, ch.audience),
+            referral: invite ? { code: invite.referrer ? invite.code : null, invitedBy: invite.referrer?.username || '', unknown: !invite.referrer } : undefined,
+          };
+        }
       }
     } else if (RESET_PARAM.test(param)) {
       start = { kind: 'RESET', panel: param.match(RESET_PARAM)[1], needsContact: true };
-    } else if (REFERRAL_PARAM.test(param)) {
-      const code = normaliseReferralCode(param.match(REFERRAL_PARAM)[1]);
-      const referrer = code ? await db.users.getUserByReferralCode(code) : null;
+    } else if (!param || REFERRAL_PARAM.test(param)) {
+      // Opened from the bot itself, or by a referral link: no website asked,
+      // so Verify creates the sign-in and sends the person to the site
+      // (`/mini-app/continue`). "Continue with Telegram" is one action: the
+      // account is found, or made.
+      const invite = param ? await referrerFor(param.match(REFERRAL_PARAM)[1]) : null;
+      const account = await accountFor(tg.id, 'PLAYER');
       start = {
-        kind: 'SIGNUP', panel: 'PLAYER', needsContact: true,
-        referral: { code: referrer ? code : null, invitedBy: referrer?.username || '' },
+        kind: 'CONTINUE', panel: 'PLAYER', needsContact: account.isNew,
+        destination: destinationLabel('PLAYER'), account,
+        referral: invite ? { code: invite.referrer ? invite.code : null, invitedBy: invite.referrer?.username || '', unknown: !invite.referrer } : undefined,
       };
-    } else if (param) {
+    } else {
       start = { kind: 'UNKNOWN', panel: null, needsContact: false };
     }
 
@@ -192,21 +249,85 @@ router.post('/mini-app/approve', miniAppLimiter, async (req, res) => {
       throw refusal(400, 'DECISION_INVALID', 'Choose approve or deny.');
     }
     const contact = proveContact(bot, req.body?.contact, { required: false });
+    const challenge = await db.telegram.getChallenge(proof.startParam);
+    const signIn = challenge?.purpose === 'TELEGRAM_LOGIN';
+
+    // ── The number match ─────────────────────────────────────────────────
+    // A wrong pick is a strike, committed on its own before anything else is
+    // asked (`strike`), and the approval is not attempted: the `initData` is
+    // not spent, so the person can pick again, three times in all.
+    const pick = Number.isInteger(req.body?.pick) ? req.body.pick : null;
+    if (decision === 'approve' && signIn && challenge.delivery === 'MATCH') {
+      const struck = await db.telegram.strike({ challengeId: challenge.challengeId, pick, telegramUserId: proof.user.id });
+      if (struck.wrong) {
+        throw struck.denied
+          ? refusal(403, 'TOO_MANY_WRONG', 'That was the third wrong number, so this sign-in has been refused. Start again from the website or app.')
+          : refusal(400, 'WRONG_NUMBER', `That is not the number on the screen you are signing in on. ${struck.strikesLeft} ${struck.strikesLeft === 1 ? 'try' : 'tries'} left.`);
+      }
+    }
+
+    // A HANDOFF approval travels as a ticket, opened on the site by this page.
+    const handoff = decision === 'approve' && signIn && challenge.delivery === 'HANDOFF';
+    const ticket = handoff ? { ...newTicket(), ttlSeconds: TICKET_TTL_SECONDS } : null;
+    const redirectUrl = handoff ? destinationFor(challenge.audience, ticket.ticket) : null;
+
     const answer = await db.telegram.answerChallenge({
       challengeId: proof.startParam, decision, telegramUser: proof.user,
       initData: initDataClaim(proof), contact, redeemWindowSeconds: REDEEM_WINDOW_SECONDS,
+      pick, ticket,
+      signup: signIn && challenge.audience === 'PLAYER' ? await signupFor(challenge.referralCode) : null,
     });
     if (!answer.ok) throw refuseWith(answer.code);
     return res.json({
       success: true,
       kind: answer.kind, panel: answer.panel,
       approved: answer.approved, relinked: answer.relinked, verified: answer.verified,
-      message: answer.approved
-        ? 'Done. Go back to the website or app — it will continue on its own.'
-        : 'Refused. Nobody was signed in.',
+      created: Boolean(answer.created),
+      redirectUrl: answer.approved ? redirectUrl : null,
+      message: !answer.approved
+        ? 'Refused. Nobody was signed in.'
+        : redirectUrl
+          ? `Opening ${destinationLabel(challenge.audience)}…`
+          : 'Done. Go back to the website or app — it will continue on its own.',
     });
   } catch (err) {
     return respondError(res, err, 'telegram/mini-app/approve', { message: 'Could not record your answer. Please try again.' });
+  }
+});
+
+/**
+ * POST /api/telegram/mini-app/continue `{ initData, contact? }` — Verify, on a
+ * Mini App opened from the bot itself or by a referral link (`ref-<CODE>`).
+ *
+ * No website asked, so nobody is polling: the sign-in is created HANDOFF and
+ * approved in one transaction, and the answer is the site's address with a
+ * one-time ticket in its fragment, which the page opens (`openLink`). The
+ * session lands on this device. A Telegram account with no player account yet
+ * shares its contact: the account of that number is linked, or one is made.
+ */
+router.post('/mini-app/continue', miniAppLimiter, signupLimiter,
+  createSubnetLimiter('signup', { countOnly: 'successes' }), async (req, res) => {
+  try {
+    const { bot, proof } = await proveInitData(req);
+    if (proof.startParam && !REFERRAL_PARAM.test(proof.startParam)) throw refuseWith('START_PARAM_INVALID');
+    const contact = proveContact(bot, req.body?.contact, { required: false });
+    const code = proof.startParam ? proof.startParam.match(REFERRAL_PARAM)[1] : null;
+    const ticket = { ...newTicket(), ttlSeconds: TICKET_TTL_SECONDS };
+    const redirectUrl = destinationFor('PLAYER', ticket.ticket);
+
+    const answer = await db.telegram.answerChallenge({
+      challengeId: newChallengeId(), decision: 'approve', telegramUser: proof.user,
+      initData: initDataClaim(proof), contact, redeemWindowSeconds: REDEEM_WINDOW_SECONDS,
+      ticket, signup: await signupFor(code),
+      open: { audience: 'PLAYER', ttlSeconds: CHALLENGE_TTL_SECONDS.TELEGRAM_LOGIN, referralCode: normaliseReferralCode(code) },
+    });
+    if (!answer.ok) throw refuseWith(answer.code);
+    return res.json({
+      success: true, panel: 'PLAYER', created: Boolean(answer.created),
+      redirectUrl, message: `Opening ${destinationLabel('PLAYER')}…`,
+    });
+  } catch (err) {
+    return respondError(res, err, 'telegram/mini-app/continue', { message: 'Could not sign you in. Please try again.' });
   }
 });
 

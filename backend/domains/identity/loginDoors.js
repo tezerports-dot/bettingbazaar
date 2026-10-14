@@ -22,6 +22,8 @@
  *                          refuse every poll after the first.
  *   login/telegram         per-address limiter: it opens a challenge before
  *                          anybody has proved anything.
+ *   login/telegram/ticket  per-address limiter: it presents a 256-bit ticket,
+ *                          which no budget makes guessable.
  *   login/totp,            the second-factor failure budget, keyed on the
  *   login/totp/activate    ACCOUNT through the challenge token (`actorKey`),
  *                          never the address: a code is six digits.
@@ -44,7 +46,7 @@ import { requireCaptcha } from '../../middleware/captcha.js';
 import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
 import {
   LOGIN_DOOR, loginHandler, loginTwoFactorHandler,
-  telegramLoginHandler, telegramLoginCompleteHandler,
+  telegramLoginHandler, telegramLoginCompleteHandler, telegramTicketHandler,
   totpLoginHandler, totpSetupHandler, totpActivateHandler,
 } from '../../routes.js';
 
@@ -75,6 +77,7 @@ const LEGS = {
   twoFactor: () => [challengePollLimiter, twoFactorLimiter, loginTwoFactorHandler],
   telegram: () => [telegramLoginLimiter, telegramLoginHandler],
   telegramComplete: () => [challengePollLimiter, twoFactorLimiter, telegramLoginCompleteHandler],
+  telegramTicket: () => [telegramLoginLimiter, telegramTicketHandler],
   totp: () => [twoFactorLimiter, totpLoginHandler],
   totpSetup: () => [challengePollLimiter, twoFactorLimiter, totpSetupHandler],
   totpActivate: () => [twoFactorLimiter, totpActivateHandler],
@@ -82,7 +85,7 @@ const LEGS = {
 
 /** Which legs each door has. Anything else is a boot-time error. */
 const DOOR_LEGS = Object.freeze({
-  PLAYER: Object.freeze(['login', 'twoFactor', 'telegram', 'telegramComplete']),
+  PLAYER: Object.freeze(['login', 'twoFactor', 'telegram', 'telegramComplete', 'telegramTicket']),
   MERCHANT: Object.freeze(['login', 'twoFactor', 'telegram', 'telegramComplete']),
   STAFF: Object.freeze(['login', 'totp', 'totpSetup', 'totpActivate']),
 });
@@ -91,7 +94,7 @@ const DOOR_LEGS = Object.freeze({
  * The middleware for one leg at one door, ending in its handler.
  *
  * @param {'PLAYER'|'STAFF'|'MERCHANT'} door
- * @param {'login'|'twoFactor'|'telegram'|'telegramComplete'|'totp'|'totpSetup'|'totpActivate'} leg
+ * @param {'login'|'twoFactor'|'telegram'|'telegramComplete'|'telegramTicket'|'totp'|'totpSetup'|'totpActivate'} leg
  */
 export function doorRoute(door, leg) {
   if (!LOGIN_DOOR[door]) throw new Error(`doorRoute: unknown door ${door}`);

@@ -21,7 +21,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { getBackend } from '../services/backend.service';
 import type { MyTelegram, TelegramBlock } from '../services/backend.interface';
-import { useTelegramPoll } from '../components/Modals/TelegramStep';
+import { useTelegramPoll } from '../hooks/useTelegramPoll';
 import { card } from '../redesign/Screen';
 
 type Waiting = { kind: 'relink' | 'off'; telegram: TelegramBlock; since: string | null } | null;

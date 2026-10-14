@@ -23,11 +23,23 @@ export interface TelegramBlock { url: string; botUsername: string; expiresAt: st
 export type SignInStep =
   | { kind: 'done'; user: User }
   | { kind: 'telegram'; leg: 'challenge' | 'telegramLogin'; challengeToken: string;
-      telegram: TelegramBlock | null; message: string }
+      telegram: TelegramBlock | null; message: string;
+      /** "Continue with Telegram": how the approval comes back, and the MATCH number to show. */
+      delivery?: TelegramDelivery; matchNumber?: number | null }
   | { kind: 'unavailable'; message: string };
 
-/** One poll of a Telegram step: still waiting, or seated. A refusal throws. */
-export type PollResult = { state: 'pending' } | { state: 'done'; user: User };
+/**
+ * How an approved "Continue with Telegram" reaches a browser (CLAUDE.md §33):
+ * MATCH, this screen polls and shows a number the Mini App must match;
+ * HANDOFF, Telegram opens the site on the phone that pressed Verify.
+ */
+export type TelegramDelivery = 'MATCH' | 'HANDOFF';
+
+/**
+ * One poll of a Telegram step: still waiting, seated, or handed off (verified,
+ * and the session went where Telegram opened the site). A refusal throws.
+ */
+export type PollResult = { state: 'pending' } | { state: 'done'; user: User } | { state: 'handedOff'; message: string };
 
 /** `GET /api/telegram/mini-app?panel=PLAYER`. */
 export interface TelegramSetup { available: boolean; botUsername: string; resetUrl: string | null }
@@ -69,8 +81,11 @@ export interface Backend {
   /** Ask once whether Telegram has answered a step; seats on approval. */
   pollSignIn(leg: 'challenge' | 'telegramLogin', challengeToken: string): Promise<PollResult>;
 
-  /** "Login with Telegram": opens a challenge whose link the player opens. */
-  loginWithTelegram(): Promise<SignInStep>;
+  /** "Continue with Telegram": opens a challenge whose link the player opens. */
+  loginWithTelegram(opts?: { delivery?: TelegramDelivery; referralCode?: string }): Promise<SignInStep>;
+
+  /** The site opened at `#/tg/<ticket>` by the Mini App: the ticket, exchanged for the session. */
+  redeemTelegramTicket(ticket: string): Promise<User>;
 
   /** Is Telegram available, and the "Forgot password" link. Public. */
   getTelegramSetup(): Promise<TelegramSetup>;

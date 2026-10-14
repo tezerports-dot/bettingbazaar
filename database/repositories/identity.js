@@ -68,13 +68,15 @@ export async function sweepExpired() {
  * unique index on `(mobile, account_type)` refuses a second player account for
  * one number — that is the guarantee, and the route's read before this is only
  * a courtesy that produces the right sentence.
+ *
+ * `passwordHash` is null for an account made by "Continue with Telegram"
+ * (owner, 2026-10-13): Telegram is how it signs in.
  */
 export async function createAccountFromSignup({
   userId, username, mobile, passwordHash,
   referralCode = null, referredBy = null, client = null,
 }) {
   if (!userId || !mobile) throw new Error('createAccountFromSignup requires a userId and a mobile');
-  if (!passwordHash) throw new Error('createAccountFromSignup requires a passwordHash — the form sets one');
 
   try {
     // 'PLAYER', stated rather than defaulted. This is the one writer of a
@@ -89,7 +91,7 @@ export async function createAccountFromSignup({
        ON CONFLICT (mobile, account_type) DO NOTHING
        RETURNING user_id`,
       [String(userId), username || `player${String(mobile).slice(-4)}`, String(mobile),
-       String(passwordHash), referralCode, referredBy ? String(referredBy) : null],
+       passwordHash ? String(passwordHash) : null, referralCode, referredBy ? String(referredBy) : null],
     );
     if (!rows[0]) return { ok: false, reason: 'mobile_taken' };
     return { ok: true, userId: String(userId) };

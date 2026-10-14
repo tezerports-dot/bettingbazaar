@@ -29,6 +29,7 @@ const TABLE = {
   CHALLENGE_ANSWERED: [409, 'This request was already answered. Go back to the website or app.'],
   MOBILE_TAKEN: [409, 'An account already exists for this mobile number. Sign in on the website or app instead.'],
   DUPLICATE: [409, 'An account already exists for those details. Sign in on the website or app instead.'],
+  WRONG_NUMBER: [400, 'That is not the number on the screen you are signing in on. Look again and pick the one it shows.'],
   START_PARAM_INVALID: [400, 'This link is not one the app recognises. Open it again from the website or app.'],
 };
 

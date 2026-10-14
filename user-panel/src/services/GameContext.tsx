@@ -32,7 +32,7 @@ import { analyticsWindowFor } from '../constants';
 import { platform } from './api';
 import { getBackend, setCdnBaseUrl } from './backend.service';
 import { decodeCyclePhase, decodeCycleResult } from './realtimeProtocol';
-import type { SignInStep } from './backend.interface';
+import type { SignInStep, TelegramDelivery } from './backend.interface';
 import { applyBranding } from './branding';
 
 
@@ -130,9 +130,11 @@ interface GameContextType {
    */
   signIn: (mobile: string, password: string) => Promise<SignInStep>;
   /** "Login with Telegram": the step to open. */
-  signInWithTelegram: () => Promise<SignInStep>;
+  signInWithTelegram: (opts?: { delivery?: TelegramDelivery; referralCode?: string }) => Promise<SignInStep>;
+  /** The `#/tg/<ticket>` page: the ticket exchanged for the session, and the player seated. */
+  signInWithTicket: (ticket: string) => Promise<void>;
   /** Ask once whether Telegram has answered; seats the player when it has. */
-  pollTelegramStep: (leg: 'challenge' | 'telegramLogin', challengeToken: string) => Promise<'pending' | 'done'>;
+  pollTelegramStep: (leg: 'challenge' | 'telegramLogin', challengeToken: string) => Promise<'pending' | 'done' | 'handedOff'>;
   logout: () => void;
   /**
    * The switched-on boards, in the admin's home-page order
@@ -906,11 +908,17 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const signIn = async (mobile: string, password: string): Promise<SignInStep> =>
     seatStep(await backend.login(mobile, password));
 
-  const signInWithTelegram = async (): Promise<SignInStep> => backend.loginWithTelegram();
+  const signInWithTelegram = async (opts?: { delivery?: TelegramDelivery; referralCode?: string }): Promise<SignInStep> =>
+    backend.loginWithTelegram(opts);
+
+  const signInWithTicket = async (ticket: string) => {
+    setUser({ ...(await backend.redeemTelegramTicket(ticket)) } as User);
+  };
 
   const pollTelegramStep = async (leg: 'challenge' | 'telegramLogin', challengeToken: string) => {
     const r = await backend.pollSignIn(leg, challengeToken);
     if (r.state === 'done') { setUser({ ...r.user } as User); return 'done' as const; }
+    if (r.state === 'handedOff') return 'handedOff' as const;
     return 'pending' as const;
   };
 
@@ -998,7 +1006,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
 
   return (
     <GameContext.Provider value={{
-      user, isAuthenticated: !!user, isOnline, register, signIn, signInWithTelegram, pollTelegramStep, logout,
+      user, isAuthenticated: !!user, isOnline, register, signIn, signInWithTelegram, signInWithTicket, pollTelegramStep, logout,
       boards, currentBoard,
       cycleType, setCycleType, cycles, currentCycle,
       pastCycles: myPastCycles, audience, setAudience, loadCycleHistory, gameState: currentCycle.status, serverTimeOffset,

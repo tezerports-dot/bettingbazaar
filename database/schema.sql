@@ -3383,6 +3383,57 @@ CREATE INDEX IF NOT EXISTS telegram_challenges_expiry_idx ON telegram_challenges
 CREATE INDEX IF NOT EXISTS telegram_challenges_user_idx ON telegram_challenges (user_id)
   WHERE user_id IS NOT NULL;
 
+-- ── The number match and the handoff (owner, 2026-10-13) ──────────────────
+-- How an approved "Continue with Telegram" reaches a browser:
+--   MATCH    the browser that asked polls for it. It shows a two-digit number
+--            and the Mini App offers three; Verify counts only with the right
+--            one (`match_number`), and three wrong picks refuse the sign-in.
+--   HANDOFF  nobody polls it. Verify answers a one-time ticket the Mini App
+--            opens on the site (`telegram_handoff_tickets`), so the session
+--            lands on the device that pressed Verify.
+ALTER TABLE telegram_challenges ADD COLUMN IF NOT EXISTS delivery TEXT NOT NULL DEFAULT 'MATCH';
+ALTER TABLE telegram_challenges ADD COLUMN IF NOT EXISTS match_number SMALLINT;
+ALTER TABLE telegram_challenges ADD COLUMN IF NOT EXISTS match_choices SMALLINT[];
+ALTER TABLE telegram_challenges ADD COLUMN IF NOT EXISTS match_strikes SMALLINT NOT NULL DEFAULT 0;
+-- The invite code a website signup carried; used only if the sign-in creates a player.
+ALTER TABLE telegram_challenges ADD COLUMN IF NOT EXISTS referral_code TEXT;
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_delivery_check;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_delivery_check
+  CHECK (delivery IN ('MATCH', 'HANDOFF'));
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_strikes;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_strikes
+  CHECK (match_strikes BETWEEN 0 AND 3);
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_match_choices;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_match_choices
+  CHECK (match_number IS NULL OR (match_number BETWEEN 10 AND 99
+         AND cardinality(match_choices) = 3 AND match_number = ANY (match_choices)));
+-- An unanswered MATCH sign-in always has its number: the approval asks
+-- `match_number IS NULL OR match_number = <pick>`, which only a HANDOFF or a
+-- challenge that is not a sign-in may pass with no number.
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_match_numbered;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_match_numbered
+  CHECK (purpose <> 'TELEGRAM_LOGIN' OR delivery = 'HANDOFF' OR status <> 'PENDING' OR match_number IS NOT NULL);
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_referral_player;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_referral_player
+  CHECK (referral_code IS NULL OR audience = 'PLAYER');
+
+-- Verify in the Mini App answers a random ticket (32 bytes) and opens
+-- `https://<site>/#/tg/<ticket>`; the site exchanges it for the session. Only
+-- its SHA-256 is kept. One per challenge, single use (`used_at IS NULL` in the
+-- redeeming UPDATE's WHERE, §32 S6), short-lived by the DATABASE clock.
+CREATE TABLE IF NOT EXISTS telegram_handoff_tickets (
+  ticket_hash  TEXT PRIMARY KEY,
+  challenge_id TEXT NOT NULL UNIQUE REFERENCES telegram_challenges (challenge_id) ON DELETE CASCADE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at   TIMESTAMPTZ NOT NULL,
+  used_at      TIMESTAMPTZ
+);
+ALTER TABLE telegram_handoff_tickets DROP CONSTRAINT IF EXISTS telegram_handoff_tickets_hash_shape;
+ALTER TABLE telegram_handoff_tickets ADD CONSTRAINT telegram_handoff_tickets_hash_shape
+  CHECK (ticket_hash ~ '^[0-9a-f]{64}$');
+CREATE INDEX IF NOT EXISTS telegram_handoff_tickets_expiry_idx
+  ON telegram_handoff_tickets (expires_at);
+
 -- ── Each signed Mini App string, used once ────────────────────────────────
 -- `initData` and a shared contact are bearer proofs for the five minutes
 -- Telegram's signature is accepted (miniAppAuth.js). Claiming the hash here,

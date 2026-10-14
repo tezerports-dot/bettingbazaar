@@ -240,7 +240,14 @@ export const CHALLENGE_PURPOSE = Object.freeze({
 
 const CHALLENGE_COLUMNS = `challenge_id, purpose, audience, user_id, status, created_at,
   expires_at, decided_at, telegram_user_id, redeemed_at, requested_ip, requested_agent,
+  delivery, match_number, match_choices, match_strikes, referral_code,
   (expires_at > now()) AS live`;
+
+/** How an approved sign-in reaches a browser (schema.sql, "The number match and the handoff"). */
+export const DELIVERY = Object.freeze({ MATCH: 'MATCH', HANDOFF: 'HANDOFF' });
+
+/** Wrong picks a MATCH sign-in survives: the third refuses it. */
+export const MATCH_STRIKES = 3;
 
 const toChallenge = (r) => (r ? {
   challengeId: r.challenge_id,
@@ -255,27 +262,76 @@ const toChallenge = (r) => (r ? {
   redeemedAt: r.redeemed_at,
   requestedIp: r.requested_ip,
   requestedAgent: r.requested_agent,
+  delivery: r.delivery,
+  // The right number is the requesting browser's to show and nobody else's:
+  // it is read here for the answer's own check and never sent by a route.
+  matchNumber: r.match_number === null ? null : Number(r.match_number),
+  matchChoices: Array.isArray(r.match_choices) ? r.match_choices.map(Number) : null,
+  matchStrikes: Number(r.match_strikes || 0),
+  referralCode: r.referral_code || null,
   // On the DATABASE clock, so the app server's clock never decides.
   live: r.live === true,
 } : null);
 
-/** Open a challenge. `userId` is null only for an unbound Telegram login. */
+/**
+ * Open a challenge. `userId` is null only for an unbound Telegram login.
+ *
+ * A TELEGRAM_LOGIN says how its approval will reach a browser (`delivery`);
+ * a MATCH one carries its number and the three choices the Mini App offers
+ * (the caller draws them, `drawMatch`). Every other purpose is answered to the
+ * browser that polls it, with no number.
+ */
 export async function createChallenge({
   challengeId, purpose, audience, userId = null, ttlSeconds,
   requestedIp = '', requestedAgent = '',
+  delivery = DELIVERY.MATCH, match = null, referralCode = null,
 }) {
   assertAudience(audience, 'createChallenge');
   if (!CHALLENGE_PURPOSE[purpose]) throw new Error(`createChallenge: unknown purpose ${purpose}`);
+  if (!DELIVERY[delivery]) throw new Error(`createChallenge: unknown delivery ${delivery}`);
   const { rows } = await pgQuery(
     `INSERT INTO telegram_challenges
-       (challenge_id, purpose, audience, user_id, expires_at, requested_ip, requested_agent)
-     VALUES ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval, $6, $7)
+       (challenge_id, purpose, audience, user_id, expires_at, requested_ip, requested_agent,
+        delivery, match_number, match_choices, referral_code)
+     VALUES ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval, $6, $7, $8, $9, $10::smallint[], $11)
      RETURNING ${CHALLENGE_COLUMNS}`,
     [String(challengeId), purpose, audience, userId ? String(userId) : null, String(ttlSeconds),
-      String(requestedIp || '').slice(0, 64), String(requestedAgent || '').slice(0, 256)],
+      String(requestedIp || '').slice(0, 64), String(requestedAgent || '').slice(0, 256),
+      delivery, match ? match.number : null, match ? match.choices : null,
+      referralCode ? String(referralCode) : null],
     'tg_challenge_create',
   );
   return toChallenge(rows[0]);
+}
+
+/**
+ * A pick in the Mini App that is NOT the challenge's number: one strike, and
+ * the third refuses the sign-in. Its own statement, committed whatever happens
+ * next, because a wrong pick must cost something even though the approval it
+ * came with is refused (the approval's own UPDATE re-asks the number in its
+ * WHERE, §32 S6). A right pick, or a challenge with no number, changes nothing.
+ *
+ * @returns {Promise<{wrong: false} | {wrong: true, strikesLeft: number, denied: boolean}>}
+ */
+export async function strike({ challengeId, pick, telegramUserId }) {
+  const { rows } = await pgQuery(
+    `UPDATE telegram_challenges
+        SET match_strikes = match_strikes + 1,
+            status = CASE WHEN match_strikes + 1 >= $3 THEN 'DENIED' ELSE status END,
+            decided_at = CASE WHEN match_strikes + 1 >= $3 THEN now() ELSE decided_at END,
+            telegram_user_id = CASE WHEN match_strikes + 1 >= $3 THEN $4 ELSE telegram_user_id END
+      WHERE challenge_id = $1 AND status = 'PENDING' AND expires_at > now()
+        AND match_number IS NOT NULL AND match_number IS DISTINCT FROM $2::smallint
+      RETURNING match_strikes, status`,
+    [String(challengeId), Number.isInteger(pick) ? pick : null, MATCH_STRIKES, String(telegramUserId)],
+    'tg_challenge_strike',
+  );
+  if (!rows[0]) return { wrong: false };
+  return {
+    wrong: true,
+    strikesLeft: Math.max(0, MATCH_STRIKES - Number(rows[0].match_strikes)),
+    denied: rows[0].status === 'DENIED',
+  };
 }
 
 export async function getChallenge(challengeId) {
@@ -288,8 +344,11 @@ export async function getChallenge(challengeId) {
 }
 
 /**
- * Spend an APPROVED challenge — once.
+ * Spend an APPROVED challenge — once, by the browser that polls it.
  *
+ * Only a MATCH challenge is spent by a poll: a HANDOFF one is spent only by
+ * its ticket (`redeemTicket`), on the device that pressed Verify, so the
+ * browser that opened it — perhaps somebody else's — never gets its session.
  * The state, the purpose, the panel, the account and the database clock are
  * all in the UPDATE's WHERE, so two polls arriving together produce one
  * session and one "expired" (§32 S6). When nothing was spent, the row is read
@@ -308,7 +367,7 @@ export async function redeemChallenge({ challengeId, audience, purposes, userId 
   const { rows } = await pgQuery(
     `UPDATE telegram_challenges SET status = 'REDEEMED', redeemed_at = now()
       WHERE challenge_id = $1 AND audience = $2 AND purpose = ANY($3::text[])
-        AND status = 'APPROVED' AND expires_at > now()
+        AND status = 'APPROVED' AND expires_at > now() AND delivery = 'MATCH'
         AND ($4::text IS NULL OR user_id = $4)
       RETURNING user_id, purpose`,
     [String(challengeId), audience, purposes, userId ? String(userId) : null],
@@ -331,6 +390,38 @@ export function stateOf(challenge, { audience, purposes, userId = null }) {
   if (challenge.status === 'DENIED') return 'DENIED';
   if (!challenge.live || challenge.status === 'REDEEMED') return 'EXPIRED';
   return challenge.status; // PENDING or APPROVED
+}
+
+/**
+ * Spend a handoff ticket — once — at the door it was minted for.
+ *
+ * The ticket and its HANDOFF challenge are spent in ONE statement: the ticket
+ * unused and unexpired, the challenge APPROVED, unexpired and of this panel,
+ * all on the database clock (§32 S6). Two tabs presenting one ticket get one
+ * session. A ticket that fails any of it is spent anyway: it was shown once.
+ *
+ * @param {object} p
+ * @param {string} p.ticketHash  SHA-256 hex of the ticket the site was opened with
+ * @param {string} p.audience    the door it is presented at
+ * @returns {Promise<{ok: true, userId: string} | {ok: false}>}
+ */
+export async function redeemTicket({ ticketHash, audience }) {
+  assertAudience(audience, 'redeemTicket');
+  if (!/^[0-9a-f]{64}$/.test(String(ticketHash || ''))) return { ok: false };
+  const { rows } = await pgQuery(
+    `WITH spent AS (
+       UPDATE telegram_handoff_tickets SET used_at = now()
+        WHERE ticket_hash = $1 AND used_at IS NULL AND expires_at > now()
+        RETURNING challenge_id
+     )
+     UPDATE telegram_challenges c SET status = 'REDEEMED', redeemed_at = now()
+       FROM spent
+      WHERE c.challenge_id = spent.challenge_id AND c.audience = $2
+        AND c.delivery = 'HANDOFF' AND c.status = 'APPROVED' AND c.expires_at > now()
+      RETURNING c.user_id`,
+    [String(ticketHash), audience], 'tg_ticket_redeem',
+  );
+  return rows[0] ? { ok: true, userId: rows[0].user_id } : { ok: false };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -452,10 +543,24 @@ async function linkWithin(client, account, { telegramUser, phone }) {
  */
 export async function answerChallenge({
   challengeId, decision, telegramUser, initData, contact = null, redeemWindowSeconds = 120,
+  pick = null, ticket = null, signup = null, open = null,
 }) {
   if (!['approve', 'deny'].includes(decision)) throw new Error(`answerChallenge: decision ${decision}`);
   return acting(async (client) => {
     await claimProof(client, initData);
+    if (open) {
+      // Opened from the bot itself (no website asked): the HANDOFF sign-in is
+      // created here, in the transaction that answers it, so it exists only
+      // once somebody has pressed Verify.
+      assertAudience(open.audience, 'answerChallenge');
+      await client.query(
+        `INSERT INTO telegram_challenges
+           (challenge_id, purpose, audience, expires_at, delivery, referral_code)
+         VALUES ($1, 'TELEGRAM_LOGIN', $2, now() + ($3 || ' seconds')::interval, 'HANDOFF', $4)`,
+        [String(challengeId), open.audience, String(open.ttlSeconds),
+          open.audience === 'PLAYER' && open.referralCode ? String(open.referralCode) : null],
+      );
+    }
     if (contact) {
       if (String(contact.userId) !== String(telegramUser.id)) refuse('CONTACT_NOT_OWN');
       await claimProof(client, contact);
@@ -482,6 +587,7 @@ export async function answerChallenge({
 
     // ── Whose account this approves ────────────────────────────────────
     let account = null;
+    let created = false;
     if (ch.userId) {
       account = await lockAccount(client, 'user_id = $1 AND account_type = $2', [ch.userId, ch.audience]);
     } else {
@@ -493,6 +599,20 @@ export async function answerChallenge({
         account = await lockAccount(client, 'user_id = $1 AND account_type = $2', [mine[0].user_id, ch.audience]);
       } else if (contact) {
         account = await lockAccount(client, 'mobile = $1 AND account_type = $2', [contact.phone, ch.audience]);
+        if (!account && signup && ch.audience === 'PLAYER') {
+          // First time on Telegram, no account on that number: this IS the
+          // signup ("Continue with Telegram" is one action). The account, its
+          // link, its joining number and the referrer's earnings commit with
+          // the approval, or none of them do.
+          const made = await createAccountFromSignup({
+            userId: signup.userId, username: `player${String(contact.phone).slice(-4)}`,
+            mobile: contact.phone, passwordHash: null, referralCode: signup.referralCode,
+            referredBy: signup.referredBy ?? null, client,
+          });
+          if (!made.ok) refuse(made.reason === 'mobile_taken' ? 'MOBILE_TAKEN' : 'DUPLICATE');
+          account = await lockAccount(client, 'user_id = $1 AND account_type = $2', [made.userId, 'PLAYER']);
+          created = true;
+        }
       } else {
         refuse('CONTACT_REQUIRED');
       }
@@ -518,16 +638,34 @@ export async function answerChallenge({
       );
     }
 
-    await client.query(
+    // The number is asked again HERE, in the approving UPDATE's WHERE, with
+    // the strike count: a wrong pick (`strike`) committed apart from this, so
+    // nothing read above may stand in for it (§32 S6).
+    const approved = await client.query(
       `UPDATE telegram_challenges
           SET status = 'APPROVED', decided_at = now(), telegram_user_id = $2, user_id = $3,
               expires_at = now() + ($4 || ' seconds')::interval
-        WHERE challenge_id = $1 AND status = 'PENDING'`,
-      [ch.challengeId, tgId, account.user_id, String(redeemWindowSeconds)],
+        WHERE challenge_id = $1 AND status = 'PENDING' AND expires_at > now()
+          AND match_strikes < $6
+          AND (match_number IS NULL OR match_number = $5::smallint)`,
+      [ch.challengeId, tgId, account.user_id, String(redeemWindowSeconds),
+        Number.isInteger(pick) ? pick : null, MATCH_STRIKES],
     );
+    if (approved.rowCount !== 1) refuse(ch.delivery === DELIVERY.MATCH ? 'WRONG_NUMBER' : 'CHALLENGE_ANSWERED');
+
+    // A HANDOFF approval travels as a ticket the Mini App opens on the site;
+    // only its hash is written (`telegram_handoff_tickets`).
+    if (ch.delivery === DELIVERY.HANDOFF) {
+      if (!ticket?.hash) throw new Error('answerChallenge: a HANDOFF approval needs a ticket');
+      await client.query(
+        `INSERT INTO telegram_handoff_tickets (ticket_hash, challenge_id, expires_at)
+         VALUES ($1, $2, now() + ($3 || ' seconds')::interval)`,
+        [String(ticket.hash), ch.challengeId, String(ticket.ttlSeconds)],
+      );
+    }
     return {
-      ok: true, kind: ch.purpose, panel: ch.audience, approved: true,
-      relinked: outcome.relinked, verified: outcome.verified, userId: account.user_id,
+      ok: true, kind: ch.purpose, panel: ch.audience, approved: true, delivery: ch.delivery,
+      relinked: outcome.relinked, verified: outcome.verified, created, userId: account.user_id,
     };
   });
 }
@@ -662,8 +800,13 @@ export async function sweepExpired() {
     `DELETE FROM telegram_challenges WHERE expires_at <= now() - interval '1 day'`, [], 'tg_sweep_challenges');
   const uses = await pgQuery(
     `DELETE FROM telegram_init_data_uses WHERE expires_at <= now()`, [], 'tg_sweep_init_data');
+  // A ticket goes with its challenge (ON DELETE CASCADE); one that lapsed
+  // sooner is worthless the moment it lapses.
+  const tickets = await pgQuery(
+    `DELETE FROM telegram_handoff_tickets WHERE expires_at <= now()`, [], 'tg_sweep_tickets');
   return {
     challenges: challenges.rowCount ?? 0,
     initDataUses: uses.rowCount ?? 0,
+    tickets: tickets.rowCount ?? 0,
   };
 }

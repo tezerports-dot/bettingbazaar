@@ -49,6 +49,7 @@ import { getBackend } from '../../services/backend.service';
 import { useRetryCountdown } from '../../hooks/useRetryCountdown';
 import { useHeaderLogo } from '../../services/brandAssets';
 import TelegramStep from './TelegramStep';
+import ContinueWithTelegram from './ContinueWithTelegram';
 import type { SignInStep, TelegramSetup } from '../../services/backend.interface';
 
 interface AuthModalProps {
@@ -163,7 +164,7 @@ function indianMobile(raw: string): string {
 }
 
 const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
-  const { register, signIn, signInWithTelegram, pollTelegramStep } = useGame();
+  const { register, signIn, pollTelegramStep } = useGame();
 
   const [mode, setMode] = useState<'login' | 'signup'>(initialMode === 'register' ? 'signup' : 'login');
   const [busy, setBusy] = useState(false);
@@ -293,19 +294,11 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
     } finally { setBusy(false); }
   };
 
-  const startTelegramLogin = async () => {
-    if (busy) return;
-    setBusy(true); setError(''); setNotice('');
-    try {
-      follow(await signInWithTelegram(), 'Log in with Telegram');
-    } catch (err) {
-      setError((err as Error)?.message || 'Telegram sign-in is not available right now.');
-    } finally { setBusy(false); }
-  };
-
   // Stable per step, so the poll restarts only when the step does.
   const poll = useCallback(
-    () => (step ? pollTelegramStep(step.leg, step.challengeToken) : Promise.resolve('pending' as const)),
+    () => (step
+      ? pollTelegramStep(step.leg, step.challengeToken).then((r) => (r === 'handedOff' ? 'done' as const : r))
+      : Promise.resolve('pending' as const)),
     [step, pollTelegramStep],
   );
 
@@ -427,12 +420,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
               style={{ ...GOLD, cursor: loginReady ? 'pointer' : 'not-allowed', opacity: loginReady ? 1 : 0.55 }}>
               {pace.blocked ? `Try again in ${pace.secondsLeft}s` : busy ? 'Signing in…' : 'Log in'}
             </button>
-            {setup?.available && (
-              <button type="button" onClick={startTelegramLogin} disabled={busy}
-                style={{ height: 46, borderRadius: 13, border: '1px solid var(--line2)', background: 'var(--surface2)', color: 'var(--text)', fontWeight: 800, fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>
-                Log in with Telegram
-              </button>
-            )}
+            {setup?.available && <ContinueWithTelegram onDone={() => onClose?.()} />}
             {setup?.available && setup.resetUrl && (
               <a href={setup.resetUrl} target="_blank" rel="noopener noreferrer"
                 style={{ textAlign: 'center', fontSize: 11.5, color: 'var(--gold-ink)', textDecoration: 'underline' }}>
