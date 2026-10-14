@@ -2880,10 +2880,10 @@ const MUTATIONS = [
   },
   {
     id: 'MTG8', file: 'database/repositories/telegram.js', config: PG,
-    test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'a merchant application is named after the last four digits of its mobile, so the second applicant with the same four is refused with a 500',
-    from: "    userId: signup.userId, username: `merchant_${letters}`, mobile: phone,",
-    to: "    userId: signup.userId, username: `merchant${last4}`, mobile: phone,",
+    test: 'database/tests/telegramPg.test.js',
+    why: 'Continue with Telegram makes a merchant account again, so anyone with a mobile becomes a merchant without an admin (owner, 2026-10-14)',
+    from: "      if (!account && signup && ch.audience === 'PLAYER') {",
+    to: "      if (!account && signup) {",
   },
   {
     id: 'MC1', file: 'database/schema.sql', config: PG,
