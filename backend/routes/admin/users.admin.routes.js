@@ -14,31 +14,9 @@ import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 // re-declared, so editing it in System Settings changes this screen.
 import { getRiskRules } from '../../domains/risk/riskValidation.service.js';
 import { notify } from '../../domains/communication/communication.service.js';
+import { respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
-
-/**
- * The keyset cursor, over the wire.
- *
- * Base64 of the JSON, so a client cannot construct one by guessing the shape
- * and the panel does not have to know that it is a (joinedAt, userId) pair. An
- * unparseable cursor is treated as absent rather than rejected: an admin who
- * pasted half a URL gets the first page, not a 400 they cannot act on.
- */
-function encodeCursor(cursor) {
-  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
-}
-
-function parseCursor(raw) {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(Buffer.from(String(raw), 'base64url').toString('utf8'));
-    return parsed?.joinedAt && parsed?.userId ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 
 /*
  * POST /api/admin/users/:userId/adjust-balance was HERE, and is gone.
@@ -71,46 +49,41 @@ function parseCursor(raw) {
  * takes the realtime emit this one had — that half was this route's own
  * improvement and the reason it could not simply be deleted.
  */
+/**
+ * GET /api/admin/users — the players table (owner, 2026-10-14).
+ *
+ * One row per PLAYER with the figures an operator sorts by: wallet (VIP and
+ * GENERAL), locked stakes, completed deposits and sells, and net win/loss.
+ * Each figure is read from its owner in `adminDirectory.listPlayers`; the
+ * sort is one of `PLAYER_SORTS`, sent back as `sorts` so the panel keeps no
+ * list of its own (§32 S25). Staff and merchant logins are not players and
+ * have their own tables (§32 S30).
+ */
 router.get('/users', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
-    const { status, search, page = 1, limit = 50, cursor } = req.query;
-
-    // Merchants are a completely separate entity with their own record and auth
-    // system, so the player list excludes them by the role they were created
-    // with. Admins and sub-admins stay visible: an operator looking for an
-    // account by name needs to find one whatever its flags say.
-    //
-    // The search is an ANCHORED prefix match inside the repository, not a
-    // regex. The filter this replaced built `{ $regex: escaped, $options: 'i' }`
-    // — escaped against ReDoS, but still a full collection scan with a leading
-    // wildcard on every keystroke of an admin's search box.
-    const listed = await db.users.listUsers({
-      status: status && status !== 'all' ? status : null,
-      search: search || null,
-      excludeRole: 'merchant',
-      limit: Math.min(Number(limit) || 50, 200),
-      cursor: parseCursor(cursor),
-      page: cursor ? null : page,
+    const { status, search, sort, dir, page = 1, limit = 50 } = req.query;
+    const size = Math.min(Number(limit) || 50, 200);
+    const { rows, total } = await db.adminDirectory.listPlayers({
+      status: status && status !== 'ALL' && status !== 'all' ? String(status) : null,
+      search: search ? String(search) : null,
+      sort: sort ? String(sort) : undefined,
+      dir: dir ? String(dir) : undefined,
+      limit: size,
+      page: Number(page) || 1,
     });
-
     res.json({
       success: true,
-      users: listed.users,
-      // The cursor is what the next page should actually be fetched with: a
-      // signup arriving mid-pagination shifts every offset page by one and
-      // silently skips an account. Page numbers stay in the response for the
-      // panel that still draws them.
-      nextCursor: listed.nextCursor ? encodeCursor(listed.nextCursor) : null,
+      users: rows,
+      sorts: Object.keys(db.adminDirectory.PLAYER_SORTS),
       pagination: {
-        total: listed.total,
+        total,
         page: Number(page) || 1,
-        limit: Math.min(Number(limit) || 50, 200),
-        pages: Math.max(Math.ceil(listed.total / Math.min(Number(limit) || 50, 200)), 1),
+        limit: size,
+        pages: Math.max(Math.ceil(total / size), 1),
       },
     });
   } catch (error) {
-    console.error('Get users error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch users' });
+    return respondError(res, error, 'GET /admin/users', { message: 'Failed to fetch users' });
   }
 });
 
@@ -206,15 +179,23 @@ router.get('/users/:userId', authenticate, hasPermission('canManageUsers'), asyn
     // this replaced queried by `user._id` — a field the repository's user
     // objects do not have — so `undefined` matched nothing and every admin
     // profile showed an empty activity list for every player on the platform.
-    const [recentBets, ledger, activity] = await Promise.all([
+    // `summary` is the players-table row (wallet, totals, net), so the
+    // profile page and the table show one figure from one query; `escrow` is
+    // the player's sell orders' locked tokens from their owner (§2 "Where a
+    // pool's tokens are"). Both display only (§9). Null for a non-player.
+    const [recentBets, ledger, activity, summary, escrow] = await Promise.all([
       db.bets.listUserBets(user.userId, { limit: 10 }),
       db.wallets.getUserLedger(user.userId, 1, 10),
       db.stats.userActivity(user.userId),
+      db.adminDirectory.playerRow(user.userId),
+      db.orders.playerSellEscrow(user.userId),
     ]);
 
     res.json({
       success: true,
       user,
+      summary,
+      escrow,
       recentBets,
       recentTransactions: ledger.entries,
       activity,

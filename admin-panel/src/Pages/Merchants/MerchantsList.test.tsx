@@ -1,125 +1,92 @@
-// GOVERNANCE: Read CLAUDE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The Merchants screen after the team-routing change (PROJECT_STATUS §3.10, 2c).
- *
- * A merchant holds no tokens and is not ranked, capped or topped up from here:
- * their team's pool holds the tokens and routing picks the member. So:
- *
- *   - no wallet, scoring, limits, top-up/deduct or profit-engine control is
- *     offered (every route behind them is gone — a press would 404);
- *   - the assignment-pause RESUME is reachable. It used to sit on the list row
- *     and read `assignmentPausedAt`, which the list route never sends, so it
- *     could never appear. The profile route does send it;
- *   - the volume tab renders the four figures GET /merchants/:id/earnings
- *     actually sends, not the earnings fields it never sent.
+ * The merchants table (owner, 2026-10-14): the figures the server sends per
+ * row (processed, orders, pool, commission today and this month), the role
+ * tabs and sort keys the server names, and a row opening the merchant's page.
+ * A merchant holds no tokens of their own: the pool is their team's.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { MemoryRouter, Routes, Route } from 'react-router';
 
-const { merchants, put } = vi.hoisted(() => ({
+const { merchants } = vi.hoisted(() => ({
   merchants: {
-    getAll: vi.fn(), getProfile: vi.fn(), getEarnings: vi.fn(), getOrders: vi.fn(),
-    resumeAssignment: vi.fn(), suspend: vi.fn(), activate: vi.fn(),
-    approve: vi.fn(), reject: vi.fn(), create: vi.fn(),
+    getAll: vi.fn(), create: vi.fn(),
     listMerchantAccounts: vi.fn(), makeMerchantAccount: vi.fn(), listMerchantFlags: vi.fn(),
   },
-  put: vi.fn(),
 }));
-vi.mock('../../services/api', () => ({ default: { merchants, put, get: vi.fn(), post: vi.fn() } }));
+vi.mock('../../services/api', () => ({ default: { merchants, put: vi.fn(), get: vi.fn(), post: vi.fn() } }));
 vi.mock('../../services/sse', () => ({ default: { on: vi.fn(), off: vi.fn() } }));
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
 import { MerchantsList } from './MerchantsList';
 
-// What GET /api/admin/merchants sends per row (merchant.admin.routes.js).
+// What GET /api/admin/merchants sends per row (adminDirectory.js toMerchantRow).
 const ROW = {
-  _id: 'MRC-1', merchantId: 'MRC-1', userId: 'u-1', name: 'ravi', mobile: '9876543210', email: '',
-  status: 'ACTIVE', merchantApprovalStatus: 'APPROVED', isOnline: true,
-  acceptsDeposits: true, acceptsWithdrawals: true, merchantType: 'INR', panelUrl: '',
-  merchantStats: { dailyProcessed: 1500, monthlyProcessed: 9000, totalOrdersProcessed: 12 },
-  createdAt: '2026-09-01T00:00:00Z',
+  merchantId: 'MRC-1', userId: null, name: 'ravi', mobile: '9876543210', status: 'ACTIVE',
+  merchantApprovalStatus: 'APPROVED', isOnline: true, role: 'SUPERVISOR', rail: 'UPI_BANK',
+  acceptsDeposits: false, acceptsWithdrawals: false, routingPriority: 3, lostDisputes: 0, highRiskAt: null,
+  assignmentPausedAt: null, createdAt: '2026-09-01T00:00:00Z', team: null,
+  processedPaise: 2_345_000, completedOrders: 12,
+  pool: { availablePaise: 700_000, heldPaise: 50_000, teams: 2 },
+  commission: { todayPaise: 1_600, monthPaise: 9_900, totalPaise: 12_000 },
 };
-// GET /merchants/:id/profile — toMerchant spread plus `statistics`.
-const PROFILE = {
-  ...ROW, acceptedCurrencies: ['INR'],
-  assignmentPausedAt: '2026-10-01T10:00:00Z',
-  assignmentPauseReason: 'Three buy orders in a row expired unpaid',
-  statistics: { totalOrders: 14, completedOrders: 12, failedOrders: 2, successRate: 85.71 },
-};
+
+const renderList = () => render(
+  <MemoryRouter initialEntries={['/merchants']}>
+    <Routes>
+      <Route path="/merchants" element={<MerchantsList />} />
+      <Route path="/merchants/:merchantId" element={<p>merchant page</p>} />
+    </Routes>
+  </MemoryRouter>,
+);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  merchants.getAll.mockResolvedValue({ success: true, data: [ROW], pagination: { total: 1 } });
-  merchants.getProfile.mockResolvedValue({ success: true, data: PROFILE });
-  merchants.getEarnings.mockResolvedValue({
-    success: true, earnings: { totalOrders: 14, completedOrders: 12, pendingOrders: 1, totalVolume: 23450 },
+  merchants.getAll.mockResolvedValue({
+    success: true, data: [ROW], pagination: { total: 1 },
+    sorts: ['joined', 'processed', 'orders', 'pool', 'commissionToday', 'commissionMonth', 'commissionTotal', 'name'],
+    roles: ['MERCHANT', 'SUPERVISOR', 'AGENT', 'UNASSIGNED'],
   });
-  merchants.resumeAssignment.mockResolvedValue({ success: true, message: 'Assignment resumed for this merchant.' });
   merchants.listMerchantAccounts.mockResolvedValue({ success: true, merchantAccounts: [] });
   merchants.listMerchantFlags.mockResolvedValue({ success: true, flags: [] });
 });
 
-const openProfile = async () => {
-  render(<MerchantsList />);
-  fireEvent.click(await screen.findByTitle('Details'));
-  await screen.findByText('Merchant Profile');
-};
-
-describe('Merchants after the team-routing change', () => {
-  it('shows no merchant wallet, scoring or limits on the list', async () => {
-    render(<MerchantsList />);
-    expect(await screen.findByText('ravi')).toBeInTheDocument();
-    expect(screen.queryByText(/Wallet|Scoring/)).not.toBeInTheDocument();
-    expect(screen.queryByTitle('Limits')).not.toBeInTheDocument();
+describe('merchants table', () => {
+  it('shows processed volume, orders, pool and commission today and this month', async () => {
+    renderList();
+    await screen.findByText('ravi');
+    expect(screen.getByText('₹23,450')).toBeInTheDocument();
     expect(screen.getByText('12')).toBeInTheDocument();
+    expect(screen.getByText('₹7,000')).toBeInTheDocument();
+    expect(screen.getByText('₹500 held')).toBeInTheDocument();
+    expect(screen.getByText('₹16')).toBeInTheDocument();
+    expect(screen.getByText('₹99')).toBeInTheDocument();
+    expect(screen.getByText('2 teams')).toBeInTheDocument();
+    expect(screen.queryByText(/Wallet|Scoring/)).not.toBeInTheDocument();
   });
 
-  it('offers no top-up, deduct, limits or profit-engine tab on the profile', async () => {
-    await openProfile();
-    expect(screen.queryByText(/Edit Limits|Profit Engine|Top Up Wallet|Deduct From Wallet|Token Wallet/)).not.toBeInTheDocument();
-    for (const name of ['Info & Stats', 'Payment Details', 'Order History', 'Order Volume']) {
-      expect(screen.getByRole('button', { name })).toBeInTheDocument();
-    }
+  it('filters by the role tabs the server names', async () => {
+    renderList();
+    await screen.findByText('ravi');
+    fireEvent.click(screen.getByRole('button', { name: 'Supervisors' }));
+    await waitFor(() => expect(merchants.getAll).toHaveBeenLastCalledWith(expect.objectContaining({ role: 'SUPERVISOR', page: 1 })));
+    fireEvent.click(screen.getByLabelText('Waiting for approval only'));
+    await waitFor(() => expect(merchants.getAll).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'PENDING' })));
   });
 
-  it('shows the pause reason and resumes after the admin confirms', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    await openProfile();
-    expect(screen.getByText('Three buy orders in a row expired unpaid')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Resume assignment' }));
-    expect(confirm.mock.calls[0][0]).toMatch(/Three buy orders in a row expired unpaid/);
-    await waitFor(() => expect(merchants.resumeAssignment).toHaveBeenCalledWith('MRC-1'));
+  it('sorts on the server by the header pressed', async () => {
+    renderList();
+    await screen.findByText('ravi');
+    fireEvent.click(screen.getByRole('button', { name: /^Commission today/ }));
+    await waitFor(() => expect(merchants.getAll).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'commissionToday', dir: 'desc' })));
   });
 
-  it('does not resume when the admin cancels', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
-    await openProfile();
-    fireEvent.click(screen.getByRole('button', { name: 'Resume assignment' }));
-    expect(merchants.resumeAssignment).not.toHaveBeenCalled();
-  });
-
-  it('offers no resume for a merchant who is not paused', async () => {
-    merchants.getProfile.mockResolvedValue({ success: true, data: { ...PROFILE, assignmentPausedAt: null } });
-    await openProfile();
-    expect(screen.queryByRole('button', { name: 'Resume assignment' })).not.toBeInTheDocument();
-  });
-
-  it('renders what the earnings route sends: counts and completed volume', async () => {
-    await openProfile();
-    fireEvent.click(screen.getByRole('button', { name: 'Order Volume' }));
-    await waitFor(() => expect(merchants.getEarnings).toHaveBeenCalledWith('MRC-1'));
-    const volume = (await screen.findByText('Completed Volume')).closest('div')!;
-    expect(within(volume).getByText(/23,450/)).toBeInTheDocument();
-    expect(screen.getByText('In Progress').closest('div')).toHaveTextContent('1');
-  });
-
-  it('switches the payment details the merchant keeps through the capabilities route', async () => {
-    put.mockResolvedValue({ data: { success: true } });
-    await openProfile();
-    fireEvent.click(screen.getByRole('button', { name: 'Payment Details' }));
-    fireEvent.click(screen.getByRole('button', { name: /USDT · wallet addresses/ }));
-    await waitFor(() => expect(put).toHaveBeenCalledWith('/api/admin/merchants/MRC-1/capabilities', { merchantType: 'USDT' }));
+  it('opens the merchant\'s page from the row', async () => {
+    renderList();
+    fireEvent.click((await screen.findByText('ravi')).closest('tr')!);
+    expect(await screen.findByText('merchant page')).toBeInTheDocument();
   });
 });
 
@@ -135,7 +102,7 @@ describe('merchants (merchant accounts), owner 2026-10-11', () => {
 
   it('creates a Merchant when the kind says so', async () => {
     merchants.create.mockResolvedValue({ success: true });
-    render(<MerchantsList />);
+    renderList();
     fireEvent.click(await screen.findByRole('button', { name: /Create Merchant/ }));
     fireEvent.change(screen.getByLabelText('Username *'), { target: { value: 'shop' } });
     fireEvent.change(screen.getByLabelText('Mobile Number *'), { target: { value: '9123456780' } });
@@ -150,7 +117,7 @@ describe('merchants (merchant accounts), owner 2026-10-11', () => {
   it('lists the merchants the server sends, never a sub-member\'s mobile, and the flags', async () => {
     merchants.listMerchantAccounts.mockResolvedValue({ success: true, merchantAccounts: [DIRECT] });
     merchants.listMerchantFlags.mockResolvedValue({ success: true, flags: [{ id: 1, merchantId: 'MRC-9', merchantName: 'shop', day: '2026-10-10', problemCount: 6, threshold: 5 }] });
-    render(<MerchantsList />);
+    renderList();
     const card = await screen.findByRole('article', { name: 'Shop Direct' });
     expect(card).toHaveTextContent('Pool: 2,500 tokens · 500 held');
     expect(card).toHaveTextContent('Asha · Deposits, Audit');
@@ -159,14 +126,4 @@ describe('merchants (merchant accounts), owner 2026-10-11', () => {
     expect(screen.getByRole('table', { name: 'Merchant flags' })).toHaveTextContent('6 / 5');
   });
 
-  it('makes an existing agent a merchant from the profile, and says the refusal', async () => {
-    merchants.makeMerchantAccount.mockRejectedValueOnce({ response: { data: { message: 'That merchant is in a team. Remove them from it first.' } } });
-    await openProfile();
-    fireEvent.click(screen.getByRole('button', { name: 'Make merchant account' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('That merchant is in a team.');
-    merchants.makeMerchantAccount.mockResolvedValueOnce({ success: true, teamId: 'TD-2' });
-    fireEvent.click(screen.getByRole('button', { name: 'Make merchant account' }));
-    await waitFor(() => expect(merchants.makeMerchantAccount).toHaveBeenLastCalledWith('MRC-1'));
-    await waitFor(() => expect(merchants.listMerchantAccounts).toHaveBeenCalledTimes(2));
-  });
 });

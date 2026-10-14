@@ -203,11 +203,20 @@ export const analytics = {
 // --- USERS --------------------------------------------------------------------
 
 export const users = {
-  getAll: async (page = 1, limit = 50, search?: string, status?: string) => {
-    const res = await api.get<any>('/api/admin/users', { params: { page, limit, search, status } });
+  // The players table (adminDirectory.listPlayers). `sort` is one of the keys
+  // the route sends back as `sorts`; the panel keeps no list of its own.
+  getAll: async (q: { page?: number; limit?: number; search?: string; status?: string; sort?: string; dir?: 'asc' | 'desc' } = {}) => {
+    const res = await api.get<any>('/api/admin/users', { params: { page: 1, limit: 50, ...q } });
     if (res.data?.success && res.data?.users) {
-      return { success: true, data: res.data.users, pagination: res.data.pagination };
+      return { success: true, data: res.data.users, sorts: res.data.sorts as string[], pagination: res.data.pagination };
     }
+    return res.data;
+  },
+
+  // One player's page: the account, its table row (`summary`), sell escrow,
+  // recent bets and wallet movements (users.admin.routes.js GET /users/:userId).
+  getProfile: async (userId: string) => {
+    const res = await api.get<any>(`/api/admin/users/${encodeURIComponent(userId)}`);
     return res.data;
   },
 
@@ -277,10 +286,12 @@ export const users = {
 // --- MERCHANTS ----------------------------------------------------------------
 
 export const merchants = {
-  getAll: async (page = 1, limit = 50, status?: string, search?: string) => {
-    const res = await api.get<any>('/api/admin/merchants', { params: { page, limit, status, search } });
+  // The merchants table (adminDirectory.listMerchants). `status` is the
+  // approval status, `role` one of the route's `roles`, `sort` one of `sorts`.
+  getAll: async (q: { page?: number; limit?: number; status?: string; role?: string; search?: string; sort?: string; dir?: 'asc' | 'desc' } = {}) => {
+    const res = await api.get<any>('/api/admin/merchants', { params: { page: 1, limit: 50, ...q } });
     if (res.data?.success && res.data?.merchants) {
-      return { success: true, data: res.data.merchants, pagination: res.data.pagination };
+      return { success: true, data: res.data.merchants, sorts: res.data.sorts as string[], roles: res.data.roles as string[], pagination: res.data.pagination };
     }
     return res.data;
   },
@@ -288,7 +299,7 @@ export const merchants = {
   getProfile: async (merchantId: string) => {
     const res = await api.get<any>(`/api/admin/merchants/${merchantId}/profile`);
     if (res.data?.success && res.data?.merchant) {
-      return { success: true, data: res.data.merchant };
+      return { success: true, data: res.data.merchant, summary: res.data.summary, choices: res.data.choices };
     }
     return res.data;
   },

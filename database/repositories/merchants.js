@@ -212,69 +212,8 @@ export async function getMerchantByPublicRef(publicRef) {
   return toMerchant(rows[0]);
 }
 
-/**
- * The admin list. Keyset pagination on `(created_at, merchant_id)`.
- *
- * Not OFFSET: a merchant created while an admin pages through the list shifts
- * every later row by one, and the page after it silently skips a merchant.
- */
-export async function listMerchants({
-  status = null, approvalStatus = null, currency = null, search = null,
-  limit = 50, cursor = null,
-} = {}) {
-  const where = [];
-  const params = [];
-  // `replaceAll`, not `replace`. A string pattern replaces the FIRST occurrence
-  // only, so a clause naming the same value twice —
-  //
-  //     add('(username ILIKE $? || \'%\' OR mobile LIKE $? || \'%\')', search)
-  //
-  // — left a literal `$?` in the SQL and PostgreSQL answered 42601, syntax
-  // error. That is every admin search for a player, 500ing since the search box
-  // was added: `serverError` answers with nothing (§2), so the screen showed an
-  // empty list and an admin read it as "no such player".
-  //
-  // CLAUDE.md trap 13 is this exact mistake, recorded against the mutation
-  // harness — "String.replace(string, …) changes the first occurrence only" —
-  // and it was made a second time in production SQL. Fixed in all six
-  // repositories that carry this helper, not just the one with a live caller
-  // (§0.15): the other five are one two-placeholder clause away from the same
-  // 500. One value, two references to the same $n, which is what Postgres wants.
-  const add = (sql, value) => { params.push(value); where.push(sql.replaceAll('$?', `$${params.length}`)); };
-
-  if (status) add('status = $?', String(status));
-  if (approvalStatus) add('merchant_approval_status = $?', String(approvalStatus));
-  if (currency) add('merchant_type = $?', String(currency));
-  if (search) {
-    params.push(`%${String(search)}%`);
-    where.push(`(name ILIKE $${params.length} OR username ILIKE $${params.length}
-                 OR mobile ILIKE $${params.length} OR public_ref ILIKE $${params.length})`);
-  }
-  if (cursor?.createdAt && cursor?.merchantId) {
-    params.push(cursor.createdAt, String(cursor.merchantId));
-    where.push(`(created_at, merchant_id) < ($${params.length - 1}, $${params.length})`);
-  }
-
-  const size = Math.min(Math.max(Number(limit) || 50, 1), 500);
-  const { rows } = await pgQuery(
-    `SELECT ${COLUMNS}, COUNT(*) OVER () AS total_count FROM merchants
-      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY created_at DESC, merchant_id DESC
-      LIMIT ${size + 1}`,
-    params, 'merchant_list',
-  );
-
-  const hasMore = rows.length > size;
-  const page = rows.slice(0, size);
-  const last = page[page.length - 1];
-  return {
-    merchants: page.map(toMerchant),
-    total: rows[0] ? Number(rows[0].total_count) : 0,
-    nextCursor: hasMore && last
-      ? { createdAt: last.created_at, merchantId: last.merchant_id }
-      : null,
-  };
-}
+// The admin list is `adminDirectory.listMerchants` (owner, 2026-10-14): one
+// row per merchant with its pool and commission, sortable by any of them.
 
 /** Aggregate counts for the admin dashboard, in one pass over the table. */
 export async function merchantCounts() {

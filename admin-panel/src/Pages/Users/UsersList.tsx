@@ -1,179 +1,103 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
+//
+// The players table (owner, 2026-10-14): every player as one row with the
+// figures an operator sorts by, from `GET /api/admin/users`
+// (adminDirectory.listPlayers). A row opens the player's own page
+// (UserProfile), where every control sits on the page itself, no pop-ups.
+// Staff and merchant logins are not players and are not listed here.
 import React, { useCallback, useEffect, useState } from 'react';
-import { Eye, Ban, CheckCircle, Plus, Minus, CreditCard, History, Ghost, Trash2 } from 'lucide-react';
-import { DataTable } from '../../components/DataTable';
+import { useNavigate } from 'react-router';
+import { ArrowDownUp } from 'lucide-react';
+import { DataTable, type Column, type TableSort } from '../../components/DataTable';
 import { DisputeRecordBadge } from '../../components/DisputeRecordBadge';
 import { StatusBadge } from '../../components/StatusBadge';
-import { Modal } from '../../components/Modal';
-import { ConfirmDialog } from '../../components/ConfirmDialog';
-import { UserAvatar } from '../../components/UserAvatar';
 import { Kpis, Toolbar, AvatarCell, Money } from '../../components/design';
 import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
-import { usePermissions } from '../../hooks/usePermission';
 import api from '../../services/api';
-import type { User, Transaction } from '../../types';
+import type { PlayerRow } from '../../types';
 import toast from 'react-hot-toast';
-import { useBoards } from '../../hooks/useBoards';
 
-type ModalTab = 'profile' | 'bank' | 'history';
+/**
+ * What each server sort key is called on screen (§11: a UI-only label; the
+ * KEYS are the server's `sorts`, and a key without a label shows as itself).
+ */
+const SORT_LABEL: Record<string, string> = {
+  joined: 'Joining date', deposits: 'Total deposits', withdrawals: 'Total sold', net: 'Net win / loss',
+  vip: 'VIP wallet', general: 'General wallet', locked: 'Locked in bets', name: 'Name',
+};
+const DIR_LABEL = (key: string, dir: 'asc' | 'desc') => {
+  if (key === 'net') return dir === 'desc' ? 'biggest winners first' : 'biggest losers first';
+  if (key === 'joined') return dir === 'desc' ? 'newest first' : 'oldest first';
+  if (key === 'name') return dir === 'asc' ? 'A to Z' : 'Z to A';
+  return dir === 'desc' ? 'highest first' : 'lowest first';
+};
+
+const STATUS_TABS = ['ALL', 'ACTIVE', 'BLOCKED', 'SUSPENDED'] as const;
 
 export const UsersList: React.FC = () => {
-  const { boards } = useBoards();
-  // A control is OFFERED only to an account whose area admits it. The Users
-  // screen is the players area; adding to or deducting from a balance is
-  // canAdjustBalances, and phantom access is canManagePhantomAgents. A
-  // sub-admin given players alone was shown all three and refused on press
-  // (measured: BB_PROFILE=subadmin-players, and the cross-area sweep).
-  const { can } = usePermissions();
-  const canAdjust = can('canAdjustBalances');
-  const canPhantom = can('canManagePhantomAgents');
-  // And only on an account it can act on. A balance and phantom access are a
-  // PLAYER's: the routes refuse a staff or merchant login (409), so offering
-  // the control on those rows is a button that can only be refused.
-  const isPlayer = (u: User) => u.accountType === 'PLAYER' && u.status !== 'DELETED';
-  const [users, setUsers] = useState<User[]>([]);
+  const navigate = useNavigate();
+  const [users, setUsers] = useState<PlayerRow[]>([]);
+  const [sorts, setSorts] = useState<string[]>(['joined']);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
-  const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  const [activeTab, setActiveTab] = useState<ModalTab>('profile');
-  const [confirmAction, setConfirmAction] = useState<{ type: string; user: User } | null>(null);
-  const [phantomUser, setPhantomUser]         = useState<User | null>(null);
-  const [phantomLevel, setPhantomLevel]       = useState('NONE');
-  const [isSavingPhantom, setIsSavingPhantom] = useState(false);
-
-  // Balance adjust
-  const [showBalanceModal, setShowBalanceModal] = useState(false);
-  const [balanceTarget, setBalanceTarget] = useState<User | null>(null);
-  const [balanceType, setBalanceType] = useState<'add' | 'deduct'>('add');
-  const [balanceWallet, setBalanceWallet] = useState<'DEPOSIT' | 'WINNINGS'>('DEPOSIT');
-  const [balanceAmount, setBalanceAmount] = useState('');
-  const [balanceReason, setBalanceReason] = useState('');
-  const [isSavingBalance, setIsSavingBalance] = useState(false);
-
-  // Tx history
-  const [userTransactions, setUserTransactions] = useState<Transaction[]>([]);
-  const [txLoading, setTxLoading] = useState(false);
-
+  const [sort, setSort] = useState<TableSort>({ key: 'joined', dir: 'desc' });
   const { page, limit, setPage } = usePagination();
   const debouncedSearch = useDebounce(search);
 
   const loadUsers = useCallback(async () => {
     setIsLoading(true);
     try {
-      const response = await api.users.getAll(page, limit, debouncedSearch, statusFilter === 'ALL' ? undefined : statusFilter);
-      if (response.success && response.data) {
-        setUsers(response.data);
-        setTotal(response.pagination?.total || 0);
+      const res = await api.users.getAll({
+        page, limit, search: debouncedSearch || undefined,
+        status: statusFilter === 'ALL' ? undefined : statusFilter,
+        sort: sort.key, dir: sort.dir,
+      });
+      if (res.success && res.data) {
+        setUsers(res.data);
+        setTotal(res.pagination?.total || 0);
+        if (Array.isArray(res.sorts) && res.sorts.length) setSorts(res.sorts);
       }
-    } catch { toast.error('Failed to load users'); }
+    } catch (e: any) { toast.error(e?.response?.data?.message || 'Failed to load players'); }
     finally { setIsLoading(false); }
-  }, [page, limit, debouncedSearch, statusFilter]);
+  }, [page, limit, debouncedSearch, statusFilter, sort]);
 
-  useEffect(() => { loadUsers(); }, [loadUsers]);
+  useEffect(() => { void loadUsers(); }, [loadUsers]);
 
-  const handleSetPhantomAccess = async () => {
-    if (!phantomUser) return;
-    setIsSavingPhantom(true);
-    try {
-      await api.post(`/api/admin/users/${phantomUser.userId}/phantom-access`, { accessLevel: phantomLevel });
-      toast.success(`House-bettor access set to ${phantomLevel}`);
-      setPhantomUser(null);
-      loadUsers();
-    } catch { toast.error('Failed to set house-bettor access'); }
-    finally { setIsSavingPhantom(false); }
-  };
+  const changeSort = (next: TableSort) => { setSort(next); setPage(1); };
+  const open = (u: PlayerRow) => navigate(`/users/${encodeURIComponent(u.userId)}`);
 
-  const openUserDetails = async (user: User, tab: ModalTab = 'profile') => {
-    setSelectedUser(user);
-    setActiveTab(tab);
-    if (tab === 'history') loadUserTx(user.userId);
-  };
-
-  const loadUserTx = async (userId: string) => {
-    setTxLoading(true);
-    try {
-      const res = await (api.users as any).getTransactions?.(userId);
-      if (res?.success && res.data) setUserTransactions(res.data);
-      else setUserTransactions([]);
-    } catch { setUserTransactions([]); }
-    finally { setTxLoading(false); }
-  };
-
-  const handleBlockUser   = async (id: string) => { try { await api.users.blockUser(id, 'Blocked by admin'); toast.success('Blocked'); loadUsers(); } catch { toast.error('Failed'); } };
-  // The server's own sentence on a refusal: a player in high-risk review is
-  // lifted by a full admin only, and "Failed" would not say so (§32 S14).
-  const handleUnblockUser = async (id: string) => { try { await api.users.unblockUser(id); toast.success('Unblocked'); loadUsers(); } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to unblock'); } };
-  // Closing an account. The server refuses one with an open order or money
-  // locked in escrow, and names which (409) — that sentence IS what the admin
-  // has to act on, so it is shown, not replaced with "Failed".
-  const handleDeleteUser = async (id: string) => {
-    try {
-      await api.users.deleteUser(id);
-      toast.success('Account closed');
-      loadUsers();
-    } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to delete the account'); }
-  };
-
-  const openBalanceModal = (user: User, type: 'add' | 'deduct') => {
-    setBalanceTarget(user); setBalanceType(type);
-    setBalanceAmount(''); setBalanceReason(''); setBalanceWallet('DEPOSIT');
-    setShowBalanceModal(true);
-  };
-
-  const handleAdjustBalance = async () => {
-    if (!balanceTarget || !balanceAmount || !balanceReason) { toast.error('Fill all fields'); return; }
-    const amt = parseFloat(balanceAmount);
-    if (isNaN(amt) || amt <= 0) { toast.error('Enter valid amount'); return; }
-    setIsSavingBalance(true);
-    try {
-      const finalAmt = balanceType === 'deduct' ? -amt : amt;
-      // FIX 10: Map UI values ('DEPOSIT'/'WINNINGS') to backend field names
-      const walletType = balanceWallet === 'WINNINGS' ? 'winningsBalance' : 'depositBalance';
-      await api.users.adjustBalance(balanceTarget.userId, finalAmt, balanceReason, walletType);
-      toast.success(`Balance ${balanceType === 'add' ? 'added' : 'deducted'}`);
-      setShowBalanceModal(false);
-      loadUsers();
-    } catch (e: any) { toast.error(e.response?.data?.message || 'Failed'); }
-    finally { setIsSavingBalance(false); }
-  };
-
-  const columns = [
+  const columns: Column<PlayerRow>[] = [
     {
-      key: 'user', label: 'Player',
-      render: (u: User) => <AvatarCell name={u.username} sub={formatters.phone(u.mobile)} index={Math.max(0, users.indexOf(u))} />,
+      key: 'user', label: 'Player', sortKey: 'name',
+      render: (u) => (
+        <button type="button" onClick={() => open(u)} className="text-left">
+          <AvatarCell name={u.username} sub={formatters.phone(u.mobile)} index={Math.max(0, users.indexOf(u))} />
+        </button>
+      ),
     },
-    { key: 'deposit',  label: 'Deposit',  render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.depositBalance)} /></div> },
-    { key: 'winnings', label: 'Winnings', render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.winningsBalance)} /></div> },
-    { key: 'locked',   label: 'Locked',   render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.lockedBalance)} tone={(u.lockedBalance || 0) > 0 ? 'warning' : 'muted'} /></div> },
-    { key: 'status',    label: 'Status', render: (u: User) => (
-      <div className="space-y-1">
-        <StatusBadge status={u.status} type="user" />
-        <DisputeRecordBadge lostDisputes={u.lostDisputes} highRiskAt={u.highRiskAt} />
-      </div>
-    ) },
+    { key: 'joined', label: 'Joined', sortKey: 'joined', render: (u) => <span className="text-xs text-gray-400">{formatters.date(u.joinedAt)}</span> },
+    { key: 'deposits', label: 'Total deposits', sortKey: 'deposits', numeric: true, render: (u) => <Money value={formatters.paise(u.totals.depositsPaise)} /> },
+    { key: 'withdrawals', label: 'Total sold', sortKey: 'withdrawals', numeric: true, render: (u) => <Money value={formatters.paise(u.totals.withdrawalsPaise)} tone="muted" /> },
     {
-      key: 'actions', label: '',
-      render: (u: User) => (
-        <div className="flex items-center justify-end space-x-1">
-          <button onClick={() => openUserDetails(u, 'profile')} className="p-1.5 hover:bg-dark-700 rounded-sm" title="Details"><Eye size={14} /></button>
-          {canAdjust && isPlayer(u) && <button onClick={() => openBalanceModal(u, 'add')}    className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Add Balance"><Plus size={14} /></button>}
-          {canAdjust && isPlayer(u) && <button onClick={() => openBalanceModal(u, 'deduct')} className="p-1.5 hover:bg-red-600/20   text-red-400   rounded-sm" title="Deduct"><Minus size={14} /></button>}
-          <button onClick={() => openUserDetails(u, 'history')} className="p-1.5 hover:bg-blue-600/20  text-blue-400  rounded-sm" title="Tx History"><History size={14} /></button>
-          <button onClick={() => openUserDetails(u, 'bank')}    className="p-1.5 hover:bg-purple-600/20 text-purple-400 rounded-sm" title="Bank"><CreditCard size={14} /></button>
-          {canPhantom && isPlayer(u) && <button onClick={() => { setPhantomUser(u); setPhantomLevel((u as any).phantomAccess || 'NONE'); }} className="p-1.5 hover:bg-yellow-600/20 text-yellow-400 rounded-sm" title="House-Bettor Access"><Ghost size={14} /></button>}
-          {u.status === 'BLOCKED' ? (
-            <button onClick={() => setConfirmAction({ type: 'unblock', user: u })} className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Unblock"><CheckCircle size={14} /></button>
-          ) : (
-            <button onClick={() => setConfirmAction({ type: 'block', user: u })}   className="p-1.5 hover:bg-red-600/20   text-red-500   rounded-sm" title="Block"><Ban size={14} /></button>
-          )}
-          {/* PLAYER rows only — the route refuses a staff or merchant login. */}
-          {isPlayer(u) && (
-            <button onClick={() => setConfirmAction({ type: 'delete', user: u })} className="p-1.5 hover:bg-red-600/20 text-red-500 rounded-sm" title="Delete Account"><Trash2 size={14} /></button>
-          )}
+      key: 'net', label: 'Net win / loss', sortKey: 'net', numeric: true,
+      render: (u) => <Money value={formatters.signedPaise(u.totals.netPaise)} tone={u.totals.netPaise > 0 ? 'success' : u.totals.netPaise < 0 ? 'danger' : 'muted'} />,
+    },
+    { key: 'vip', label: 'VIP wallet', sortKey: 'vip', numeric: true, render: (u) => <Money value={formatters.paise(u.wallet.vipPaise)} /> },
+    { key: 'general', label: 'General wallet', sortKey: 'general', numeric: true, render: (u) => <Money value={formatters.paise(u.wallet.generalPaise)} /> },
+    {
+      key: 'locked', label: 'Locked', sortKey: 'locked', numeric: true,
+      render: (u) => <Money value={formatters.paise(u.wallet.lockedPaise)} tone={u.wallet.lockedPaise > 0 ? 'warning' : 'muted'} />,
+    },
+    {
+      key: 'status', label: 'Status',
+      render: (u) => (
+        <div className="space-y-1">
+          <StatusBadge status={u.status} type="user" />
+          <DisputeRecordBadge lostDisputes={u.lostDisputes} highRiskAt={u.highRiskAt} />
         </div>
       ),
     },
@@ -182,209 +106,37 @@ export const UsersList: React.FC = () => {
   return (
     <div className="om-fade">
       <Kpis items={[
-        { label: 'Total Users', value: total.toLocaleString('en-IN') },
-        { label: 'Active', value: users.filter((u) => u.status === 'ACTIVE').length, tone: 'var(--success)' },
-        { label: 'Blocked', value: users.filter((u) => u.status === 'BLOCKED').length, tone: 'var(--danger)' },
+        { label: 'Players', value: total.toLocaleString('en-IN') },
+        { label: 'Sorted by', value: `${SORT_LABEL[sort.key] ?? sort.key}` },
       ]} />
 
       <Toolbar
-        tabs={[
-          { label: 'All', active: statusFilter === 'ALL', onClick: () => setStatusFilter('ALL') },
-          { label: 'Active', active: statusFilter === 'ACTIVE', onClick: () => setStatusFilter('ACTIVE') },
-          { label: 'Blocked', active: statusFilter === 'BLOCKED', onClick: () => setStatusFilter('BLOCKED') },
-          { label: 'Suspended', active: statusFilter === 'SUSPENDED', onClick: () => setStatusFilter('SUSPENDED') },
-        ]}
-        search={{ value: search, onChange: setSearch, placeholder: 'Search name, mobile, ID…' }}
+        tabs={STATUS_TABS.map((s) => ({
+          label: s === 'ALL' ? 'All' : s.charAt(0) + s.slice(1).toLowerCase(),
+          active: statusFilter === s,
+          onClick: () => { setStatusFilter(s); setPage(1); },
+        }))}
+        search={{ value: search, onChange: (v) => { setSearch(v); setPage(1); }, placeholder: 'Search name, mobile, ID…' }}
       />
 
-      <div className="card">
-        <DataTable data={users} columns={columns} currentPage={page} totalPages={Math.ceil(total / limit)} onPageChange={setPage} isLoading={isLoading} />
+      {/* The same sort as the column headers, for a phone where the table
+          scrolls sideways and the header you want is off screen. */}
+      <div className="flex flex-wrap items-center gap-2 mb-3 text-sm">
+        <label htmlFor="players-sort" className="text-gray-400">Sort by</label>
+        <select id="players-sort" className="input w-auto" value={sort.key}
+          onChange={(e) => changeSort({ key: e.target.value, dir: sort.dir })}>
+          {sorts.map((k) => <option key={k} value={k}>{SORT_LABEL[k] ?? k}</option>)}
+        </select>
+        <button type="button" className="btn-secondary inline-flex items-center gap-1"
+          onClick={() => changeSort({ key: sort.key, dir: sort.dir === 'desc' ? 'asc' : 'desc' })}>
+          <ArrowDownUp size={14} aria-hidden="true" /> {DIR_LABEL(sort.key, sort.dir)}
+        </button>
       </div>
 
-      {/* User Detail Modal */}
-      {selectedUser && (
-        <Modal isOpen={!!selectedUser} onClose={() => setSelectedUser(null)} title="User Details" size="lg">
-          <div className="flex space-x-1 mb-6 bg-dark-800 rounded-lg p-1">
-            {(['profile', 'bank', 'history'] as ModalTab[]).map((tab) => (
-              <button key={tab} onClick={() => { setActiveTab(tab); if (tab === 'history') loadUserTx(selectedUser.userId); }}
-                className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-colors ${activeTab === tab ? 'bg-dark-600 text-white' : 'text-gray-400 hover:text-white'}`}>
-                {tab === 'bank' ? 'Bank Details' : tab === 'history' ? 'Tx History' : 'Profile'}
-              </button>
-            ))}
-          </div>
-
-          {activeTab === 'profile' && (
-            <div className="space-y-4">
-              <div className="flex items-center space-x-4">
-                <UserAvatar src={selectedUser.profilePic} name={selectedUser.username} size="lg" />
-                <div>
-                  <h3 className="text-xl font-bold">{selectedUser.username}</h3>
-                  <p className="text-gray-400">{formatters.phone(selectedUser.mobile)}</p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-3 bg-dark-700 rounded-lg"><p className="text-xs text-gray-400 mb-1">Deposit Balance</p><p className="text-xl font-bold text-green-500">{formatters.currency(selectedUser.depositBalance)}</p><p className="text-xs text-gray-500">Non-withdrawable</p></div>
-                <div className="p-3 bg-dark-700 rounded-lg"><p className="text-xs text-gray-400 mb-1">Winnings Balance</p><p className="text-xl font-bold text-gold-500">{formatters.currency(selectedUser.winningsBalance)}</p><p className="text-xs text-gray-500">Withdrawable</p></div>
-                <div className="p-3 bg-dark-700 rounded-lg"><p className="text-xs text-gray-400 mb-1">Locked</p><p className="text-xl font-bold text-yellow-500">{formatters.currency(selectedUser.lockedBalance)}</p></div>
-                <div className="p-3 bg-dark-700 rounded-lg"><p className="text-xs text-gray-400 mb-1">Total</p><p className="text-xl font-bold">{formatters.currency((selectedUser.depositBalance||0)+(selectedUser.winningsBalance||0))}</p></div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div><p className="text-xs text-gray-400 mb-1">Status</p><StatusBadge status={selectedUser.status} type="user" /></div>
-              </div>
-
-              <p className="text-sm text-gray-400">Joined: {formatters.datetime(selectedUser.joinedAt)}</p>
-
-              <div className="flex gap-3 pt-2 border-t border-dark-700">
-                {canAdjust && isPlayer(selectedUser) && (<>
-                <button onClick={() => openBalanceModal(selectedUser, 'add')} className="flex-1 flex items-center justify-center bg-green-600 hover:bg-green-700 py-2 rounded-lg text-sm font-medium"><Plus size={14} className="mr-1" />Add Balance</button>
-                <button onClick={() => openBalanceModal(selectedUser, 'deduct')} className="flex-1 flex items-center justify-center bg-red-600 hover:bg-red-700 py-2 rounded-lg text-sm font-medium"><Minus size={14} className="mr-1" />Deduct</button>
-                </>)}
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'bank' && (
-            <div>
-              {selectedUser.bankDetails ? (
-                <div className="bg-dark-700 rounded-lg p-5 space-y-3 text-sm">
-                  <div className="flex justify-between"><span className="text-gray-400">Account Holder</span><span className="font-semibold">{selectedUser.bankDetails.accountHolderName}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-400">Account Number</span><span className="font-mono font-semibold">{selectedUser.bankDetails.accountNumber}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-400">IFSC Code</span><span className="font-mono font-semibold">{selectedUser.bankDetails.ifscCode}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-400">Bank Name</span><span className="font-semibold">{selectedUser.bankDetails.bankName}</span></div>
-                </div>
-              ) : (
-                <div className="text-center py-12 text-gray-500">
-                  <CreditCard size={40} className="mx-auto mb-3 opacity-30" />
-                  <p>No bank details added</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeTab === 'history' && (
-            <div>
-              {txLoading ? (
-                <div className="text-center py-8 text-gray-400">Loading transactions...</div>
-              ) : userTransactions.length === 0 ? (
-                <div className="text-center py-8 text-gray-500"><History size={36} className="mx-auto mb-3 opacity-30"/><p>No transactions found</p></div>
-              ) : (
-                <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-                  {userTransactions.map((tx: any) => (
-                    <div key={tx._id} className="flex items-center justify-between bg-dark-700 rounded-lg px-4 py-3 text-sm">
-                      <div>
-                        <p className="font-medium">{tx.type.replace(/_/g, ' ')}</p>
-                        <p className="text-xs text-gray-400">{formatters.datetime(tx.date || tx.timestamp)}</p>
-                        {tx.referenceId   && <p className="text-xs text-gray-500 font-mono">Ref: {tx.referenceId}</p>}
-                        {tx.orderId       && <p className="text-xs text-gray-500 font-mono">Order: {tx.orderId}</p>}
-                        {tx.cycleId       && <p className="text-xs text-gray-500">Cycle: {tx.cycleType} {tx.cycleWinner ? `→ ${tx.cycleWinner} won` : ''}</p>}
-                        {tx.merchantName  && <p className="text-xs text-gray-500">Merchant: {tx.merchantName}</p>}
-                        {tx.side          && <p className="text-xs text-blue-400">Side: {tx.side}</p>}
-                        {tx.source === 'bet' && tx.payout > 0 && <p className="text-xs text-green-400">Payout: {formatters.currency(tx.payout)}</p>}
-                      </div>
-                      <div className="text-right">
-                        <span className={`font-semibold ${tx.status === 'WON' ? 'text-green-400' : tx.status === 'LOST' ? 'text-red-400' : tx.type === 'DEPOSIT' ? 'text-green-400' : tx.type?.startsWith('BET_') ? 'text-yellow-400' : 'text-red-400'}`}>
-                          {tx.amount ? formatters.currency(tx.amount) : '-'}
-                        </span>
-                        <p className="text-xs text-gray-500 capitalize">{(tx.status || '').toLowerCase()}</p>
-                        {tx.source && tx.source !== 'transaction' && <p className="text-xs text-gray-600 capitalize">{tx.source.replace('_', ' ')}</p>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </Modal>
-      )}
-
-      {/* Balance Modal */}
-      {showBalanceModal && balanceTarget && (
-        <Modal isOpen={showBalanceModal} onClose={() => setShowBalanceModal(false)} title={balanceType === 'add' ? 'Add Balance' : 'Deduct Balance'}>
-          <div className="space-y-4">
-            <div className="bg-dark-700 rounded-lg p-4 text-sm">
-              <p className="text-gray-400">User</p>
-              <p className="font-semibold">{balanceTarget.username} — {formatters.phone(balanceTarget.mobile)}</p>
-              <div className="grid grid-cols-2 gap-2 mt-2">
-                <div><span className="text-gray-400">Deposit: </span><span className="text-green-400">{formatters.currency(balanceTarget.depositBalance)}</span></div>
-                <div><span className="text-gray-400">Winnings: </span><span className="text-gold-400">{formatters.currency(balanceTarget.winningsBalance)}</span></div>
-              </div>
-            </div>
-
-            <div>
-              <label htmlFor="balance-wallet" className="label">Target Wallet</label>
-              <select id="balance-wallet" name="balanceWallet" value={balanceWallet} onChange={(e) => setBalanceWallet(e.target.value as any)} className="input">
-                <option value="DEPOSIT">Deposit Balance (betting only, non-withdrawable)</option>
-                <option value="WINNINGS">Winnings Balance (withdrawable)</option>
-              </select>
-            </div>
-
-            <div>
-              <label htmlFor="balance-amount" className="label">Amount (₹)</label>
-              <input id="balance-amount" name="balanceAmount" type="number" min="1" value={balanceAmount} onChange={(e) => setBalanceAmount(e.target.value)} className="input" placeholder="0" />
-            </div>
-
-            <div>
-              <label htmlFor="balance-reason" className="label">Reason</label>
-              <input id="balance-reason" name="balanceReason" type="text" value={balanceReason} onChange={(e) => setBalanceReason(e.target.value)} className="input" placeholder="e.g. Bonus, Correction, Refund" />
-            </div>
-
-            <div className="flex gap-3">
-              <button onClick={() => setShowBalanceModal(false)} className="flex-1 btn-secondary">Cancel</button>
-              <button onClick={handleAdjustBalance} disabled={isSavingBalance}
-                className={`flex-1 py-2 px-4 rounded-lg font-semibold text-white transition-colors disabled:opacity-50 ${balanceType === 'add' ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'}`}>
-                {isSavingBalance ? 'Saving...' : balanceType === 'add' ? 'Add Balance' : 'Deduct Balance'}
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {confirmAction && (
-        <ConfirmDialog isOpen={!!confirmAction} onClose={() => setConfirmAction(null)}
-          onConfirm={() => {
-            const id = confirmAction.user.userId;
-            if (confirmAction.type === 'block') handleBlockUser(id);
-            else if (confirmAction.type === 'delete') handleDeleteUser(id);
-            else handleUnblockUser(id);
-          }}
-          title={confirmAction.type === 'block' ? 'Block User' : confirmAction.type === 'delete' ? 'Delete Account' : 'Unblock User'}
-          message={confirmAction.type === 'delete'
-            ? `Close ${confirmAction.user.username}'s account? They will be signed out everywhere and cannot sign in again. Their bets, orders and ledger are kept. This cannot be undone from the panel.`
-            : `Are you sure you want to ${confirmAction.type} ${confirmAction.user.username}?`}
-          type={confirmAction.type === 'unblock' ? 'warning' : 'danger'}
-          confirmText={confirmAction.type === 'block' ? 'Block' : confirmAction.type === 'delete' ? 'Delete' : 'Unblock'}
-        />
-      )}
-
-      {phantomUser && (
-        <Modal isOpen onClose={() => setPhantomUser(null)} title="Set House-Bettor Access">
-          <div className="space-y-4">
-            <div className="bg-dark-700 rounded-lg p-4 text-sm">
-              <p className="text-gray-400">User</p>
-              <p className="font-semibold">{phantomUser.username} — {formatters.phone(phantomUser.mobile)}</p>
-              <p className="text-xs text-gray-500 mt-1">Current: {(phantomUser as any).phantomAccess || 'NONE'}</p>
-            </div>
-            <div>
-              <label className="label" htmlFor="phantom-access-level">House-Bettor Access Level</label>
-              <select id="phantom-access-level" value={phantomLevel} onChange={e => setPhantomLevel(e.target.value)} className="input">
-                <option value="NONE">NONE — No house bets</option>
-                {boards.map((b) => <option key={b.key} value={b.key}>{b.name} — this board only</option>)}
-                <option value="BOTH">BOTH — every board</option>
-              </select>
-            </div>
-            <p className="text-xs text-yellow-400">⚠️ Phantom bets are cosmetic — they never win and don't affect real pools. Use to balance pool display only.</p>
-            <div className="flex gap-3">
-              <button onClick={() => setPhantomUser(null)} className="flex-1 btn-secondary">Cancel</button>
-              <button onClick={handleSetPhantomAccess} disabled={isSavingPhantom} className="flex-1 btn-primary disabled:opacity-50">
-                {isSavingPhantom ? 'Saving...' : 'Save Access'}
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      <div className="card">
+        <DataTable data={users} columns={columns} currentPage={page} totalPages={Math.ceil(total / limit)}
+          onPageChange={setPage} isLoading={isLoading} sort={sort} onSort={changeSort} onRowClick={open} />
+      </div>
     </div>
   );
 };
-

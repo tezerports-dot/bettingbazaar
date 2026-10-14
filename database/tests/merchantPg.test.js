@@ -21,7 +21,7 @@ import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
   createMerchant, getMerchant, getMerchants,
   getMerchantByUserId, getMerchantByPublicRef,
-  listMerchants, merchantCounts, updateMerchant, setOnline,
+  merchantCounts, updateMerchant, setOnline,
   recordCompletedOrder, resetPeriodicStats, suspendMerchant, approveMerchant,
   rejectMerchant, deleteMerchant, generateMerchantPublicRef, newMerchantId,
 } from '../repositories/merchants.js';
@@ -449,20 +449,6 @@ describePg('the merchant record', () => {
     expect(await deleteMerchant(ID)).toEqual({ ok: true });
     expect(await getMerchant(ID)).toBeNull();
     expect(await deleteMerchant(ID)).toEqual({ ok: false, reason: 'NOT_FOUND' });
-  });
-
-  // ── Listing ───────────────────────────────────────────────────────────────
-  it('pages by keyset, so a merchant created mid-listing does not hide one', async () => {
-    for (let i = 0; i < 5; i += 1) {
-      await createMerchant({ merchantId: `${ID}-p${i}`, name: `Page ${i}`, status: 'ACTIVE' });
-    }
-    const first = await listMerchants({ search: `Page`, limit: 2 });
-    expect(first.merchants).toHaveLength(2);
-    expect(first.nextCursor).not.toBeNull();
-
-    const second = await listMerchants({ search: `Page`, limit: 2, cursor: first.nextCursor });
-    const ids = new Set([...first.merchants, ...second.merchants].map((m) => m.merchantId));
-    expect(ids.size).toBe(4);   // no overlap between the pages
   });
 
   it('counts by status in one pass', async () => {

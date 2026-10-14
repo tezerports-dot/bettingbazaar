@@ -106,6 +106,60 @@ export interface User {
   lastLogin: string;
 }
 
+/**
+ * A row of the players table, as `GET /api/admin/users` sends it
+ * (database/repositories/adminDirectory.js `toPlayerRow`). Money in PAISE.
+ * `netPaise` is the player's net win (positive) or loss (negative) on boards
+ * and casino.
+ */
+export interface PlayerRow {
+  userId: string;
+  username: string;
+  mobile: string;
+  status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED' | 'DELETED';
+  joinedAt: string;
+  lastLogin: string | null;
+  playProfile: 'VIP' | 'GENERAL';
+  phantomAccess: string;
+  lostDisputes: number;
+  highRiskAt: string | null;
+  paymentFlagged: boolean;
+  blockReason: string | null;
+  wallet: { vipPaise: number; depositPaise: number; winningsPaise: number; generalPaise: number; lockedPaise: number };
+  totals: { depositsPaise: number; withdrawalsPaise: number; depositCount: number; netPaise: number };
+}
+
+/** `MERCHANT_ROLES` (adminDirectory.js): derived from the team rows. */
+export type MerchantRole = 'MERCHANT' | 'SUPERVISOR' | 'AGENT' | 'UNASSIGNED';
+
+/**
+ * A row of the merchants table, as `GET /api/admin/merchants` sends it
+ * (adminDirectory.js `toMerchantRow`). Money in PAISE (tokens × 100).
+ */
+export interface MerchantRow {
+  merchantId: string;
+  userId: string | null;
+  name: string;
+  mobile: string;
+  status: 'ACTIVE' | 'SUSPENDED' | 'INACTIVE' | string;
+  merchantApprovalStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | string;
+  isOnline: boolean;
+  role: MerchantRole;
+  rail: string | null;
+  acceptsDeposits: boolean;
+  acceptsWithdrawals: boolean;
+  routingPriority: number;
+  lostDisputes: number;
+  highRiskAt: string | null;
+  assignmentPausedAt: string | null;
+  createdAt: string;
+  team: { teamId: string; name: string; memberStatus: 'PENDING' | 'APPROVED' | null } | null;
+  processedPaise: number;
+  completedOrders: number;
+  pool: { availablePaise: number; heldPaise: number; teams: number };
+  commission: { todayPaise: number; monthPaise: number; totalPaise: number };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Cycles
 // ─────────────────────────────────────────────────────────────────────────────
@@ -236,7 +290,7 @@ export interface DepositPolicyVersion {
 // Merchants
 // A merchant holds no tokens of their own: they work in a team whose POOL holds
 // them, and routing hands each order to a member of a working team on the
-// order's rail. Checked against the list route's row and `toMerchant`
+// order's rail. Checked against the profile route (`toMerchant`); the TABLE's row is `MerchantRow` above
 // (backend/domains/merchant/merchant.admin.routes.js,
 // database/repositories/merchants.js).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -259,7 +313,7 @@ export interface Merchant {
     monthlyProcessed: number;
     totalOrdersProcessed: number;
   };
-  /** Lost payment disputes, and when high-risk review opened (GET /api/admin/merchants). */
+  /** Lost payment disputes, and when high-risk review opened (GET /api/admin/merchants/:id/profile). */
   lostDisputes?: number;
   highRiskAt?: string | null;
   suspensionReason?: string | null;
