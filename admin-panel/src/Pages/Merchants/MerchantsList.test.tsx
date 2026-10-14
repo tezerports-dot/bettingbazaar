@@ -139,10 +139,12 @@ describe('merchants (merchant accounts), owner 2026-10-11', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Create Merchant/ }));
     fireEvent.change(screen.getByLabelText('Username *'), { target: { value: 'shop' } });
     fireEvent.change(screen.getByLabelText('Mobile Number *'), { target: { value: '9123456780' } });
-    fireEvent.change(screen.getByLabelText('Temporary Password *'), { target: { value: 'a-long-password' } });
+    // No password: a merchant signs in with Telegram (owner, 2026-10-14).
+    expect(screen.queryByLabelText(/password/i)).toBeNull();
     fireEvent.click(screen.getByRole('radio', { name: 'Merchant' }));
     fireEvent.click(screen.getAllByRole('button', { name: 'Create Merchant' }).pop()!);
     await waitFor(() => expect(merchants.create).toHaveBeenCalledWith(expect.objectContaining({ username: 'shop', kind: 'DIRECT' })));
+    expect(merchants.create.mock.calls[0][0]).not.toHaveProperty('password');
   });
 
   it('lists the merchants the server sends, never a sub-member\'s mobile, and the flags', async () => {
