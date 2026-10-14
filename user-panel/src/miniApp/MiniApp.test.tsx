@@ -91,7 +91,7 @@ describe('the Verify screen (Continue with Telegram)', () => {
   const signIn = (extra: object = {}) => ctx({
     kind: 'TELEGRAM_LOGIN', panel: 'PLAYER', needsContact: false, state: 'PENDING',
     destination: 'bettingbazaar.com', account: { panel: 'PLAYER', isNew: false, mobileHint: '••••••3210' },
-    request: { at: '2026-10-13T05:00:00Z', ip: '203.0.113.9', device: 'Chrome on Windows' }, ...extra,
+    request: { at: '2026-10-13T05:00:00Z', ip: '203.0.113.9', city: 'Pune', device: 'Chrome on Windows' }, ...extra,
   });
 
   it('names where Verify sends them and whose account it enters, and approves only on a press', async () => {
@@ -101,6 +101,7 @@ describe('the Verify screen (Continue with Telegram)', () => {
     render(<MiniApp app={a} />);
     expect(await screen.findByText(/you will be sent to bettingbazaar\.com/i)).toBeTruthy();
     expect(screen.getByTestId('verify-account').textContent).toMatch(/3210/);
+    expect(screen.getByTestId('verify-request').textContent).toMatch(/203\.0\.113\.9.*Pune.*Chrome on Windows/);
     expect(screen.getByText(/203\.0\.113\.9/)).toBeTruthy();
     expect(approve).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /^verify$/i }));

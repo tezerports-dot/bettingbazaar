@@ -214,7 +214,7 @@ export async function listLinksForTelegramUser(telegramUserId) {
 
 const CHALLENGE_COLUMNS = `challenge_id, audience, user_id, status, created_at,
   expires_at, decided_at, telegram_user_id, redeemed_at, requested_ip, requested_agent,
-  delivery, match_number, match_choices, match_strikes, referral_code,
+  requested_city, delivery, match_number, match_choices, match_strikes, referral_code,
   (expires_at > now()) AS live`;
 
 /** How an approved sign-in reaches a browser (schema.sql, "The number match and the handoff"). */
@@ -235,6 +235,7 @@ const toChallenge = (r) => (r ? {
   redeemedAt: r.redeemed_at,
   requestedIp: r.requested_ip,
   requestedAgent: r.requested_agent,
+  requestedCity: r.requested_city || '',
   delivery: r.delivery,
   // The right number is the requesting browser's to show and nobody else's:
   // it is read here for the answer's own check and never sent by a route.
@@ -256,7 +257,7 @@ const toChallenge = (r) => (r ? {
  */
 export async function createChallenge({
   challengeId, audience, ttlSeconds,
-  requestedIp = '', requestedAgent = '',
+  requestedIp = '', requestedAgent = '', requestedCity = '',
   delivery = DELIVERY.MATCH, match = null, referralCode = null,
 }) {
   assertAudience(audience, 'createChallenge');
@@ -265,13 +266,13 @@ export async function createChallenge({
   const { rows } = await pgQuery(
     `INSERT INTO telegram_challenges
        (challenge_id, audience, expires_at, requested_ip, requested_agent,
-        delivery, match_number, match_choices, referral_code)
-     VALUES ($1, $2, now() + ($3 || ' seconds')::interval, $4, $5, $6, $7, $8::smallint[], $9)
+        delivery, match_number, match_choices, referral_code, requested_city)
+     VALUES ($1, $2, now() + ($3 || ' seconds')::interval, $4, $5, $6, $7, $8::smallint[], $9, $10)
      RETURNING ${CHALLENGE_COLUMNS}`,
     [String(challengeId), audience, String(ttlSeconds),
       String(requestedIp || '').slice(0, 64), String(requestedAgent || '').slice(0, 256),
       delivery, match ? match.number : null, match ? match.choices : null,
-      referralCode ? String(referralCode) : null],
+      referralCode ? String(referralCode) : null, String(requestedCity || '').slice(0, 80)],
     'tg_challenge_create',
   );
   return toChallenge(rows[0]);

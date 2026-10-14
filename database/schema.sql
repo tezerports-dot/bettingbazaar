@@ -3346,11 +3346,15 @@ CREATE TABLE IF NOT EXISTS telegram_challenges (
   decided_at       TIMESTAMPTZ,
   telegram_user_id TEXT,
   redeemed_at      TIMESTAMPTZ,
-  -- Shown in the Mini App ("a sign-in from 203.0.113.7, Chrome on Android"),
-  -- so the person approving knows what they approve.
+  -- Shown in the Mini App ("a sign-in from 203.0.113.7, Mumbai, Chrome on
+  -- Android"), so the person approving knows what they approve. The city is
+  -- the edge's own geolocation header, only where the operator names one
+  -- (GEO_CITY_HEADER); '' is "not known", said so on the screen.
   requested_ip     TEXT NOT NULL DEFAULT '',
-  requested_agent  TEXT NOT NULL DEFAULT ''
+  requested_agent  TEXT NOT NULL DEFAULT '',
+  requested_city   TEXT NOT NULL DEFAULT ''
 );
+ALTER TABLE telegram_challenges ADD COLUMN IF NOT EXISTS requested_city TEXT NOT NULL DEFAULT '';
 -- The other purposes (verify after a form signup, approve a password sign-in,
 -- relink, switch approval off) went with the passwords. A database that still
 -- holds one converges: those rows are deleted, then the column (§32 S31).

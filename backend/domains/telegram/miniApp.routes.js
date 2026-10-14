@@ -31,7 +31,7 @@ import { verifyInitData, verifyContact } from './miniAppAuth.js';
 import { miniAppRefusal } from './miniAppRefusals.js';
 import {
   CHALLENGE_PARAM, telegramUnavailable, REDEEM_WINDOW_SECONDS, CHALLENGE_TTL_SECONDS,
-  TICKET_TTL_SECONDS, destinationFor, newTicket, newChallengeId,
+  TICKET_TTL_SECONDS, destinationFor, newTicket, newChallengeId, deviceOf,
 } from '../identity/telegramChallenge.service.js';
 import { normaliseReferralCode } from '../identity/signupFields.js';
 import { generateReferralCode } from '../referral/referral.service.js';
@@ -174,7 +174,7 @@ router.post('/mini-app/context', miniAppLimiter, async (req, res) => {
           state,
           needsContact: account.isNew,
           expiresAt: ch.expiresAt,
-          request: { at: ch.createdAt, ip: ch.requestedIp, device: ch.requestedAgent },
+          request: { at: ch.createdAt, ip: ch.requestedIp, city: ch.requestedCity, device: deviceOf(ch.requestedAgent) },
           delivery: ch.delivery,
           choices: ch.delivery === 'MATCH' ? ch.matchChoices : null,
           strikesLeft: ch.delivery === 'MATCH' ? Math.max(0, MATCH_STRIKES - ch.matchStrikes) : null,

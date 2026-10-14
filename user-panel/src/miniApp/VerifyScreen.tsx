@@ -124,7 +124,11 @@ const VerifyScreen: React.FC<Props> = ({ app, start, onDone }) => {
       {start.referral?.unknown && <p style={HINT}>The invite code in your link is not recognised, so none is applied.</p>}
 
       {start.request && (
-        <p style={HINT}>Asked {new Date(start.request.at).toLocaleString()} from {start.request.ip || 'an unknown address'}{start.request.device ? ` · ${start.request.device}` : ''}</p>
+        <p data-testid="verify-request" style={HINT}>
+          Asked {new Date(start.request.at).toLocaleString()} from {start.request.ip || 'an unknown address'}
+          {' · '}{start.request.city || 'city not known'}
+          {start.request.device ? ` · ${start.request.device}` : ''}
+        </p>
       )}
 
       {match && (

@@ -57,7 +57,8 @@ export interface MiniAppContext {
     kind: StartKind; panel: Panel | null; needsContact: boolean;
     state?: 'PENDING' | 'APPROVED' | 'DENIED' | 'REDEEMED' | 'EXPIRED';
     expiresAt?: string; mobileHint?: string;
-    request?: { at: string; ip: string; device: string };
+    /** Who asked: the server's clock, address, city ('' when the edge names none) and device. */
+    request?: { at: string; ip: string; city: string; device: string };
     referral?: { code: string | null; invitedBy: string; unknown?: boolean };
     /** A sign-in: how it reaches a browser, and where Verify sends the person. */
     delivery?: 'MATCH' | 'HANDOFF';

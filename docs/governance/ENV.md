@@ -26,6 +26,12 @@ Generate every secret with: `openssl rand -base64 48`
 | `METRICS_TOKEN` | Bearer token protecting `GET /metrics` from public disclosure. |
 | `PUBLIC_APP_ORIGIN` | Official public app origin advertised to native clients (a valid `https://…` origin). |
 
+**`GEO_CITY_HEADER` — optional; the city on the Telegram Verify screen.** The
+header the edge writes the visitor's city into (Cloudflare's "Add visitor
+location headers" managed transform sends `CF-IPCity`). Name it only when the
+edge sets it on every request and strips any copy a client sends; unset, the
+Verify screen says "city not known" and no header a caller sends is read.
+
 **`TRUST_PROXY` — set this whenever anything terminates TLS in front of Node.**
 Not in the required table because the app boots without it, but leaving it
 wrong breaks IP attribution in both directions, and every per-IP control

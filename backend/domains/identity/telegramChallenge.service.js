@@ -124,6 +124,38 @@ export function telegramBlock(bot, challenge) {
  *   delivery: string, matchNumber: number|null}>}
  * @throws 503 TELEGRAM_UNAVAILABLE when no bot is configured
  */
+/**
+ * The city the edge in front of the server placed this request in, read from
+ * the header the operator names in GEO_CITY_HEADER (Cloudflare's visitor
+ * location transform sends `CF-IPCity`), or '' when none is named. Only the
+ * operator can say that their edge sets the header and strips a client's own
+ * copy, so with none named nothing a caller sends is shown as a city.
+ */
+export function requestCity(req) {
+  const header = String(process.env.GEO_CITY_HEADER || '').trim();
+  if (!header || !req?.get) return '';
+  // eslint-disable-next-line no-control-regex
+  return String(req.get(header) || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80);
+}
+
+/**
+ * The requesting device in a few words ("Chrome on Android"), for the person
+ * deciding whether they started this sign-in; the raw string when it names
+ * nothing recognisable.
+ */
+export function deviceOf(agent) {
+  const ua = String(agent || '');
+  if (!ua) return '';
+  const browser = [[/EdgA?\//, 'Edge'], [/OPR\/|Opera/, 'Opera'], [/SamsungBrowser\//, 'Samsung Internet'],
+    [/Firefox\/|FxiOS\//, 'Firefox'], [/Chrome\/|CriOS\//, 'Chrome'], [/Safari\//, 'Safari']]
+    .find(([re]) => re.test(ua))?.[1];
+  const os = [[/Android/, 'Android'], [/iPhone|iPad|iPod/, 'iOS'], [/Windows/, 'Windows'],
+    [/Mac OS X|Macintosh/, 'macOS'], [/CrOS/, 'ChromeOS'], [/Linux/, 'Linux']]
+    .find(([re]) => re.test(ua))?.[1];
+  if (browser && os) return `${browser} on ${os}`;
+  return browser || os || ua.slice(0, 120);
+}
+
 export async function openChallenge({ door, req = null, delivery = 'MATCH', referralCode = null }) {
   const bot = await miniAppBot();
   if (!bot) throw telegramUnavailable();
@@ -134,6 +166,7 @@ export async function openChallenge({ door, req = null, delivery = 'MATCH', refe
     audience: door, ttlSeconds: CHALLENGE_TTL_SECONDS,
     requestedIp: req?.ip || '',
     requestedAgent: req?.get?.('user-agent') || '',
+    requestedCity: requestCity(req),
     delivery: how, match,
     referralCode: door === 'PLAYER' ? referralCode : null,
   });
