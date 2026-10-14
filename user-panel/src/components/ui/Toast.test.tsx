@@ -7,9 +7,9 @@
  * happens. Found by the browser drive (R4), which reads the same roles.
  */
 import React from 'react';
-import { describe, it, expect } from 'vitest';
-import { render, screen, act } from '@testing-library/react';
-import { ToastProvider, useToast } from './Toast';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, act, fireEvent } from '@testing-library/react';
+import { ToastProvider, useToast, TOAST_MS } from './Toast';
 
 function Say({ message, type }: { message: string; type?: 'success' | 'error' | 'info' }) {
   const { addToast } = useToast();
@@ -29,5 +29,45 @@ describe('player toasts are announced', () => {
     const status = screen.getByRole('status');
     expect(status.textContent).toContain('Bet placed');
     expect(status.closest('[aria-live="polite"]')).not.toBeNull();
+  });
+});
+
+describe('one notice at a time (owner, 2026-10-14)', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  function Two() {
+    const { addToast } = useToast();
+    return (<>
+      <button onClick={() => addToast('first', 'error')}>one</button>
+      <button onClick={() => addToast('second', 'error')}>two</button>
+    </>);
+  }
+
+  it('a new notice replaces the one on screen at once', () => {
+    render(<ToastProvider><Two /></ToastProvider>);
+    act(() => { screen.getByText('one').click(); });
+    act(() => { screen.getByText('two').click(); });
+    const shown = screen.getAllByRole('alert');
+    expect(shown).toHaveLength(1);
+    expect(shown[0].textContent).toContain('second');
+  });
+
+  it('the cross closes it', () => {
+    render(<ToastProvider><Two /></ToastProvider>);
+    act(() => { screen.getByText('one').click(); });
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('the last one goes by itself after TOAST_MS, counted from the newest', () => {
+    vi.useFakeTimers();
+    render(<ToastProvider><Two /></ToastProvider>);
+    act(() => { screen.getByText('one').click(); });
+    act(() => { vi.advanceTimersByTime(TOAST_MS - 100); });
+    act(() => { screen.getByText('two').click(); });
+    act(() => { vi.advanceTimersByTime(TOAST_MS - 100); });
+    expect(screen.getByRole('alert').textContent).toContain('second');
+    act(() => { vi.advanceTimersByTime(100); });
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

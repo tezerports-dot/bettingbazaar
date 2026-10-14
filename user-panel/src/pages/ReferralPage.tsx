@@ -18,10 +18,9 @@
  * the server no longer sends it.
  *
  * ── What a referrer sees about the people they invited ──────────────────────
- * A joining number, and nothing else. No name and no phone. The
- * joining number is already the queue key, so it is the one identifier that has
- * to be visible for the payout order to be checkable by the person waiting in
- * it.
+ * Nothing that identifies them: no name, no phone and no joining number
+ * (owner, 2026-10-14). Each row is a level, a reward and its state, newest
+ * first.
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import ScreenShell, { card } from '../redesign/Screen';
@@ -33,13 +32,12 @@ interface LevelTotals {
   count: number; confirmed: number; disbursed: number; blocked: number;
 }
 interface Row {
-  joiningNumber: number; level: 1 | 2; amount: number;
+  level: 1 | 2; amount: number;
   status: 'PENDING' | 'DISBURSED' | 'BLOCKED';
   reason: string; disbursedAt: string | null;
 }
 interface Summary {
   referralCode: string;
-  joiningNumber: number | null;
   rewardPerReferral: number;
   level1: LevelTotals;
   level2: LevelTotals;
@@ -169,9 +167,6 @@ const ReferralPage: React.FC = () => {
         )}
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 12, fontSize: 11, color: 'var(--text3)' }}>
           <span>Code <strong className="font-grotesk" style={{ color: 'var(--gold-ink)' }}>{data.referralCode || '—'}</strong></span>
-          {data.joiningNumber != null && (
-            <span>You are joiner <strong className="font-grotesk" style={{ color: 'var(--text2)' }}>#{data.joiningNumber.toLocaleString('en-IN')}</strong></span>
-          )}
         </div>
         <p style={{ margin: '10px 0 0', fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>
           Opening the link starts our bot{bot ? <> (<strong style={{ color: 'var(--text2)' }}>@{bot}</strong>)</> : ''} with
@@ -245,8 +240,7 @@ const ReferralPage: React.FC = () => {
           Your referrals
         </div>
         <p style={{ margin: '0 0 10px', fontSize: 11, color: 'var(--text3)', lineHeight: 1.55 }}>
-          Listed by joining number, which is also the payout order — the queue pays earliest
-          joiners first. We show only their joining number, never their name or contact.
+          Newest first. We never show who they are.
         </p>
 
         {data.rows.length === 0 ? (
@@ -255,20 +249,19 @@ const ReferralPage: React.FC = () => {
           </div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 420 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 300 }}>
               <thead>
                 <tr>
-                  {['Joiner', 'Level', 'Reward', 'Status'].map((h) => (
+                  {['Level', 'Reward', 'Status'].map((h) => (
                     <th key={h} style={{ textAlign: 'left', fontSize: 9.5, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text3)', padding: '0 10px 8px 0', whiteSpace: 'nowrap' }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {data.rows.map((r) => {
+                {data.rows.map((r, i) => {
                   const st = rowState(r);
                   return (
-                    <tr key={`${r.joiningNumber}-${r.level}`} style={{ borderTop: '1px solid var(--line2)' }}>
-                      <td className="font-grotesk" style={{ padding: '10px 10px 10px 0', fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>#{r.joiningNumber.toLocaleString('en-IN')}</td>
+                    <tr key={i} style={{ borderTop: '1px solid var(--line2)' }}>
                       <td style={{ padding: '10px 10px 10px 0', fontSize: 11.5, color: 'var(--text2)' }}>L{r.level}</td>
                       <td className="font-grotesk" style={{ padding: '10px 10px 10px 0', fontSize: 12.5, color: 'var(--text2)' }}>{inr(r.amount)}</td>
                       <td style={{ padding: '10px 0', fontSize: 11, fontWeight: 700, color: st.tone }}>
