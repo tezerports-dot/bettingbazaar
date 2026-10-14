@@ -54,7 +54,8 @@ import {
 import { miniAppBot } from './domains/telegram/telegramClient.js';
 import { verifyInitData } from './domains/telegram/miniAppAuth.js';
 import { miniAppRefusal } from './domains/telegram/miniAppRefusals.js';
-import { respondError } from './shared/httpError.js';
+import { respondError, refusal } from './shared/httpError.js';
+import { TELEGRAM_AUDIENCES } from '#db/repositories/telegram.js';
 import { formatMerchant } from './domains/merchant/merchantSelfView.js';
 
 const router = express.Router();
@@ -479,6 +480,20 @@ export async function totpActivateHandler(req, res) {
 }
 
 /**
+ * The door a Telegram leg serves: a player's or a merchant's, never staff's
+ * (owner, 2026-10-13: staff have no Telegram). `doorRoute` already refuses to
+ * mount one at the staff door; this refuses a handler mounted without a door
+ * rather than defaulting to one.
+ */
+function telegramDoor(req) {
+  const door = req.loginDoor;
+  if (!door || !TELEGRAM_AUDIENCES.includes(door.accountType)) {
+    throw refusal(404, 'NO_TELEGRAM_STEP', 'This sign-in has no Telegram step.');
+  }
+  return door;
+}
+
+/**
  * What a poll is told when nothing was redeemed. 202 keeps the panel polling;
  * a 401 tells it to stop and start the sign-in again.
  */
@@ -511,7 +526,7 @@ function notRedeemed(res, state) {
  */
 export async function loginTwoFactorHandler(req, res) {
   try {
-    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+    const door = telegramDoor(req);
     const { challengeToken } = req.body || {};
     if (!challengeToken) {
       return send(res, { status: 400, code: 'CHALLENGE_REQUIRED', message: 'Sign in again to continue.' });
@@ -552,7 +567,7 @@ export async function loginTwoFactorHandler(req, res) {
  */
 export async function telegramLoginHandler(req, res) {
   try {
-    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+    const door = telegramDoor(req);
     const bot = await miniAppBot();
     if (!bot) throw telegramUnavailable();
 
@@ -610,7 +625,7 @@ export async function telegramLoginHandler(req, res) {
  */
 export async function telegramLoginCompleteHandler(req, res) {
   try {
-    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+    const door = telegramDoor(req);
     const challenge = verifyChallenge(req.body?.challengeToken, door.accountType);
     if (!challenge) return notRedeemed(res, 'EXPIRED');
 

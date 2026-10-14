@@ -41,7 +41,7 @@ function view(link, { available, accountType }) {
     twoFactor: {
       enabled: link ? link.twoFactor : accountType !== 'PLAYER',
       // Merchants always: the row's own CHECK
-      // (`telegram_links_staff_two_factor`) says so.
+      // (`telegram_links_merchant_two_factor`) says so.
       required: accountType !== 'PLAYER',
     },
   };

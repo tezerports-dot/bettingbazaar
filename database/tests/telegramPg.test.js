@@ -17,7 +17,7 @@ import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { createUser, getUser, newUserId } from '../repositories/users.js';
 import {
   getBot, getBotSecrets, saveBot,
-  getLinkByUserId, getLinkByTelegramId, listLinksForTelegramUser, listAlertRecipients,
+  getLinkByUserId, getLinkByTelegramId, listLinksForTelegramUser,
   enablePlayerTwoFactor,
   createChallenge, getChallenge, redeemChallenge,
   answerChallenge, telegramSignIn, signUpVerifiedPlayer, resetPasswordByContact,
@@ -167,13 +167,16 @@ describePg('Telegram, Step 3 (PostgreSQL)', () => {
       expect((await getLinkByUserId(merchant)).twoFactor).toBe(true);
     });
 
-    it('the row refuses a phone that is not the mobile, a staff link without 2FA, and a link across panels', async () => {
+    it('the row refuses a phone that is not the mobile, a merchant link without 2FA, any staff link, and a link across panels', async () => {
       const id = await account();
+      const merchant = await account({ mobile: '9222222222', accountType: 'MERCHANT' });
       const staff = await account({ mobile: '9111111111', accountType: 'STAFF' });
       await expect(pgQuery(`INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone) VALUES ($1,'PLAYER','9','9000000000')`, [id]))
         .rejects.toThrow(/telegram_link_phone_is_mobile|mobile/);
-      await expect(pgQuery(`INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor) VALUES ($1,'STAFF','9','9111111111',FALSE)`, [staff]))
-        .rejects.toThrow(/telegram_links_staff_two_factor/);
+      await expect(pgQuery(`INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor) VALUES ($1,'MERCHANT','9','9222222222',FALSE)`, [merchant]))
+        .rejects.toThrow(/telegram_links_merchant_two_factor/);
+      await expect(pgQuery(`INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor) VALUES ($1,'STAFF','9','9111111111',TRUE)`, [staff]))
+        .rejects.toThrow(/telegram_links_audience_check/);
       await expect(pgQuery(`INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor) VALUES ($1,'MERCHANT','9','9876543210',TRUE)`, [id]))
         .rejects.toThrow(/telegram_links_account/);
     });
@@ -234,7 +237,7 @@ describePg('Telegram, Step 3 (PostgreSQL)', () => {
       const other = await account({ mobile: '9123456789' });
       const ch = await challenge({ userId: id });
       await answerChallenge({ challengeId: ch.challengeId, decision: 'approve', telegramUser: tgUser('1'), initData: proof(), contact: contactOf(tgUser('1'), '9876543210') });
-      expect((await redeemChallenge({ challengeId: ch.challengeId, audience: 'STAFF', purposes: ['VERIFY'] })).ok).toBe(false);
+      expect((await redeemChallenge({ challengeId: ch.challengeId, audience: 'MERCHANT', purposes: ['VERIFY'] })).ok).toBe(false);
       expect((await redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER', purposes: ['TELEGRAM_LOGIN'] })).ok).toBe(false);
       expect((await redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER', purposes: ['VERIFY'], userId: other })).ok).toBe(false);
       expect((await redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER', purposes: ['VERIFY'], userId: id })).ok).toBe(true);
@@ -288,7 +291,7 @@ describePg('Telegram, Step 3 (PostgreSQL)', () => {
       await verify(id, tgUser('1'), '9876543210', 'MERCHANT');
       expect(await enablePlayerTwoFactor(id)).toBeNull();
       await expect(pgQuery(`UPDATE telegram_links SET two_factor = FALSE WHERE user_id = $1`, [id]))
-        .rejects.toThrow(/telegram_links_staff_two_factor/);
+        .rejects.toThrow(/telegram_links_merchant_two_factor/);
     });
   });
 
@@ -302,14 +305,23 @@ describePg('Telegram, Step 3 (PostgreSQL)', () => {
         .toBe('NO_LINKED_ACCOUNT');
     });
 
-    it('for staff, writes an APPROVED challenge the password then spends, bound to that account', async () => {
-      const staff = await account({ mobile: '9111111111', accountType: 'STAFF', isAdmin: true });
-      await verify(staff, tgUser('7'), '9111111111', 'STAFF');
-      const r = await telegramSignIn({ audience: 'STAFF', telegramUser: tgUser('7'), initData: proof(), challengeId: 'cstaff1' });
+    it('for a merchant, writes an APPROVED challenge the password then spends, bound to that account', async () => {
+      const merchant = await account({ mobile: '9111111111', accountType: 'MERCHANT' });
+      await verify(merchant, tgUser('7'), '9111111111', 'MERCHANT');
+      const r = await telegramSignIn({ audience: 'MERCHANT', telegramUser: tgUser('7'), initData: proof(), challengeId: 'cmerch1' });
       expect(r.ok).toBe(true);
-      const other = await account({ mobile: '9222222222', accountType: 'STAFF', isAdmin: true });
-      expect((await redeemChallenge({ challengeId: 'cstaff1', audience: 'STAFF', purposes: ['TELEGRAM_LOGIN'], userId: other })).ok).toBe(false);
-      expect((await redeemChallenge({ challengeId: 'cstaff1', audience: 'STAFF', purposes: ['TELEGRAM_LOGIN'], userId: staff })).ok).toBe(true);
+      const other = await account({ mobile: '9222222222', accountType: 'MERCHANT' });
+      expect((await redeemChallenge({ challengeId: 'cmerch1', audience: 'MERCHANT', purposes: ['TELEGRAM_LOGIN'], userId: other })).ok).toBe(false);
+      expect((await redeemChallenge({ challengeId: 'cmerch1', audience: 'MERCHANT', purposes: ['TELEGRAM_LOGIN'], userId: merchant })).ok).toBe(true);
+    });
+
+    it('refuses the STAFF audience in every writer: staff have no Telegram', async () => {
+      const staff = await account({ mobile: '9111111111', accountType: 'STAFF', isAdmin: true });
+      await expect(verify(staff, tgUser('7'), '9111111111', 'STAFF')).rejects.toThrow(/audience/i);
+      await expect(telegramSignIn({ audience: 'STAFF', telegramUser: tgUser('7'), initData: proof(), challengeId: 'cstaff1' }))
+        .rejects.toThrow(/audience/i);
+      await expect(pgQuery(`INSERT INTO telegram_challenges (challenge_id, purpose, audience, status, expires_at) VALUES ('cstaff2','TELEGRAM_LOGIN','STAFF','PENDING', now() + interval '5 minutes')`))
+        .rejects.toThrow(/telegram_challenges_audience_check|violates/);
     });
 
     it('outside Telegram: an unbound challenge is bound to the account the Mini App proves', async () => {
@@ -430,19 +442,6 @@ describePg('Telegram, Step 3 (PostgreSQL)', () => {
       expect(swept).toEqual({ challenges: 1, initDataUses: 1 });
       expect(await count('telegram_init_data_uses')).toBe(1);
       expect(await getChallenge(live.challengeId)).toBeTruthy();
-    });
-  });
-
-  describe('security alerts', () => {
-    it('go to linked staff who are not blocked, and to no player or merchant', async () => {
-      const staff = await account({ mobile: '9111111111', accountType: 'STAFF', isAdmin: true });
-      const blocked = await account({ mobile: '9222222222', accountType: 'STAFF', isAdmin: true });
-      const player = await account({ mobile: '9333333333' });
-      await verify(staff, tgUser('7'), '9111111111', 'STAFF');
-      await verify(blocked, tgUser('8'), '9222222222', 'STAFF');
-      await verify(player, tgUser('9'), '9333333333');
-      await pgQuery(`UPDATE users SET is_blocked = TRUE, block_reason = 'test', blocked_at = now() WHERE user_id = $1`, [blocked]);
-      expect(await listAlertRecipients()).toEqual(['7']);
     });
   });
 });

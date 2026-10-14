@@ -5,8 +5,11 @@
  *
  * Owner, 2026-10-07: "they must verify and share contact on signup ... now they
  * can do login without telegram mini app but add also login with telegram
- * button too"; 2FA is "Telegram only", required for staff and merchants;
- * a forgotten password is recovered by sharing the contact in the Mini App.
+ * button too"; 2FA is "Telegram only", required for merchants; a forgotten
+ * password is recovered by sharing the contact in the Mini App. Owner,
+ * 2026-10-13: staff have no Telegram at all (an authenticator app instead,
+ * proven in staffSignInPg.test.js); this file proves the staff door offers
+ * none of it.
  *
  * Nothing here reaches Telegram. The Mini App's signed strings are signed with
  * the test token (miniAppFixture.js), the algorithm the server verifies, and
@@ -58,9 +61,6 @@ describePg('Step 3: sign-in doors and the Mini App', () => {
     app.use('/api/v1/auth', (await import('../../domains/identity/playerAuth.routes.js')).default);
     app.use('/api/v1/auth', (await import('../../routes.js')).default);
     app.post('/api/admin/login', ...doorRoute('STAFF', 'login'));
-    app.post('/api/admin/login/2fa', ...doorRoute('STAFF', 'twoFactor'));
-    app.post('/api/admin/login/telegram', ...doorRoute('STAFF', 'telegram'));
-    app.post('/api/admin/login/telegram/complete', ...doorRoute('STAFF', 'telegramComplete'));
     app.use('/api/admin', (await import('../../routes/admin/telegram.admin.routes.js')).default);
     app.use('/api/merchant', (await import('../../domains/merchant/merchant.routes.js')).default);
     app.use('/api/telegram', (await import('../../domains/telegram/miniApp.routes.js')).default);
@@ -89,13 +89,13 @@ describePg('Step 3: sign-in doors and the Mini App', () => {
     return { userId, mobile, tgId };
   };
 
-  const staff = async ({ verified = true } = {}) => {
+  /** A staff account: it has no Telegram to link (owner, 2026-10-13). */
+  const staff = async () => {
     const mobile = freshMobile('8');
     const userId = newUserId();
     await createUser({ userId, username: 's', mobile, passwordHash: await hashPassword(PASSWORD), accountType: 'STAFF', isAdmin: true });
     await setRoles(userId, ['admin']);
-    const tgId = verified ? await linkTelegram(userId) : freshTelegramUserId();
-    return { userId, mobile, tgId };
+    return { userId, mobile };
   };
 
   const merchant = async ({ verified = true, approved = true } = {}) => {
@@ -194,9 +194,10 @@ describePg('Step 3: sign-in doors and the Mini App', () => {
       expect(verifyJwt(res.body.token).amr).toEqual(['pwd']);
     });
 
-    for (const door of ['STAFF', 'MERCHANT']) {
+    {
+      const door = 'MERCHANT';
       it(`${door}: the password opens a Telegram approval; approving it signs in, with Telegram on the token`, async () => {
-        const who = door === 'STAFF' ? await staff() : await merchant();
+        const who = await merchant();
         const first = await login(door, who.mobile);
         expect(first.body, JSON.stringify(first.body)).toMatchObject({ success: false, twoFactorRequired: true });
         expect(first.body.token).toBeFalsy();
@@ -207,11 +208,11 @@ describePg('Step 3: sign-in doors and the Mini App', () => {
         const session = await poll(door, first.body.challengeToken);
         expect(session.status, JSON.stringify(session.body)).toBe(200);
         expect(verifyJwt(session.body.token).amr).toEqual(['pwd', 'tg']);
-        if (door === 'MERCHANT') expect(session.body.merchant._id).toBe(who.merchantId);
+        expect(session.body.merchant._id).toBe(who.merchantId);
       });
 
       it(`${door}: a denied approval is refused and opens nothing`, async () => {
-        const who = door === 'STAFF' ? await staff() : await merchant();
+        const who = await merchant();
         const first = await login(door, who.mobile);
         await approve(first.body.telegram, who.tgId, { decision: 'deny' });
         const res = await poll(door, first.body.challengeToken);
@@ -238,23 +239,41 @@ describePg('Step 3: sign-in doors and the Mini App', () => {
       }
     });
 
-    it('another Telegram account cannot approve a staff sign-in without the matching contact', async () => {
-      const s = await staff();
-      const first = await login('STAFF', s.mobile);
+    it('another Telegram account cannot approve a merchant sign-in without the matching contact', async () => {
+      const m = await merchant();
+      const first = await login('MERCHANT', m.mobile);
       const intruder = await approve(first.body.telegram, freshTelegramUserId());
       expect(intruder.body.code).toBe('CONTACT_REQUIRED');
       const wrongPhone = await approve(first.body.telegram, freshTelegramUserId(), { phone: '9000000002' });
       expect(wrongPhone.body.code).toBe('CONTACT_MISMATCH');
-      expect((await poll('STAFF', first.body.challengeToken)).status).toBe(202);
+      expect((await poll('MERCHANT', first.body.challengeToken)).status).toBe(202);
     });
 
-    it('a staff approval cannot be redeemed at the merchant or player door', async () => {
+    it('a merchant approval cannot be redeemed at the player door', async () => {
+      const m = await merchant();
+      const first = await login('MERCHANT', m.mobile);
+      await approve(first.body.telegram, m.tgId);
+      expect((await poll('PLAYER', first.body.challengeToken)).status).toBe(401);
+      expect((await poll('MERCHANT', first.body.challengeToken)).status).toBe(200);
+    });
+
+    it('the staff password leg opens no Telegram step: it asks for an authenticator code', async () => {
       const s = await staff();
       const first = await login('STAFF', s.mobile);
-      await approve(first.body.telegram, s.tgId);
-      expect((await poll('MERCHANT', first.body.challengeToken)).status).toBe(401);
-      expect((await poll('PLAYER', first.body.challengeToken)).status).toBe(401);
-      expect((await poll('STAFF', first.body.challengeToken)).status).toBe(200);
+      expect(first.status, JSON.stringify(first.body)).toBe(200);
+      expect(first.body).toMatchObject({ success: false, twoFactorRequired: true, totpSetupRequired: true });
+      expect(first.body.telegram).toBeUndefined();
+      expect(first.body.token).toBeFalsy();
+      // Nothing was written for Telegram to answer.
+      const { rows } = await pgQuery('SELECT count(*)::int AS n FROM telegram_challenges WHERE user_id = $1', [s.userId]);
+      expect(rows[0].n).toBe(0);
+    });
+
+    it('the staff door has no Telegram leg to mount', async () => {
+      const { doorRoute } = await import('../../domains/identity/loginDoors.js');
+      for (const leg of ['twoFactor', 'telegram', 'telegramComplete']) {
+        expect(() => doorRoute('STAFF', leg), leg).toThrow(/no .* leg/);
+      }
     });
 
     it('a player who switched approval on owes it; switching it off needs Telegram\'s approval', async () => {
@@ -275,24 +294,26 @@ describePg('Step 3: sign-in doors and the Mini App', () => {
       expect(on.body.twoFactor).toEqual({ enabled: true, required: false });
     });
 
-    it('a staff or merchant session without Telegram on it is refused once a bot exists', async () => {
+    it('a staff session is admitted on an authenticator code, never on Telegram', async () => {
       const { signToken } = await import('../../domains/identity/jwt.util.js');
       const s = await staff();
-      const pwdOnly = signToken({ userId: s.userId, amr: ['pwd'] });
-      const res = await request(app).get('/api/admin/account/telegram').set('Authorization', `Bearer ${pwdOnly}`);
-      expect(res.status).toBe(403);
-      expect(res.body.code).toBe('TWO_FACTOR_REQUIRED');
-      const both = signToken({ userId: s.userId, amr: ['pwd', 'tg'] });
-      expect((await request(app).get('/api/admin/account/telegram').set('Authorization', `Bearer ${both}`)).status).toBe(200);
+      const bot = (amr) => request(app).get('/api/admin/telegram/bot')
+        .set('Authorization', `Bearer ${signToken({ userId: s.userId, amr })}`);
+      for (const amr of [['pwd'], ['pwd', 'tg'], ['tg']]) {
+        const res = await bot(amr);
+        expect(res.status, amr.join('+')).toBe(403);
+        expect(res.body.code).toBe('TWO_FACTOR_REQUIRED');
+      }
+      expect((await bot(['pwd', 'otp'])).status).toBe(200);
     });
 
-    it('staff cannot switch Telegram approval off', async () => {
+    it('staff have no Telegram account routes', async () => {
       const { signToken } = await import('../../domains/identity/jwt.util.js');
       const s = await staff();
-      const auth = `Bearer ${signToken({ userId: s.userId, amr: ['pwd', 'tg'] })}`;
-      const res = await request(app).put('/api/admin/account/telegram/two-factor').set('Authorization', auth).send({ enabled: false });
-      expect(res.status).toBe(403);
-      expect(res.body.code).toBe('TWO_FACTOR_MANDATORY');
+      const auth = `Bearer ${signToken({ userId: s.userId, amr: ['pwd', 'otp'] })}`;
+      expect((await request(app).get('/api/admin/account/telegram').set('Authorization', auth)).status).toBe(404);
+      expect((await request(app).put('/api/admin/account/telegram/two-factor').set('Authorization', auth).send({ enabled: false })).status).toBe(404);
+      expect((await request(app).post('/api/admin/account/telegram/relink').set('Authorization', auth).send({})).status).toBe(404);
     });
   });
 
@@ -329,9 +350,10 @@ describePg('Step 3: sign-in doors and the Mini App', () => {
       expect(again.body.code).toBe('INIT_DATA_REPLAYED');
     });
 
-    for (const door of ['STAFF', 'MERCHANT']) {
+    {
+      const door = 'MERCHANT';
       it(`${door}: Telegram first, then the password; the approval stands in for the second factor once`, async () => {
-        const who = door === 'STAFF' ? await staff() : await merchant();
+        const who = await merchant();
         const start = await post(`${DOOR[door]}/login/telegram`, {});
         await approve(start.body.telegram, who.tgId);
         const next = await post(`${DOOR[door]}/login/telegram/complete`, { challengeToken: start.body.challengeToken });
@@ -345,23 +367,34 @@ describePg('Step 3: sign-in doors and the Mini App', () => {
       });
     }
 
-    it('a staff Telegram approval does not complete ANOTHER staff account\'s password sign-in', async () => {
-      const a = await staff();
-      const b = await staff();
-      const start = await post('/api/admin/login/telegram', {});
+    it('a merchant Telegram approval does not complete ANOTHER merchant\'s password sign-in', async () => {
+      const a = await merchant();
+      const b = await merchant();
+      const start = await post('/api/merchant/auth/login/telegram', {});
       await approve(start.body.telegram, a.tgId);
-      const res = await login('STAFF', b.mobile, { challengeToken: start.body.challengeToken });
+      const res = await login('MERCHANT', b.mobile, { challengeToken: start.body.challengeToken });
       expect(res.body.twoFactorRequired).toBe(true);
       expect(res.body.token).toBeFalsy();
     });
 
-    it('staff inside the Mini App still owe their password', async () => {
-      const s = await staff();
-      const res = await post('/api/admin/login/telegram', { initData: signInitData({ telegramUserId: s.tgId }) });
+    it('merchants inside the Mini App still owe their password', async () => {
+      const m = await merchant();
+      const res = await post('/api/merchant/auth/login/telegram', { initData: signInitData({ telegramUserId: m.tgId }) });
       expect(res.body).toMatchObject({ success: false, passwordRequired: true });
       expect(res.body.token).toBeFalsy();
-      const done = await login('STAFF', s.mobile, { challengeToken: res.body.challengeToken });
+      const done = await login('MERCHANT', m.mobile, { challengeToken: res.body.challengeToken });
       expect(done.status).toBe(200);
+    });
+
+    it('a merchant approval presented at the staff password leg opens nothing', async () => {
+      const m = await merchant();
+      const s = await staff();
+      const start = await post('/api/merchant/auth/login/telegram', {});
+      await approve(start.body.telegram, m.tgId);
+      const res = await login('STAFF', s.mobile, { challengeToken: start.body.challengeToken });
+      expect(res.body.token).toBeFalsy();
+      expect(res.body.twoFactorRequired).toBe(true);
+      expect(res.body.telegram).toBeUndefined();
     });
   });
 
@@ -429,20 +462,34 @@ describePg('Step 3: sign-in doors and the Mini App', () => {
     });
 
     it("a password under the account's floor is refused BEFORE the proof is spent, so the same page can try again", async () => {
-      const s = await staff();
-      const initData = signInitData({ telegramUserId: s.tgId, startParam: 'reset-STAFF' });
-      const weak = 'Eight-ch';                         // a player's floor, not staff's (12)
-      const refused = await resetAs(s, 'STAFF', { password: weak, confirmPassword: weak }, initData);
+      const m = await merchant();
+      const initData = signInitData({ telegramUserId: m.tgId, startParam: 'reset-MERCHANT' });
+      const weak = 'Eight-ch';                         // a player's floor, not a merchant's (12)
+      const refused = await resetAs(m, 'MERCHANT', { password: weak, confirmPassword: weak }, initData);
       expect(refused.status).toBe(400);
       expect(refused.body.code).toBe('WEAK_PASSWORD');
       expect(refused.body.message).toMatch(/12/);
-      expect((await verifyPassword(await hashOf(s.userId), PASSWORD)).valid).toBe(true);
+      expect((await verifyPassword(await hashOf(m.userId), PASSWORD)).valid).toBe(true);
 
-      const retried = await resetAs(s, 'STAFF', {}, initData);
+      const retried = await resetAs(m, 'MERCHANT', {}, initData);
       expect(retried.status, JSON.stringify(retried.body)).toBe(200);
-      expect((await verifyPassword(await hashOf(s.userId), NEW)).valid).toBe(true);
+      expect((await verifyPassword(await hashOf(m.userId), NEW)).valid).toBe(true);
       // ...and now it is spent.
-      expect((await resetAs(s, 'STAFF', {}, initData)).status).toBe(409);
+      expect((await resetAs(m, 'MERCHANT', {}, initData)).status).toBe(409);
+    });
+
+    it('there is no staff reset in the Mini App: reset-STAFF is refused and the password is unchanged', async () => {
+      const s = await staff();
+      const tgId = freshTelegramUserId();
+      const res = await post('/api/telegram/mini-app/password-reset', {
+        initData: signInitData({ telegramUserId: tgId, startParam: 'reset-STAFF' }),
+        contact: signContact({ telegramUserId: tgId, phone: s.mobile }),
+        password: NEW, confirmPassword: NEW,
+      });
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(res.status).toBeLessThan(500);
+      expect((await verifyPassword(await hashOf(s.userId), PASSWORD)).valid).toBe(true);
+      expect((await request(app).get('/api/telegram/mini-app?panel=STAFF')).body.resetUrl ?? null).toBeNull();
     });
 
     it('two different passwords, or none, are refused by name and change nothing', async () => {
@@ -475,13 +522,15 @@ describePg('Step 3: sign-in doors and the Mini App', () => {
 
   // ── No bot ─────────────────────────────────────────────────────────────
   describe('with no bot configured', () => {
-    it('staff sign in on the password (the bootstrap) and are told so; players and merchants are told Telegram is unavailable', async () => {
+    it('staff still owe their authenticator code (there is no bootstrap); merchants and players are told Telegram is unavailable', async () => {
       await removeTestBot();
       try {
-        const s = await staff({ verified: false });
+        const s = await staff();
         const res = await login('STAFF', s.mobile);
         expect(res.status, JSON.stringify(res.body)).toBe(200);
-        expect(res.body.bootstrap).toBe(true);
+        expect(res.body).toMatchObject({ success: false, twoFactorRequired: true, totpSetupRequired: true });
+        expect(res.body.token).toBeFalsy();
+        expect(res.body.bootstrap).toBeUndefined();
 
         const m = await merchant({ verified: false });
         const refused = await login('MERCHANT', m.mobile);

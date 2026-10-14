@@ -3297,8 +3297,12 @@ DELETE FROM telegram_links WHERE audience = 'STAFF';
 ALTER TABLE telegram_links DROP CONSTRAINT IF EXISTS telegram_links_audience_check;
 ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_audience_check
   CHECK (audience IN ('PLAYER', 'MERCHANT'));
+-- A merchant approves every sign-in in Telegram; only a player may switch it
+-- off. Named for what it holds now that no staff row exists (the old name is
+-- dropped so a database that had it converges).
 ALTER TABLE telegram_links DROP CONSTRAINT IF EXISTS telegram_links_staff_two_factor;
-ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_staff_two_factor
+ALTER TABLE telegram_links DROP CONSTRAINT IF EXISTS telegram_links_merchant_two_factor;
+ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_merchant_two_factor
   CHECK (audience = 'PLAYER' OR two_factor);
 CREATE UNIQUE INDEX IF NOT EXISTS telegram_links_one_per_panel
   ON telegram_links (telegram_user_id, audience);
