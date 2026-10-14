@@ -367,8 +367,8 @@ const MUTATIONS = [
     id: 'M77', file: 'backend/domains/identity/loginDoors.js', config: UNIT,
     test: 'backend/tests/unit/loginPacing.test.js',
     why: 'the staff password path stops being paced',
-    from: `    loginPaceLimiter, adminAuthLimiter, createSubnetLimiter('adminAuth'),`,
-    to: `    adminAuthLimiter, createSubnetLimiter('adminAuth'),`,
+    from: `  loginPaceLimiter, adminAuthLimiter, createSubnetLimiter('adminAuth'),`,
+    to: `  adminAuthLimiter, createSubnetLimiter('adminAuth'),`,
   },
   {
     id: 'M78', file: 'backend/middleware/security.js', config: UNIT,
@@ -1084,15 +1084,8 @@ const MUTATIONS = [
   // MERCHANT login row; its old reader (`getMerchantCredentials`) is deleted,
   // so the mutant moves to the other side of the same seam: the reset.
   {
-    id: 'M196', file: 'database/repositories/telegram.js', config: PG,
-    test: 'backend/tests/routes/merchantPasswordResetPg.test.js',
-    why: 'the reset keeps the old password on the row the merchant door reads, so a reset merchant is refused their new password',
-    from: `UPDATE users SET password_hash = $2, sessions_valid_from = $3, updated_at = now()`,
-    to: `UPDATE users SET password_hash = COALESCE(password_hash, $2), sessions_valid_from = $3, updated_at = now()`,
-  },
-  {
     id: 'M197', file: 'backend/middleware/merchantAuth.js', config: PG,
-    test: 'backend/tests/routes/merchantPasswordResetPg.test.js',
+    test: 'backend/tests/routes/merchantStaffSignInPg.test.js',
     why: 'a password reset evicts no merchant session, so the session the reset was meant to end keeps working',
     from: `    if (sessionSuperseded(login, decoded)) return refuseSupersededSession(res);`,
     to: `    if (false) return refuseSupersededSession(res);`,
@@ -1106,7 +1099,7 @@ const MUTATIONS = [
   },
   {
     id: 'M200', file: 'backend/routes/sse.routes.js', config: PG,
-    test: 'backend/tests/routes/merchantPasswordResetPg.test.js',
+    test: 'backend/tests/routes/merchantStaffSignInPg.test.js',
     why: 'a merchant whose password was reset keeps the live order feed',
     from: `            if (sessionSuperseded(await merchantLoginRow(merchant, decoded), decoded)) {`,
     to: `            if (false) {`,
@@ -1382,7 +1375,7 @@ const MUTATIONS = [
   {
     id: 'M247', file: 'backend/routes.js', config: PG,
     test: 'backend/tests/routes/closedAccountPg.test.js',
-    why: 'a deleted player signs in with their password, and so does one closed between the two legs of a login',
+    why: 'a deleted player is signed in by Telegram, and so is one closed between Verify and the poll or the ticket',
     from: `  if (accountClosed(user)) {
     return { status: 403, code: 'ACCOUNT_CLOSED',`,
     to: `  if (false) {
@@ -1604,8 +1597,8 @@ const MUTATIONS = [
     id: 'M277', file: 'database/repositories/identity.js', config: PG,
     test: 'database/tests/identityPg.test.js',
     why: 'the signup form writes its account into the STAFF population, so the player door can never read it back',
-    from: `VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', 'PLAYER')`,
-    to: `VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', 'STAFF')`,
+    from: `       VALUES ($1, $2, $3, $4, $5, 'ACTIVE', 'PLAYER')`,
+    to: `       VALUES ($1, $2, $3, $4, $5, 'ACTIVE', 'STAFF')`,
   },
   {
     id: 'M278', file: 'database/repositories/identity.js', config: PG,
@@ -2339,13 +2332,7 @@ const MUTATIONS = [
     from: "    if (isAccountMobileRefusal(error)) {\n",
     to: "    if (false) {\n",
   },
-  {
-    id: 'M369', file: 'database/repositories/merchants.js', config: PG,
-    test: 'backend/tests/routes/payoutAccountNotAMobilePg.test.js',
-    why: 'an applicant whose account is a mobile number is told "signup failed" and nothing they can act on',
-    from: "    if (error.code === '23514' && error.constraint === 'merchants_bank_account_not_a_mobile') {\n",
-    to: "    if (false) {\n",
-  },  // ── Team commission (Step 2e) ──────────────────────────────────────────────
+  // ── Team commission (Step 2e) ──────────────────────────────────────────────
   {
     id: 'M383', file: 'database/repositories/teamCommission.js', config: PG,
     test: 'backend/tests/routes/teamCommissionPg.test.js',
@@ -2676,13 +2663,6 @@ const MUTATIONS = [
   // ── Step 3: Telegram verifies signup, approves merchant sign-ins,
   // and offers Login with Telegram (owner, 2026-10-07) ──────────────────────
   {
-    id: 'MS1', file: 'database/repositories/telegram.js', config: PG,
-    test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'a contact on another number verifies the account, so anybody can claim a mobile they do not hold',
-    from: `  if (String(account.mobile) !== String(phone)) refuse('CONTACT_MISMATCH');`,
-    to: `  if (false) refuse('CONTACT_MISMATCH');`,
-  },
-  {
     id: 'MS2', file: 'database/repositories/telegram.js', config: PG,
     test: 'backend/tests/routes/telegramLoginPg.test.js',
     why: 'a contact card forwarded from someone else\'s address book proves their number',
@@ -2716,25 +2696,27 @@ const MUTATIONS = [
   {
     id: 'MS6', file: 'backend/routes.js', config: PG,
     test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'a merchant password signs in without the Telegram approval',
-    from: `    if (!link.twoFactor) return sessionFor(door, user, res, { amr: ['pwd'], merchant, staff });`,
-    to: `    if (true) return sessionFor(door, user, res, { amr: ['pwd'], merchant, staff });`,
+    why: 'a merchant application still waiting for an admin is signed in by its first Verify',
+    from: `  if (notActive) return send(res, notActive);`,
+    to: `  if (false) return send(res, notActive);`,
   },
   {
     id: 'MS7', file: 'backend/routes.js', config: PG,
     test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'merchants signing in from inside the Mini App skip their password',
-    from: `    if (!isPlayer) {
-      return res.status(200).json({`,
-    to: `    if (false) {
-      return res.status(200).json({`,
+    why: 'an account an admin blocked is still signed in by a Telegram approval',
+    from: `  const refused = accountRefusal(door, user);
+  if (refused) return send(res, refused);
+  const { merchant, staff, refusal: notActive }`,
+    to: `  const refused = null;
+  if (refused) return send(res, refused);
+  const { merchant, staff, refusal: notActive }`,
   },
   {
-    id: 'MS8', file: 'backend/routes.js', config: PG,
-    test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'one merchant\'s Telegram approval completes another merchant\'s password sign-in',
-    from: `        purposes: ['TELEGRAM_LOGIN'], userId: user.userId,`,
-    to: `        purposes: ['TELEGRAM_LOGIN'],`,
+    id: 'MS8', file: 'database/repositories/telegram.js', config: PG,
+    test: 'backend/tests/routes/continueWithTelegramPg.test.js',
+    why: 'a player\'s handoff ticket signs in at the merchant door',
+    from: `      WHERE c.challenge_id = spent.challenge_id AND c.audience = $2`,
+    to: `      WHERE c.challenge_id = spent.challenge_id AND $2::text IS NOT NULL`,
   },
   // ── Staff sign in with an authenticator app, no Telegram (owner, 2026-10-13) ─
   {
@@ -2769,8 +2751,8 @@ const MUTATIONS = [
     id: 'MT4', file: 'backend/domains/identity/auth.middleware.js', config: PG,
     test: 'backend/tests/routes/staffSignInPg.test.js',
     why: 'a staff session approved in Telegram (or carrying no code) is honoured, so Telegram is a staff second factor again',
-    from: `const SECOND_FACTOR = Object.freeze({ STAFF: 'otp', MERCHANT: 'tg' });`,
-    to: `const SECOND_FACTOR = Object.freeze({ STAFF: 'tg', MERCHANT: 'tg' });`,
+    from: `const SECOND_FACTOR = Object.freeze({ STAFF: 'otp', MERCHANT: 'tg', PLAYER: 'tg' });`,
+    to: `const SECOND_FACTOR = Object.freeze({ STAFF: 'tg', MERCHANT: 'tg', PLAYER: 'tg' });`,
   },
   {
     id: 'MT5', file: 'backend/domains/identity/twoFactorChallenge.js', config: PG,
@@ -2861,8 +2843,8 @@ const MUTATIONS = [
     edits: [
       [`        AND match_number IS NOT NULL AND match_number IS DISTINCT FROM $2::smallint`,
         `        AND match_number IS NOT NULL AND FALSE AND $2::smallint IS NULL`],
-      [`          AND (match_number IS NULL OR match_number = $5::smallint)\`,`,
-        `          AND ($5::smallint IS NULL OR TRUE)\`,`],
+      [`          AND (delivery = 'HANDOFF' OR match_number = $5::smallint)\`,`,
+        `          AND (delivery = 'HANDOFF' OR $5::smallint IS NULL OR TRUE)\`,`],
     ],
   },
   {
@@ -2874,31 +2856,10 @@ const MUTATIONS = [
   },
   // ── Forgot password, set in the Mini App for every panel (2026-10-08) ────
   {
-    id: 'MS9', file: 'database/repositories/telegram.js', config: PG,
-    test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'a reset leaves alive the sessions it exists to evict',
-    from: `      \`UPDATE users SET password_hash = $2, sessions_valid_from = $3, updated_at = now()`,
-    to: `      \`UPDATE users SET password_hash = $2, sessions_valid_from = CASE WHEN $3::timestamptz IS NULL THEN now() ELSE sessions_valid_from END, updated_at = now()`,
-  },
-  {
-    id: 'MS10', file: 'backend/domains/identity/passwordReset.service.js', config: PG,
-    test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'a merchant password below the merchant floor is set through the Mini App',
-    from: `  assertNewPassword(panel, { password, confirmPassword, mobile: contact.phone });`,
-    to: ``,
-  },
-  {
-    id: 'MS11', file: 'database/repositories/telegram.js', config: PG,
-    test: 'database/tests/telegramPg.test.js',
-    why: "a player's contact share resets the staff account on the same mobile",
-    from: `lockAccount(client, 'mobile = $1 AND account_type = $2', [contact.phone, panel]);`,
-    to: `lockAccount(client, 'mobile = $1 AND $2::text IS NOT NULL ORDER BY account_type DESC', [contact.phone, panel]);`,
-  },
-  {
     id: 'MS12', file: 'backend/domains/identity/loginDoors.js', config: UNIT,
     test: 'backend/tests/unit/loginPacing.test.js',
-    why: 'the player door, the one sign-in with no Telegram approval behind it, stops asking for a captcha',
-    from: `    requireCaptcha('player-login'),`,
+    why: 'the player\'s Continue with Telegram, the one door that creates accounts, stops asking for a captcha',
+    from: `    ...(door === 'PLAYER' ? [requireCaptcha('telegram-login')] : []),`,
     to: ``,
   },
   {
@@ -2909,6 +2870,20 @@ const MUTATIONS = [
 `,
     to: `    success: true, token, merchant: { _id: merchant._id, userId: merchant.userId, status: merchant.status },
 `,
+  },
+  {
+    id: 'MTG7', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/continueWithTelegramPg.test.js',
+    why: 'a player or merchant account may hold a password again, a second way in beside Telegram (owner, 2026-10-14)',
+    from: `  CHECK (account_type = 'STAFF' OR password_hash IS NULL);`,
+    to: `  CHECK (account_type IS NOT NULL OR password_hash IS NULL);`,
+  },
+  {
+    id: 'MTG8', file: 'database/repositories/telegram.js', config: PG,
+    test: 'backend/tests/routes/telegramLoginPg.test.js',
+    why: 'a merchant application is named after the last four digits of its mobile, so the second applicant with the same four is refused with a 500',
+    from: "    userId: signup.userId, username: `merchant_${letters}`, mobile: phone,",
+    to: "    userId: signup.userId, username: `merchant${last4}`, mobile: phone,",
   },
   {
     id: 'MC1', file: 'database/schema.sql', config: PG,

@@ -104,11 +104,15 @@ const server = spawn(process.execPath, [join(ROOT, 'backend', 'server.js')], {
   // that is not the runner itself. A request with no such header is still
   // keyed on the socket, so no other scenario sees a difference.
   //
+  // PUBLIC_APP_ORIGIN: where Verify sends a handoff ticket (s9); with none,
+  // the Mini App says the site is not set up, which is the point of no origin.
+  //
   // TELEGRAM_CONFIG_TTL_MS short: s9 saves the test bot from THIS process, and
   // the server's own bot cache (30 s by default) cannot hear it do so.
   env: {
     ...process.env, PORT: String(PORT), NODE_ENV: process.env.NODE_ENV || 'development',
     BB_RATE_LIMIT_RELAX: '1', TRUST_PROXY: '1', TELEGRAM_CONFIG_TTL_MS: '500',
+    PUBLIC_APP_ORIGIN: process.env.PUBLIC_APP_ORIGIN || 'https://e2e.bettingbazaar.test',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });

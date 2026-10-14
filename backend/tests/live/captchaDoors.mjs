@@ -79,19 +79,19 @@ async function probe(path, body) {
 //     input has to be one the door would otherwise accept.
 const stamp = String(Date.now()).slice(-6);
 const PW = `Cap7cha-Pr0be-${stamp}!`;
+// Players have one door since 2026-10-14: Continue with Telegram, which opens
+// a sign-in (and can make an account) before anybody has proved anything.
 const DOORS = [
-  ['player signup',   '/api/v1/auth/register',     { mobile: `91${stamp}1`.slice(0, 10), password: PW, confirmPassword: PW }],
-  ['player login',    '/api/v1/auth/login',        { mobile: `92${stamp}2`.slice(0, 10), password: PW }],
+  ['player Continue with Telegram', '/api/v1/auth/login/telegram', { delivery: 'MATCH' }],
 ];
 // ── Doors that must NOT challenge (owner, 2026-10-08) ─────────────────────
-// Staff and merchants "only need 2FA": every sign-in waits for their Telegram
-// approval, and a merchant application is unusable until Telegram verifies
-// its mobile. Their panels carry no captcha widget, so a challenge here would
-// refuse every staff and merchant sign-in the moment Turnstile is switched on.
+// Staff and merchants "only need 2FA": every staff sign-in owes an
+// authenticator code, and a merchant signs in only through Telegram. Their
+// panels carry no captcha widget, so a challenge here would refuse every staff
+// and merchant sign-in the moment Turnstile is switched on.
 const UNCHALLENGED = [
   ['staff login',     '/api/admin/login',          { mobile: `93${stamp}3`.slice(0, 10), password: PW }],
-  ['merchant login',  '/api/merchant/auth/login',  { mobile: `94${stamp}4`.slice(0, 10), password: PW }],
-  ['merchant signup', '/api/merchant/auth/signup', { username: `cap${stamp}`, mobile: `95${stamp}5`.slice(0, 10), email: `c${stamp}@example.test`, password: PW, acceptedCurrencies: ['INR'] }],
+  ['merchant Continue with Telegram', '/api/merchant/auth/login/telegram', { delivery: 'MATCH' }],
 ];
 
 // ── Refuse to report on a server where the captcha is not even on ─────────
@@ -104,11 +104,10 @@ if (!health?.ok) {
   console.error(`No server at ${BASE}. Start one with TURNSTILE_SECRET_KEY set.`);
   process.exit(1);
 }
-const control = await probe('/api/v1/auth/login',
-  { mobile: `90${String(Date.now()).slice(-7)}`.slice(0, 10), password: 'Contro1-Probe-Pw!' });
+const control = await probe('/api/v1/auth/login/telegram', { delivery: 'MATCH' });
 if (control.body?.code !== 'CAPTCHA_REQUIRED') {
   console.error(
-    'The player login did not challenge, so the captcha is NOT switched on for this server.\n'
+    'The player Continue with Telegram did not challenge, so the captcha is NOT switched on for this server.\n'
     + 'Start it with TURNSTILE_SECRET_KEY set to any non-empty value — otherwise every door\n'
     + `below would read as unprotected and none of them would be.\n  got: ${control.status} `
     + `${JSON.stringify(control.body).slice(0, 160)}`);
@@ -125,7 +124,7 @@ for (const [label, path, body] of DOORS) {
 
 for (const [label, path, body] of UNCHALLENGED) {
   const res = await probe(path, body);
-  ok(`${label} does NOT ask for a captcha (Telegram approval is its second factor)`,
+  ok(`${label} does NOT ask for a captcha (its second factor is the authenticator or Telegram)`,
      res.body?.code !== 'CAPTCHA_REQUIRED', `${res.status} ${JSON.stringify(res.body).slice(0, 120)}`);
 }
 
