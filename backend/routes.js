@@ -3,26 +3,30 @@
  * routes.js — the three sign-in doors, the one place a session is minted, and
  * the session lifecycle.
  *
- * ── Step 3 (owner, 2026-10-07) ─────────────────────────────────────────────
- * "they must verify and share contact on signup ... now they can do login
- * without telegram mini app but add also login with telegram button too."
+ * ── Staff (owner, 2026-10-13) ──────────────────────────────────────────────
+ * A STAFF account (admin, sub-admin, queue manager, mediator) has no Telegram
+ * at all. It signs in with its mobile, its password and a code from an
+ * authenticator app (`/login/totp`), and enrols that app at its first sign-in
+ * (`/login/totp/setup`, `/login/totp/activate`). The staff door has only those
+ * legs (`loginDoors.js`).
  *
- * So a sign-in is a mobile, a password and a captcha, at the door of the
+ * ── Players and merchants (Step 3, owner 2026-10-07) ──────────────────────
+ * A sign-in is a mobile, a password and a captcha, at the door of the
  * account's own panel (CLAUDE.md §33):
  *
  *   • An account whose mobile Telegram has not yet verified is not signed in:
  *     it is answered 403 TELEGRAM_VERIFICATION_REQUIRED with a Mini App link,
  *     and finishing that step signs it in (`/login/2fa`).
- *   • A staff or merchant sign-in is also approved in the account's own
- *     Telegram (the second factor); a player's is, only if they switched it on.
+ *   • A merchant sign-in is also approved in the account's own Telegram (the
+ *     second factor); a player's is, only if they switched it on.
  *   • "Login with Telegram" (`/login/telegram`): a player is signed in by
- *     Telegram alone; staff and merchants still give their password.
+ *     Telegram alone; merchants still give their password.
  *
  * Every leg of every door is one handler here, mounted per door with that
  * door's limits (`loginDoors.js`). Writing a door's legs as copies would be the
  * place one of three quietly stops asking (§5).
  *
- * What a token proves is ON the token (`amr`): `pwd`, `tg`, or both. Every path
+ * What a token proves is ON the token (`amr`): `pwd`, `otp`, `tg`. Every path
  * that honours a session asks `secondFactorMissing` of it (auth.middleware.js).
  */
 import express     from 'express';
@@ -34,11 +38,15 @@ import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.
 import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
 import { isTokenRevoked, revokeToken } from '#db/repositories/identity.js';
 import { verifyChallenge, issueChallenge, isChallengeToken } from './domains/identity/twoFactorChallenge.js';
+import crypto from 'node:crypto';
 import {
   sessionSuperseded, refuseSupersededSession, accountClosed, refuseClosedAccount,
   belongsElsewhere, refuseWrongPanel, secondFactorMissing, refuseMissingSecondFactor,
-  staffBootstrap,
 } from './domains/identity/auth.middleware.js';
+import {
+  beginEnrolment, completeEnrolment, checkSignInCode,
+} from './domains/identity/totp.service.js';
+import { currentBranding } from './domains/branding/brandingPayload.js';
 import { normalisePhone } from './domains/identity/signupFields.js';
 import {
   openChallenge, newChallengeId, telegramUnavailable, REDEEM_WINDOW_SECONDS,
@@ -187,7 +195,7 @@ async function merchantRefusal(door, user) {
  * @param {object} user     the `users` row
  * @param {object} res
  * @param {object} o
- * @param {string[]} o.amr  what this sign-in proved: 'pwd', 'tg', or both
+ * @param {string[]} o.amr  what this sign-in proved: 'pwd', 'otp', 'tg'
  * @param {object|null} [o.merchant]
  */
 async function sessionFor(door, user, res, { amr, merchant = null, staff = null }) {
@@ -197,9 +205,10 @@ async function sessionFor(door, user, res, { amr, merchant = null, staff = null 
 
 /**
  * The player and staff session (the cookie for the player app, the bearer for
- * the admin panel).
+ * the admin panel). `extra` is merged into the answer (a staff sign-in's
+ * recovery codes, or how many are left).
  */
-export async function issueSession(user, res, { amr = ['pwd'] } = {}) {
+export async function issueSession(user, res, { amr = ['pwd'], extra = {} } = {}) {
   let role = 'user';
   if (user.isAdmin)          role = 'admin';
   else if (user.isSubAdmin)  role = 'subadmin';
@@ -242,13 +251,7 @@ export async function issueSession(user, res, { amr = ['pwd'] } = {}) {
   // Only a player session rides in the cookie. The admin panel sends its
   // bearer header; on one origin a staff cookie would reach the player app.
   if (user.accountType === 'PLAYER') res.cookie('auth_token', token, COOKIE_OPTS);
-  return res.json({
-    success: true, token, user: userPayload,
-    // The staff bootstrap (§33): no Mini App bot yet, so this staff session is
-    // a password alone. The admin panel shows a standing banner naming the
-    // Telegram screen that ends it.
-    ...(user.accountType === 'STAFF' && await staffBootstrap() ? { bootstrap: true } : {}),
-  });
+  return res.json({ ...extra, success: true, token, user: userPayload });
 }
 
 /**
@@ -330,10 +333,11 @@ export async function loginHandler(req, res) {
     const refused = accountRefusal(door, user, loginType);
     if (refused) return send(res, refused);
 
+    // ── Staff: the authenticator app, never Telegram (owner, 2026-10-13) ───
+    // No session yet, with or without a bot: the code is the next leg.
+    if (door.accountType === 'STAFF') return staffCodeRequired(user, res, loginType);
+
     const bot = await miniAppBot();
-    // ── The staff bootstrap (§33) ──────────────────────────────────────────
-    // No bot yet: a staff account signs in on its password, and says so.
-    if (!bot && door.accountType === 'STAFF') return issueSession(user, res, { amr: ['pwd'] });
 
     // ── Verified yet? ──────────────────────────────────────────────────────
     const link = await db.telegram.getLinkByUserId(user.userId);
@@ -346,12 +350,12 @@ export async function loginHandler(req, res) {
     if (notActive) return send(res, notActive);
 
     // ── Second factor ──────────────────────────────────────────────────────
-    // Always for staff and merchants (the link's CHECK says so); a player's
-    // own switch otherwise.
+    // Always for merchants (the link's CHECK says so); a player's own switch
+    // otherwise.
     if (!link.twoFactor) return sessionFor(door, user, res, { amr: ['pwd'], merchant, staff });
 
     // A Telegram sign-in already approved for THIS account at THIS door — the
-    // staff and merchant "Login with Telegram", finished with the password.
+    // merchant "Login with Telegram", finished with the password.
     // The account is in the redeem's WHERE, so another account's approval
     // spends nothing here.
     const presented = verifyChallenge(challengeToken, door.accountType);
@@ -374,6 +378,103 @@ export async function loginHandler(req, res) {
     });
   } catch (e) {
     return respondError(res, e, 'auth/login', { message: 'Sign-in failed. Please try again.' });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE STAFF AUTHENTICATOR (owner, 2026-10-13)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** How long a staff challenge token lasts: enough to scan a QR and type a code. */
+const STAFF_CHALLENGE_TTL_SECONDS = 15 * 60;
+
+/**
+ * The answer to a right staff password: no session, a token for the next leg,
+ * and which leg — a code from the enrolled app, or enrolling one.
+ */
+async function staffCodeRequired(user, res, loginType) {
+  const { enrolled } = await db.totp.getState(user.userId);
+  const step = enrolled ? 'totp' : 'totp_setup';
+  return res.status(200).json({
+    success: false,               // deliberately NOT a logged-in success
+    twoFactorRequired: true,
+    ...(enrolled ? { totpRequired: true } : { totpSetupRequired: true }),
+    challengeToken: issueChallenge({
+      userId: user.userId, door: 'STAFF', step, loginType,
+      challengeId: `t${crypto.randomBytes(16).toString('hex')}`,
+      ttlSeconds: STAFF_CHALLENGE_TTL_SECONDS,
+    }),
+    message: enrolled
+      ? 'Type the 6-digit code from your authenticator app.'
+      : 'Set up your authenticator app to finish signing in.',
+  });
+}
+
+/**
+ * The account a staff challenge token names, asked every account question
+ * again: between the password and the code an admin may have blocked it or
+ * taken its role away. Answers `{ user }` or `{ refusal }`.
+ */
+async function staffChallengeAccount(req, step) {
+  const challenge = verifyChallenge(req.body?.challengeToken, 'STAFF', step);
+  if (!challenge?.userId) {
+    return {
+      refusal: {
+        status: 401, code: 'TWO_FACTOR_EXPIRED', twoFactorExpired: true,
+        message: 'This sign-in has expired. Please sign in again.',
+      },
+    };
+  }
+  const user = await db.users.getUser(challenge.userId);
+  const refused = accountRefusal(LOGIN_DOOR.STAFF, user, challenge.loginType);
+  return refused ? { refusal: refused } : { user };
+}
+
+/** POST /api/admin/login/totp `{ challengeToken, code }` — the code, then a session. */
+export async function totpLoginHandler(req, res) {
+  try {
+    const { user, refusal: refused } = await staffChallengeAccount(req, 'totp');
+    if (refused) return send(res, refused);
+    const checked = await checkSignInCode(user, req.body?.code);
+    return issueSession(user, res, {
+      amr: ['pwd', 'otp'],
+      extra: checked.method === 'recovery' ? { recoveryCodesLeft: checked.recoveryCodesLeft } : {},
+    });
+  } catch (e) {
+    return respondError(res, e, 'auth/login/totp', { message: 'Sign-in failed. Please try again.' });
+  }
+}
+
+/**
+ * POST /api/admin/login/totp/setup `{ challengeToken }` — the secret and its QR
+ * for an account that has no authenticator yet. 409 once one is enrolled:
+ * only an admin's reset or the break-glass script replaces it.
+ */
+export async function totpSetupHandler(req, res) {
+  try {
+    const { user, refusal: refused } = await staffChallengeAccount(req, 'totp_setup');
+    if (refused) return send(res, refused);
+    const branding = await currentBranding();
+    const issuer = branding?.appName || 'Betting Bazaar'; // schema default: 'Betting Bazaar' (config.spec.js)
+    const { secret, otpauthUri, qrDataUrl } = await beginEnrolment(user, { issuer });
+    return res.json({ success: true, secret, otpauthUri, qrDataUrl });
+  } catch (e) {
+    return respondError(res, e, 'auth/login/totp/setup', { message: 'Could not start the authenticator setup.' });
+  }
+}
+
+/**
+ * POST /api/admin/login/totp/activate `{ challengeToken, code }` — the first
+ * code from the app. Answers a session AND the ten recovery codes, shown once.
+ */
+export async function totpActivateHandler(req, res) {
+  try {
+    const { user, refusal: refused } = await staffChallengeAccount(req, 'totp_setup');
+    if (refused) return send(res, refused);
+    const { recoveryCodes } = await completeEnrolment(user, req.body?.code);
+    return issueSession(user, res, { amr: ['pwd', 'otp'], extra: { recoveryCodes } });
+  } catch (e) {
+    return respondError(res, e, 'auth/login/totp/activate', { message: 'Could not finish the authenticator setup.' });
   }
 }
 
@@ -443,8 +544,8 @@ export async function loginTwoFactorHandler(req, res) {
  * POST {door}/login/telegram `{ initData? }` — "Login with Telegram".
  *
  * Inside Telegram (the Mini App sends its `initData`), the signed string is the
- * proof: a player is signed in on it; staff and merchants are handed a token
- * that their password then completes. Outside Telegram, a challenge is opened
+ * proof: a player is signed in on it; merchants are handed a token that their
+ * password then completes. Outside Telegram, a challenge is opened
  * and the browser is given its Mini App link to open, and polls
  * `/login/telegram/complete` (owner reading 2026-10-07: the Login Widget only
  * serves one domain per bot, and three panels and the app are not one domain).
@@ -502,8 +603,8 @@ export async function telegramLoginHandler(req, res) {
  * POST {door}/login/telegram/complete `{ challengeToken }` — has the Mini App
  * answered a "Login with Telegram" opened outside Telegram?
  *
- * A player is signed in on the approval (spent here, once). Staff and
- * merchants are told their password is next, and the approval is spent only
+ * A player is signed in on the approval (spent here, once). Merchants are
+ * told their password is next, and the approval is spent only
  * when the password arrives with this same token (`loginHandler`), bound in
  * that redeem to the account the password proved.
  */
@@ -566,7 +667,7 @@ router.get('/me', async (req, res) => {
     if (accountClosed(user)) return refuseClosedAccount(res);
     if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
     if (belongsElsewhere(user, ['PLAYER', 'STAFF'])) return refuseWrongPanel(res, user);
-    if (await secondFactorMissing(user.accountType, decoded)) return refuseMissingSecondFactor(res);
+    if (secondFactorMissing(user.accountType, decoded)) return refuseMissingSecondFactor(res);
 
     if (user.isBlocked || user.status === 'BLOCKED')
       return res.status(403).json({ success: false, message: 'Account blocked' });
@@ -587,10 +688,6 @@ router.get('/me', async (req, res) => {
         status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
         lastLogin: user.lastLogin || null, phantomAccess: user.phantomAccess || 'NONE',
       },
-      // The staff bootstrap, re-stated on every load: it ends the moment a bot
-      // is saved, and a panel that read it only at sign-in would keep the
-      // banner up over a session that is about to be refused.
-      ...(user.accountType === 'STAFF' && await staffBootstrap() ? { bootstrap: true } : {}),
     });
   } catch (e) {
     console.error('Auth check error:', e);

@@ -22,9 +22,11 @@ export async function seedAdminAccount() {
     }
 
     // ── The seeded admin is the account with the most to lose ──────────────
-    // It holds the whole platform, no second factor is required of it, and its
-    // password comes from an environment variable somebody set once — the
-    // likeliest place on this platform for `admin123` to live.
+    // It holds the whole platform, and its password comes from an environment
+    // variable somebody set once — the likeliest place on this platform for
+    // `admin123` to live. Its second factor is an authenticator app, enrolled
+    // at its first sign-in (owner, 2026-10-13); its mobile is just the
+    // identifier it signs in with and needs no Telegram behind it.
     //
     // WARNS rather than refuses, and that is deliberate. Refusing to boot on a
     // weak seed password bricks a running deployment on the deploy that adds
@@ -36,8 +38,8 @@ export async function seedAdminAccount() {
     } catch (e) {
       console.warn(
         `⚠️  DEFAULT_ADMIN_PASSWORD is weak: ${e.message}\n`
-        + '    This account has no second factor required of it and holds the entire\n'
-        + '    platform. Change it, and enrol 2FA on it.',
+        + '    This account holds the entire platform; its password is half of its\n'
+        + '    sign-in. Change it.',
       );
     }
 

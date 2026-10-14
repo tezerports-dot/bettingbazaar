@@ -105,7 +105,7 @@ export const STAFF_PERMISSIONS = Object.freeze([
   { key: 'canManageSupportAssistant', group: 'content', label: 'Support assistant',
     description: 'The knowledge base the support assistant answers players from.' },
   { key: 'canManageTelegram', group: 'content', label: 'Telegram setup',
-    description: 'The one Telegram bot and its Mini App, which verify every account and approve staff and merchant sign-ins.' },
+    description: 'The one Telegram bot and its Mini App, which verify every player and merchant account and approve merchant sign-ins.' },
 
   // ── Platform ─────────────────────────────────────────────────────────────
   { key: 'canManageSystemSettings', group: 'platform', label: 'System settings',
@@ -128,15 +128,17 @@ export const ADMIN_ONLY_AREAS = Object.freeze([
     routes: ['GET /sub-admins', 'POST /sub-admins', 'PUT /sub-admins/:subAdminId/permissions', 'DELETE /sub-admins/:subAdminId', 'GET /staff-permissions'] },
   { area: 'Queue managers', why: 'The queue-manager role routes players\' payments; granting it is granting authority.',
     routes: ['GET /queue-managers', 'POST /users/:userId/queue-manager'] },
+  { area: 'Staff authenticators', why: 'Resetting a staff account\'s authenticator lets whoever holds its password enrol a new one; a holder could take over any staff account whose password they know.',
+    routes: ['POST /staff/:userId/reset-authenticator'] },
 ]);
 
 /**
  * Staff routes that ask for NO area, because they are about the caller
- * themselves: every staff account, of any role, may see and move its own
- * Telegram link (Step 3; accountTelegram.js).
+ * themselves: every staff account, of any role, may read its own authenticator
+ * state and replace its own recovery codes (account.admin.routes.js).
  */
 export const SELF_ROUTES = Object.freeze([
-  'GET /account/telegram', 'POST /account/telegram/relink', 'PUT /account/telegram/two-factor',
+  'GET /account/2fa', 'POST /account/2fa/recovery-codes',
 ]);
 
 export const PERMISSION_KEYS = Object.freeze(STAFF_PERMISSIONS.map((p) => p.key));

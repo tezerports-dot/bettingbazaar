@@ -91,7 +91,7 @@ export const merchantAuth = async (req, res, next) => {
     // A merchant session is a password AND the merchant's own Telegram
     // (Step 3); one minted on the password alone is refused here as on every
     // other path that honours a session (auth.middleware.js).
-    if (await secondFactorMissing('MERCHANT', decoded)) return refuseMissingSecondFactor(res);
+    if (secondFactorMissing('MERCHANT', decoded)) return refuseMissingSecondFactor(res);
 
     req.merchant   = merchant;
     req.merchantId = merchant._id;

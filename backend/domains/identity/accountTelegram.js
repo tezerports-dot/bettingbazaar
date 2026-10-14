@@ -3,10 +3,10 @@
  * domains/identity/accountTelegram.js — the signed-in account's own Telegram.
  *
  * One implementation, mounted on each panel behind that panel's own session
- * check (§5, §33.5):
+ * check (§5, §33.5). Players and merchants only: a STAFF account has no
+ * Telegram (owner, 2026-10-13).
  *
  *   player    GET|POST|PUT /api/v1/auth/telegram…       authenticatePlayer
- *   staff     GET|POST|PUT /api/admin/account/telegram…  authenticateStaff
  *   merchant  GET|POST|PUT /api/merchant/telegram…       merchantAuth
  *
  * Every mount leaves the account's id on `req.userId` — the `users` row, which
@@ -40,7 +40,7 @@ function view(link, { available, accountType }) {
     linkedAt: link?.linkedAt ?? null,
     twoFactor: {
       enabled: link ? link.twoFactor : accountType !== 'PLAYER',
-      // Staff and merchants always: the row's own CHECK
+      // Merchants always: the row's own CHECK
       // (`telegram_links_staff_two_factor`) says so.
       required: accountType !== 'PLAYER',
     },
@@ -84,7 +84,7 @@ export async function telegramRelink(req, res) {
  *
  * ON takes effect at once. OFF needs their Telegram's approval (202 and a Mini
  * App link): a stolen password must not be able to switch off the one thing
- * that would have stopped it. Staff and merchants cannot switch it at all.
+ * that would have stopped it. Merchants cannot switch it at all.
  */
 export async function telegramTwoFactor(req, res) {
   try {

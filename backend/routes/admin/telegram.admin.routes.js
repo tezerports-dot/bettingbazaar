@@ -1,11 +1,12 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * routes/admin/telegram.admin.routes.js — the one bot, the staff account's own
- * Telegram link, and the referral batches.
+ * routes/admin/telegram.admin.routes.js — the one bot and the referral batches.
+ * A staff account has no Telegram of its own (owner, 2026-10-13: staff sign in
+ * with an authenticator app, account.admin.routes.js).
  *
  * ── The one bot (Step 3, owner 2026-10-07) ─────────────────────────────────
- * One bot carries the Mini App that verifies every account and approves staff
- * and merchant sign-ins. Telegram suspends gambling bots, so replacing it must
+ * One bot carries the Mini App that verifies every player and merchant account
+ * and approves merchant sign-ins. Telegram suspends gambling bots, so replacing it must
  * be a form an operator fills at 3am, not a deploy: PUT a new token here. Links
  * survive a swap — they key on the PERSON's Telegram id, which belongs to
  * Telegram, not to the bot. The fleet, the channels, the recovery bots and the
@@ -16,25 +17,15 @@
  * proof; referrals (`canManageReferrals`) pay money.
  */
 import express from 'express';
-import { authenticate, authenticateStaff, hasPermission } from '../../domains/identity/auth.middleware.js';
+import { authenticate, hasPermission } from '../../domains/identity/auth.middleware.js';
 import { encryptField } from '../../domains/identity/fieldCrypto.util.js';
 import { verifyBotToken, invalidateBotCache } from '../../domains/telegram/telegramClient.js';
-import { telegramStatus, telegramRelink, telegramTwoFactor } from '../../domains/identity/accountTelegram.js';
 import { db } from '#db';
 import { disburse, programmeStats } from '../../domains/referral/referral.service.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
 import { serverError, respondError, refusal } from '../../shared/httpError.js';
 
 const router = express.Router();
-
-// ═══════════════════════════════════════════════════════════════════════════
-// THE STAFF ACCOUNT'S OWN TELEGRAM (accountTelegram.js; SELF_ROUTES)
-// ═══════════════════════════════════════════════════════════════════════════
-// About the caller themselves, so no area: every staff account, of any role,
-// may see and move its own link. `authenticateStaff` admits STAFF rows only.
-router.get('/account/telegram', authenticateStaff, telegramStatus);
-router.post('/account/telegram/relink', authenticateStaff, telegramRelink);
-router.put('/account/telegram/two-factor', authenticateStaff, telegramTwoFactor);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // THE ONE BOT
