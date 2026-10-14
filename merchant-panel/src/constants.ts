@@ -23,15 +23,10 @@ export const API_BASE_URL = getAPIBaseURL();
 export const ENDPOINTS = {
   AUTH: {
     // FIX 2: Point to merchant-specific endpoints that enforce merchant status checks
-    LOGIN: '/api/merchant/auth/login',
-    LOGIN_2FA: '/api/merchant/auth/login/2fa',
-    // Telegram sign-in legs (backend/domains/identity/loginDoors.js, merchant.routes.js).
+    // "Continue with Telegram", the only way in (backend/domains/identity/loginDoors.js, merchant.routes.js).
     LOGIN_TELEGRAM: '/api/merchant/auth/login/telegram',
     LOGIN_TELEGRAM_COMPLETE: '/api/merchant/auth/login/telegram/complete',
-    // The signed-in merchant's Telegram link (accountTelegram.js).
-    TELEGRAM: '/api/merchant/telegram',
-    TELEGRAM_RELINK: '/api/merchant/telegram/relink',
-    SIGNUP: '/api/merchant/auth/signup',
+    LOGIN_TELEGRAM_TICKET: '/api/merchant/auth/login/telegram/ticket',
     PROFILE: '/api/merchant/profile',
     STATUS: '/api/merchant/online-status',
     PREFERENCES: '/api/merchant/preferences',

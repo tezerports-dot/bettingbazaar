@@ -15,8 +15,6 @@ import {
   DisputeThreadMessage,
   TelegramLink,
   MiniAppSetup,
-  TelegramStatus,
-  SignupResponse,
   MerchantAccountOverview,
   PaymentAccount,
   PaymentAccountKind,
@@ -194,107 +192,60 @@ const keepSession = (data: AuthResponse): void => {
   if (merchant) setMerchantData(data.actor ? { ...merchant, actor: data.actor } : merchant);
 };
 
-/** A refusal `request()` threw, with the body the server sent. */
-type Refusal = Error & { status?: number; data?: { code?: string } & Partial<AuthResponse> };
+/** How an approved "Continue with Telegram" comes back (backend `DELIVERY`, repositories/telegram.js). */
+export type TelegramDelivery = 'MATCH' | 'HANDOFF';
+
+/** An opened "Continue with Telegram": the link, and for a MATCH the number to show. */
+export interface TelegramSignIn {
+  challengeToken: string;
+  telegram: TelegramLink | null;
+  delivery: TelegramDelivery;
+  matchNumber: number | null;
+  message?: string;
+}
 
 /**
- * The password leg. Answers a session (kept here), or a Telegram step the
- * merchant owes before one: `twoFactorRequired` (200, approve this sign-in)
- * or 403 `TELEGRAM_VERIFICATION_REQUIRED` (verify the mobile first). Neither
- * is stored: the challenge is not a session and never reaches the
- * Authorization header. `challengeToken` is the approved "Login with
- * Telegram" this password completes. Every other refusal is thrown as
- * `request()` threw it, status and body included.
+ * "Continue with Telegram", the only way in (owner, 2026-10-14): opens a
+ * sign-in whose link the merchant opens. No bot set up is thrown as the
+ * server's sentence (503 TELEGRAM_UNAVAILABLE).
  */
-export const merchantLogin = async (
-  mobile: string, password: string, challengeToken?: string,
-): Promise<AuthResponse> => {
-  let data: AuthResponse;
-  try {
-    data = await request<AuthResponse>(ENDPOINTS.AUTH.LOGIN, {
-      method: 'POST',
-      body: JSON.stringify(challengeToken ? { mobile, password, challengeToken } : { mobile, password }),
-    });
-  } catch (error) {
-    const refused = error as Refusal;
-    if (refused.status === 403 && refused.data?.code === 'TELEGRAM_VERIFICATION_REQUIRED') {
-      return { ...(refused.data as AuthResponse), success: false, verificationRequired: true };
-    }
-    throw error;
-  }
-  if (data.twoFactorRequired && data.challengeToken) return data;
-  keepSession(data);
-  return data;
-};
+export const startTelegramSignIn = async (delivery: TelegramDelivery): Promise<TelegramSignIn> =>
+  request<TelegramSignIn>(ENDPOINTS.AUTH.LOGIN_TELEGRAM, {
+    method: 'POST',
+    body: JSON.stringify({ delivery }),
+  });
 
 /**
- * One poll of a VERIFY or LOGIN challenge (`/login/2fa`). `null` while
- * Telegram has not answered (202); the session, kept, once it has. A denial,
- * an expiry or an account refusal (403 MERCHANT_NOT_ACTIVE, with `verified`
- * when the mobile was just verified) is thrown with its status and body.
+ * One poll of a "Continue with Telegram". `null` while Telegram has not
+ * answered (202); the session, kept, once a MATCH is approved; `'handedOff'`
+ * when Verify sent the session to the device Telegram opened. A denial, an
+ * expiry or an account refusal (403 MERCHANT_NOT_ACTIVE: an application an
+ * admin has not approved) is thrown with its status and body.
  */
-export const pollLoginChallenge = async (challengeToken: string): Promise<AuthResponse | null> => {
-  const data = await request<AuthResponse & { pending?: boolean }>(ENDPOINTS.AUTH.LOGIN_2FA, {
+export const pollTelegramSignIn = async (challengeToken: string): Promise<AuthResponse | 'handedOff' | null> => {
+  const data = await request<AuthResponse & { pending?: boolean; handedOff?: boolean }>(ENDPOINTS.AUTH.LOGIN_TELEGRAM_COMPLETE, {
     method: 'POST',
     body: JSON.stringify({ challengeToken }),
   });
+  if (data.handedOff) return 'handedOff';
   if (data.pending || !data.token) return null;
   keepSession(data);
   return data;
 };
 
-/** "Login with Telegram", opened outside Telegram: a challenge and its link. */
-export const startTelegramLogin = async (): Promise<{ challengeToken: string; telegram: TelegramLink | null; message?: string }> =>
-  request<{ challengeToken: string; telegram: TelegramLink | null; message?: string }>(ENDPOINTS.AUTH.LOGIN_TELEGRAM, {
+/** The one-time ticket the Mini App opened this panel with (`#/tg/<ticket>`), exchanged once for the session. */
+export const redeemTelegramTicket = async (ticket: string): Promise<AuthResponse> => {
+  const data = await request<AuthResponse>(ENDPOINTS.AUTH.LOGIN_TELEGRAM_TICKET, {
     method: 'POST',
-    body: JSON.stringify({}),
+    body: JSON.stringify({ ticket }),
   });
-
-/**
- * One poll of a "Login with Telegram": `null` while pending (202), `true` once
- * Telegram approved and the password is next (`passwordRequired`). Denied or
- * expired is thrown.
- */
-export const pollTelegramLogin = async (challengeToken: string): Promise<true | null> => {
-  const data = await request<{ passwordRequired?: boolean; pending?: boolean }>(ENDPOINTS.AUTH.LOGIN_TELEGRAM_COMPLETE, {
-    method: 'POST',
-    body: JSON.stringify({ challengeToken }),
-  });
-  return data.passwordRequired ? true : null;
+  keepSession(data);
+  return data;
 };
 
-/** Whether the platform's bot is set up, and the merchant "Forgot password" link. Public. */
+/** Whether the platform's bot is set up. Public. */
 export const getMiniAppSetup = async (): Promise<MiniAppSetup> =>
   request<MiniAppSetup>('/api/telegram/mini-app?panel=MERCHANT');
-
-/** The signed-in merchant's Telegram link (Profile). */
-export const getTelegramStatus = async (): Promise<TelegramStatus> =>
-  request<TelegramStatus>(ENDPOINTS.AUTH.TELEGRAM);
-
-/** Move this account to another Telegram account: opened there, then poll the status. */
-export const relinkTelegram = async (): Promise<{ telegram: TelegramLink | null; message?: string }> =>
-  request<{ telegram: TelegramLink | null; message?: string }>(ENDPOINTS.AUTH.TELEGRAM_RELINK, {
-    method: 'POST',
-    body: JSON.stringify({}),
-  });
-
-/**
- * A merchant's application. The account is created now and waits for an
- * admin; the mobile is verified in Telegram straight away (`telegram`, polled
- * at `/login/2fa`), or at the first sign-in when no bot is set up
- * (`verificationAvailable: false`). Refusals are thrown with status and body.
- */
-export const merchantSignup = async (fields: {
-  username: string;
-  mobile: string;
-  email?: string;
-  password: string;
-  confirmPassword: string;
-}): Promise<SignupResponse> =>
-  request<SignupResponse>(ENDPOINTS.AUTH.SIGNUP, {
-    method: 'POST',
-    body: JSON.stringify(fields),
-  });
 
 /** Sign out and reload at the sign-in form; `reason` is the server's refusal, shown there once. */
 export const logout = (reason?: string | null): void => {
@@ -761,7 +712,7 @@ export const removePaymentAccount = async (accountId: string): Promise<void> => 
 };
 
 export const addSubMember = async (input: {
-  mobile: string; password: string; name: string; roles: StaffRole[];
+  mobile: string; name: string; roles: StaffRole[];
 }): Promise<SubMember> =>
   (await accountRequest<{ staff: SubMember }, []>(ENDPOINTS.ACCOUNT.ADD_STAFF, [], input)).staff;
 
@@ -838,14 +789,10 @@ export const api = {
   // Auth
   isAuthenticated,
   getCurrentMerchant,
-  merchantLogin,
-  pollLoginChallenge,
-  startTelegramLogin,
-  pollTelegramLogin,
+  startTelegramSignIn,
+  pollTelegramSignIn,
+  redeemTelegramTicket,
   getMiniAppSetup,
-  getTelegramStatus,
-  relinkTelegram,
-  merchantSignup,
   logout,
   signedOutReason,
   getMerchantProfile,

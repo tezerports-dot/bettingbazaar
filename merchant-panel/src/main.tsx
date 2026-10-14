@@ -5,11 +5,15 @@ import { BrowserRouter } from 'react-router';
 import { Toaster } from 'react-hot-toast';
 import App from './App';
 import { applyTheme, readStoredTheme } from './theme';
+import { captureTelegramTicket } from './services/telegramTicket';
 import './index.css';
 
 // Set the theme attribute before the first paint so the panel never flashes the
 // wrong palette while React mounts.
 applyTheme(readStoredTheme());
+
+// A ticket Verify opened the panel with leaves the address bar before anything renders.
+captureTelegramTicket();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <BrowserRouter basename="/merchant">

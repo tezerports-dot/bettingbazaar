@@ -2,20 +2,13 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import toast from 'react-hot-toast';
-import { MerchantProfile, LoginCredentials, AuthResponse, TelegramLink } from '../types';
+import { MerchantProfile, AuthResponse } from '../types';
 import { api } from './api';
 
 interface AuthContextType {
   merchant: MerchantProfile | null;
   loading: boolean;
-  /**
-   * The password leg. Resolves `null` once signed in (and navigates), or the
-   * Telegram step still owed: approve this sign-in, or verify the mobile.
-   * The step is held by the sign-in screen in React state ONLY, never
-   * localStorage: it is a five-minute half-authenticated credential.
-   */
-  login: (credentials: LoginCredentials) => Promise<TelegramChallenge | null>;
-  /** A session a Telegram poll answered with (`/login/2fa`): sign in with it. */
+  /** A session "Continue with Telegram" answered with (the poll, or the ticket): sign in with it. */
   acceptSession: (response: AuthResponse) => void;
   logout: () => void;
   refreshProfile: () => Promise<void>;
@@ -42,15 +35,6 @@ interface AuthContextType {
 const serverRefusal = (err: any): string | null =>
   err?.data && typeof err.data === 'object' && err.data.success === false && typeof err.data.message === 'string'
     ? err.data.message : null;
-
-/** What the sign-in screen waits on in Telegram. */
-export interface TelegramChallenge {
-  challengeToken: string;
-  telegram: TelegramLink | null;
-  message: string;
-  /** True: the mobile is being verified (403 TELEGRAM_VERIFICATION_REQUIRED); false: this sign-in is being approved. */
-  verify: boolean;
-}
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -164,29 +148,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }).catch(() => { /* the next screen's reads say what is wrong */ });
   };
 
-  const login = async (credentials: LoginCredentials): Promise<TelegramChallenge | null> => {
-    try {
-      setLoading(true);
-      const response = await api.merchantLogin(credentials.mobile, credentials.password, credentials.challengeToken);
-      // Half-done: the password was accepted and Telegram is owed. No
-      // session and no navigation; the screen shows the Telegram step.
-      if ((response.twoFactorRequired || response.verificationRequired) && response.challengeToken) {
-        return {
-          challengeToken: response.challengeToken,
-          telegram: response.telegram ?? null,
-          message: response.message || '',
-          verify: Boolean(response.verificationRequired),
-        };
-      }
-      acceptSession(response);
-      return null;
-    } finally {
-      // A refusal is thrown to the sign-in screen, which shows it in the
-      // server's words (role="alert").
-      setLoading(false);
-    }
-  };
-
   const logout = () => {
     setMerchant(null);
     api.logout();
@@ -215,7 +176,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   return (
-    <AuthContext.Provider value={{ merchant, loading, login, acceptSession, logout, refreshProfile, unreachable }}>
+    <AuthContext.Provider value={{ merchant, loading, acceptSession, logout, refreshProfile, unreachable }}>
       {children}
     </AuthContext.Provider>
   );
