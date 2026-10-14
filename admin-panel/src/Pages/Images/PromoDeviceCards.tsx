@@ -27,13 +27,13 @@ export interface PromoDevice {
 }
 
 export interface HomeCard {
-  promoId: string; title: string; linkUrl: string | null; priority: number;
+  promoId: string; title: string; description: string; linkUrl: string | null; priority: number;
   status: 'PUBLISHED' | 'DRAFT' | 'ARCHIVED'; images: Record<string, string>;
 }
 
-interface Draft { promoId: string | null; title: string; linkUrl: string; priority: number; live: boolean; images: Record<string, string> }
+interface Draft { promoId: string | null; title: string; description: string; linkUrl: string; priority: number; live: boolean; images: Record<string, string> }
 
-const EMPTY: Draft = { promoId: null, title: '', linkUrl: '', priority: 0, live: true, images: {} };
+const EMPTY: Draft = { promoId: null, title: '', description: '', linkUrl: '', priority: 0, live: true, images: {} };
 
 /** How wide each screen's preview is drawn on this page, in px. */
 const PREVIEW_WIDTH: Record<string, number> = { LAPTOP: 300, TABLET: 560, PHONE: 390, SMALL_PHONE: 340 };
@@ -68,7 +68,7 @@ export const PromoDeviceCards: React.FC = () => {
 
   const edit = (c: HomeCard) => {
     setError('');
-    setDraft({ promoId: c.promoId, title: c.title || '', linkUrl: c.linkUrl || '', priority: c.priority || 0, live: c.status === 'PUBLISHED', images: { ...c.images } });
+    setDraft({ promoId: c.promoId, title: c.title || '', description: c.description || '', linkUrl: c.linkUrl || '', priority: c.priority || 0, live: c.status === 'PUBLISHED', images: { ...c.images } });
   };
 
   const save = async () => {
@@ -77,7 +77,7 @@ export const PromoDeviceCards: React.FC = () => {
     // Every screen, so a removed image is sent as '' and removed.
     const images = Object.fromEntries(devices.map((d) => [d.key, draft.images[d.key] || '']));
     const body = {
-      title: draft.title.trim(), linkUrl: draft.linkUrl.trim(), priority: Number(draft.priority) || 0,
+      title: draft.title.trim(), description: draft.description.trim(), linkUrl: draft.linkUrl.trim(), priority: Number(draft.priority) || 0,
       status: draft.live ? 'PUBLISHED' : 'DRAFT', images,
     };
     try {
@@ -144,18 +144,25 @@ export const PromoDeviceCards: React.FC = () => {
           </div>
           <div className="grid gap-3 md:grid-cols-3">
             <div>
-              <label className="label" htmlFor="card-title">Name (for you, and read aloud to screen readers)</label>
+              <label className="label" htmlFor="card-title">Title (the heading of its page, and read aloud to screen readers)</label>
               <input id="card-title" className="input" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="Diwali offer" />
             </div>
             <div>
-              <label className="label" htmlFor="card-link">Opens when tapped (optional)</label>
+              <label className="label" htmlFor="card-link">Button on its page (optional)</label>
               <input id="card-link" className="input" value={draft.linkUrl} onChange={(e) => setDraft({ ...draft, linkUrl: e.target.value })} placeholder="/referrals or https://t.me/yourchannel" />
-              <p className="text-xs text-gray-500 mt-1">A page of the app (/referrals, /wallet, /promo) or a full https:// link, which opens in a new tab.</p>
+              <p className="text-xs text-gray-500 mt-1">Leave empty for none. A page of the app (/referrals, /wallet, /promo) or a full https:// link, which opens in a new tab.</p>
             </div>
             <div>
               <label className="label" htmlFor="card-priority">Order (higher shows first)</label>
               <input id="card-priority" type="number" className="input" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: Number(e.target.value) })} />
             </div>
+          </div>
+          <div>
+            <label className="label" htmlFor="card-details">Details (optional)</label>
+            <textarea id="card-details" className="input min-h-[90px]" value={draft.description}
+              onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+              placeholder="Deposit ₹1,000 or more this weekend and get a bonus. Offer ends Sunday midnight." />
+            <p className="text-xs text-gray-500 mt-1">A tapped card opens its own page in the player app: the card's image, its title and these details, and the button above if it has one.</p>
           </div>
           <div className="grid gap-4 xl:grid-cols-2">
             {devices.map((d) => (
@@ -193,7 +200,7 @@ export const PromoDeviceCards: React.FC = () => {
                   <span className="font-semibold truncate">{c.title || 'Untitled card'}</span>
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${live ? 'bg-green-500/20 text-green-300' : 'bg-dark-600 text-gray-400'}`}>{live ? 'SHOWING' : 'HIDDEN'}</span>
                 </div>
-                <div className="text-xs text-gray-500 mt-1">Order {c.priority}{c.linkUrl ? ` · opens ${c.linkUrl}` : ' · not clickable'}</div>
+                <div className="text-xs text-gray-500 mt-1">Order {c.priority}{' · opens its page'}{c.linkUrl ? `, button to ${c.linkUrl}` : ''}</div>
                 <div className="flex flex-wrap gap-3 mt-3">
                   {devices.map((d) => {
                     const url = c.images?.[d.key];

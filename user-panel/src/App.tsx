@@ -29,6 +29,7 @@ import ProfilePage from './pages/ProfilePage';
 import HistoryPage from './pages/HistoryPage';
 import ResultsPage from './pages/ResultsPage';
 import PromoPage   from './pages/PromoPage';
+import PromoCardPage from './pages/PromoCardPage';
 import RulesPage   from './pages/RulesPage';
 import FaqPage     from './pages/FaqPage';
 import MyBetsPage  from './pages/MyBetsPage';
@@ -364,6 +365,8 @@ const App: React.FC = () => (
                           {/* Where Verify in the Mini App sends a player: the one-time ticket, exchanged. */}
                           <Route path="/tg/:ticket"      element={<TelegramTicketPage />} />
                           <Route path="/promo"           element={<PromoPage />} />
+                          {/* A tapped home promo card: its image, details and optional link. */}
+                          <Route path="/card/:promoId"   element={<PromoCardPage />} />
                           <Route path="/rules"           element={<RulesPage />} />
                           <Route path="/faq"             element={<FaqPage />} />
                           <Route path="/support"         element={<SupportPage />} />

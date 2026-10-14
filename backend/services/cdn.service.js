@@ -102,6 +102,11 @@ const BLOCKED_EXTENSIONS = new Set([
  *  4. File size is within the per-MIME limit
  *  5. Filename contains no path-traversal sequences
  */
+/** A file this platform will not store: the caller's to fix, so a 400 that says why. */
+function uploadRefused(message) {
+  return Object.assign(new Error(message), { status: 400, code: 'UPLOAD_REFUSED' });
+}
+
 function validateUpload(fileName, contentType, fileSize, category = '') {
   // ── 1. Normalise and check MIME type ─────────────────────────────────────
   // Lowercase and strip any parameters (e.g. "image/jpeg; charset=utf-8")
@@ -110,7 +115,7 @@ function validateUpload(fileName, contentType, fileSize, category = '') {
   const mimeRule = mimeRules[mime];
   if (!mimeRule) {
     const allowedTypes = Object.keys(mimeRules).map((allowedMime) => allowedMime.replace('image/', '').toUpperCase()).join(', ');
-    throw new Error(
+    throw uploadRefused(
       `File type "${mime}" is not allowed. ` +
       `Allowed: ${allowedTypes}`
     );
@@ -120,19 +125,19 @@ function validateUpload(fileName, contentType, fileSize, category = '') {
   const rawName = (fileName || '').trim();
   const lastDot = rawName.lastIndexOf('.');
   if (lastDot === -1 || lastDot === rawName.length - 1) {
-    throw new Error('File must have a recognised extension (e.g. .jpg, .png, .pdf)');
+    throw uploadRefused('File must have a recognised extension (e.g. .jpg, .png, .pdf)');
   }
   const ext = rawName.slice(lastDot).toLowerCase();
 
   // ── 3. Hard-block dangerous extensions ───────────────────────────────────
   if (BLOCKED_EXTENSIONS.has(ext)) {
-    throw new Error(`Extension "${ext}" is not permitted`);
+    throw uploadRefused(`Extension "${ext}" is not permitted`);
   }
 
   // ── 4. Extension must match declared MIME type ────────────────────────────
   // Prevents "rename shell.php to photo.jpg, claim image/jpeg"
   if (!mimeRule.exts.includes(ext)) {
-    throw new Error(
+    throw uploadRefused(
       `Extension "${ext}" does not match declared type "${mime}". ` +
       `Expected: ${mimeRule.exts.join(', ')}`
     );
@@ -142,16 +147,16 @@ function validateUpload(fileName, contentType, fileSize, category = '') {
   const size = Number(fileSize);
   if (!size || size <= 0 || size > mimeRule.maxSize) {
     const mb = (mimeRule.maxSize / (1024 * 1024)).toFixed(0);
-    throw new Error(`File size must be > 0 and ≤ ${mb} MB for ${mime}`);
+    throw uploadRefused(`File size must be > 0 and ≤ ${mb} MB for ${mime}`);
   }
 
   // ── 6. Filename safety ────────────────────────────────────────────────────
   if (rawName.includes('..') || /[/\\]/.test(rawName)) {
-    throw new Error('Invalid filename — path separators not allowed');
+    throw uploadRefused('Invalid filename — path separators not allowed');
   }
   // Allow only safe characters: alphanumeric, dash, underscore, dot, space
   if (!/^[\w\s.\-()[\]]+$/i.test(rawName)) {
-    throw new Error('Filename contains invalid characters');
+    throw uploadRefused('Filename contains invalid characters');
   }
 
   return true;
@@ -189,6 +194,10 @@ export async function generatePresignedUploadUrl({
   try {
     // Validate: MIME + extension cross-check + size + filename safety
     validateUpload(fileName, contentType, fileSize, category);
+
+    // The file is acceptable; can it be stored? Said by name, so the operator
+    // knows which setting to fill instead of reading "upload failed".
+    assertStorageConfigured();
 
     // Generate secure file key — extension derived from MIME, not raw filename
     const fileKey = generateSecureFileName(fileName, contentType, category);
@@ -276,6 +285,26 @@ export async function generatePresignedDownloadUrl(fileKey) {
  * endpoint). Used by callers that must gracefully fall back to local storage
  * when object storage isn't set up (portability: runs with or without S3).
  */
+/**
+ * The storage settings an upload needs that this server does not have, by
+ * environment variable name: the bucket and its keys to take the file, and
+ * CDN_URL to serve it back. Empty when uploads can work.
+ */
+export function missingStorageSettings() {
+  return ['S3_BUCKET_NAME', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'S3_ENDPOINT', 'CDN_URL']
+    .filter((name) => !process.env[name]);
+}
+
+/** Refuses an upload this server cannot store, naming what is missing (503). */
+export function assertStorageConfigured() {
+  const missing = missingStorageSettings();
+  if (missing.length === 0) return;
+  throw Object.assign(
+    new Error(`File storage is not set up on the server: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} missing. Set ${missing.length === 1 ? 'it' : 'them'} in the server environment and restart.`),
+    { status: 503, code: 'STORAGE_NOT_CONFIGURED' },
+  );
+}
+
 export function isS3Configured() {
   return Boolean(
     process.env.S3_BUCKET_NAME &&

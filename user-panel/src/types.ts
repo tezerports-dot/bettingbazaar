@@ -235,6 +235,8 @@ export interface PromoDevice {
 export interface HomePromoCard {
   promoId: string;
   title: string;
+  /** Shown on the card's own page (`/card/:promoId`) when it is tapped. */
+  description?: string;
   linkUrl: string | null;
   images: Record<string, string>;
 }

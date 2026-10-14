@@ -624,12 +624,23 @@ export class RealBackend implements Backend {
     });
     if (!urlRes.success || !urlRes.uploadUrl) throw new Error('No upload URL returned');
 
-    const s3Res = await secureFetch(urlRes.uploadUrl, {
-      method:  'PUT',
-      headers: { 'Content-Type': file.type },
-      body:    file
-    });
-    if (!s3Res.ok) throw new Error(`S3 upload failed: ${s3Res.status}`);
+    // A short reason a player can pass on to support: the storage's own error
+    // code when it answers, or that it could not be reached (its upload rules
+    // or address) when it does not.
+    let s3Res: Response;
+    try {
+      s3Res = await secureFetch(urlRes.uploadUrl, {
+        method:  'PUT',
+        headers: { 'Content-Type': file.type },
+        body:    file
+      });
+    } catch {
+      throw new Error('The file storage could not be reached (its upload rules or address are not set up for this site). Please tell support.');
+    }
+    if (!s3Res.ok) {
+      const code = /<Code>([^<]+)<\/Code>/.exec(await s3Res.text().catch(() => ''))?.[1];
+      throw new Error(`The file storage refused the upload (HTTP ${s3Res.status}${code ? `, ${code}` : ''}). Please tell support.`);
+    }
 
     await this.request('/user/profile/picture/confirm-upload', {
       method: 'POST',

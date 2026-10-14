@@ -5,8 +5,8 @@
  * to the leaves of `SYSTEM_CONFIG_SPEC`.
  */
 import { describe, it, expect } from 'vitest';
-import { SYSTEM_CONFIG_SPEC } from '../../../database/spec/config.spec.js';
-import { SYSTEM_CONFIG_HELP, leafPaths } from '../../../database/spec/configHelp.js';
+import { SYSTEM_CONFIG_SPEC } from '#db/spec/config.spec.js';
+import { SYSTEM_CONFIG_HELP, leafPaths } from '#db/spec/configHelp.js';
 
 describe('system setting help', () => {
   const leaves = leafPaths(SYSTEM_CONFIG_SPEC);

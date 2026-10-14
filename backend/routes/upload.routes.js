@@ -146,8 +146,8 @@ router.post('/user/profile/picture/upload-url', authenticatePlayer, async (req, 
     });
     res.json({ success: true, ...uploadData });
   } catch (err) {
-    console.error('Profile picture upload-url error:', err.message);
-    res.status(503).json({ success: false, message: 'CDN storage is not configured. File upload is unavailable.' });
+    // A refused file or missing storage settings are said as written (cdn.service.js).
+    return respondError(res, err, 'POST /user/profile/picture/upload-url', { message: 'Could not prepare the upload. Please try again.' });
   }
 });
 

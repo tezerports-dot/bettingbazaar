@@ -243,12 +243,10 @@ router.post('/promo/upload-url', authenticate, hasPermission('canManageContent')
     });
     res.json({ success: true, ...uploadData });
   } catch (error) {
-    // validateUpload throws on a refused MIME/extension — a client error, not a
-    // server one; anything else means S3 is not configured.
-    const refused = /mime|extension|file type|size|filename/i.test(error.message || '');
-    if (refused) return res.status(400).json({ success: false, message: error.message });
-    console.error('Promo upload-url error:', error.message);
-    res.status(503).json({ success: false, message: 'CDN storage is not configured. File upload is unavailable.' });
+    // A refused file (400 UPLOAD_REFUSED) or storage the server lacks (503
+    // STORAGE_NOT_CONFIGURED, naming the missing settings) is said as written;
+    // anything else is ours.
+    return respondError(res, error, 'POST /promo/upload-url', { message: 'Could not prepare the upload. Please try again.' });
   }
 });
 
@@ -289,9 +287,21 @@ router.get('/promo', authenticate, hasPermission('canManageContent'), async (req
   }
 });
 
+/**
+ * A card's details, shown on its own page in the player app when tapped
+ * (owner, 2026-10-14). Plain text; refused past `PROMO_DETAILS_MAX` with a
+ * message the admin can act on.
+ */
+const PROMO_DETAILS_MAX = 1000;
+function promoDetailsTooLong(description) {
+  return description !== undefined && String(description ?? '').length > PROMO_DETAILS_MAX;
+}
+const PROMO_DETAILS_REFUSAL = `Details can be at most ${PROMO_DETAILS_MAX} characters.`;
+
 router.post('/promo', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { title, description, location, mediaType, fileUrl, priority, status } = req.body;
+    if (promoDetailsTooLong(description)) return res.status(400).json({ success: false, message: PROMO_DETAILS_REFUSAL });
     const resolved = promoStatus(status) ?? 'DRAFT';
     const media = String(mediaType || 'IMAGE').toUpperCase();
     const where = String(location || 'HOME').toUpperCase();
@@ -328,7 +338,7 @@ router.post('/promo', authenticate, hasPermission('canManageContent'), async (re
     catch (e) { return res.status(400).json({ success: false, message: e.message }); }
 
     const promo = await db.content.upsertPromo({
-      title, description, linkUrl, images,
+      title, description: description ?? '', linkUrl, images,
       location: where,
       mediaType: media, fileUrl: safeFileUrl,
       priority: Number(priority) || 0,
@@ -348,7 +358,8 @@ router.put('/promo/:id', authenticate, hasPermission('canManageContent'), async 
     const { title, description, location, mediaType, fileUrl, priority, status } = req.body;
     const patch = {};
     if (title !== undefined)       patch.title = String(title);
-    if (description !== undefined) patch.description = String(description);
+    if (promoDetailsTooLong(description)) return res.status(400).json({ success: false, message: PROMO_DETAILS_REFUSAL });
+    if (description !== undefined) patch.description = String(description ?? '');
     // A promo slide is rendered to every player. Stored raw, this accepted a
     // link to any site — and by the permission gap recorded as F-001 every
     // sub-admin can write one, whatever their keys say. Empty clears it.

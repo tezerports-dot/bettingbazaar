@@ -24,12 +24,13 @@ import { mountRouter, actor, as, request } from './_harness.js';
 const describePg = pgConfigured() ? describe : describe.skip;
 
 describePg('promo upload-url route', () => {
-  let app; let admin; let plainUser;
+  let app; let brandingApp; let admin; let plainUser;
 
   beforeAll(async () => {
     await applySchema();
     const mod = await import('../../domains/cms/content.admin.routes.js');
     app = mountRouter(mod.default);
+    brandingApp = mountRouter((await import('../../routes/admin/branding.admin.routes.js')).default);
     admin = await actor({ isAdmin: true, roles: ['admin'] });
     plainUser = await actor({});
   }, 60_000);
@@ -92,6 +93,44 @@ describePg('promo upload-url route', () => {
     if (res.status === 200) {
       expect(res.body).toHaveProperty('uploadUrl');
       expect(res.body).toHaveProperty('cdnUrl');
+    } else {
+      // The admin is told which server settings are missing, not just "failed".
+      expect(res.body.code).toBe('STORAGE_NOT_CONFIGURED');
+      expect(res.body.message).toMatch(/S3_BUCKET_NAME|S3_ACCESS_KEY|S3_SECRET_KEY|S3_ENDPOINT|CDN_URL/);
+    }
+  });
+
+  it('names the missing storage settings on the branding presign too', async () => {
+    // The card images (Delhi, Bombay) go through this path; it used to answer
+    // a bare 500 "Failed to generate upload URL" whatever the cause.
+    const res = await as(brandingApp, admin).post('/branding/upload-url').send({ ...png, category: 'card' });
+    expect([200, 503]).toContain(res.status);
+    if (res.status === 503) expect(res.body.code).toBe('STORAGE_NOT_CONFIGURED');
+  });
+
+  it('says why a file is refused on the branding presign', async () => {
+    const res = await as(brandingApp, admin).post('/branding/upload-url')
+      .send({ fileName: 'payload.php', contentType: 'image/png', fileSize: 1000, category: 'card' });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('UPLOAD_REFUSED');
+    expect(res.body.message).toMatch(/\.php/);
+  });
+
+  it("keeps a home card's details for its page, and refuses details past 1,000 characters", async () => {
+    const tooLong = await as(app, admin).post('/promo').send({ title: 'Long', description: 'x'.repeat(1001), location: 'HOME' });
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.message).toMatch(/1000 characters/);
+
+    const made = await as(app, admin).post('/promo').send({ title: 'Diwali', description: 'Deposit this weekend.', location: 'HOME' });
+    expect(made.status, JSON.stringify(made.body)).toBe(200);
+    const id = made.body.promo.promoId;
+    try {
+      expect(made.body.promo.description).toBe('Deposit this weekend.');
+      const edited = await as(app, admin).put(`/promo/${id}`).send({ description: 'Ends Sunday.' });
+      expect(edited.body.promo.description).toBe('Ends Sunday.');
+      expect((await as(app, admin).put(`/promo/${id}`).send({ description: 'y'.repeat(1001) })).status).toBe(400);
+    } finally {
+      await as(app, admin).delete(`/promo/${id}`);
     }
   });
 });

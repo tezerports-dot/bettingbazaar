@@ -251,7 +251,8 @@ router.post('/branding/upload-url', authenticate, hasPermission('canManageConten
       expiresAt: result.expiresAt,
     });
   } catch (error) {
-    return serverError(res, error, 'POST /branding/upload-url', 'Failed to generate upload URL');
+    // A refused file or missing storage settings are said as written (cdn.service.js).
+    return respondError(res, error, 'POST /branding/upload-url', { message: 'Failed to generate upload URL' });
   }
 });
 

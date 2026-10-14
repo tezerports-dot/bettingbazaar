@@ -348,6 +348,25 @@ export const confirmPayment = async (
 };
 
 /**
+ * PUT a file to a presigned storage URL, or throw a short reason: the storage's
+ * own error code when it answers, or that it could not be reached (its CORS
+ * rules or address) when it does not. Written for a person to pass on to
+ * support, who fixes the storage setting it names.
+ */
+async function putToStorage(uploadUrl: string, file: File): Promise<void> {
+  let put: Response;
+  try {
+    put = await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
+  } catch {
+    throw new Error('The file storage could not be reached (its upload rules or address are not set up for this site). Please tell support.');
+  }
+  if (put.ok) return;
+  const xml = await put.text().catch(() => '');
+  const code = /<Code>([^<]+)<\/Code>/.exec(xml)?.[1];
+  throw new Error(`The file storage refused the upload (HTTP ${put.status}${code ? `, ${code}` : ''}). Please tell support.`);
+}
+
+/**
  * Reject an order the player says they paid, because the money never arrived.
  *
  * Different from `rejectOrder` below, which declines an order BEFORE payment
@@ -373,10 +392,7 @@ export const rejectPaidOrder = async (
     throw new Error('Could not prepare the proof upload');
   }
 
-  const put = await fetch(presigned.uploadUrl, {
-    method: 'PUT', body: proof, headers: { 'Content-Type': proof.type },
-  });
-  if (!put.ok) throw new Error('The proof image failed to upload');
+  await putToStorage(presigned.uploadUrl, proof);
 
   const data = await request<any>(ENDPOINTS.ORDERS.REJECT_PAID(orderId), {
     method: 'POST',

@@ -162,14 +162,14 @@ describe('PromoCarousel (under the header)', () => {
     { promoId: 'a', title: 'Refer & Earn', image: 'https://cdn.example/a.png', ratio: R, linkUrl: '/referrals' },
     { promoId: 'b', title: 'Channel', image: 'https://cdn.example/b.png', ratio: R, linkUrl: 'https://t.me/x' },
   ];
-  it('shows one card across the width, each in its screen\'s frame, each opening its own link', () => {
+  it('shows one card across the width, each in its screen\'s frame, each opening its own page', () => {
     const { container } = render(<PromoCarousel cards={cards} />);
     const slides = container.querySelectorAll<HTMLElement>('[style*="scroll-snap-align"]');
     expect(slides).toHaveLength(2);
     for (const sl of slides) expect(sl.style.flex).toBe('0 0 100%');
     for (const img of screen.getAllByRole('img')) expect(img.style.aspectRatio).toBe('3 / 1');
-    expect(screen.getByRole('link', { name: 'Refer & Earn' })).toHaveAttribute('href', '#/referrals');
-    expect(screen.getByRole('link', { name: 'Channel' })).toHaveAttribute('target', '_blank');
+    expect(screen.getByRole('link', { name: 'Refer & Earn' })).toHaveAttribute('href', '#/card/a');
+    expect(screen.getByRole('link', { name: 'Channel' })).toHaveAttribute('href', '#/card/b');
   });
   it('has a dot per card, the first marked as current', () => {
     render(<PromoCarousel cards={cards} />);
