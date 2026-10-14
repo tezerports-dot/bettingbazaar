@@ -17,6 +17,7 @@ import * as promo from '../repositories/promo.js';
 import { getBalancesPaise, applyDeltaPaise } from '../repositories/wallets.core.js';
 import { placeBet, winBet, loseBet, refundBet } from '../repositories/bets.core.js';
 import { ensureCycle } from '../repositories/markets.js';
+import { getSystemConfig, setConfigPath } from '../repositories/config.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 const RUN = `promo-${Date.now()}`;
@@ -53,6 +54,22 @@ describePg('the GENERAL balance and its turnover requirement', () => {
     expect(again.idempotent).toBe(true);
     expect((await balances(u)).promoBalance).toBe(100_000);
     expect(await grants(u)).toHaveLength(1);
+  });
+
+  it('asks the admin\'s multiplier at the moment it pays, and keeps it on the bonus', async () => {
+    const saved = (await getSystemConfig()).referralRewards.turnoverMultiplier;
+    const u = player();
+    try {
+      await setConfigPath('system', 'referralRewards.turnoverMultiplier', 3);
+      await promo.creditReferralBonus({ userId: u, amountPaise: 10_000, earningId: `${u}-e1` });
+      expect((await promo.promoSummary(u)).turnoverMultiplier).toBe(3);
+    } finally {
+      await setConfigPath('system', 'referralRewards.turnoverMultiplier', saved);
+    }
+    // Changing the setting later does not move what that bonus asks.
+    const [g] = await grants(u);
+    expect(g.requiredTurnoverPaise).toBe(30_000);
+    expect((await getSystemConfig()).referralRewards.turnoverMultiplier).toBe(saved);
   });
 
   it('the owner\'s example: ₹1,000 bonus, ₹400 won along the way, ₹1,400 withdrawable at ₹10,000', async () => {

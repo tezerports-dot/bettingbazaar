@@ -19,7 +19,8 @@
  */
 import { db } from '#db';
 import crypto from 'crypto';
-import { REFERRAL_REWARD_PAISE } from './referralRewards.js';
+import { referralRewardsFrom } from './referralRewards.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 import { paiseToRupees } from '../../shared/money.js';
 
 // ── Joining numbers ─────────────────────────────────────────────────────────
@@ -346,6 +347,7 @@ function hashViewer(ip, code) {
 
 export async function referralSummaryFor(userId, { limit = 200 } = {}) {
   const me = await db.users.getUser(userId);
+  const rewards = referralRewardsFrom(await getSystemConfig());
 
   const rows = await db.referrals.listEarnings({ earnerId: userId, limit });
 
@@ -390,7 +392,10 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
 
   return {
     referralCode: me?.referralCode || '',
-    rewardPerReferral: paiseToRupees(REFERRAL_REWARD_PAISE),
+    // What a NEW joiner earns now, per level (the admin's settings); what each
+    // earning below pays is the amount stamped on it when its joiner verified.
+    rewardPerReferral: paiseToRupees(rewards.level1Paise),
+    rewardLevel2: paiseToRupees(rewards.level2Paise),
     level1: level(1),
     level2: level(2),
     totals: {

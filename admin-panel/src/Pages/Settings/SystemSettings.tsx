@@ -252,6 +252,8 @@ export const SystemSettings: React.FC = () => {
     rejectedBuyDisputeMinutes: 15,  // schema default: 15
     // The daily red flag on team members (Step 2f): low activity.
     redFlags: { lowActivityPercent: 25 },  // schema default: 25
+    // What a referral pays (owner, 2026-10-14: admin-editable).
+    referralRewards: { level1Rupees: 25, level2Rupees: 25, turnoverMultiplier: 10 },  // schema defaults: 25 / 25 / 10
     // Overload ceilings — past either one the server answers 503 fast rather
     // than admitting work into a queue that will never drain.
     loadShedding: { enabled: true, maxInFlight: 300, maxEventLoopLagMs: 0 },  // schema defaults: true / 300 / 0
@@ -363,6 +365,11 @@ export const SystemSettings: React.FC = () => {
           rejectedBuyDisputeMinutes: response.data.rejectedBuyDisputeMinutes ?? 15, // schema default: 15
           redFlags: {
             lowActivityPercent: response.data.redFlags?.lowActivityPercent ?? 25, // schema default: 25
+          },
+          referralRewards: {
+            level1Rupees:       response.data.referralRewards?.level1Rupees       ?? 25, // schema default: 25
+            level2Rupees:       response.data.referralRewards?.level2Rupees       ?? 25, // schema default: 25
+            turnoverMultiplier: response.data.referralRewards?.turnoverMultiplier ?? 10, // schema default: 10
           },
           loadShedding: {
             enabled:           response.data.loadShedding?.enabled           ?? true, // schema default: true
@@ -1276,6 +1283,49 @@ export const SystemSettings: React.FC = () => {
               </div>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* ── REFERRAL REWARDS (owner, 2026-10-14: admin-editable) ── */}
+      <div className="card">
+        <h3 className="text-lg font-semibold mb-1">Referral Rewards</h3>
+        <p className="text-xs text-gray-400 mb-4">
+          What inviting a friend pays. Paid from the queue you fund on the Referrals page.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <label className="label" htmlFor="referral-level1Rupees">Level 1 reward (₹ per joiner)</label>
+            <input id="referral-level1Rupees"
+              type="number" min={0} max={10000} step={1}
+              value={formData.referralRewards.level1Rupees}
+              onChange={(e) => setFormData({ ...formData, referralRewards: { ...formData.referralRewards,
+                level1Rupees: Math.min(10000, Math.max(0, Math.floor(Number(e.target.value) || 0))) } })}
+              className="input"
+            />
+            <SettingHelp path="referralRewards.level1Rupees" />
+          </div>
+          <div>
+            <label className="label" htmlFor="referral-level2Rupees">Level 2 reward (₹ per joiner)</label>
+            <input id="referral-level2Rupees"
+              type="number" min={0} max={10000} step={1}
+              value={formData.referralRewards.level2Rupees}
+              onChange={(e) => setFormData({ ...formData, referralRewards: { ...formData.referralRewards,
+                level2Rupees: Math.min(10000, Math.max(0, Math.floor(Number(e.target.value) || 0))) } })}
+              className="input"
+            />
+            <SettingHelp path="referralRewards.level2Rupees" />
+          </div>
+          <div>
+            <label className="label" htmlFor="referral-turnoverMultiplier">Bonus play requirement (× the bonus)</label>
+            <input id="referral-turnoverMultiplier"
+              type="number" min={1} max={100} step={1}
+              value={formData.referralRewards.turnoverMultiplier}
+              onChange={(e) => setFormData({ ...formData, referralRewards: { ...formData.referralRewards,
+                turnoverMultiplier: Math.min(100, Math.max(1, Math.floor(Number(e.target.value) || 1))) } })}
+              className="input"
+            />
+            <SettingHelp path="referralRewards.turnoverMultiplier" />
+          </div>
         </div>
       </div>
 

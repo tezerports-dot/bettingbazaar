@@ -17,7 +17,7 @@
  * consume the pool, so funding ₹1,00,000 pays ₹1,00,000 of eligible earnings
  * regardless of how much sits blocked behind it.
  *
- * ── Why ₹25 is never split ──────────────────────────────────────────────────
+ * ── Why a reward is never split ──────────────────────────────────────────────────
  * A pool that runs out mid-queue stops at the last earner it can pay in full.
  * Half a reward is not a reward; it is a support ticket and a broken promise to
  * someone who did the work of inviting a player.
@@ -117,8 +117,9 @@ export const ReferralProgramme: React.FC = () => {
           <p style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.65, marginBottom: 16 }}>
             Enter an amount. It is paid out in strict joining order — earliest joiner first —
             until it runs out. Nobody is chosen by hand, and a reward is never split: if the
-            pool cannot cover the next ₹25 in full, it stops there and the remainder is
-            reported back to you unspent.
+            pool cannot cover the next reward in full, it stops there and the remainder is
+            reported back to you unspent. What each joiner earns is set under System Settings ›
+            Referral Rewards.
           </p>
 
           <label style={{ display: 'block', fontSize: 10.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 5 }} htmlFor="pool-amount">
@@ -130,11 +131,6 @@ export const ReferralProgramme: React.FC = () => {
             inputMode="decimal" placeholder="100000" className="font-mono"
             style={{ width: '100%', height: 42, borderRadius: 9, border: '1px solid var(--input-border)', background: 'var(--input)', color: 'var(--text)', padding: '0 13px', fontSize: 15, fontWeight: 700, outline: 'none' }}
           />
-          {valid && (
-            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 7 }}>
-              Covers up to {formatters.number(Math.floor(parsed / 25))} reward(s) of ₹25.
-            </div>
-          )}
 
           <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', gap: 11, flexWrap: 'wrap' }}>
             {!confirming ? (

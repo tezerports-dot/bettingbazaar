@@ -39,6 +39,8 @@ interface Row {
 interface Summary {
   referralCode: string;
   rewardPerReferral: number;
+  /** What the second level earns per joiner now (referral.service.js `rewardLevel2`). */
+  rewardLevel2: number;
   level1: LevelTotals;
   level2: LevelTotals;
   totals: {
@@ -171,8 +173,9 @@ const ReferralPage: React.FC = () => {
         <p style={{ margin: '10px 0 0', fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>
           Opening the link starts our bot{bot ? <> (<strong style={{ color: 'var(--text2)' }}>@{bot}</strong>)</> : ''} with
           your code already attached — the person you invite never has to type it. You earn{' '}
-          {inr(data.rewardPerReferral)} when they join, and {inr(data.rewardPerReferral)} again
-          when someone <em>they</em> invite joins.
+          {inr(data.rewardPerReferral)} when they join{data.rewardLevel2 > 0 && (
+            <>, and {inr(data.rewardLevel2)} when someone <em>they</em> invite joins</>
+          )}.
         </p>
         <p style={{ margin: '8px 0 0', fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>
           This link is permanent. If we ever switch to a different sign-up bot it keeps working
