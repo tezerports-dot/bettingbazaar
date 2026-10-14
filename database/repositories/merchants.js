@@ -844,11 +844,6 @@ export async function createMerchantAccount(fields) {
     if (error.code === '23505') {
       return { ok: false, reason: 'CREDENTIALS_TAKEN', constraint: error.constraint };
     }
-    // An account number that is a mobile number (schema.sql, Step 2d): named
-    // for the same reason.
-    if (error.code === '23514' && error.constraint === 'merchants_bank_account_not_a_mobile') {
-      return { ok: false, reason: 'ACCOUNT_IS_A_MOBILE' };
-    }
     // A username that is, or carries, a mobile number (schema.sql, Step 2f):
     // the name is shown to other people.
     if (error.code === '23514' && error.constraint === 'merchants_name_not_a_mobile') {

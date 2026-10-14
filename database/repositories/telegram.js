@@ -620,8 +620,12 @@ async function signUpWithin(client, audience, phone, signup) {
     if (!made.ok) refuse(made.reason === 'mobile_taken' ? 'MOBILE_TAKEN' : 'DUPLICATE');
     return lockAccount(client, 'user_id = $1 AND account_type = $2', [made.userId, 'PLAYER']);
   }
+  // A merchant's username is unique and shown to other people, so it carries
+  // no part of the mobile (§24) and no digits at all: the account id spelled in
+  // letters (a–p for 0–f), unique because the id is. The merchant can rename it.
+  const letters = String(signup.userId).replace(/[0-9a-f]/g, (c) => String.fromCharCode(97 + parseInt(c, 16)));
   const made = await createMerchantAccountWithin(client, {
-    userId: signup.userId, username: `merchant${last4}`, mobile: phone,
+    userId: signup.userId, username: `merchant_${letters}`, mobile: phone,
   });
   if (!made.ok) refuse('MOBILE_TAKEN');
   return lockAccount(client, 'user_id = $1 AND account_type = $2', [made.userId, 'MERCHANT']);
