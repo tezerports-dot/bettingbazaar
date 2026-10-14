@@ -1,7 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The admin directory: one row per player, and one per merchant, with the
- * figures an operator sorts by (owner, 2026-10-14). Read only; it owns no value.
+ * The admin directory: one row per player, one per merchant and one per staff
+ * account, with the figures an operator sorts by (owner, 2026-10-14). Read
+ * only; it owns no value.
  *
  * ── Every figure is read from its owner, never stored here ───────────────────
  * Players:
@@ -312,4 +313,95 @@ export async function merchantRow(merchantId) {
     [String(merchantId)], 'admin_directory_merchant',
   );
   return rows[0] ? toMerchantRow(rows[0]) : null;
+}
+
+// ── Staff ─────────────────────────────────────────────────────────────────────
+// Every STAFF account (admin, sub-admin, queue manager, mediator) as one row.
+// The roles are the account's own flags on `users`; the areas are the keys its
+// grant holds true (`sub_admin_permissions`, validated by staffPermissions.js);
+// whether it has an authenticator is a yes/no from `staff_totp`, never the
+// secret. Nothing here is stored.
+
+/** Sort keys the staff table offers → the column each sorts by. */
+export const STAFF_SORTS = Object.freeze({
+  joined:    'joined_at',
+  lastLogin: 'last_login',
+  areas:     'area_count',
+  name:      'username',
+});
+
+/** A staff role → the flag on `users` that makes an account one. */
+export const STAFF_ROLES = Object.freeze({
+  ADMIN: 'is_admin',
+  SUB_ADMIN: 'is_sub_admin',
+  QUEUE_MANAGER: 'is_queue_manager',
+  MEDIATOR: 'is_mediator',
+});
+
+const STAFF_SQL = `
+  SELECT u.user_id, u.username, u.mobile, u.status, u.joined_at, u.last_login,
+         u.is_admin, u.is_sub_admin, u.is_queue_manager, u.is_mediator, u.is_blocked,
+         u.sub_admin_permissions,
+         (SELECT COUNT(*) FROM jsonb_each(u.sub_admin_permissions) e WHERE e.value = 'true'::jsonb) AS area_count,
+         (t.user_id IS NOT NULL) AS authenticator_enrolled
+    FROM users u
+    LEFT JOIN staff_totp t ON t.user_id = u.user_id AND t.enrolled_at IS NOT NULL`;
+
+function toStaffRow(r) {
+  const grant = r.sub_admin_permissions || {};
+  return {
+    userId: r.user_id,
+    username: r.username,
+    mobile: r.mobile,
+    status: r.status,
+    isBlocked: Boolean(r.is_blocked),
+    joinedAt: r.joined_at,
+    lastLogin: r.last_login,
+    roles: Object.keys(STAFF_ROLES).filter((role) => r[STAFF_ROLES[role]]),
+    // The areas this account holds, by key; labels are the catalogue's
+    // (`GET /staff-permissions`), so the panel keeps no list of its own.
+    areas: Object.keys(grant).filter((k) => grant[k] === true),
+    authenticatorEnrolled: Boolean(r.authenticator_enrolled),
+  };
+}
+
+/**
+ * The staff table, sorted by a whitelisted key and paged by number.
+ * `role` narrows to one STAFF_ROLES key; an unknown one is a 400.
+ */
+export async function listStaff({
+  search = null, role = null, sort = 'joined', dir = 'desc', limit = 50, page: pageNo = 1,
+} = {}) {
+  const order = orderBy(STAFF_SORTS, sort, dir, 'joined', 'user_id');
+  const where = ["u.account_type = 'STAFF'", "u.status <> 'DELETED'"];
+  const params = [];
+  if (role) {
+    const flag = STAFF_ROLES[String(role)];
+    if (!flag) throw refuse('UNKNOWN_ROLE', `Unknown role "${role}". Roles: ${Object.keys(STAFF_ROLES).join(', ')}.`);
+    where.push(`u.${flag}`);
+  }
+  if (search) {
+    params.push(String(search));
+    where.push(`(u.username ILIKE $${params.length} || '%' OR u.mobile LIKE $${params.length} || '%'
+                 OR u.user_id = $${params.length})`);
+  }
+  const { size, offset } = page(limit, pageNo);
+  params.push(size, offset);
+  const { rows } = await pgQuery(
+    `SELECT d.*, COUNT(*) OVER () AS total_count FROM (${STAFF_SQL}
+      WHERE ${where.join(' AND ')}) d
+      ${order}
+      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params, 'admin_directory_staff',
+  );
+  return { rows: rows.map(toStaffRow), total: rows[0] ? Number(rows[0].total_count) : 0 };
+}
+
+/** One staff account's row (the profile page), or null for any other account. */
+export async function staffRow(userId) {
+  const { rows } = await pgQuery(
+    `${STAFF_SQL} WHERE u.user_id = $1 AND u.account_type = 'STAFF'`,
+    [String(userId)], 'admin_directory_staff_one',
+  );
+  return rows[0] ? toStaffRow(rows[0]) : null;
 }

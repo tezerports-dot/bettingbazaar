@@ -30,7 +30,7 @@ const NoAccess: React.FC<{ adminOnly?: boolean }> = ({ adminOnly = false }) => {
       <p style={{ marginBottom: 16, lineHeight: 1.5 }}>
         {adminOnly
           ? 'Only a full admin can use this screen. It grants authority to other staff accounts, so it cannot be given to a sub-admin.'
-          : 'Your account is signed in, but it was not given the area this screen belongs to. Ask an admin to grant it on the Sub-admins screen.'}
+          : 'Your account is signed in, but it was not given the area this screen belongs to. Ask an admin to grant it on the Staff screen.'}
       </p>
       {elsewhere
         ? <Link to={elsewhere} style={{ fontWeight: 600 }}>Go to a screen you can use</Link>

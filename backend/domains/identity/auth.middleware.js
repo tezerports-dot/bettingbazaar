@@ -486,9 +486,9 @@ export const hasPermission = (permission) => {
     return res.status(403).json({
       success: false,
       code: 'PERMISSION_REQUIRED',
-      // Names the area in the words the Sub-admins screen uses, so the person
+      // Names the area in the words the Staff screen uses, so the person
       // refused knows exactly what to ask their admin for.
-      message: `You do not have the "${permissionLabel(permission)}" permission. Ask an admin to grant it on the Sub-admins screen.`,
+      message: `You do not have the "${permissionLabel(permission)}" permission. Ask an admin to grant it on the Staff screen.`,
       requiredPermission: permission,
     });
   };

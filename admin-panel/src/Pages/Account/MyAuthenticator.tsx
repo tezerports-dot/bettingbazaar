@@ -12,7 +12,7 @@
  * (backend/routes/admin/account.admin.routes.js). A wrong code is a 400, not a
  * 401, so it never ends this session.
  *
- * Moving to a new phone is a reset by another admin (Sub-admins screen), then
+ * Moving to a new phone is a reset by another admin (Staff screen), then
  * setting the app up again at the next sign-in.
  */
 import React, { useCallback, useEffect, useState } from 'react';
@@ -94,7 +94,7 @@ export const MyAuthenticator: React.FC = () => {
           <Row name="Recovery codes left">{view.enrolled ? String(view.recoveryCodesLeft) : '—'}</Row>
           <Row name="Codes made on">{view.recoveryGeneratedAt ? formatters.datetime(view.recoveryGeneratedAt) : '—'}</Row>
           <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12, lineHeight: 1.5 }}>
-            New phone? Ask another admin to reset your authenticator on the Sub-admins screen; you set
+            New phone? Ask another admin to reset your authenticator on the Staff screen; you set
             the app up again at your next sign-in.
           </div>
         </div>

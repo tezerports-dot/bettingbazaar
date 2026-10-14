@@ -150,7 +150,7 @@ export const Login: React.FC = () => {
       const perms = (admin.permissions || {}) as Record<string, boolean>;
       const first = perms.canViewAnalytics ? '/' : firstPermittedPath((keys) => keys.some((k) => perms[k] === true));
       if (!first) {
-        toast.error('Your account has not been given any area yet. Ask an admin to grant permissions on the Sub-admins screen.');
+        toast.error('Your account has not been given any area yet. Ask an admin to grant permissions on the Staff screen.');
         return;
       }
       navigate(first);

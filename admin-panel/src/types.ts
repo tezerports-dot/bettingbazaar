@@ -106,6 +106,20 @@ export interface User {
   lastLogin: string;
 }
 
+/** A staff role key, as the server names it (adminDirectory.js STAFF_ROLES). */
+export type StaffRole = 'ADMIN' | 'SUB_ADMIN' | 'QUEUE_MANAGER' | 'MEDIATOR';
+
+/**
+ * One row of the staff table, as `GET /api/admin/staff` sends it
+ * (database/repositories/adminDirectory.js `toStaffRow`). `areas` are the
+ * permission keys the grant holds true; their labels are the catalogue's.
+ */
+export interface StaffRow {
+  userId: string; username: string | null; mobile: string; status: string; isBlocked: boolean;
+  joinedAt: string; lastLogin: string | null;
+  roles: StaffRole[]; areas: string[]; authenticatorEnrolled: boolean;
+}
+
 /**
  * A row of the players table, as `GET /api/admin/users` sends it
  * (database/repositories/adminDirectory.js `toPlayerRow`). Money in PAISE.

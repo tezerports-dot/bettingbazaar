@@ -125,9 +125,9 @@ export const STAFF_PERMISSIONS = Object.freeze([
  */
 export const ADMIN_ONLY_AREAS = Object.freeze([
   { area: 'Sub-admins', why: 'Creating a sub-admin or changing one\'s permissions grants authority; a holder could grant themselves everything.',
-    routes: ['GET /sub-admins', 'POST /sub-admins', 'PUT /sub-admins/:subAdminId/permissions', 'DELETE /sub-admins/:subAdminId', 'GET /staff-permissions'] },
+    routes: ['GET /staff', 'GET /staff/:userId', 'POST /sub-admins', 'PUT /sub-admins/:subAdminId/permissions', 'DELETE /sub-admins/:subAdminId', 'GET /staff-permissions'] },
   { area: 'Queue managers', why: 'The queue-manager role routes players\' payments; granting it is granting authority.',
-    routes: ['GET /queue-managers', 'POST /users/:userId/queue-manager'] },
+    routes: ['POST /users/:userId/queue-manager'] },
   { area: 'Staff authenticators', why: 'Resetting a staff account\'s authenticator lets whoever holds its password enrol a new one; a holder could take over any staff account whose password they know.',
     routes: ['POST /staff/:userId/reset-authenticator'] },
 ]);
@@ -147,7 +147,7 @@ const KNOWN = new Set(PERMISSION_KEYS);
 export const isPermissionKey = (key) => KNOWN.has(key);
 
 const LABELS = new Map(STAFF_PERMISSIONS.map((p) => [p.key, p.label]));
-/** The words the Sub-admins screen shows for a key. */
+/** The words the Staff screen shows for a key. */
 export const permissionLabel = (key) => LABELS.get(key) ?? key;
 
 /**

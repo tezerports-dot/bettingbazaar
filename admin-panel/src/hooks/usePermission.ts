@@ -8,7 +8,7 @@ import type { PermissionKey } from '../utils/permissions';
  *
  * `can(key)` takes a key from `utils/permissions.ts` — the server's list of
  * areas. A full admin holds every key; a sub-admin holds the ones an admin
- * ticked on the Sub-admins screen; a queue manager holds none (their access is
+ * ticked on the Staff screen; a queue manager holds none (their access is
  * the queue, decided separately). This only decides what is OFFERED: the server
  * refuses the same routes by the same keys.
  */

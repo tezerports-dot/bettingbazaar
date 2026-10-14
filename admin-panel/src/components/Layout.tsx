@@ -13,7 +13,7 @@ import {
   MessageCircle, Shield, History, Scale, Search, Sun, Moon, Bell,
   SlidersHorizontal, Trophy, Star, Gamepad2, Bot, Share2,
   type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, Hourglass, Fingerprint,
-  Ghost, Smartphone, ShieldBan, KeyRound} from 'lucide-react';
+  Ghost, Smartphone, ShieldBan, KeyRound, Wallet } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -49,72 +49,71 @@ interface MenuGroup {
 }
 
 // Grouped nav model — order, labels and grouping mirror the design handoff.
+// Grouped by the work an operator does (owner, 2026-10-14): people, money,
+// games, content, platform. Each item is the one screen for its job, so a
+// small task is one click from the menu.
 const NAV_GROUPS: MenuGroup[] = [
-  { key: 'core', label: 'Analytics', items: [
+  { key: 'core', label: 'Overview', items: [
     { path: '/',              icon: LayoutDashboard, label: 'Dashboard',      title: 'Operations Command', sub: 'Real-time platform health across finance, cycles, risk & queues' },
     { path: '/live-cycles',   icon: Activity,        label: 'Live Cycles',    title: 'Live Cycles',        sub: 'Active Delhi vs Bombay betting cycles & phantom book control', permission: 'canViewAnalytics' },
     { path: '/cycle-history', icon: History,         label: 'Cycle History',  title: 'Cycle History',      sub: 'Settled cycles, results and house profit', permission: 'canViewAnalytics' },
     { path: '/profit-loss',   icon: TrendingUp,      label: 'Profit & Loss',  title: 'Profit & Loss',      sub: 'Gross & net gaming revenue over time', permission: 'canViewAnalytics' },
     { path: '/token-flow',    icon: ArrowLeftRight,  label: 'Token Flow',     title: 'Token Flow',         sub: 'Player purchases, player sells and team pool funding — never summed', permission: 'canViewAnalytics' },
   ] },
-  { key: 'people', label: 'Users & Merchants', items: [
-    { path: '/users',               icon: Users,            label: 'Users',          title: 'Users',              sub: 'Player accounts, balances & status', permission: 'canManageUsers' },
-    { path: '/users/balance-adjust',icon: SlidersHorizontal,label: 'Balance Adjust', title: 'Balance Adjustment', sub: 'Manual credit / debit with mandatory audit note', permission: 'canAdjustBalances' },
+  { key: 'people', label: 'People', items: [
+    { path: '/users',               icon: Users,            label: 'Players',        title: 'Players',            sub: 'Every player with deposits, net win or loss and wallets; a row opens the player', permission: 'canManageUsers' },
     { path: '/users/flagged',       icon: Flag,             label: 'Flagged Players',title: 'Flagged Players',    sub: "A merchant disputed their payment — reason, proof, and the block decision", permission: 'canManageUsers' },
-    { path: '/merchants',           icon: Store,            label: 'Agents & Merchants', title: 'Agents & Merchants', sub: 'Agents in teams and direct merchants: approval, payment details, merchant accounts', permission: 'canManageMerchants' },
-    { path: '/teams',               icon: Users,            label: 'Teams',          title: 'Supervisors & Teams', sub: 'Supervisors, their agent teams, agents waiting for approval, pool requests', permission: 'canManageTeams' },
-    { path: '/users/phantom-agents',  icon: Ghost,           label: 'House Bettors', title: 'House Bettors',     sub: 'Who can place cosmetic bets, and on which boards', permission: 'canManagePhantomAgents' },
+    { path: '/merchants',           icon: Store,            label: 'Agents & Merchants', title: 'Agents & Merchants', sub: 'Agents, supervisors and merchants with volume, pool and commission; a row opens the merchant', permission: 'canManageMerchants' },
+    { path: '/teams',               icon: Users,            label: 'Teams',          title: 'Supervisors & Teams', sub: 'Supervisors, their agent teams, agents waiting for approval, red flags', permission: 'canManageTeams' },
+    { path: '/users/phantom-agents',icon: Ghost,            label: 'House Bettors',  title: 'House Bettors',      sub: 'Who can place cosmetic bets, and on which boards', permission: 'canManagePhantomAgents' },
+    { path: '/staff',               icon: ShieldCheck,      label: 'Staff',          title: 'Staff',              sub: 'Admins, sub-admins, queue managers and mediators; a row opens the account', adminOnly: true },
   ] },
-  // Identity and payout control plane. Each screen is its own area, granted
-  // by an admin on the Sub-admins screen (owner, 2026-10-01). Every staff
-  // sign-in ends with an authenticator code (owner, 2026-10-13); "My
-  // Authenticator" is every account's own and needs no area.
-  { key: 'identity', label: 'Identity & Growth', items: [
-    { path: '/telegram',  icon: Bot,             label: 'Telegram Setup',  title: 'Telegram Setup',      sub: 'The one bot: replace it without a deploy', permission: 'canManageTelegram' },
-    { path: '/account/security', icon: KeyRound, label: 'My Authenticator', title: 'My Authenticator',   sub: 'Your authenticator app and recovery codes' },
-    { path: '/referrals', icon: Share2,          label: 'Referrals',       title: 'Referral Programme',  sub: 'Fund the payout queue in joining order', permission: 'canManageReferrals' },
-  ] },
-  { key: 'payments', label: 'Payments & Queue', items: [
+  { key: 'payments', label: 'Payments', items: [
+    { path: '/payments',        icon: Wallet,   label: 'Pools & Requests', title: 'Pools & Requests', sub: 'Every pool and pool request: agents\' teams and merchants behind one switch', permission: ['canFundMerchants', 'canManageTeams', 'canManageMerchants'] },
     { path: '/queue-manager',   icon: Layers,   label: 'Queue Manager',  title: 'Queue Manager', sub: 'Live payment order queue — orders are routed to agent teams or merchants', queueManagerAccess: true, permission: 'canManageMerchants', badge: 'queue' },
-    { path: '/transactions',    icon: FileText, label: 'Transactions',   title: 'Transactions',  sub: 'Ledger of deposits, withdrawals, bets & adjustments', permission: 'canViewTransactions' },
     { path: '/disputes',        icon: Scale,    label: 'Disputes',       title: 'Disputes',      sub: 'Payment order disputes & resolution', permission: 'canResolveDisputes' },
     { path: '/disputes/stalled-withdrawals', icon: Hourglass, label: 'Stalled Payouts', title: 'Stalled Withdrawals', sub: 'Payouts no merchant has taken, and the tokens locked behind them', permission: 'canResolveDisputes' },
+    { path: '/transactions',    icon: FileText, label: 'Transactions',   title: 'Transactions',  sub: 'Ledger of deposits, withdrawals, bets & adjustments', permission: 'canViewTransactions' },
     { path: '/payment-references', icon: Fingerprint, label: 'Payment References', title: 'Payment References', sub: 'UTRs and chain hashes: who claimed what, and who tried to reuse one', permission: 'canManageUtr' },
+    { path: '/users/balance-adjust',icon: SlidersHorizontal,label: 'Balance Adjust', title: 'Balance Adjustment', sub: 'Manual credit / debit with mandatory audit note', permission: 'canAdjustBalances' },
   ] },
-  { key: 'policy', label: 'Business Policy', items: [
-    { path: '/business-policy/deposit', icon: Landmark, label: 'Deposit Policy', title: 'Deposit Policy', sub: 'Versioned deposit / reserve allocation policy', permission: 'canManageBusinessPolicy' },
-  ] },
-  { key: 'enterprise', label: 'Enterprise Platforms', items: [
+  { key: 'finance', label: 'Finance & Reports', items: [
     { path: '/revenue',           icon: Landmark, label: 'Revenue & Ledger',  title: 'Revenue & Ledger',    sub: 'Enterprise revenue ledger & settlements', permission: 'canViewAnalytics' },
-    { path: '/operations',        icon: Activity, label: 'Operations',        title: 'Operations Overview', sub: 'Cross-domain operational health', permission: 'canViewAnalytics' },
+    { path: '/business-policy/deposit', icon: Landmark, label: 'Deposit Policy', title: 'Deposit Policy', sub: 'Versioned deposit / reserve allocation policy', permission: 'canManageBusinessPolicy' },
     { path: '/reports',           icon: FileText, label: 'Reports',           title: 'Reports',             sub: 'Executive reporting & exports', permission: 'canViewAnalytics' },
+    { path: '/operations',        icon: Activity, label: 'Operations',        title: 'Operations Overview', sub: 'Cross-domain operational health', permission: 'canViewAnalytics' },
     { path: '/merchant-platform', icon: Store,    label: 'Merchant Platform', title: 'Merchant Platform',   sub: 'Merchant onboarding, tiers & performance', permission: 'canManageMerchants' },
   ] },
-  { key: 'games', label: 'Game Providers', items: [
+  { key: 'games', label: 'Games', items: [
     { path: '/boards',         icon: Gamepad2, label: 'Boards',         title: 'Boards',         sub: 'Board games: timers, stakes and home-page order', permission: 'canManageGames' },
     { path: '/games',          icon: Gamepad2, label: 'Game Registry',  title: 'Game Registry',  sub: 'Game catalogue & categories', permission: 'canManageGames' },
     { path: '/game-providers', icon: Star,     label: 'Game Providers', title: 'Game Providers', sub: 'Casino / crash / sports API providers', permission: 'canManageGames' },
   ] },
-  { key: 'promos', label: 'Promotions', items: [
-    { path: '/winners-manager',          icon: Trophy,        label: 'Winners Manager', title: 'Winners Manager', sub: 'Real & phantom winner surfacing', permission: 'canManageContent' },
+  { key: 'support', label: 'Support', items: [
     { path: '/chat-management',          icon: MessageCircle, label: 'Chat & Support',  title: 'Chat & Support',  sub: 'Public chat moderation & support console', permission: ['canModerateChat', 'canManageSupportTickets'] },
     { path: '/support-assistant',        icon: BookOpenCheck, label: 'Support Assistant', title: 'Support Assistant', sub: 'Knowledge base the assistant answers players from', permission: 'canManageSupportAssistant' },
+    { path: '/content/faq',              icon: HelpCircle,    label: 'FAQ Manager',     title: 'FAQ Manager',     sub: 'Help centre questions & categories', permission: 'canManageContent' },
+    { path: '/content/support',          icon: MessageCircle, label: 'Support Links',   title: 'Support Links',   sub: 'Contact & social channels', permission: 'canManageContent' },
+  ] },
+  { key: 'content', label: 'Content & Promotions', items: [
     { path: '/promotions/announcements', icon: Bell,          label: 'Announcements',   title: 'Announcements',   sub: 'Platform-wide notices & popups', permission: 'canManageContent' },
+    { path: '/winners-manager',          icon: Trophy,        label: 'Winners Manager', title: 'Winners Manager', sub: 'Real & phantom winner surfacing', permission: 'canManageContent' },
+    { path: '/referrals',                icon: Share2,        label: 'Referrals',       title: 'Referral Programme', sub: 'Fund the payout queue in joining order', permission: 'canManageReferrals' },
+    { path: '/images',                   icon: ImageIcon,     label: 'Images',          title: 'Images',          sub: 'Every image of the player app: promo cards per screen, board, logo, banners', permission: 'canManageContent' },
+    { path: '/branding',                 icon: Palette,       label: 'Branding',        title: 'Branding',        sub: 'App name, colours, tagline & panel names', permission: 'canManageContent' },
+    { path: '/android-app',              icon: Smartphone,    label: 'Android App',     title: 'Android App',     sub: 'Upload, publish & force updates', permission: 'canManageAndroidApp' },
   ] },
-  { key: 'content', label: 'Content & Branding', items: [
-    { path: '/content/faq',     icon: HelpCircle,    label: 'FAQ Manager',      title: 'FAQ Manager',     sub: 'Help centre questions & categories', permission: 'canManageContent' },
-    { path: '/images',          icon: ImageIcon,     label: 'Images',           title: 'Images',          sub: 'Every image of the player app: promo cards per screen, board, logo, banners', permission: 'canManageContent' },
-    { path: '/content/support', icon: MessageCircle, label: 'Support Links',    title: 'Support Links',   sub: 'Contact & social channels', permission: 'canManageContent' },
-    { path: '/branding',        icon: Palette,       label: 'Branding',         title: 'Branding',        sub: 'App name, colours, tagline & panel names', permission: 'canManageContent' },
-    { path: '/android-app',     icon: Smartphone,    label: 'Android App',      title: 'Android App',     sub: 'Upload, publish & force updates', permission: 'canManageAndroidApp' },
-  ] },
-  { key: 'admin', label: 'Admin', items: [
-    { path: '/sub-admins',       icon: ShieldCheck, label: 'Sub-Admins',       title: 'Sub-Admins',       sub: 'Roles, permissions & access control', adminOnly: true },
-    { path: '/player-screen',    icon: SlidersHorizontal, label: 'Player Screen', title: 'Player Screen', sub: 'Show or hide the player app extras', permission: 'canManageSystemSettings' },
+  // Platform control. Every staff sign-in ends with an authenticator code
+  // (owner, 2026-10-13); "My Authenticator" is every account's own and needs
+  // no area.
+  { key: 'admin', label: 'Platform', items: [
     { path: '/settings',         icon: Settings,    label: 'System Settings',  title: 'System Settings',  sub: 'Platform configuration', permission: 'canManageSystemSettings' },
-    { path: '/audit-logs',       icon: Shield,      label: 'Audit Logs',       title: 'Audit Logs',       sub: 'Administrative action trail', permission: 'canViewAuditLogs' },
+    { path: '/player-screen',    icon: SlidersHorizontal, label: 'Player Screen', title: 'Player Screen', sub: 'Show or hide the player app extras', permission: 'canManageSystemSettings' },
+    { path: '/telegram',         icon: Bot,         label: 'Telegram Setup',   title: 'Telegram Setup',   sub: 'The bot and its standbys: replace one without a deploy', permission: 'canManageTelegram' },
     { path: '/blocked-ips',      icon: ShieldBan,   label: 'Blocked IPs',      title: 'Blocked IPs',      sub: 'Refuse every request from an address or range', permission: 'canManageIpBlocks' },
+    { path: '/audit-logs',       icon: Shield,      label: 'Audit Logs',       title: 'Audit Logs',       sub: 'Administrative action trail', permission: 'canViewAuditLogs' },
     { path: '/error-logs',       icon: Shield,      label: 'Error Logs',       title: 'Error Logs',       sub: 'Runtime errors & failed jobs', permission: 'canViewAuditLogs' },
+    { path: '/account/security', icon: KeyRound,    label: 'My Authenticator', title: 'My Authenticator', sub: 'Your authenticator app and recovery codes' },
   ] },
 ];
 

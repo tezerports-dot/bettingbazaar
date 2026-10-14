@@ -357,16 +357,19 @@ describePg('staff sign-in with an authenticator app', () => {
       expect((await pgQuery('SELECT 1 FROM staff_totp WHERE user_id = $1', [target.userId])).rowCount).toBe(1);
     });
 
-    it('the Sub-admins list says who has an authenticator', async () => {
+    it('the staff table says who has an authenticator', async () => {
       const a = await staffAccount({ isAdmin: false });
       const b = await staffAccount({ isAdmin: false });
       await enrol(a);
-      const res = await request(app).get('/api/admin/sub-admins').set('Authorization', `Bearer ${admin.token}`);
-      expect(res.status).toBe(200);
-      const byId = Object.fromEntries(res.body.subAdmins.map((u) => [u.userId, u]));
-      expect(byId[a.userId].authenticatorEnrolled).toBe(true);
-      expect(byId[b.userId].authenticatorEnrolled).toBe(false);
-      expect(JSON.stringify(res.body)).not.toMatch(/secret_enc|recovery_hashes/);
+      const rowOf = async (who) => {
+        const res = await request(app).get('/api/admin/staff').query({ search: who.userId })
+          .set('Authorization', `Bearer ${admin.token}`);
+        expect(res.status).toBe(200);
+        expect(JSON.stringify(res.body)).not.toMatch(/secret_enc|recovery_hashes/);
+        return res.body.staff.find((u) => u.userId === who.userId);
+      };
+      expect((await rowOf(a)).authenticatorEnrolled).toBe(true);
+      expect((await rowOf(b)).authenticatorEnrolled).toBe(false);
     });
   });
 
