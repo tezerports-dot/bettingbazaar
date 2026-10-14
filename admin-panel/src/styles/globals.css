@@ -339,6 +339,12 @@
 .om-pop { animation: om-pop .18s ease; }
 .om-slide { animation: om-slide .24s cubic-bezier(.4,0,.2,1); }
 
+/* Every control answers the finger at once (owner, 2026-10-14: "buttons felt
+   lagging"): no double-tap-zoom wait, no grey tap flash, a short press-in. */
+button, [role='button'], a { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+button:active:not(:disabled), [role='button']:active { transform: scale(.98); }
+
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+  button:active:not(:disabled), [role='button']:active { transform: none; }
 }

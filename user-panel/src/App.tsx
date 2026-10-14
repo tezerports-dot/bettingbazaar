@@ -36,13 +36,30 @@ import SupportPage from './pages/SupportPage';
 import TelegramTicketPage from './pages/TelegramTicketPage';
 
 // ── LAZY GAME SECTIONS ────────────────────────────────────────────────────────
-const CasinoPage          = React.lazy(() => import('./pages/CasinoPage'));
-const CrashPage           = React.lazy(() => import('./pages/CrashPage'));
-const SportsPage          = React.lazy(() => import('./pages/SportsPage'));
-const WinnersPage         = React.lazy(() => import('./pages/WinnersPage'));
-const LeaderboardPage     = React.lazy(() => import('./pages/LeaderboardPage'));
-const WalletPage          = React.lazy(() => import('./pages/WalletPage'));
-const ReferralPage = React.lazy(() => import('./pages/ReferralPage'));
+// Each loader is kept so the chunks can be fetched while the phone is idle
+// after the first screen: otherwise the first tap on Wallet or Casino waited
+// on the network behind a skeleton, which read as a laggy button.
+const LAZY_PAGES = {
+  casino:      () => import('./pages/CasinoPage'),
+  crash:       () => import('./pages/CrashPage'),
+  sports:      () => import('./pages/SportsPage'),
+  winners:     () => import('./pages/WinnersPage'),
+  leaderboard: () => import('./pages/LeaderboardPage'),
+  wallet:      () => import('./pages/WalletPage'),
+  referral:    () => import('./pages/ReferralPage'),
+};
+const CasinoPage          = React.lazy(LAZY_PAGES.casino);
+const CrashPage           = React.lazy(LAZY_PAGES.crash);
+const SportsPage          = React.lazy(LAZY_PAGES.sports);
+const WinnersPage         = React.lazy(LAZY_PAGES.winners);
+const LeaderboardPage     = React.lazy(LAZY_PAGES.leaderboard);
+const WalletPage          = React.lazy(LAZY_PAGES.wallet);
+const ReferralPage        = React.lazy(LAZY_PAGES.referral);
+const preloadLazyPages = () => {
+  const run = () => { Object.values(LAZY_PAGES).forEach((load) => { void load().catch(() => { /* fetched again on the tap */ }); }); };
+  if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 4000 });
+  else window.setTimeout(run, 1500);
+};
 import ErrorBoundary from './components/ui/ErrorBoundary';
 import { applyBranding, applyCachedBranding } from './services/branding';
 import { getBackend } from './services/backend.service';
@@ -292,6 +309,9 @@ const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) =
       stream?.removeEventListener('system_config', onConfig);
     };
   }, []);
+
+  const ready = status === 'OK';
+  useEffect(() => { if (ready) preloadLazyPages(); }, [ready]);
 
   if (status === 'LOADING')     return <LoadingScreen />;
   if (status === 'MAINTENANCE') return <MaintenanceScreen message={maintenanceMsg} />;

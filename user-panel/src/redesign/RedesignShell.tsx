@@ -13,7 +13,7 @@
  * app_branding / --brand-* variables). §8: route paths flow through here as the
  * single nav table for the redesigned shell.
  */
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { useGame, spendableBalance, useBoardExtras } from '../services/GameContext';
 import { useGameProviders } from '../services/GameProviderContext';
@@ -144,6 +144,11 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   });
   const navigate = useNavigate();
   const location = useLocation();
+  // A new screen opens at its top. <main> is the scroller, so the browser's
+  // own reset never fires and a page used to open wherever the last one was
+  // scrolled to, mid-way down, before jumping.
+  const mainRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => { if (mainRef.current) mainRef.current.scrollTop = 0; }, [location.pathname]);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
@@ -350,7 +355,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
         {/* ░░ RAIL (laptop) + MAIN + CATEGORY STRIP ░░ */}
         <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
         {rail}
-        <main style={{ minWidth: 0, flex: 1, minHeight: 0, position: 'relative', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+        <main ref={mainRef} style={{ minWidth: 0, flex: 1, minHeight: 0, position: 'relative', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
           {/*
             What the platform is telling everyone. `announcements` had an admin
             page that writes them and a route that serves them, and no screen

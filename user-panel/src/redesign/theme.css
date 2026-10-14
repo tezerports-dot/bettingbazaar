@@ -126,7 +126,8 @@
   100% { transform: translateY(320px) rotate(320deg); opacity: 0; }
 }
 @keyframes bb-dot { 0%, 80%, 100% { transform: scale(.6); opacity: .4; } 40% { transform: scale(1); opacity: 1; } }
-@keyframes bb-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes bb-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes bb-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes bb-chipfloat { 0%, 100% { transform: translateY(0) rotate(-8deg); } 50% { transform: translateY(-10px) rotate(8deg); } }
 @keyframes bb-chipshine { 0% { transform: translateX(-165%) rotate(45deg); } 55%, 100% { transform: translateX(175%) rotate(45deg); } }
 
@@ -139,7 +140,27 @@
 .bb-skel { animation: bb-skel 1.4s ease-in-out infinite; }
 .bb-spin { animation: bb-spin 1s linear infinite; }
 .bb-pulse { animation: bb-pulse 1.5s ease-in-out infinite; }
-.bb-rise { animation: bb-rise .34s ease both; }
+.bb-rise { animation: bb-rise .26s cubic-bezier(.2, .8, .2, 1) backwards; }
+/* `backwards`, not `both`: a transform left on the element after the rise
+   would make it the containing block of every position:fixed child (modals,
+   the bet bar), so they would scroll with the page. */
+.bb-fade { animation: bb-fade .2s ease-out backwards; }
+
+/* Every control in the app answers the finger at once (owner, 2026-10-14:
+   "buttons felt lagging"): no double-tap-zoom wait, no grey tap flash, a
+   short press-in, and colour changes that ease instead of snapping. Inline
+   styles still win, so a control that sets its own transform keeps it. */
+.bb-app button, .bb-app [role='button'], .bb-app a {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.bb-app button, .bb-app [role='button'] {
+  transition: background-color .18s ease, border-color .18s ease, color .18s ease,
+    box-shadow .18s ease, opacity .18s ease, transform .12s ease;
+}
+.bb-app button:active:not(:disabled), .bb-app [role='button']:active {
+  transform: scale(.97);
+}
 .bb-chipfloat { animation: bb-chipfloat 2.6s ease-in-out infinite; }
 .bb-chipshine { animation: bb-chipshine 3.4s ease-in-out infinite; }
 
@@ -216,4 +237,6 @@
     animation: none !important;
   }
   .bb-share-fill { transition: none; }
+  .bb-app button, .bb-app [role='button'] { transition: none; }
+  .bb-app button:active:not(:disabled), .bb-app [role='button']:active { transform: none; }
 }

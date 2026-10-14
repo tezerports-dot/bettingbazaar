@@ -71,16 +71,33 @@ const AnalyticsPanel = forwardRef<HTMLElement, Props>(({ board, winners, loadCyc
 
   const A = useMemo(() => analyticsFor(winners, board), [winners, board]);
 
+  // A tapped button's slide is the one shown, from the tap. The smooth scroll
+  // to it passes over every slide in between, and reading the scroll position
+  // on the way lit each of their buttons in turn (and slid the button bar back
+  // and forth): the flicker on Probability and Continuous streaks. So while a
+  // tapped scroll is travelling the position is not read; a swipe still is.
+  const travelTo = useRef<number | null>(null);
+  const travelEnd = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (travelEnd.current) clearTimeout(travelEnd.current); }, []);
   const goTo = (i: number) => {
     const t = trackRef.current;
     setActive(i);
-    if (t) t.scrollTo({ left: i * t.clientWidth, behavior: 'smooth' });
+    if (!t) return;
+    travelTo.current = i;
+    if (travelEnd.current) clearTimeout(travelEnd.current);
+    // Released when the slide is reached, or after this if a finger stops it.
+    travelEnd.current = setTimeout(() => { travelTo.current = null; }, 900);
+    t.scrollTo({ left: i * t.clientWidth, behavior: 'smooth' });
   };
   const onTrackScroll = () => {
     const t = trackRef.current;
     if (!t || !t.clientWidth) return;
     const i = Math.round(t.scrollLeft / t.clientWidth);
-    if (i !== active) setActive(i);
+    if (travelTo.current !== null) {
+      if (i === travelTo.current && Math.abs(t.scrollLeft - i * t.clientWidth) < 2) travelTo.current = null;
+      return;
+    }
+    setActive((prev) => (prev === i ? prev : i));
   };
   // Keep the active button visible in its own bar without scrolling the page.
   useEffect(() => {
@@ -307,4 +324,7 @@ const AnalyticsPanel = forwardRef<HTMLElement, Props>(({ board, winners, loadCyc
 
 AnalyticsPanel.displayName = 'AnalyticsPanel';
 
-export default AnalyticsPanel;
+// The board screen re-renders every second for its countdown; this panel's
+// props do not change with it, so it is not rebuilt (and its five slides
+// repainted) once a second.
+export default React.memo(AnalyticsPanel);
