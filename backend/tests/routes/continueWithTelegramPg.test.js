@@ -356,6 +356,35 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
       expect((await db.telegram.redeemTicket({ ticketHash: hash, audience: 'PLAYER' })).ok).toBe(false);
     });
 
+    it('a database from before Telegram-only sign-in converges when the schema is applied twice', async () => {
+      const p = await player();
+      const opened = (await open({ delivery: 'HANDOFF' })).body;
+      const challengeId = startParam(opened.telegram);
+      // What that database held: a player password, the merchant approval
+      // switch, challenge purposes (one a password reset), the reset table.
+      await pgQuery('ALTER TABLE users DROP CONSTRAINT users_password_staff_only');
+      try {
+        await pgQuery(`UPDATE users SET password_hash = 'argon2id$old' WHERE user_id = $1`, [p.userId]);
+        await pgQuery('ALTER TABLE telegram_links ADD COLUMN IF NOT EXISTS two_factor BOOLEAN NOT NULL DEFAULT false');
+        await pgQuery(`ALTER TABLE telegram_challenges ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'TELEGRAM_LOGIN'`);
+        await pgQuery(`UPDATE telegram_challenges SET purpose = 'VERIFY' WHERE challenge_id = $1`, [challengeId]);
+        await pgQuery('CREATE TABLE IF NOT EXISTS password_resets (token_hash TEXT PRIMARY KEY)');
+      } finally {
+        await applySchema();
+        await applySchema();
+      }
+      expect((await db.users.getUserCredentials(p.userId)).passwordHash).toBeNull();
+      expect(await db.telegram.getChallenge(challengeId)).toBeNull();
+      const { rows } = await pgQuery(
+        `SELECT table_name, column_name FROM information_schema.columns
+          WHERE (table_name = 'telegram_links' AND column_name = 'two_factor')
+             OR (table_name = 'telegram_challenges' AND column_name = 'purpose')
+             OR table_name = 'password_resets'`);
+      expect(rows).toEqual([]);
+      const check = await pgQuery(`SELECT 1 FROM pg_constraint WHERE conname = 'users_password_staff_only'`);
+      expect(check.rowCount).toBe(1);
+    });
+
     it('only a staff account may hold a password (users_password_staff_only)', async () => {
       const ids = [];
       try {
