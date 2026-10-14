@@ -3631,7 +3631,7 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 139 | 0 | 0 |
+| `user-panel` | 140 | 0 | 0 |
 | `admin-panel` | 125 | 0 | 0 |
 | `merchant-panel` | 63 | 0 | 0 |
 
