@@ -23,8 +23,39 @@ const issue = (over = {}) => issueChallenge({ userId: USER_ID, door: 'PLAYER', c
 
 describe('2FA challenge token', () => {
   it('round-trips the account, door and challenge it was issued for', () => {
-    const c = verifyChallenge(issue({ door: 'STAFF', loginType: 'admin' }), 'STAFF');
-    expect(c).toEqual({ userId: USER_ID, challengeId: CID, door: 'STAFF', loginType: 'admin' });
+    const c = verifyChallenge(issue({ door: 'MERCHANT' }), 'MERCHANT');
+    expect(c).toEqual({ userId: USER_ID, challengeId: CID, door: 'MERCHANT', loginType: null, step: null });
+    const s = verifyChallenge(issue({ door: 'STAFF', loginType: 'admin', step: 'totp' }), 'STAFF', 'totp');
+    expect(s).toEqual({ userId: USER_ID, challengeId: CID, door: 'STAFF', loginType: 'admin', step: 'totp' });
+  });
+
+  // ── The step isolates the legs (owner, 2026-10-13) ──────────────────────
+  // A Telegram leg asks with no step and an authenticator leg with its own, so
+  // a token minted for one can never be redeemed at the other.
+  it('a Telegram leg refuses an authenticator token, and the reverse', () => {
+    const totpToken = issue({ door: 'STAFF', step: 'totp' });
+    const setupToken = issue({ door: 'STAFF', step: 'totp_setup' });
+    const telegramToken = issue({ door: 'MERCHANT' });
+    expect(verifyChallenge(totpToken, 'STAFF')).toBeNull();
+    expect(verifyChallenge(setupToken, 'STAFF')).toBeNull();
+    expect(verifyChallenge(totpToken, 'STAFF', 'totp_setup')).toBeNull();
+    expect(verifyChallenge(setupToken, 'STAFF', 'totp')).toBeNull();
+    expect(verifyChallenge(telegramToken, 'MERCHANT', 'totp')).toBeNull();
+    expect(verifyChallenge(setupToken, 'STAFF', 'totp_setup')).not.toBeNull();
+  });
+
+  it('an authenticator token is still never a session, and carries no privilege', () => {
+    const claims = verifyJwt(issue({ door: 'STAFF', step: 'totp', loginType: 'admin' }));
+    expect(isChallengeToken(claims)).toBe(true);
+    for (const k of ['userId', 'role', 'isAdmin', 'isSubAdmin', 'permissions', 'amr']) {
+      expect(claims[k]).toBeUndefined();
+    }
+  });
+
+  it('mints an authenticator step at the staff door only, and only a known step', () => {
+    expect(() => issue({ door: 'PLAYER', step: 'totp' })).toThrow(/staff door only/);
+    expect(() => issue({ door: 'MERCHANT', step: 'totp_setup' })).toThrow(/staff door only/);
+    expect(() => issue({ door: 'STAFF', step: 'sms' })).toThrow(/unknown step/);
   });
 
   it('may name no account yet (an unbound Login with Telegram)', () => {

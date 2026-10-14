@@ -10,10 +10,10 @@
  * On its own that is bad. What makes it the platform's sharpest edge is what it
  * connects to:
  *
- *   • Nothing makes a staff account enrol a second factor. `loginHandler`
- *     challenges accounts that ALREADY enrolled and issues a full session to
- *     everyone else, and no route guard consults `requires2FA()`. So a weak
- *     password is the whole credential.
+ *   • (Then) nothing made a staff account enrol a second factor, so a weak
+ *     password was the whole credential. Since 2026-10-13 every staff
+ *     sign-in also needs an authenticator code (totp.service.js); the
+ *     password is still half of it, and the half a phishing page asks for.
  *   • A session lasts 24 hours by default.
  *   • A sub-admin reaches 51 admin routes without any permission key being
  *     checked — every player's record and financial history, the revenue

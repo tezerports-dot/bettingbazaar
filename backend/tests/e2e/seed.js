@@ -8,6 +8,9 @@ import { setCashReady, RAILS } from '#db/repositories/teamRouting.js';
 import { getTreasuryBalances, ACCOUNTS } from '#db/repositories/treasury.js';
 import { rid } from './harness.js';
 import { BOARD_RULES_VERSION } from '../../domains/markets/boardRules.js';
+import { encryptField } from '../../domains/identity/fieldCrypto.util.js';
+import { base32Encode, stepAt } from '../../domains/identity/totp.service.js';
+import crypto from 'node:crypto';
 
 const mob = () => String(6000000000 + Math.floor(Math.random() * 3999999999));
 
@@ -25,10 +28,12 @@ export const bep20 = () => '0x' + Array.from({ length: 40 }, () => '0123456789ab
  * without this row cannot sign in: it is the state production reaches, not an
  * optional extra (§32 S16). Written directly because the real writer proves a
  * contact Telegram signed, and there is no Telegram here. The phone is the
- * account's mobile (the row's trigger insists), and staff and merchant links
- * carry 2FA (its CHECK insists).
+ * account's mobile (the row's trigger insists), and merchant links carry 2FA
+ * (its CHECK insists). Players and merchants only: a STAFF account has no
+ * Telegram (owner, 2026-10-13) — see `enrolAuthenticator`.
  */
 export async function verifyActor({ userId, mobile, audience }) {
+  if (audience === 'STAFF') throw new Error('verifyActor: staff have no Telegram; use enrolAuthenticator');
   await pgQuery(
     `INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor)
      VALUES ($1, $2, $3, $4, $2 <> 'PLAYER')
@@ -316,6 +321,19 @@ export async function poolAndFloats(teamId) {
  * staff authority riding a player's session. Two mutate cases still took the
  * shortcut and failed on the constraint, which is the constraint working.
  */
+/**
+ * Give a STAFF account the authenticator it enrols at its first sign-in, through
+ * the real writer (`db.totp`), and answer its base32 secret so a caller can
+ * compute codes. The first step is spent as the activation spends it.
+ */
+export async function enrolAuthenticator({ userId }) {
+  const secret = base32Encode(crypto.randomBytes(20));
+  const pendingSecretEnc = encryptField(secret);
+  await db.totp.savePending(userId, pendingSecretEnc);
+  await db.totp.activate(userId, { pendingSecretEnc, step: stepAt() - 2, recoveryHashes: [] });
+  return secret;
+}
+
 export async function seedStaff({ subAdmin = false, queueManager = false, permissions = {}, verified = true } = {}) {
   const userId = rid('staff');
   const mobile = mob();
@@ -325,8 +343,8 @@ export async function seedStaff({ subAdmin = false, queueManager = false, permis
   const roles = [subAdmin ? 'subadmin' : null, queueManager ? 'queue_manager' : null].filter(Boolean);
   if (roles.length) await db.users.setRoles(userId, roles);
   if (subAdmin) await db.users.updateUser(userId, { subAdminPermissions: permissions });
-  if (verified) await verifyActor({ userId, mobile, audience: 'STAFF' });
-  return { ...user, userId, mobile };
+  const totpSecret = verified ? await enrolAuthenticator({ userId }) : null;
+  return { ...user, userId, mobile, totpSecret };
 }
 
 export async function seedAdmin({ verified = true } = {}) {
@@ -349,7 +367,7 @@ export async function seedAdmin({ verified = true } = {}) {
     accountType: 'STAFF',
     isAdmin: true,
   });
-  // Telegram approves every staff sign-in (Step 3): the link below is that.
-  if (verified) await verifyActor({ userId, mobile, audience: 'STAFF' });
-  return { ...user, userId, mobile };
+  // An authenticator code completes every staff sign-in (owner, 2026-10-13).
+  const totpSecret = verified ? await enrolAuthenticator({ userId }) : null;
+  return { ...user, userId, mobile, totpSecret };
 }

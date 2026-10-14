@@ -50,9 +50,9 @@ describe('the identity and payout control plane is reachable', () => {
   const required = [
     'GET /telegram/bot',
     'PUT /telegram/bot',
-    'GET /account/telegram',
-    'POST /account/telegram/relink',
-    'PUT /account/telegram/two-factor',
+    'GET /account/2fa',
+    'POST /account/2fa/recovery-codes',
+    'POST /staff/:userId/reset-authenticator',
     'GET /referral/stats',
     'POST /referral/disburse',
   ];

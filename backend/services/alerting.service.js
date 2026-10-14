@@ -38,42 +38,25 @@ export async function sendAlert(key, title, details = {}) {
 
     const url = await getWebhookUrl();
 
-    // ── TWO SINKS, INDEPENDENT ──────────────────────────────────────────────
-    // The webhook and Telegram are not alternatives: an operator may run one,
-    // the other, or both. Security alerts go by the one bot to every staff
-    // member who linked Telegram (owner, 2026-10-07), and an operator who has
-    // that must not have to also stand up a Slack endpoint to receive anything.
+    // ── ONE SINK: the webhook ───────────────────────────────────────────────
+    // Staff have no Telegram (owner, 2026-10-13), so the bot has nobody on the
+    // staff side to message; the webhook is the alert channel.
     //
-    // The COOLDOWN is shared and checked once, above, so a crash-looping job
-    // cannot flood one sink because the other was quiet. And it is claimed only
-    // once at least one sink EXISTS — the version this replaced returned before
-    // claiming it when no webhook was set, which is what made "no sinks" a
+    // The COOLDOWN is claimed only once the sink EXISTS, so "no sink" is a
     // silent no-op rather than a silenced key.
-    const text = `🚨 [BettingBazaar] ${title}`;
-    const sinks = [];
-
-    if (url) {
-      // 5s per-attempt timeout — never let a slow webhook hold anything open —
-      // plus up to 2 jittered retries (full jitter, tight cap) for transient
-      // failures. Bounded worst case ~ 3×5s + a few seconds of jitter; this runs
-      // in a background/fire-and-forget context, never on a synchronous money path.
-      sinks.push(fetchWithRetry(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, key, title, details, ts: new Date().toISOString() }),
-      }, { timeoutMs: 5000, retries: 2, baseMs: 250, capMs: 2000, jitter: 'full' }));
-    }
-
-    const telegram = await postToStaff(text, details);
-    if (telegram) sinks.push(telegram);
-
-    if (!sinks.length) return; // alerting not configured — silent no-op by design
+    if (!url) return; // alerting not configured — silent no-op by design
     lastSent.set(key, now);
+    const text = `🚨 [BettingBazaar] ${title}`;
 
-    // `allSettled`, not `all`: a dead webhook must not stop the admin channel
-    // receiving the page, and vice versa. Either failing is logged below by the
-    // helper that raised it; neither reaches the caller.
-    await Promise.allSettled(sinks);
+    // 5s per-attempt timeout — never let a slow webhook hold anything open —
+    // plus up to 2 jittered retries (full jitter, tight cap) for transient
+    // failures. Bounded worst case ~ 3×5s + a few seconds of jitter; this runs
+    // in a background/fire-and-forget context, never on a synchronous money path.
+    await fetchWithRetry(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, key, title, details, ts: new Date().toISOString() }),
+    }, { timeoutMs: 5000, retries: 2, baseMs: 250, capMs: 2000, jitter: 'full' });
     try {
       const { alertsSent } = await import('./metrics.service.js');
       alertsSent.inc({ key });
@@ -82,62 +65,4 @@ export async function sendAlert(key, title, details = {}) {
     // Alerting must never throw into the caller.
     console.error('[alerting] webhook send failed:', e.message);
   }
-}
-
-/**
- * Every linked staff member, by the one bot (Step 3), or null when there is no
- * bot or nobody to tell.
- *
- * Returns a PROMISE to await (or null), rather than awaiting here, so the two
- * sinks run concurrently and a slow Bot API call does not delay the webhook.
- *
- * ── Why this cannot loop ──────────────────────────────────────────────────
- * A failure here is logged and swallowed; it never calls `sendAlert`.
- *
- * ── Why STAFF specifically ───────────────────────────────────────────────
- * `listAlertRecipients` reads STAFF links of STAFF accounts only, blocked and
- * closed accounts left out. An account-takeover alert reaching a player would
- * publish platform security detail to the user base, so the population is the
- * repository's literal, not anything a caller can influence.
- */
-async function postToStaff(text, details) {
-  try {
-    const [{ miniAppBot, sendDirectMessage }, { listAlertRecipients }] = await Promise.all([
-      import('../domains/telegram/telegramClient.js'),
-      import('#db/repositories/telegram.js'),
-    ]);
-    if (!(await miniAppBot())) return null;
-    const recipients = await listAlertRecipients();
-    if (!recipients.length) return null;
-
-    // Details as a fenced block: an alert is read on a phone, and a wall of
-    // unformatted JSON in a chat is a wall nobody reads.
-    const body = Object.keys(details || {}).length
-      ? `${text}\n<pre>${escapeHtml(JSON.stringify(details, null, 2))}</pre>`
-      : text;
-
-    return Promise.allSettled(recipients.map((chatId) => sendDirectMessage(chatId, body)
-      .then((res) => {
-        // The commonest cause is a staff member who never allowed the bot to
-        // write to them; nothing else would ever say so.
-        if (!res.ok) console.error(`[alerting] could not message staff ${chatId}: ${res.error}`);
-        return res;
-      })));
-  } catch (e) {
-    console.error('[alerting] staff Telegram sink failed:', e.message);
-    return null;
-  }
-}
-
-/**
- * `parse_mode: HTML` is set, so an `&` or a `<` inside a detail value would
- * make Telegram reject the whole message — which turns one alert into no alert,
- * silently, exactly when something has gone wrong. Escaped rather than sent as
- * plain text because the fenced block is what makes these readable on a phone.
- */
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
 }

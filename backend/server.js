@@ -546,21 +546,17 @@ app.use('/api/v1/auth', playerAuthRoutes);
 // signed the rest of them out. Both now sit on the credential ROUTES, in
 // playerAuth.routes.js, which is the only place either can do its job.
 app.use('/api/v1/auth', authLimiter, authRoutes);
-// 2FA enrolment and management (docs/PROJECT_STATUS.md §3.3). Mandatory for admin and
-// sub-admin roles; players do not have passwords and so have no second factor
-// to enrol. Enforcement at login lives in the auth handler, this router only
-// manages enrolment.
 app.use('/api', winnersRoutes);
 
 // ── The staff sign-in door (§33) ─────────────────────────────────────────────
-// routes.js's four legs with the staff limits (loginDoors.js): the password leg
-// paced FIRST (a paced request is not a failed attempt), then the admin failure
-// budget, the subnet limiter and the captcha; the Telegram polls on the poll
-// limiter, never the password pace.
+// Password, then an authenticator code (owner, 2026-10-13; no Telegram). The
+// password leg is paced FIRST (a paced request is not a failed attempt), then
+// the admin failure budget and the subnet limiter; the code legs on the
+// second-factor budget, keyed on the account (loginDoors.js).
 app.post('/api/admin/login', ...doorRoute('STAFF', 'login'));
-app.post('/api/admin/login/2fa', ...doorRoute('STAFF', 'twoFactor'));
-app.post('/api/admin/login/telegram', ...doorRoute('STAFF', 'telegram'));
-app.post('/api/admin/login/telegram/complete', ...doorRoute('STAFF', 'telegramComplete'));
+app.post('/api/admin/login/totp', ...doorRoute('STAFF', 'totp'));
+app.post('/api/admin/login/totp/setup', ...doorRoute('STAFF', 'totpSetup'));
+app.post('/api/admin/login/totp/activate', ...doorRoute('STAFF', 'totpActivate'));
 
 app.use('/api/admin', adminRoutes);   // ← now routes/admin/index.js (13 sub-routers)
 

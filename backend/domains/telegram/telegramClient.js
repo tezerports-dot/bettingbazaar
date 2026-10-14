@@ -3,9 +3,10 @@
  * domains/telegram/telegramClient.js — the one bot, and the Bot API.
  *
  * Step 3 (owner, 2026-10-07) left ONE bot: it carries the Mini App that
- * verifies every account, approves staff and merchant sign-ins, signs players
- * in with "Login with Telegram" and resets passwords, and it sends staff their
- * security alerts. There is no fleet, no channel, no recovery bot, no webhook.
+ * verifies every player and merchant, approves merchant sign-ins, signs players
+ * in with "Login with Telegram" and resets passwords. Staff have no Telegram
+ * (owner, 2026-10-13), so it messages nobody. There is no fleet, no channel,
+ * no recovery bot, no webhook.
  *
  * ── Why the bot is read per call, through a short cache ───────────────────
  * Telegram suspends gambling bots, so an admin replaces the token at runtime
@@ -121,19 +122,6 @@ export async function callApi(token, method, payload = {}, { timeoutMs = 10_000 
   } finally {
     clearTimeout(timer);
   }
-}
-
-/**
- * A direct message from the bot. The bot can reach only somebody who opened
- * it, which every linked account did to verify (and a staff member's Mini App
- * asks `requestWriteAccess` for exactly this).
- */
-export async function sendDirectMessage(chatId, text, extra = {}) {
-  const bot = await miniAppBot();
-  if (!bot) return { ok: false, error: 'not_configured' };
-  return callApi(bot.token, 'sendMessage', {
-    chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra,
-  });
 }
 
 /** Ask Telegram who a token belongs to: the only way a bot is ever named. */

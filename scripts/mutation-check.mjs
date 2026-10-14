@@ -2673,7 +2673,7 @@ const MUTATIONS = [
   // in `schema.sql` itself: `applySchema()` runs the whole file on every suite
   // start, and each guard is DROPped and re-ADDed there (S31), so weakening the
   // definition weakens the live database the next time a suite starts.
-  // ── Step 3: Telegram verifies signup, approves staff and merchant sign-ins,
+  // ── Step 3: Telegram verifies signup, approves merchant sign-ins,
   // and offers Login with Telegram (owner, 2026-10-07) ──────────────────────
   {
     id: 'MS1', file: 'database/repositories/telegram.js', config: PG,
@@ -2701,10 +2701,10 @@ const MUTATIONS = [
   },
   {
     id: 'MS4', file: 'backend/domains/identity/auth.middleware.js', config: PG,
-    test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'a staff or merchant session proved by a password alone is honoured',
-    from: `  if (amr.includes('tg')) return false;`,
-    to: `  if (true) return false;`,
+    test: 'backend/tests/routes/staffSignInPg.test.js',
+    why: 'a staff or merchant session without its second factor is honoured',
+    from: `  return !amr.includes(owed);`,
+    to: `  return false;`,
   },
   {
     id: 'MS5', file: 'database/repositories/telegram.js', config: PG,
@@ -2716,14 +2716,14 @@ const MUTATIONS = [
   {
     id: 'MS6', file: 'backend/routes.js', config: PG,
     test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'a staff or merchant password signs in without the Telegram approval',
+    why: 'a merchant password signs in without the Telegram approval',
     from: `    if (!link.twoFactor) return sessionFor(door, user, res, { amr: ['pwd'], merchant, staff });`,
     to: `    if (true) return sessionFor(door, user, res, { amr: ['pwd'], merchant, staff });`,
   },
   {
     id: 'MS7', file: 'backend/routes.js', config: PG,
     test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'staff signing in from inside the Mini App skip their password',
+    why: 'merchants signing in from inside the Mini App skip their password',
     from: `    if (!isPlayer) {
       return res.status(200).json({`,
     to: `    if (false) {
@@ -2732,9 +2732,90 @@ const MUTATIONS = [
   {
     id: 'MS8', file: 'backend/routes.js', config: PG,
     test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'one staff member\'s Telegram approval completes another staff member\'s password sign-in',
+    why: 'one merchant\'s Telegram approval completes another merchant\'s password sign-in',
     from: `        purposes: ['TELEGRAM_LOGIN'], userId: user.userId,`,
     to: `        purposes: ['TELEGRAM_LOGIN'],`,
+  },
+  // ── Staff sign in with an authenticator app, no Telegram (owner, 2026-10-13) ─
+  {
+    id: 'MT1', file: 'database/repositories/totp.js', config: PG,
+    test: 'backend/tests/routes/staffSignInPg.test.js',
+    why: 'an authenticator code signs in twice: a shoulder-surfed code is good for its whole window',
+    from: `        AND (last_counter IS NULL OR last_counter < $2)`,
+    to: `        AND TRUE`,
+  },
+  {
+    id: 'MT2', file: 'database/repositories/totp.js', config: PG,
+    test: 'database/tests/totpPg.test.js',
+    why: 'one recovery code, sent twice at once, signs in twice',
+    from: `      WHERE user_id = $1 AND secret_enc IS NOT NULL AND recovery_hashes ? $2::text`,
+    to: `      WHERE user_id = $1 AND secret_enc IS NOT NULL`,
+  },
+  {
+    id: 'MT3', file: 'database/repositories/totp.js', config: PG,
+    test: 'database/tests/totpPg.test.js',
+    why: 'a scanned secret left pending for days still activates',
+    // Both places that judge the pending secret's age: the read the service
+    // refuses on, and the activating UPDATE's WHERE (S6). Either alone is
+    // covered by the other, so the BEHAVIOUR is what this loosens.
+    edits: [
+      [`              AND pending_at > now() - make_interval(secs => $2)) AS pending_live`,
+        `              AND $2::int IS NOT NULL) AS pending_live`],
+      [`        AND pending_at > now() - make_interval(secs => $5)\`,`,
+        `        AND $5::int IS NOT NULL\`,`],
+    ],
+  },
+  {
+    id: 'MT4', file: 'backend/domains/identity/auth.middleware.js', config: PG,
+    test: 'backend/tests/routes/staffSignInPg.test.js',
+    why: 'a staff session approved in Telegram (or carrying no code) is honoured, so Telegram is a staff second factor again',
+    from: `const SECOND_FACTOR = Object.freeze({ STAFF: 'otp', MERCHANT: 'tg' });`,
+    to: `const SECOND_FACTOR = Object.freeze({ STAFF: 'tg', MERCHANT: 'tg' });`,
+  },
+  {
+    id: 'MT5', file: 'backend/domains/identity/twoFactorChallenge.js', config: PG,
+    test: 'backend/tests/routes/staffSignInPg.test.js',
+    why: 'a challenge for one leg is accepted at another: an enrolled account\'s code-step token opens a new setup',
+    from: `  if ((claims.step || null) !== step) return null;          // another leg`,
+    to: ``,
+  },
+  {
+    id: 'MT6', file: 'backend/domains/identity/loginDoors.js', config: PG,
+    test: 'backend/tests/routes/telegramLoginPg.test.js',
+    why: 'the staff door mounts a Telegram leg again',
+    from: `  if (!DOOR_LEGS[door].includes(leg))`,
+    to: `  if (false)`,
+  },
+  {
+    id: 'MT7', file: 'backend/routes/admin/subadmins.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/staffSignInPg.test.js',
+    why: 'an admin resets their own authenticator, so a stolen admin session enrols the thief\'s phone',
+    from: `    if (targetId === String(req.user.userId)) {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'MT8', file: 'backend/routes.js', config: PG,
+    test: 'backend/tests/routes/staffSignInPg.test.js',
+    why: 'a staff account blocked between its password and its code is signed in anyway',
+    from: `  const refused = accountRefusal(LOGIN_DOOR.STAFF, user, challenge.loginType);
+  return refused ? { refusal: refused } : { user };`,
+    to: `  return { user };`,
+  },
+  {
+    id: 'MT9', file: 'backend/routes/admin/account.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/staffSignInPg.test.js',
+    why: 'a mistyped code on My Authenticator answers 401, which the panel reads as a dead session and signs the operator out',
+    from: `    if (e?.code === 'TOTP_INVALID') e.status = 400;`,
+    to: ``,
+  },
+  {
+    id: 'MT10', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/telegramPg.test.js',
+    why: 'a staff account may hold a Telegram link again',
+    from: `ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_audience_check
+  CHECK (audience IN ('PLAYER', 'MERCHANT'));`,
+    to: `ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_audience_check
+  CHECK (audience IN ('PLAYER', 'MERCHANT', 'STAFF'));`,
   },
   // ── Forgot password, set in the Mini App for every panel (2026-10-08) ────
   {
@@ -2747,7 +2828,7 @@ const MUTATIONS = [
   {
     id: 'MS10', file: 'backend/domains/identity/passwordReset.service.js', config: PG,
     test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'a staff password below the staff floor is set through the Mini App',
+    why: 'a merchant password below the merchant floor is set through the Mini App',
     from: `  assertNewPassword(panel, { password, confirmPassword, mobile: contact.phone });`,
     to: ``,
   },

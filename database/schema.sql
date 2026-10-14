@@ -632,8 +632,9 @@ CREATE TABLE IF NOT EXISTS users (
   sub_admin_permissions JSONB NOT NULL DEFAULT '{}'::jsonb,
   phantom_access     TEXT NOT NULL DEFAULT 'NONE',
 
-  -- The second factor is the account's own Telegram (`telegram_links`, Step 3);
-  -- no secret is stored on the account.
+  -- The second factor is not stored on the account: a STAFF account's is its
+  -- authenticator app (`staff_totp`), a merchant's its own Telegram
+  -- (`telegram_links`).
 
   -- ── Blocking ─────────────────────────────────────────────────────────────
   is_blocked         BOOLEAN NOT NULL DEFAULT FALSE,
@@ -662,10 +663,10 @@ CREATE TABLE IF NOT EXISTS users (
     CHECK (NOT is_blocked OR (block_reason IS NOT NULL AND blocked_at IS NOT NULL))
 );
 
--- ── The authenticator app is gone (owner, 2026-10-07: 2FA is "Telegram only")
--- Its secrets, replay counters and recovery codes are dropped, so a database
--- that had them converges on this file (§32 S31) and keeps no secret for a
--- factor nothing checks.
+-- ── No second-factor secret on the account row ─────────────────────────────
+-- The old per-account authenticator columns are dropped, so a database that had
+-- them converges on this file (§32 S31). The STAFF authenticator (owner,
+-- 2026-10-13) lives in its own table, `staff_totp`, with one writer.
 ALTER TABLE users DROP COLUMN IF EXISTS two_factor_enabled;
 ALTER TABLE users DROP COLUMN IF EXISTS two_factor_secret;
 ALTER TABLE users DROP COLUMN IF EXISTS two_factor_pending_secret;
@@ -3262,8 +3263,9 @@ ALTER TABLE telegram_bot ADD CONSTRAINT telegram_bot_short_name_shape
 
 -- ── The link: an account verified by its own Telegram ─────────────────────
 -- One per account (the key) and, per panel, one account per Telegram account
--- (`telegram_links_one_per_panel`): a person holds a player, a merchant and a
--- staff account on one mobile, all three linked to the same Telegram account.
+-- (`telegram_links_one_per_panel`): a person holds a player and a merchant
+-- account on one mobile, both linked to the same Telegram account. Staff
+-- accounts have no link (the audience CHECK below).
 --
 -- A row EXISTS only once a contact share proved the phone, and nothing deletes
 -- one but the account's own deletion: "relink, never unlink" (owner reading,
@@ -3278,8 +3280,8 @@ CREATE TABLE IF NOT EXISTS telegram_links (
   phone             TEXT NOT NULL,
   telegram_username TEXT NOT NULL DEFAULT '',
   first_name        TEXT NOT NULL DEFAULT '',
-  -- Telegram approval of every password sign-in. Always on for staff and
-  -- merchants (the CHECK); a player's own switch.
+  -- Telegram approval of every password sign-in. Always on for merchants (the
+  -- CHECK); a player's own switch.
   two_factor        BOOLEAN NOT NULL DEFAULT FALSE,
   verified_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   linked_at         TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -3287,11 +3289,20 @@ CREATE TABLE IF NOT EXISTS telegram_links (
 ALTER TABLE telegram_links DROP CONSTRAINT IF EXISTS telegram_links_account;
 ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_account
   FOREIGN KEY (user_id, audience) REFERENCES users (user_id, account_type) ON DELETE CASCADE;
+-- Players and merchants only (owner, 2026-10-13): a staff account signs in with
+-- its password and an authenticator app (`staff_totp`) and has no Telegram at
+-- all. A database that still holds a staff link from before converges here: the
+-- row is deleted, then the CHECK refuses another (§32 S31).
+DELETE FROM telegram_links WHERE audience = 'STAFF';
 ALTER TABLE telegram_links DROP CONSTRAINT IF EXISTS telegram_links_audience_check;
 ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_audience_check
-  CHECK (audience IN ('PLAYER', 'STAFF', 'MERCHANT'));
+  CHECK (audience IN ('PLAYER', 'MERCHANT'));
+-- A merchant approves every sign-in in Telegram; only a player may switch it
+-- off. Named for what it holds now that no staff row exists (the old name is
+-- dropped so a database that had it converges).
 ALTER TABLE telegram_links DROP CONSTRAINT IF EXISTS telegram_links_staff_two_factor;
-ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_staff_two_factor
+ALTER TABLE telegram_links DROP CONSTRAINT IF EXISTS telegram_links_merchant_two_factor;
+ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_merchant_two_factor
   CHECK (audience = 'PLAYER' OR two_factor);
 CREATE UNIQUE INDEX IF NOT EXISTS telegram_links_one_per_panel
   ON telegram_links (telegram_user_id, audience);
@@ -3345,9 +3356,12 @@ CREATE TABLE IF NOT EXISTS telegram_challenges (
 ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_purpose_check;
 ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_purpose_check
   CHECK (purpose IN ('VERIFY', 'LOGIN', 'TELEGRAM_LOGIN', 'RELINK', 'TWO_FACTOR_OFF'));
+-- Players and merchants only, as `telegram_links` above: a staff challenge left
+-- from before is deleted, then refused.
+DELETE FROM telegram_challenges WHERE audience = 'STAFF';
 ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_audience_check;
 ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_audience_check
-  CHECK (audience IN ('PLAYER', 'STAFF', 'MERCHANT'));
+  CHECK (audience IN ('PLAYER', 'MERCHANT'));
 ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_status_check;
 ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_status_check
   CHECK (status IN ('PENDING', 'APPROVED', 'DENIED', 'REDEEMED'));
@@ -4670,3 +4684,52 @@ CREATE TABLE IF NOT EXISTS merchant_flags (
 CREATE INDEX IF NOT EXISTS merchant_flags_recent_idx ON merchant_flags (flag_day DESC, merchant_id);
 CREATE OR REPLACE TRIGGER merchant_flags_append_only
   BEFORE UPDATE OR DELETE ON merchant_flags FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- STAFF AUTHENTICATOR (owner, 2026-10-13)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- A STAFF account (admin, sub-admin, queue manager, mediator) signs in with its
+-- mobile, its password and a code from an authenticator app (RFC 6238 TOTP).
+-- No Telegram. Written only by database/repositories/totp.js.
+--
+--   secret_enc / pending_secret_enc  the base32 secret, AES-256-GCM
+--                       (IDENTITY_ENCRYPTION_KEY, fieldCrypto.util.js). Pending
+--                       while the first code has not been typed; the DATABASE
+--                       clock (`pending_at`) decides when it lapses.
+--   last_counter        the last 30-second step accepted. A code is spent by an
+--                       UPDATE whose WHERE asks `last_counter < step` (§32 S6),
+--                       so a replayed or older code updates no row.
+--   recovery_hashes     argon2id hashes of the unused recovery codes; a code is
+--                       spent by removing its hash in an UPDATE that names it.
+--
+-- A row exists from the first enrolment step. Deleting it (an admin's reset or
+-- scripts/reset-staff-access.mjs) sends the account back to enrolment.
+CREATE TABLE IF NOT EXISTS staff_totp (
+  user_id               TEXT PRIMARY KEY,
+  account_type          TEXT NOT NULL DEFAULT 'STAFF',
+  secret_enc            TEXT,
+  pending_secret_enc    TEXT,
+  pending_at            TIMESTAMPTZ,
+  last_counter          BIGINT,
+  enrolled_at           TIMESTAMPTZ,
+  recovery_hashes       JSONB NOT NULL DEFAULT '[]'::jsonb,
+  recovery_generated_at TIMESTAMPTZ,
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE staff_totp DROP CONSTRAINT IF EXISTS staff_totp_account;
+ALTER TABLE staff_totp ADD CONSTRAINT staff_totp_account
+  FOREIGN KEY (user_id, account_type) REFERENCES users (user_id, account_type) ON DELETE CASCADE;
+ALTER TABLE staff_totp DROP CONSTRAINT IF EXISTS staff_totp_staff_only;
+ALTER TABLE staff_totp ADD CONSTRAINT staff_totp_staff_only CHECK (account_type = 'STAFF');
+ALTER TABLE staff_totp DROP CONSTRAINT IF EXISTS staff_totp_has_secret;
+ALTER TABLE staff_totp ADD CONSTRAINT staff_totp_has_secret
+  CHECK (secret_enc IS NOT NULL OR pending_secret_enc IS NOT NULL);
+ALTER TABLE staff_totp DROP CONSTRAINT IF EXISTS staff_totp_enrolled_shape;
+ALTER TABLE staff_totp ADD CONSTRAINT staff_totp_enrolled_shape
+  CHECK ((secret_enc IS NULL) = (enrolled_at IS NULL));
+ALTER TABLE staff_totp DROP CONSTRAINT IF EXISTS staff_totp_pending_shape;
+ALTER TABLE staff_totp ADD CONSTRAINT staff_totp_pending_shape
+  CHECK ((pending_secret_enc IS NULL) = (pending_at IS NULL));
+ALTER TABLE staff_totp DROP CONSTRAINT IF EXISTS staff_totp_recovery_array;
+ALTER TABLE staff_totp ADD CONSTRAINT staff_totp_recovery_array
+  CHECK (jsonb_typeof(recovery_hashes) = 'array');

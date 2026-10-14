@@ -4,7 +4,8 @@
  * Telegram is asked.
  *
  * Step 3 (owner, 2026-10-07): an account's first sign-in waits for its Telegram
- * verification, a staff or merchant sign-in waits for its Telegram approval,
+ * verification, a merchant sign-in waits for its Telegram approval (a staff
+ * sign-in waits for an authenticator code, owner 2026-10-13: the `step` claim),
  * and "Login with Telegram" waits for the Mini App. Each is a row in
  * `telegram_challenges`; this token is how the browser that ASKED proves, when
  * it polls, that the answer is its own. The challenge id travels to Telegram in
@@ -19,6 +20,15 @@
  * account.
  *
  * ── The property everything depends on ───────────────────────────────────
+ * ── The step: which leg may redeem it ─────────────────────────────────────
+ * A STAFF sign-in (owner, 2026-10-13) is the password and then a code from an
+ * authenticator app, with no Telegram and no challenge row: the token alone
+ * carries the account from one leg to the next, and says which leg (`step`:
+ * `totp` for an enrolled account, `totp_setup` for one enrolling). A token
+ * with a step is refused by every Telegram leg, and a Telegram token (no step)
+ * by every authenticator leg (`verifyChallenge`'s third argument), so neither
+ * kind can be fed to the other's door.
+ *
  * A challenge token MUST NOT be usable as a session token. It carries
  * `purpose: '2fa_challenge'`, which every session-consuming path refuses
  * (`authenticate`, `merchantAuth`, `/me`, SSE, sockets), and none of the claims
@@ -29,6 +39,9 @@ import { signToken, verifyJwt } from './jwt.util.js';
 import { ACCOUNT_TYPES } from './audiences.js';
 
 export const CHALLENGE_PURPOSE = '2fa_challenge';
+
+/** The authenticator legs a staff challenge token can be minted for. */
+const TOTP_STEPS = Object.freeze(['totp', 'totp_setup']);
 
 /**
  * Mint the token for one challenge.
@@ -41,24 +54,38 @@ export const CHALLENGE_PURPOSE = '2fa_challenge';
  * @param {number} c.ttlSeconds   at least the challenge's own window plus the
  *                                redeem window; the database row decides
  * @param {string|null} [c.loginType]  the staff door's role selector, re-applied
+ * @param {'totp'|'totp_setup'|null} [c.step]  the authenticator leg this token
+ *                                is for (STAFF door only); null for Telegram
  */
-export function issueChallenge({ userId = null, door, challengeId, ttlSeconds, loginType = null }) {
+export function issueChallenge({ userId = null, door, challengeId, ttlSeconds, loginType = null, step = null }) {
   if (!ACCOUNT_TYPES.includes(door)) throw new Error(`issueChallenge: unknown door ${door}`);
   if (!challengeId) throw new Error('issueChallenge: a challenge id is required');
+  if (step !== null && !TOTP_STEPS.includes(step)) throw new Error(`issueChallenge: unknown step ${step}`);
+  if (step !== null && door !== 'STAFF') throw new Error('issueChallenge: an authenticator step is for the staff door only');
   return signToken(
     // NOTE the absence of userId/role/isAdmin/merchantId: see the header.
-    { sub: userId ? String(userId) : '', purpose: CHALLENGE_PURPOSE, door, cid: String(challengeId), loginType },
+    {
+      sub: userId ? String(userId) : '', purpose: CHALLENGE_PURPOSE, door, cid: String(challengeId), loginType,
+      ...(step ? { step } : {}),
+    },
     { expiresIn: `${Math.max(60, Math.ceil(Number(ttlSeconds) || 0))}s` },
   );
 }
 
+
 /**
- * Read a challenge token presented at `door`. Null for anything that is not
- * one, has expired, or was minted at another door.
+ * Read a challenge token presented at `door`, for the leg `step`. Null for
+ * anything that is not one, has expired, was minted at another door, or was
+ * minted for another leg: a Telegram leg passes no step and refuses every
+ * authenticator token; an authenticator leg names its step and refuses a
+ * Telegram token and the other step's.
  *
- * @returns {null | {userId: string|null, challengeId: string, door: string, loginType: string|null}}
+ * @param {string} token
+ * @param {'PLAYER'|'STAFF'|'MERCHANT'} door
+ * @param {'totp'|'totp_setup'|null} [step]
+ * @returns {null | {userId: string|null, challengeId: string, door: string, loginType: string|null, step: string|null}}
  */
-export function verifyChallenge(token, door) {
+export function verifyChallenge(token, door, step = null) {
   if (!token || typeof token !== 'string') return null;
   let claims;
   try {
@@ -68,11 +95,13 @@ export function verifyChallenge(token, door) {
   }
   if (claims.purpose !== CHALLENGE_PURPOSE) return null;  // a session token
   if (claims.door !== door || !claims.cid) return null;    // another door
+  if ((claims.step || null) !== step) return null;          // another leg
   return {
     userId: claims.sub ? String(claims.sub) : null,
     challengeId: String(claims.cid),
     door: claims.door,
     loginType: claims.loginType || null,
+    step: claims.step || null,
   };
 }
 

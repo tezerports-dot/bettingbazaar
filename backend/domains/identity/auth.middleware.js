@@ -31,8 +31,6 @@ import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 // Ed25519 signature verification, iss/aud stamped on sign. No raw token-library calls remain here.
 import { verifyJwt } from './jwt.util.js';
 import { isChallengeToken } from './twoFactorChallenge.js';
-// The one bot: whether it exists decides the staff bootstrap exemption (§33).
-import { miniAppBot } from '../telegram/telegramClient.js';
 import { isPermissionKey, permissionLabel, staffCan } from './staffPermissions.js';
 import { PANEL_NAME } from './audiences.js';
 
@@ -154,48 +152,38 @@ export async function sessionIsLive(token, decoded, login) {
   if (isChallengeToken(decoded)) return false;
   if (sessionSuperseded(login, decoded)) return false;
   const accountType = login?.accountType ?? (decoded?.isMerchant ? 'MERCHANT' : null);
-  return !(await secondFactorMissing(accountType, decoded));
+  return !secondFactorMissing(accountType, decoded);
 }
 
 /**
- * Is the platform still in its STAFF BOOTSTRAP (CLAUDE.md §33)?
+ * The second factor each account type's session must carry, by what its
+ * token's `amr` says was proved (minted only by `issueSession` /
+ * `issueMerchantSession`):
  *
- * True while no Mini App bot is configured. A staff account then signs in with
- * its password alone, because the screen where an admin saves the bot sits
- * behind the staff sign-in, and Telegram cannot approve anything before there
- * is a bot to carry the approval. Every staff response says so (`bootstrap`),
- * and the moment a bot is saved this is false on every path below — within the
- * bot cache's 30 seconds on other instances.
+ *   STAFF     `otp` — a code from the authenticator app (owner, 2026-10-13).
+ *             Always: there is no bootstrap, with or without a Telegram bot.
+ *   MERCHANT  `tg` — the account's own Telegram.
+ *   PLAYER    none: a player who switched approval on is asked for it AT the
+ *             login.
  */
-export async function staffBootstrap() {
-  return !(await miniAppBot());
-}
+const SECOND_FACTOR = Object.freeze({ STAFF: 'otp', MERCHANT: 'tg' });
 
 /**
- * Does this session lack the Telegram approval its account type owes?
+ * Does this session lack the second factor its account type owes?
  *
- * Step 3 (owner, 2026-10-07): a staff or merchant sign-in is a password AND the
- * account's own Telegram, and the token SAYS which it proved (`amr`, minted
- * only by `issueSession` / `issueMerchantSession`). Asked on every path that
- * honours a session — `authenticate`, `/me`, `merchantAuth`, both private SSE
- * streams and the socket room joins (through `sessionIsLive`) — so no path
- * admits a password-only staff or merchant session the login would not have
+ * Asked on every path that honours a session — `authenticate`, `/me`,
+ * `merchantAuth`, both private SSE streams and the socket room joins (through
+ * `sessionIsLive`) — so no path admits a session the login would not have
  * minted (§32 S32).
- *
- * Telegram is the only second factor (owner, 2026-10-07: "Telegram only"; the
- * authenticator app is gone). A player's session never owes one: a player
- * signs in with a password, or with Telegram, and a player who switched
- * approval on is asked for it AT the login.
  *
  * @param {'PLAYER'|'STAFF'|'MERCHANT'|null} accountType
  * @param {object} decoded  the verified claims
  */
-export async function secondFactorMissing(accountType, decoded) {
-  if (accountType !== 'STAFF' && accountType !== 'MERCHANT') return false;
+export function secondFactorMissing(accountType, decoded) {
+  const owed = SECOND_FACTOR[accountType];
+  if (!owed) return false;
   const amr = Array.isArray(decoded?.amr) ? decoded.amr : [];
-  if (amr.includes('tg')) return false;
-  if (accountType === 'STAFF' && await staffBootstrap()) return false;
-  return true;
+  return !amr.includes(owed);
 }
 
 /** One refusal, so every path says the same thing to the same panel. */
@@ -203,7 +191,7 @@ export function refuseMissingSecondFactor(res) {
   return res.status(403).json({
     success: false,
     code: 'TWO_FACTOR_REQUIRED',
-    message: 'This sign-in has not been approved in Telegram. Sign in again and approve it in the Telegram app.',
+    message: 'This sign-in is missing its second step. Sign in again.',
   });
 }
 
@@ -346,7 +334,7 @@ const makeAuthenticate = ({ accountTypes = ['PLAYER', 'STAFF'] } = {}) => async 
     if (accountClosed(user)) return refuseClosedAccount(res);
     if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
     if (belongsElsewhere(user, accountTypes)) return refuseWrongPanel(res, user);
-    if (await secondFactorMissing(user.accountType, decoded)) return refuseMissingSecondFactor(res);
+    if (secondFactorMissing(user.accountType, decoded)) return refuseMissingSecondFactor(res);
 
     // Check if user account is active
     if (user.isBlocked) {
@@ -390,7 +378,7 @@ const authenticate = makeAuthenticate();
 const authenticatePlayer = makeAuthenticate({ accountTypes: ['PLAYER'] });
 
 /**
- * A STAFF account's own routes — its Telegram link (accountTelegram.js). A
+ * A STAFF account's own routes — its authenticator (account.admin.routes.js). A
  * player's session is refused with the panel it belongs to.
  */
 const authenticateStaff = makeAuthenticate({ accountTypes: ['STAFF'] });

@@ -213,7 +213,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
             if (sessionSuperseded(await merchantLoginRow(merchant, decoded), decoded)) {
                 return refuseSupersededSession(res);
             }
-            if (await secondFactorMissing('MERCHANT', decoded)) return refuseMissingSecondFactor(res);
+            if (secondFactorMissing('MERCHANT', decoded)) return refuseMissingSecondFactor(res);
         } catch (e) {
             console.error('❌ SSE merchant auth check error:', e.message);
             return res.status(500).json({ success: false, message: 'Auth check failed' });
@@ -298,12 +298,13 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         }
         // A password reset ends this stream too, not only the REST API.
         if (sessionSuperseded(adminUser, decoded)) return refuseSupersededSession(res);
-        // A staff account's own population (§33.5), and a session its Telegram
-        // approved: the same two questions `authenticate` asks (§32 S32).
+        // A staff account's own population (§33.5), and a session that carries
+        // its authenticator code: the same two questions `authenticate` asks
+        // (§32 S32).
         if (adminUser.accountType !== 'STAFF') {
             return res.status(403).json({ success: false, code: 'WRONG_PANEL', message: 'Admin access required' });
         }
-        if (await secondFactorMissing('STAFF', decoded)) return refuseMissingSecondFactor(res);
+        if (secondFactorMissing('STAFF', decoded)) return refuseMissingSecondFactor(res);
 
         initSSEResponse(res);
         sseManager.addAdminClient(res, adminUser);

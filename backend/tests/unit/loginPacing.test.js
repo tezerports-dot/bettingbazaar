@@ -9,8 +9,9 @@
  * the RATE that decides whether an automated guess is worth attempting.
  *
  * ── Which accounts this protects ───────────────────────────────────────────
- * Every door (Step 3): a player, a staff member and a merchant all sign in with
- * a mobile and a password; staff and merchants then approve in Telegram.
+ * Every door: a player, a staff member and a merchant all sign in with a mobile
+ * and a password; staff then type an authenticator code (owner, 2026-10-13)
+ * and merchants approve in Telegram.
  *
  * ── The response has to be answerable ───────────────────────────────────────
  * A 429 carrying only "too many requests" leaves a person to guess when to
@@ -115,18 +116,36 @@ describe('every credential path is actually paced', () => {
   // Step 3: every door's legs come from ONE table (loginDoors.js), mounted by
   // each panel's router. So the chain is asserted on the table, and the mounts
   // on the source.
-  it('every door mounts all four legs through doorRoute', () => {
+  const TELEGRAM_LEGS = [['', 'login'], ['/2fa', 'twoFactor'], ['/telegram', 'telegram'], ['/telegram/complete', 'telegramComplete']];
+  const STAFF_LEGS = [['', 'login'], ['/totp', 'totp'], ['/totp/setup', 'totpSetup'], ['/totp/activate', 'totpActivate']];
+
+  it('every door mounts its legs through doorRoute', () => {
     const mounts = {
-      'server.js': ['/api/admin/login', 'STAFF'],
-      'domains/merchant/merchant.routes.js': ['/auth/login', 'MERCHANT'],
-      'domains/identity/playerAuth.routes.js': ['/login', 'PLAYER'],
+      'server.js': ['/api/admin/login', 'STAFF', STAFF_LEGS],
+      'domains/merchant/merchant.routes.js': ['/auth/login', 'MERCHANT', TELEGRAM_LEGS],
+      'domains/identity/playerAuth.routes.js': ['/login', 'PLAYER', TELEGRAM_LEGS],
     };
-    for (const [file, [path, door]] of Object.entries(mounts)) {
+    for (const [file, [path, door, legs]] of Object.entries(mounts)) {
       const src = read(file);
-      for (const [suffix, leg] of [['', 'login'], ['/2fa', 'twoFactor'], ['/telegram', 'telegram'], ['/telegram/complete', 'telegramComplete']]) {
+      for (const [suffix, leg] of legs) {
         expect(src, `${file} ${path}${suffix}`).toContain(`('${path}${suffix}', ...doorRoute('${door}', '${leg}'))`);
       }
     }
+  });
+
+  it('the staff door has no Telegram leg, and no other door an authenticator leg (owner, 2026-10-13)', async () => {
+    const { doorRoute } = await import('../../domains/identity/loginDoors.js');
+    for (const leg of ['twoFactor', 'telegram', 'telegramComplete']) {
+      expect(() => doorRoute('STAFF', leg), leg).toThrow(/no .* leg/);
+    }
+    for (const door of ['PLAYER', 'MERCHANT']) {
+      for (const leg of ['totp', 'totpSetup', 'totpActivate']) {
+        expect(() => doorRoute(door, leg), `${door} ${leg}`).toThrow(/no .* leg/);
+      }
+    }
+    const src = read('server.js');
+    expect(src).not.toContain("'/api/admin/login/2fa'");
+    expect(src).not.toContain("'/api/admin/login/telegram'");
   });
 
   it('paces the password BEFORE the failure budget and the captcha, at every door', async () => {
@@ -146,17 +165,20 @@ describe('every credential path is actually paced', () => {
     expect(hasCaptcha(doorRoute('PLAYER', 'login'))).toBe(true);
     expect(hasCaptcha(doorRoute('STAFF', 'login'))).toBe(false);
     expect(hasCaptcha(doorRoute('MERCHANT', 'login'))).toBe(false);
-    for (const door of ['PLAYER', 'STAFF', 'MERCHANT']) {
+    for (const door of ['PLAYER', 'MERCHANT']) {
       for (const leg of ['twoFactor', 'telegram', 'telegramComplete']) {
         expect(hasCaptcha(doorRoute(door, leg)), `${door} ${leg}`).toBe(false);
       }
+    }
+    for (const leg of ['totp', 'totpSetup', 'totpActivate']) {
+      expect(hasCaptcha(doorRoute('STAFF', leg)), `STAFF ${leg}`).toBe(false);
     }
   });
 
   it('bounds the Telegram poll and the second-factor budget on both polling legs', async () => {
     const { doorRoute } = await import('../../domains/identity/loginDoors.js');
     const sec = await import('../../middleware/security.js');
-    for (const door of ['PLAYER', 'STAFF', 'MERCHANT']) {
+    for (const door of ['PLAYER', 'MERCHANT']) {
       for (const leg of ['twoFactor', 'telegramComplete']) {
         const chain = doorRoute(door, leg);
         expect(chain.indexOf(sec.challengePollLimiter), `${door} ${leg}`).toBe(0);
@@ -164,5 +186,15 @@ describe('every credential path is actually paced', () => {
       }
       expect(doorRoute(door, 'telegram')[0]).toBe(sec.telegramLoginLimiter);
     }
+  });
+
+  it('puts every staff code leg on the second-factor budget, keyed on the account', async () => {
+    const { doorRoute } = await import('../../domains/identity/loginDoors.js');
+    const sec = await import('../../middleware/security.js');
+    expect(doorRoute('STAFF', 'totp')[0]).toBe(sec.twoFactorLimiter);
+    expect(doorRoute('STAFF', 'totpActivate')[0]).toBe(sec.twoFactorLimiter);
+    const setup = doorRoute('STAFF', 'totpSetup');
+    expect(setup[0]).toBe(sec.challengePollLimiter);
+    expect(setup[1]).toBe(sec.twoFactorLimiter);
   });
 });

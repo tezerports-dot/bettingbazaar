@@ -12,8 +12,9 @@
  *
  * ── Set where the person is, for every panel (2026-10-08) ─────────────────
  * It used to answer with a link to `<panel>/#/reset/<token>`. Only the player
- * app had that page, so a merchant or staff member who forgot their password
- * was handed a link to a screen that did not exist. The person is already in
+ * app had that page, so a merchant who forgot their password was handed a
+ * link to a screen that did not exist. (Staff have no Telegram, so no reset
+ * here: owner, 2026-10-13; `scripts/reset-staff-access.mjs` is theirs.) The person is already in
  * the Mini App holding the proof; the password is set there, in the same
  * transaction that spends the proof, and there is no token to carry anywhere.
  *
@@ -33,7 +34,7 @@ import { refusal } from '../../shared/httpError.js';
  * spent. The Mini App's `initData` and contact are single-use: a password the
  * policy refuses must not cost the person the page they are on.
  *
- * The floor is the ACCOUNT's (§2: 12 staff and merchant, 8 player), derived
+ * The floor is the ACCOUNT's (§2: 12 merchant, 8 player), derived
  * from the panel, which IS the account type the reset looks up.
  *
  * @throws status 400: PASSWORDS_DIFFER, or the policy's WEAK_PASSWORD (§32 S35)
@@ -49,8 +50,8 @@ export function assertNewPassword(panel, { password, confirmPassword, mobile }) 
 /**
  * A contact shared in the Mini App resets the password of the account of that
  * mobile on `panel`. The account's type IS the panel, in the repository's
- * WHERE (§33.5): a player's share can never reach the staff account on the
- * same number.
+ * WHERE (§33.5): a player's share can never reach the merchant account on
+ * the same number.
  *
  * @returns {Promise<{ok: true, userId: string} | {ok: false, code: string}>}
  * @throws status 400 when the password is refused (before anything is spent)

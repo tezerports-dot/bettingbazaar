@@ -8,36 +8,25 @@ import { endRefusedSession, forgetSignedOutReason, serverRefusal } from './signe
 /**
  * The staff session.
  *
- * A sign-in that owes a Telegram approval is NOT held here: its challenge is a
- * few minutes' half-credential that lives in the sign-in screen's own state and
- * dies with it, so nothing persists it and a reload starts the sign-in again.
+ * A sign-in that still owes its authenticator code is NOT held here: its
+ * challenge is a few minutes' half-credential that lives in the sign-in
+ * screen's own state and dies with it, so nothing persists it and a reload
+ * starts the sign-in again.
  */
 interface AuthState {
   admin: Admin | null;
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  /**
-   * The staff bootstrap (CLAUDE.md §33): no Telegram bot is saved yet, so this
-   * session is a password alone. The server says so on every session payload
-   * and on every `/me`; the Layout shows a standing banner naming the screen
-   * that ends it. Persisted with the session it describes.
-   */
-  bootstrap: boolean;
-  /**
-   * The password leg. Signs in when the server answers a session; otherwise
-   * returns the Telegram step for the screen to show.
-   */
+  /** The password leg. Answers which code step is next; never a session. */
   login: (
     mobile: string,
     password: string,
     loginType?: 'admin' | 'subadmin' | 'queue_manager',
-    challengeToken?: string,
   ) => Promise<LoginAnswer>;
   /**
-   * Hold a session a Telegram poll answered. The poll itself lives in the
-   * sign-in screen, which drops an answer that arrives after "Back"; only a
-   * session it still wants reaches here.
+   * Hold the session a code leg answered. The sign-in screen decides when (it
+   * shows the recovery codes first, on a first sign-in).
    */
   adoptSession: (session: StaffSession) => void;
   logout: () => Promise<void>;
@@ -53,7 +42,6 @@ export const useAuthStore = create<AuthState>()(
           token: session.token,
           isAuthenticated: true,
           isLoading: false,
-          bootstrap: session.bootstrap,
         });
       };
 
@@ -62,14 +50,12 @@ export const useAuthStore = create<AuthState>()(
         token: null,
         isAuthenticated: false,
         isLoading: false,
-        bootstrap: false,
 
-        login: async (mobile, password, loginType = 'admin', challengeToken) => {
+        login: async (mobile, password, loginType = 'admin') => {
           set({ isLoading: true });
           try {
-            const answer = await api.auth.login(mobile, password, loginType, challengeToken);
-            if (answer.kind === 'session') adopt(answer.session);
-            else set({ isLoading: false });
+            const answer = await api.auth.login(mobile, password, loginType);
+            set({ isLoading: false });
             return answer;
           } catch (error) {
             set({ isLoading: false });
@@ -87,7 +73,7 @@ export const useAuthStore = create<AuthState>()(
             // A Log out says nothing on the sign-in form, whatever an earlier
             // refusal said there on this page load (`signedOut.ts`).
             forgetSignedOutReason();
-            set({ admin: null, token: null, isAuthenticated: false, bootstrap: false });
+            set({ admin: null, token: null, isAuthenticated: false });
           }
         },
 
@@ -100,10 +86,7 @@ export const useAuthStore = create<AuthState>()(
           try {
             const response = await api.auth.verifySession();
             if (response.success && response.data) {
-              set({
-                admin: response.data.admin, token, isAuthenticated: true,
-                bootstrap: (response as { bootstrap?: boolean }).bootstrap === true,
-              });
+              set({ admin: response.data.admin, token, isAuthenticated: true });
             } else {
               set({ isAuthenticated: false, token: null });
             }
@@ -121,7 +104,7 @@ export const useAuthStore = create<AuthState>()(
             // for the sign-in form.
             const status = err?.response?.status;
             if (status === 401 || status === 403) {
-              set({ admin: null, isAuthenticated: false, token: null, bootstrap: false });
+              set({ admin: null, isAuthenticated: false, token: null });
               if (status === 403) endRefusedSession(serverRefusal(err?.response?.data));
             }
           }
@@ -131,7 +114,7 @@ export const useAuthStore = create<AuthState>()(
     {
       name: 'admin-auth',
       partialize: (s) => ({
-        admin: s.admin, token: s.token, isAuthenticated: s.isAuthenticated, bootstrap: s.bootstrap,
+        admin: s.admin, token: s.token, isAuthenticated: s.isAuthenticated,
       }),
     }
   )

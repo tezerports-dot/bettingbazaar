@@ -385,6 +385,23 @@ capabilities:
       - database/repositories/audit.js
       - backend/routes/admin/audit.admin.routes.js
       - admin-panel/src/Pages/Settings/AuditLogs.tsx
+  - id: CAP-75
+    name: Staff Authenticator Sign-in (TOTP)
+    bucket: A
+    owner: app
+    implementation_status: full
+    activation_status: active
+    # Owner, 2026-10-13: staff sign in with mobile, password and an
+    # authenticator app, and have no Telegram (CLAUDE.md §33.8).
+    evidence:
+      - backend/domains/identity/totp.service.js
+      - database/repositories/totp.js
+      - backend/routes/admin/account.admin.routes.js
+      - scripts/reset-staff-access.mjs
+      - admin-panel/src/Pages/Login.tsx
+      - admin-panel/src/Pages/Account/MyAuthenticator.tsx
+    verification: { test: backend/tests/routes/staffSignInPg.test.js }
+    docs: [CLAUDE.md, deploy/VPS_UBUNTU_SETUP.md]
 
   # ── F. Networking & Edge ───────────────────────────────────────────────────
   - id: CAP-36

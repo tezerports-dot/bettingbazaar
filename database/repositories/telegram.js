@@ -10,9 +10,9 @@
  *
  * An account is created by a form and cannot be used until its holder shares,
  * in the Mini App, the Telegram contact whose phone IS the form's mobile. That
- * share writes a LINK (`telegram_links`). After it the link is the staff and
- * merchant second factor, an optional "Login with Telegram", and how a
- * forgotten password is reset. One bot; no fleet, channel, templates or
+ * share writes a LINK (`telegram_links`). After it the link is the merchant
+ * second factor, an optional "Login with Telegram", and how a forgotten
+ * password is reset. Players and merchants only (`TELEGRAM_AUDIENCES`). One bot; no fleet, channel, templates or
  * webhooks (CLAUDE.md §33).
  *
  * ── Every act on a Mini App proof is ONE transaction ───────────────────────
@@ -38,14 +38,22 @@
  * only; a late sweep never makes anything usable.
  */
 import { pgQuery, withTransaction } from '../client.js';
-import { ACCOUNT_TYPES, claimJoiningNumber } from './users.js';
+import { claimJoiningNumber } from './users.js';
 import { createAccountFromSignup } from './identity.js';
 import { recordJoinerEarnings } from './referrals.js';
 import { REFERRAL_REWARD_PAISE } from '../../backend/domains/referral/referralRewards.js';
 
+/**
+ * The account types Telegram serves: players and merchants. A STAFF account has
+ * no Telegram at all (owner, 2026-10-13): it signs in with a password and an
+ * authenticator app, and the schema's audience CHECKs refuse a staff link or
+ * challenge.
+ */
+export const TELEGRAM_AUDIENCES = Object.freeze(['PLAYER', 'MERCHANT']);
+
 function assertAudience(audience, fn) {
-  if (!ACCOUNT_TYPES.includes(audience)) {
-    throw new Error(`${fn} requires an audience (one of ${ACCOUNT_TYPES.join(', ')}); got ${audience}`);
+  if (!TELEGRAM_AUDIENCES.includes(audience)) {
+    throw new Error(`${fn} requires an audience (one of ${TELEGRAM_AUDIENCES.join(', ')}); got ${audience}`);
   }
   return audience;
 }
@@ -172,8 +180,8 @@ export async function getLinkByUserId(userId) {
 
 /**
  * Which account of THIS panel a Telegram account verifies. The audience is half
- * the key and required: one person's Telegram account verifies their player,
- * merchant and staff accounts alike (§33.5).
+ * the key and required: one person's Telegram account verifies their player and
+ * merchant accounts alike (§33.5).
  */
 export async function getLinkByTelegramId(telegramUserId, audience) {
   if (!telegramUserId) return null;
@@ -201,23 +209,6 @@ export async function listLinksForTelegramUser(telegramUserId) {
     [String(telegramUserId)], 'tg_links_for_telegram',
   );
   return rows.map((r) => ({ audience: r.audience, userId: r.user_id, mobile: r.mobile }));
-}
-
-/**
- * Who receives a staff security alert: every STAFF account that is linked and
- * neither blocked nor closed (owner, 2026-10-07: "admin security alerts to
- * staff who linked Telegram"). The bot can only message somebody who opened it,
- * which every linked staff member did to verify.
- */
-export async function listAlertRecipients() {
-  const { rows } = await pgQuery(
-    `SELECT l.telegram_user_id
-       FROM telegram_links l JOIN users u ON u.user_id = l.user_id
-      WHERE l.audience = 'STAFF' AND u.account_type = 'STAFF'
-        AND NOT u.is_blocked AND u.status NOT IN ('BLOCKED', 'DELETED')`,
-    [], 'tg_alert_recipients',
-  );
-  return rows.map((r) => r.telegram_user_id);
 }
 
 /**
@@ -329,7 +320,7 @@ export async function redeemChallenge({ challengeId, audience, purposes, userId 
 
 /**
  * What a challenge means to the browser holding it, without spending it: the
- * staff and merchant Telegram-first sign-in reads this to say "now your
+ * merchant Telegram-first sign-in reads this to say "now your
  * password", and spends it only when the password arrives.
  */
 export function stateOf(challenge, { audience, purposes, userId = null }) {
@@ -545,7 +536,7 @@ export async function answerChallenge({
  * "Login with Telegram" from INSIDE the Mini App: the `initData` is the proof.
  *
  * Claims it and finds the panel's account this Telegram account verifies. A
- * player is signed in by the caller on the answer; staff and merchants still
+ * player is signed in by the caller on the answer; merchants still
  * owe their password (owner reading, 2026-10-07), so for them an APPROVED
  * challenge is written in the same transaction and the password sign-in spends
  * it.

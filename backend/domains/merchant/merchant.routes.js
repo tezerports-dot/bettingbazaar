@@ -126,8 +126,7 @@ router.post('/auth/signup', async (req, res) => {
         // lookup: two applications on the same number arriving together both
         // pass a check, and only one INSERT can win.
         // A merchant holds platform float and sees the account a payout pays.
-        // Same floor as a sub-admin, for the same reason: no second factor is
-        // required of them either, so the password is the whole credential.
+        // Same floor as a sub-admin: the password is half the credential.
         try {
             assertStaffPassword(password, { mobile, username }, 'merchant');
         } catch (e) {

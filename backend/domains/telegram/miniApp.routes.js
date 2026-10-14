@@ -3,7 +3,8 @@
  * domains/telegram/miniApp.routes.js — what the Telegram Mini App asks.
  *
  * The Mini App is a page of the player panel that Telegram opens inside its own
- * app, for any of the three panels (Step 3, owner 2026-10-07). It has no
+ * app, for players and merchants (Step 3, owner 2026-10-07; a STAFF account has
+ * no Telegram since 2026-10-13, `TELEGRAM_AUDIENCES`). It has no
  * session. Its credential is `initData`, the string Telegram signs with the one
  * bot's token, verified on every request (miniAppAuth.js) and claimed once by
  * whichever request ACTS on it (repositories/telegram.js). The contact the
@@ -18,7 +19,7 @@
  *
  * What the page was opened FOR is the `start_param` Telegram signed into
  * `initData` (telegramClient.miniAppLink): a challenge id (`c…`), a reset for a
- * panel (`reset-PLAYER|STAFF|MERCHANT`), or a referral (`ref-<CODE>`). The page
+ * panel (`reset-PLAYER|MERCHANT`), or a referral (`ref-<CODE>`). The page
  * cannot alter it; the server reads it only from the verified string.
  *
  * Replaces the webhooks (`telegram.routes.js`): no update from Telegram is ever
@@ -35,9 +36,9 @@ import { hashPassword } from '../identity/password.util.js';
 import { assertPlayerPassword } from '../identity/passwordPolicy.js';
 import { isValidMobile, normaliseReferralCode } from '../identity/signupFields.js';
 import { generateReferralCode } from '../referral/referral.service.js';
-import { ACCOUNT_TYPES } from '../identity/audiences.js';
 import { issueSession } from '../../routes.js';
 import { respondError, refusal } from '../../shared/httpError.js';
+import { TELEGRAM_AUDIENCES } from '#db/repositories/telegram.js';
 import { miniAppLimiter, signupLimiter } from '../../middleware/security.js';
 import { createSubnetLimiter } from '../../middleware/ipDefense.js';
 
@@ -74,11 +75,13 @@ const initDataClaim = (proof) => ({ hash: proof.hash, expiresAt: proof.expiresAt
 /** "••••••3210": enough to recognise one's own number, never the number. */
 const mobileHint = (mobile) => (mobile ? `••••••${String(mobile).slice(-4)}` : '');
 
-const RESET_PARAM = /^reset-(PLAYER|STAFF|MERCHANT)$/;
+// No STAFF: a Telegram password reset for a staff mobile would be a way into a
+// staff account around its authenticator (owner, 2026-10-13).
+const RESET_PARAM = /^reset-(PLAYER|MERCHANT)$/;
 const REFERRAL_PARAM = /^ref-([A-Za-z0-9_-]{4,32})$/;
 
 /**
- * GET /api/telegram/mini-app?panel=PLAYER|STAFF|MERCHANT — public.
+ * GET /api/telegram/mini-app?panel=PLAYER|MERCHANT — public.
  *
  * Whether Telegram is available at all, the bot's @username, and the link that
  * opens "Forgot password" for that panel — what a sign-in screen needs to offer
@@ -87,8 +90,8 @@ const REFERRAL_PARAM = /^ref-([A-Za-z0-9_-]{4,32})$/;
 router.get('/mini-app', async (req, res) => {
   try {
     const panel = String(req.query.panel || 'PLAYER').toUpperCase();
-    if (!ACCOUNT_TYPES.includes(panel)) {
-      throw refusal(400, 'PANEL_INVALID', `panel must be one of ${ACCOUNT_TYPES.join(', ')}.`);
+    if (!TELEGRAM_AUDIENCES.includes(panel)) {
+      throw refusal(400, 'PANEL_INVALID', `panel must be one of ${TELEGRAM_AUDIENCES.join(', ')}.`);
     }
     const bot = await miniAppBot();
     res.set('Cache-Control', 'public, max-age=60');
@@ -276,8 +279,8 @@ router.post('/mini-app/password-reset', miniAppLimiter, async (req, res) => {
     const { bot, proof } = await proveInitData(req);
     const fromLink = RESET_PARAM.test(proof.startParam) ? proof.startParam.match(RESET_PARAM)[1] : null;
     const panel = fromLink ?? String(req.body?.panel || '').toUpperCase();
-    if (!ACCOUNT_TYPES.includes(panel)) {
-      throw refusal(400, 'PANEL_INVALID', 'Choose which account to reset: player, merchant or staff.');
+    if (!TELEGRAM_AUDIENCES.includes(panel)) {
+      throw refusal(400, 'PANEL_INVALID', 'Choose which account to reset: player or merchant.');
     }
     if (!req.body?.password) throw refusal(400, 'PASSWORD_REQUIRED', 'Type the new password, twice.');
     const contact = proveContact(bot, req.body?.contact, { required: true });

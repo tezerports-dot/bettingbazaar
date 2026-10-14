@@ -21,7 +21,7 @@ import { TokenFlow } from './Pages/Finance/TokenFlow';
 import { SupportAssistant } from './Pages/Support/SupportAssistant';
 import { QueueDashboard } from './Pages/QueueManager/QueueDashboard';
 import { TelegramBot } from './Pages/Telegram/TelegramBot';
-import { MyTelegram } from './Pages/Account/MyTelegram';
+import { MyAuthenticator } from './Pages/Account/MyAuthenticator';
 import { ReferralProgramme } from './Pages/Referrals/ReferralProgramme';
 import { SubAdminsList } from './Pages/SubAdmins/SubAdminsList';
 import { BrandingSettings } from './Pages/Branding/BrandingSettings';
@@ -236,10 +236,10 @@ const App: React.FC = () => {
         <Route path="/telegram" element={
           <PermRoute permission="canManageTelegram"><Layout><TelegramBot /></Layout></PermRoute>
         } />
-        {/* The signed-in account's own Telegram link: every staff account, of
+        {/* The signed-in account's own authenticator: every staff account, of
             any role (the server mounts it with no area). */}
-        <Route path="/account/telegram" element={
-          <AnyAuth><Layout><MyTelegram /></Layout></AnyAuth>
+        <Route path="/account/security" element={
+          <AnyAuth><Layout><MyAuthenticator /></Layout></AnyAuth>
         } />
         <Route path="/referrals" element={
           <PermRoute permission="canManageReferrals"><Layout><ReferralProgramme /></Layout></PermRoute>

@@ -3542,8 +3542,8 @@ checked and is correct; the evidence is named.
 |---|---|
 | Route declarations in `backend/**` | 315 |
 | Reachable with **no auth middleware** | 38 |
-| Staff routes carrying an **area** (permission key) | 170 |
-| Staff routes a sub-admin can **never** be given (full admin only) | 7 |
+| Staff routes carrying an **area** (permission key) | 169 |
+| Staff routes a sub-admin can **never** be given (full admin only) | 8 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.
@@ -3597,6 +3597,7 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /queue-managers  (backend/routes/admin/users.admin.routes.js)`
 - `GET /staff-permissions  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
+- `POST /staff/:userId/reset-authenticator  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /users/:userId/queue-manager  (backend/routes/admin/users.admin.routes.js)`
 - `PUT /sub-admins/:subAdminId/permissions  (backend/routes/admin/subadmins.admin.routes.js)`
@@ -3607,8 +3608,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 445 |
-| Parameters only (safe by construction) | 291 |
+| `pgQuery` call sites | 452 |
+| Parameters only (safe by construction) | 298 |
 | Interpolating into statement text (each needs a reading) | 148 |
 | Statement text built elsewhere and passed in (each needs a reading) | 6 |
 
@@ -3627,7 +3628,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 130 | 0 | 0 |
-| `admin-panel` | 123 | 0 | 0 |
+| `admin-panel` | 125 | 0 | 0 |
 | `merchant-panel` | 63 | 0 | 0 |
 
 <!-- END GENERATED -->

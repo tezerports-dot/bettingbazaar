@@ -20,6 +20,7 @@ import {
   PERMISSION_GROUPS, STAFF_PERMISSIONS, ADMIN_ONLY_AREAS, normaliseGrant,
 } from '../../domains/identity/staffPermissions.js';
 import { personalStaffRoom } from '../../domains/notification/staffEventAreas.js';
+import { resetEnrolment } from '../../domains/identity/totp.service.js';
 
 const router = express.Router();
 
@@ -69,7 +70,12 @@ router.get('/sub-admins', authenticate, isAdmin, async (req, res) => {
     // the exclusion is a property of the repository rather than something each
     // route has to remember to ask for.
     const { users } = await db.users.listUsers({ isSubAdmin: true, limit: 200 });
-    res.json({ success: true, subAdmins: users });
+    // Whether each has an authenticator: a yes/no, never its secret.
+    const enrolled = await db.totp.enrolledAmong(users.map((u) => u.userId));
+    res.json({
+      success: true,
+      subAdmins: users.map((u) => ({ ...u, authenticatorEnrolled: enrolled.has(u.userId) })),
+    });
   } catch (error) {
     console.error('Get sub-admins error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch sub-admins' });
@@ -88,9 +94,10 @@ router.post('/sub-admins', authenticate, isAdmin, async (req, res) => {
     const grant = grantOrRefuse(res, permissions);
     if (!grant) return;
 
-    // A sub-admin reads the player base and the ledger, and holds a session for
-    // 24 hours with no second factor required of it — so the password IS the
-    // credential. This took anything at all, including one character.
+    // A sub-admin reads the player base and the ledger. Its sign-in is this
+    // password and an authenticator code (enrolled at its first sign-in), so
+    // the password is half the credential and is held to the staff floor.
+    // This took anything at all, including one character.
     try {
       assertStaffPassword(password, { mobile, username }, 'sub-admin');
     } catch (e) {
@@ -209,6 +216,51 @@ router.delete('/sub-admins/:subAdminId', authenticate, isAdmin, async (req, res)
   } catch (error) {
     console.error('Delete sub-admin error:', error);
     res.status(500).json({ success: false, message: 'Failed to remove sub-admin' });
+  }
+});
+
+/**
+ * Reset a STAFF account's authenticator (full admin only, ADMIN_ONLY_AREAS).
+ *
+ * Deletes the secret and its recovery codes and ends every session the account
+ * holds, in one transaction (`db.totp.reset`); its next sign-in enrols a new
+ * app. Never your own account: an admin who could reset their own would turn a
+ * stolen admin session into a new authenticator for the thief.
+ */
+router.post('/staff/:userId/reset-authenticator', authenticate, isAdmin, async (req, res) => {
+  try {
+    const targetId = String(req.params.userId);
+    if (targetId === String(req.user.userId)) {
+      return res.status(403).json({
+        success: false, code: 'NOT_YOUR_OWN',
+        message: 'You cannot reset your own authenticator. Another admin can, or use the break-glass script on the server.',
+      });
+    }
+    const target = await db.users.getUser(targetId);
+    if (!target || target.accountType !== 'STAFF') {
+      return res.status(404).json({ success: false, code: 'NOT_STAFF', message: 'Staff account not found.' });
+    }
+    const reset = await resetEnrolment(targetId);
+    if (!reset.ok) {
+      return res.status(404).json({ success: false, code: 'NOT_STAFF', message: 'Staff account not found.' });
+    }
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, performedByRole: 'admin',
+      action: 'STAFF_AUTHENTICATOR_RESET', category: 'SECURITY',
+      targetType: 'User', targetId, targetName: target.username || null,
+      details: { hadAuthenticator: reset.hadAuthenticator },
+      ip: req.ip, userAgent: req.get('user-agent') || null,
+    });
+    // REST refuses the old sessions by the cutoff; the live streams were
+    // opened before it.
+    closeLiveStreams(targetId);
+    return res.json({
+      success: true, hadAuthenticator: reset.hadAuthenticator,
+      message: 'Authenticator reset. They set up a new one at their next sign-in.',
+    });
+  } catch (error) {
+    console.error('Reset authenticator error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to reset the authenticator' });
   }
 });
 

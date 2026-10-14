@@ -117,10 +117,12 @@ describePg('three separate entities, one mobile', () => {
       `UPDATE merchants SET status='ACTIVE', merchant_approval_status='APPROVED'
         WHERE merchant_id = $1`, [merchant.merchant.merchantId]);
 
-    // Step 3: each account verified its mobile in Telegram at signup, and the
-    // one bot is configured. Staff and merchants then owe Telegram's approval
-    // (a challenge, not a session); a player signs in on the password.
-    for (const id of [player.userId, staff.user.userId, merchant.userId]) await linkTelegram(id);
+    // Step 3: the player and the merchant verified their mobile in Telegram at
+    // signup, and the one bot is configured. Merchants then owe Telegram's
+    // approval and staff an authenticator code (a challenge, not a session);
+    // a player signs in on the password. Staff have no Telegram (owner,
+    // 2026-10-13).
+    for (const id of [player.userId, merchant.userId]) await linkTelegram(id);
     await saveTestBot();
   });
   afterAll(async () => { await removeTestBot(); await closePg(); });

@@ -486,8 +486,12 @@ Then the checks that actually prove it works end to end:
 
 ## 12. After first boot
 
-- **Change the seeded admin password immediately**, then enrol admin 2FA. 2FA is
-  mandatory for admin and sub-admin roles and is enforced at login.
+- **Sign in as the seeded admin at once.** The first sign-in of every staff
+  account sets up its authenticator app (scan the QR, type the first code) and
+  shows ten recovery codes once: keep them off the phone. Every staff sign-in
+  after that is mobile, password and a 6-digit code; staff have no Telegram.
+  Then change the seeded password.
+- **Recovering staff access (break-glass)** — see §12.1.
 - **Restore drill.** Backups run daily to the bucket
   (`backend/services/backup.service.js`). An untested backup is not a backup —
   `docs/governance/DISASTER_RECOVERY.md` §2.
@@ -499,6 +503,48 @@ Then the checks that actually prove it works end to end:
   a nice-to-have (`docs/PROJECT_STATUS.md` §D), and single-VPS is precisely the shape
   where the ceilings in `docs/governance/LATENCY.md` — Argon2 threadpool, the
   `Cycle` document write contention — arrive soonest.
+
+### 12.1 Break-glass: staff access
+
+Two cases need nothing but the admin panel:
+
+- **A sub-admin (or a second admin) lost their phone.** Another full admin opens
+  **Sub-admins**, presses **Reset Authenticator** on that row and confirms. Their
+  app and recovery codes stop working and every session they hold ends; their
+  next sign-in sets up a new app. Nobody can reset their own.
+- **Someone used up recovery codes.** They make ten new ones under **My
+  Authenticator** with a current app code.
+
+Everything else is on the server, as the user that owns the app, with the same
+`.env` the app runs on:
+
+- **The only admin lost their phone and their recovery codes**, or
+- **a staff member forgot their password** (there is no staff password reset in
+  Telegram or the panel).
+
+```bash
+cd /var/www/bettingbazaar
+# Forget the authenticator and end every session; keep the password:
+node --env-file=.env scripts/reset-staff-access.mjs --mobile 98XXXXXXXX
+
+# ...and also set a new password. It is read from the ENVIRONMENT, never an
+# argument (argv is visible in /proc and lands in shell history). `read -s`
+# keeps it off the screen and out of history:
+read -rs NEW_STAFF_PASSWORD && export NEW_STAFF_PASSWORD
+node --env-file=.env scripts/reset-staff-access.mjs --mobile 98XXXXXXXX
+unset NEW_STAFF_PASSWORD
+```
+
+The new password is checked against the staff policy (12 characters or more,
+not built from the mobile or username) before anything changes; a refused one
+changes nothing. On success the account's next sign-in sets up a new
+authenticator app. The reset is one database transaction and is recorded in
+the audit log as `STAFF_ACCESS_RESET_CLI`. The script needs `DATABASE_URL` (and
+`IDENTITY_ENCRYPTION_KEY` is not needed: it deletes the secret, it never reads
+it). Under Docker (`deploy/vps/docker-compose.prod.yml`), run it inside the
+`api` service, whose environment already carries the database settings:
+`docker compose -f deploy/vps/docker-compose.prod.yml exec -e NEW_STAFF_PASSWORD api node scripts/reset-staff-access.mjs --mobile 98XXXXXXXX`
+(drop `-e NEW_STAFF_PASSWORD` to keep the password).
 
 ### What a single VPS cannot give you
 

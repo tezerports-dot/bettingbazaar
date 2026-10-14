@@ -965,6 +965,12 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
 
 ### Step 3 — Simple signup and login; Telegram verifies the mobile once — **BUILT on branch `helper/step3-core-2` (2026-10-08), main (#210) merged in; draft PR open**
 
+> **Superseded for STAFF on 2026-10-13 (§3.13).** Everything below about staff
+> and Telegram (staff approval in Telegram, staff "Login with Telegram", the
+> bootstrap exemption, staff alerts by the bot, "My Telegram", the staff Mini App
+> reset) is history: staff now sign in with an authenticator app and have no
+> Telegram. Players and merchants are unchanged.
+
 **Owner, 2026-10-07, two messages.** First (HANDOFF §3, twelve answers):
 signup and login are mobile + password + captcha, the Mini App is optional,
 for 2FA and password reset only. Then, the same day (20:06 UTC), revised:
@@ -1367,6 +1373,47 @@ Not built: every panel screen for the above (admin switch, merchant-account
 admin, the merchant panel's accounts / sub-members / reports / paid-from
 picker, the player's UPI link button); "House bettors" wording (Phase C).
 SSE pushes are per merchant, not filtered per sub-member.
+
+## 3.13 Staff sign in with an authenticator app; staff have no Telegram (owner, 2026-10-13) — **BUILT on `feat/staff-authenticator`**
+
+Owner (Choudhary): staff (admin, sub-admin, queue manager, mediator) sign in
+with mobile + password + a TOTP code and have no Telegram anywhere. Rules:
+CLAUDE.md §33.2, §33.6, §33.8. Merchants and players are unchanged here.
+
+**API contract (staff door, `/api/admin`).** Every refusal is `{ success:
+false, code, message }`.
+- `POST /login` `{ mobile, password, loginType }` → 200 `{ success: false,
+  twoFactorRequired: true, totpRequired | totpSetupRequired, challengeToken,
+  message }`. Never a session.
+- `POST /login/totp` `{ challengeToken, code }` (6 digits, or a recovery code
+  `XXXXX-XXXXX` in any case and spacing) → a session `{ success, token, user }`,
+  plus `recoveryCodesLeft` when a recovery code was used; 401 `TOTP_INVALID`,
+  `TWO_FACTOR_EXPIRED`; 409 `TOTP_NOT_ENROLLED`.
+- `POST /login/totp/setup` `{ challengeToken }` (a setup-step token) → `{
+  secret, otpauthUri, qrDataUrl }`; 409 `TOTP_ALREADY_ENROLLED`.
+- `POST /login/totp/activate` `{ challengeToken, code }` → a session plus
+  `recoveryCodes` (ten, shown once); 409 `TOTP_SETUP_EXPIRED` after 30 minutes.
+- `GET /account/2fa` → `{ enrolled, enrolledAt, recoveryCodesLeft,
+  recoveryGeneratedAt }`; `POST /account/2fa/recovery-codes` `{ code }` → `{
+  recoveryCodes }`, 400 `TOTP_INVALID` (400 so the panel does not end the
+  held session).
+- `POST /staff/:userId/reset-authenticator` (full admin) → `{ hadAuthenticator
+  }`; 403 `NOT_YOUR_OWN`, 404 `NOT_STAFF`. `GET /sub-admins` carries
+  `authenticatorEnrolled`.
+
+A staff session's `amr` is `['pwd','otp']`; one without `otp` is refused 403
+`TWO_FACTOR_REQUIRED` everywhere a session is checked. There is no bootstrap.
+
+**Deleted:** `/api/admin/login/2fa`, `/login/telegram`,
+`/login/telegram/complete`, `/api/admin/account/telegram*`, the staff
+`reset-STAFF` Mini App reset, `listAlertRecipients` and the bot's staff alerts
+(the webhook is the one sink), `sendDirectMessage`, the panel's MyTelegram,
+`useTelegramPoll` and bootstrap banner. Staff `telegram_links` and
+`telegram_challenges` rows are deleted by `schema.sql` and refused by CHECK.
+
+**Recovery:** another full admin's Reset on Sub-admins; the last admin or a
+forgotten staff password: `scripts/reset-staff-access.mjs`
+(`deploy/VPS_UBUNTU_SETUP.md` §12.1).
 
 ## 4. How to pick this up
 
