@@ -67,11 +67,17 @@ Implemented and verifiable in the codebase:
 * **Tiered + per-subnet rate limiting**, surge breaker, load-shed and an
   application-side OWASP filter (`middleware/security.js`, `ipDefense.js`).
 * **Admin action audit logging** (`EnhancedAuditLog`) across privileged routes.
-* **Telegram two-factor authentication** — every account's mobile is verified
-  by a signed contact share in the Telegram Mini App at signup; staff and
-  merchants approve every sign-in in their Telegram, players optionally
-  (`domains/telegram/miniApp.routes.js`, `routes.js`). Approval polls have their
-  own rate-limit tier — see `docs/governance/RATE_LIMITS.md`.
+* **Staff sign in with an authenticator app** — admins, sub-admins, queue
+  managers and mediators give their mobile, password and a 6-digit TOTP code
+  (RFC 6238, single use, ten single-use recovery codes); staff have no
+  Telegram (`domains/identity/totp.service.js`, `database/repositories/totp.js`).
+  An admin resets another staff member's authenticator; the last admin locked
+  out is recovered on the server with `scripts/reset-staff-access.mjs`.
+* **Telegram two-factor authentication for players and merchants** — their
+  mobile is verified by a signed contact share in the Telegram Mini App at
+  signup; merchants approve every sign-in in their Telegram, players optionally
+  (`domains/telegram/miniApp.routes.js`, `routes.js`). Code and approval legs
+  have their own rate-limit tiers — see `docs/governance/RATE_LIMITS.md`.
 
 **Not implemented — do not assume these exist** (see
 `docs/PROJECT_STATUS.md` §F):

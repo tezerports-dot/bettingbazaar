@@ -1894,6 +1894,40 @@ noticed for months that one of the two confirm routes never checked for one.
 
 ## 33. Signing up is a FORM. Telegram verifies; it does not authenticate.
 
+### 33.8 Staff sign in with an authenticator app (owner, 2026-10-13)
+
+Choudhary, 2026-10-13: staff (admin, sub-admin, queue manager, mediator) sign
+in with mobile, password and a TOTP authenticator app, and have no Telegram
+anywhere. This reverses the 2026-10-07 answer "2FA is Telegram only, required
+for staff and merchants" for STAFF only; merchants keep Telegram.
+
+What went with it: the bootstrap exemption (a staff password alone while no bot
+was saved), because the authenticator does not depend on the bot; staff
+Telegram links, challenges, the staff Mini App reset and the alerts the bot
+sent to linked staff (the webhook is now the one alert sink); the staff
+"Login with Telegram" and `/login/2fa` legs, which `doorRoute` now refuses to
+mount. A database that held staff rows converges: `schema.sql` deletes them
+before the audience CHECKs refuse new ones (§32 S31).
+
+Why each guard is where it is: a code is spent by `last_counter < step` in the
+UPDATE's WHERE, so two requests carrying one code cannot both win (S6, proven by
+a five-way race in `totpPg`); a recovery code is removed from the array in the
+statement that checks it is there; activation names the pending ciphertext the
+code was checked against, so a second setup in between cannot be activated by
+the first one's code. The pending window is judged by the database clock, and
+twice (the read the service refuses on, and the activating WHERE), so a
+mutation of either alone changes nothing (MT3 loosens both).
+
+A wrong code on My Authenticator is answered 400, not the sign-in legs' 401:
+the admin panel ends a HELD session on any 401, so a typo there would sign the
+operator out (MT9).
+
+The reset by an admin is never of their own account: an admin who could reset
+their own authenticator turns a stolen admin session into an enrolment of the
+thief's phone. Recovering the last admin, or a forgotten staff password, is the
+break-glass script, which needs the server and its `DATABASE_URL` (already
+every account).
+
 ### 33.0 Step 3 (owner, 2026-10-07) replaced 33.2, 33.3 and 33.7 below
 
 Kept below as history; the rules are CLAUDE.md §33. The owner's words: "they

@@ -334,7 +334,10 @@ uniqueness, the other does export.
 `IDENTITY_ENCRYPTION_PREVIOUS_KEYS`, set the new one, redeploy, then re-encrypt
 at leisure with `rewrapField()` and drop the old entry. This key *can* be
 rotated, but only if the previous value is kept until the re-encryption
-finishes. It also encrypts the one Telegram bot's token.
+finishes. It also encrypts the one Telegram bot's token and every staff
+authenticator secret (`staff_totp`): a key lost without its previous value in
+`IDENTITY_ENCRYPTION_PREVIOUS_KEYS` locks every staff account out until each is
+reset (`deploy/VPS_UBUNTU_SETUP.md` §12.1).
 
 **Bot tokens are NOT environment variables.** They live in `TelegramConfig` so a
 suspended bot can be replaced from the admin panel without a deploy — see
@@ -372,6 +375,11 @@ Full walkthrough: `ANDROID_RELEASE_SETUP.md`.
 
 ## Two-factor authentication
 
-No variable. The second factor is the account's own Telegram, approved in the
-Mini App (Step 3); no authenticator secrets are stored, so the former
-`TOTP_ENCRYPTION_KEY` is gone.
+No variable. Staff use an authenticator app (owner, 2026-10-13): its secret is
+encrypted with `IDENTITY_ENCRYPTION_KEY` (above), and the former
+`TOTP_ENCRYPTION_KEY` stays gone. Merchants (always) and players (by choice)
+approve sign-ins in their own Telegram, in the Mini App.
+
+`NEW_STAFF_PASSWORD` is read by `scripts/reset-staff-access.mjs` alone, set for
+that one command and unset after it (`deploy/VPS_UBUNTU_SETUP.md` §12.1). The
+app never reads it; it does not belong in `.env`.

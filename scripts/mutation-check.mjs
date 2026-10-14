@@ -2702,7 +2702,7 @@ const MUTATIONS = [
   {
     id: 'MS4', file: 'backend/domains/identity/auth.middleware.js', config: PG,
     test: 'backend/tests/routes/staffSignInPg.test.js',
-    why: 'a staff or merchant session proved by a password alone is honoured',
+    why: 'a staff or merchant session without its second factor is honoured',
     from: `  return !amr.includes(owed);`,
     to: `  return false;`,
   },
@@ -2716,14 +2716,14 @@ const MUTATIONS = [
   {
     id: 'MS6', file: 'backend/routes.js', config: PG,
     test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'a staff or merchant password signs in without the Telegram approval',
+    why: 'a merchant password signs in without the Telegram approval',
     from: `    if (!link.twoFactor) return sessionFor(door, user, res, { amr: ['pwd'], merchant, staff });`,
     to: `    if (true) return sessionFor(door, user, res, { amr: ['pwd'], merchant, staff });`,
   },
   {
     id: 'MS7', file: 'backend/routes.js', config: PG,
     test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'staff signing in from inside the Mini App skip their password',
+    why: 'merchants signing in from inside the Mini App skip their password',
     from: `    if (!isPlayer) {
       return res.status(200).json({`,
     to: `    if (false) {
@@ -2732,7 +2732,7 @@ const MUTATIONS = [
   {
     id: 'MS8', file: 'backend/routes.js', config: PG,
     test: 'backend/tests/routes/telegramLoginPg.test.js',
-    why: 'one staff member\'s Telegram approval completes another staff member\'s password sign-in',
+    why: 'one merchant\'s Telegram approval completes another merchant\'s password sign-in',
     from: `        purposes: ['TELEGRAM_LOGIN'], userId: user.userId,`,
     to: `        purposes: ['TELEGRAM_LOGIN'],`,
   },
@@ -2755,8 +2755,15 @@ const MUTATIONS = [
     id: 'MT3', file: 'database/repositories/totp.js', config: PG,
     test: 'database/tests/totpPg.test.js',
     why: 'a scanned secret left pending for days still activates',
-    from: `        AND pending_at > now() - make_interval(secs => $5)\`,`,
-    to: `        AND $5::int IS NOT NULL\`,`,
+    // Both places that judge the pending secret's age: the read the service
+    // refuses on, and the activating UPDATE's WHERE (S6). Either alone is
+    // covered by the other, so the BEHAVIOUR is what this loosens.
+    edits: [
+      [`              AND pending_at > now() - make_interval(secs => $2)) AS pending_live`,
+        `              AND $2::int IS NOT NULL) AS pending_live`],
+      [`        AND pending_at > now() - make_interval(secs => $5)\`,`,
+        `        AND $5::int IS NOT NULL\`,`],
+    ],
   },
   {
     id: 'MT4', file: 'backend/domains/identity/auth.middleware.js', config: PG,
