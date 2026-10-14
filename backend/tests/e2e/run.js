@@ -108,10 +108,13 @@ const server = spawn(process.execPath, [join(ROOT, 'backend', 'server.js')], {
   // the Mini App says the site is not set up, which is the point of no origin.
   //
   // TELEGRAM_CONFIG_TTL_MS short: s9 saves the test bot from THIS process, and
-  // the server's own bot cache (30 s by default) cannot hear it do so.
+  // the server's own bot cache (5 s by default) cannot hear it do so.
+  //
+  // TELEGRAM_BOT_HEALTH_MS=0: the test bot's token is fake, so Telegram would
+  // refuse it and the health check would suspend it mid-run.
   env: {
     ...process.env, PORT: String(PORT), NODE_ENV: process.env.NODE_ENV || 'development',
-    BB_RATE_LIMIT_RELAX: '1', TRUST_PROXY: '1', TELEGRAM_CONFIG_TTL_MS: '500',
+    BB_RATE_LIMIT_RELAX: '1', TRUST_PROXY: '1', TELEGRAM_CONFIG_TTL_MS: '500', TELEGRAM_BOT_HEALTH_MS: '0',
     PUBLIC_APP_ORIGIN: process.env.PUBLIC_APP_ORIGIN || 'https://e2e.bettingbazaar.test',
   },
   stdio: ['ignore', 'pipe', 'pipe'],

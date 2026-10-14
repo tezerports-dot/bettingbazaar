@@ -329,6 +329,7 @@ identical for every user, and the client takes no IP, geo or ISP as input.
 | Variable | Required | Purpose |
 |---|---|---|
 | `IDENTITY_ENCRYPTION_KEY` | **yes — the server refuses to boot in production without it** | AES-256-GCM key over the stored Aadhaar ciphertext and the Telegram bot tokens. Must decode to exactly **32 bytes**: `openssl rand -base64 32`. A wrong or absent key makes every stored identity unreadable. |
+| `TELEGRAM_BOT_HEALTH_MS` | no (default 1000) | How often each saved Telegram bot is asked `getMe`; a bot whose token Telegram refuses is suspended and its standby takes over (CLAUDE.md §2). `0` turns the check off: only for a test server holding a fake token (`test:e2e`, `test:signin-journey`), never production. |
 | `IDENTITY_ENCRYPTION_PREVIOUS_KEYS` | no | Comma-separated retired keys, **decrypt-only**. Their presence is what makes a rotation possible without a migration window. |
 
 **Why two forms of the same number.** The HMAC is one-way, so it cannot produce

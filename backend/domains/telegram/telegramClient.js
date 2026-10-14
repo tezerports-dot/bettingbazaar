@@ -16,7 +16,7 @@
  * Telegram suspends gambling bots, so an admin replaces the token at runtime
  * (PUT /api/admin/telegram/bot). A module that captured the token at import
  * would need a restart to follow the swap. `miniAppBots()` reads the rows and
- * keeps it for `BOT_TTL_MS`; the admin route drops the cache on the instance
+ * keeps them for `BOT_TTL_MS` (5 s); the admin route drops the cache on the instance
  * that saved, and the other instances follow within the window (stated in
  * CLAUDE.md §2, "Live bot").
  *
@@ -31,8 +31,12 @@ import { decryptField } from '../identity/fieldCrypto.util.js';
 
 const API_ROOT = 'https://api.telegram.org';
 
-/** How long the bot row is reused before it is read again (30 s). */
-const BOT_TTL_MS = Number(process.env.TELEGRAM_CONFIG_TTL_MS || 30_000);
+/**
+ * How long the bot rows are reused before they are read again (5 s): short,
+ * so a bot suspended on one instance stops being named by every instance
+ * within seconds; four rows, so the read is cheap.
+ */
+const BOT_TTL_MS = Number(process.env.TELEGRAM_CONFIG_TTL_MS || 5_000);
 
 let _cache = null; // { at, bot }
 
@@ -159,29 +163,56 @@ export async function callApi(token, method, payload = {}, { timeoutMs = 10_000 
 const TOKEN_REFUSED = new Set([401, 403, 404]);
 
 /**
- * Ask Telegram about every bot in use; suspend one whose token it REFUSES, so
- * new links move to the next standby at once (owner, 2026-10-14). A timeout,
- * a 5xx or a 429 is Telegram's weather and suspends nothing. Returns the
- * slots suspended. Run by the scheduler (`telegram-bot-health`).
+ * How often the bots are asked: every second (owner, 2026-10-14: "make it per
+ * second"). `TELEGRAM_BOT_HEALTH_MS=0` turns the check off, for a server that
+ * holds a TEST token Telegram would refuse (`test:e2e`, `test:signin-journey`);
+ * the scheduler then registers nothing.
  */
-export async function checkBotHealth({ verify = verifyBotToken, onSuspended = () => {} } = {}) {
-  const suspended = [];
-  for (const bot of await miniAppBots({ force: true })) {
-    if (bot.suspended) continue;
-    const me = await verify(bot.token);
-    if (me.ok || !TOKEN_REFUSED.has(me.status)) continue;
-    const row = await db.telegram.setBotSuspended({
-      slot: bot.slot, botId: bot.botId, reason: `Telegram refused the token: ${me.error}`, updatedBy: 'system:bot-health',
-    });
-    if (row) { suspended.push(bot.slot); onSuspended(bot, me); }
+export const BOT_HEALTH_EVERY_MS = Number(process.env.TELEGRAM_BOT_HEALTH_MS ?? 1000);
+
+/** A health probe gives up after this, so a slow Telegram never stacks probes. */
+const HEALTH_TIMEOUT_MS = 3000;
+
+let _checking = false;
+
+/**
+ * Ask Telegram about every bot in use, all at once; suspend one whose token it
+ * REFUSES, so new links move to the next standby at once (owner, 2026-10-14).
+ * A timeout, a 5xx or a 429 is Telegram's weather and suspends nothing. One
+ * `getMe` per bot per second is far inside what Telegram allows a bot.
+ * Returns the slots suspended; a call while the last is still out returns []
+ * (never two probes of one bot in flight). Run by the scheduler
+ * (`telegram-bot-health`, every `BOT_HEALTH_EVERY_MS`; off at 0).
+ */
+export async function checkBotHealth({
+  verify = (token) => verifyBotToken(token, { timeoutMs: HEALTH_TIMEOUT_MS }), onSuspended = () => {},
+} = {}) {
+  if (_checking) return [];
+  _checking = true;
+  try {
+    // The cached list (5 s), not a read of the table every second. A
+    // suspension drops the cache.
+    const live = (await miniAppBots()).filter((b) => !b.suspended);
+    const answers = await Promise.all(live.map((bot) => verify(bot.token)));
+    const suspended = [];
+    for (const [i, bot] of live.entries()) {
+      const me = answers[i];
+      if (me.ok || !TOKEN_REFUSED.has(me.status)) continue;
+      const row = await db.telegram.setBotSuspended({
+        slot: bot.slot, botId: bot.botId, reason: `Telegram refused the token: ${me.error}`, updatedBy: 'system:bot-health',
+      });
+      if (row) { suspended.push(bot.slot); onSuspended(bot, me); }
+    }
+    if (suspended.length) invalidateBotCache();
+    return suspended;
+  } finally {
+    _checking = false;
   }
-  if (suspended.length) invalidateBotCache();
-  return suspended;
 }
 
 /** Ask Telegram who a token belongs to: the only way a bot is ever named. */
-export async function verifyBotToken(token) {
-  const res = await callApi(token, 'getMe');
+export async function verifyBotToken(token, { timeoutMs } = {}) {
+  const res = await callApi(token, 'getMe', {}, timeoutMs ? { timeoutMs } : undefined);
   if (!res.ok) return res;
   if (!res.result?.is_bot || !res.result?.username) return { ok: false, error: 'not_a_bot' };
   return { ok: true, username: res.result.username, id: String(res.result.id) };

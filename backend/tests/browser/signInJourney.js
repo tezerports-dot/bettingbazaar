@@ -26,8 +26,8 @@
  * ── What it needs ───────────────────────────────────────────────────────────
  * A running dev server at BB_BASE (default http://127.0.0.1:8099) on the
  * DATABASE_URL this process is given, started with BB_RATE_LIMIT_RELAX (§34:
- * a dev server for a browser pass) and ALLOW_NO_CAPTCHA, and no real bot
- * saved: the test bot is saved for the run and removed after. It starts the
+ * a dev server for a browser pass), ALLOW_NO_CAPTCHA and
+ * TELEGRAM_BOT_HEALTH_MS=0 (the test token is fake), and no real bot saved: the test bot is saved for the run and removed after. It starts the
  * three panels' own dev servers itself (stack.js).
  *
  *   npm run test:signin-journey
@@ -328,7 +328,7 @@ async function main() {
   await saveTestBot();
   let code = 1;
   try {
-    // The server caches the bot (miniAppBot, 30 s unless TELEGRAM_CONFIG_TTL_MS).
+    // The server caches the bot (miniAppBot, 5 s unless TELEGRAM_CONFIG_TTL_MS).
     const ready = await until(async () => (await (await fetch(`${API}/api/telegram/mini-app?panel=PLAYER`)).json()).available, 40_000);
     if (!ready) throw new Error('the server never reported the test bot as available');
 

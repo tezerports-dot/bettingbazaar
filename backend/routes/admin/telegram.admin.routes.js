@@ -93,7 +93,7 @@ const SHORT_NAME = /^[A-Za-z0-9_]{0,64}$/;
  * or no bot, is refused by name. Stored encrypted (IDENTITY_ENCRYPTION_KEY).
  * A new token lifts the slot's suspension. One bot sits in one slot: saving
  * a bot already in another is refused (409 BOT_IN_OTHER_SLOT). The cache on
- * this instance is dropped at once; others follow within 30 s.
+ * this instance is dropped at once; others follow within 5 s.
  */
 router.put('/telegram/bot', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {

@@ -44,4 +44,17 @@ describe('checkBotHealth', () => {
     expect(verify).not.toHaveBeenCalled();
     expect(await miniAppBot({ force: true })).toBeNull();
   });
+
+  it('asks every bot at once, and never twice while the last probe is still out', async () => {
+    rows.current = [row(1), row(2)];
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const verify = vi.fn(() => gate);
+    const first = checkBotHealth({ verify });
+    await vi.waitFor(() => expect(verify).toHaveBeenCalledTimes(2));
+    expect(await checkBotHealth({ verify })).toEqual([]);
+    release({ ok: true });
+    expect(await first).toEqual([]);
+    expect(verify).toHaveBeenCalledTimes(2);
+  });
 });

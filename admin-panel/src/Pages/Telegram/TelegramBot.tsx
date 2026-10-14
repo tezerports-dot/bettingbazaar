@@ -231,7 +231,7 @@ export const TelegramBot: React.FC = () => {
         Each token comes from @BotFather and is asked of Telegram before it is stored; it is never
         shown again. Give every standby its own Mini App at the same page as the primary
         (https://&lt;site&gt;/mini-app.html). When Telegram refuses the bot in use, it is suspended within
-        five minutes and new sign-ins and links use the next standby. Accounts belong to the person's
+        seconds and new sign-ins and links use the next standby. Accounts belong to the person's
         Telegram, so every bot already knows everyone.
       </div>
 

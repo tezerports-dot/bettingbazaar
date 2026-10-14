@@ -162,7 +162,7 @@ the address that always works.
 Then register up to three **standby bots** the same way (each its own bot in
 BotFather, each with a Mini App at the same page) and save them in the
 Standby slots of the same screen. Every account belongs to the person's
-Telegram, so each standby already knows everyone. Every five minutes the
+Telegram, so each standby already knows everyone. Every second the
 server asks Telegram about the bot in use; when Telegram refuses its token
 (banned or revoked), it is suspended, an alert is sent, and every new sign-in
 and link names the next standby. The app remembers every working bot's link,
