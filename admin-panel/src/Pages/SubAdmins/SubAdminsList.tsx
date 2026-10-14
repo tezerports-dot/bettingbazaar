@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useCallback, useEffect, useState } from 'react';
-import { UserPlus, Edit, Trash2, Key, Layers} from 'lucide-react';
+import { UserPlus, Edit, Trash2, Key, Layers, RotateCcw } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
 import { Kpis, Toolbar } from '../../components/design';
 import { Modal } from '../../components/Modal';
@@ -26,6 +26,7 @@ export const SubAdminsList: React.FC = () => {
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<User | null>(null);
+  const [confirmReset, setConfirmReset] = useState<User | null>(null);
 
   const [formData, setFormData] = useState({
     username: '',
@@ -118,6 +119,18 @@ export const SubAdminsList: React.FC = () => {
     }
   };
 
+  // Forgets their authenticator and ends their sessions; their next sign-in
+  // sets up a new app (POST /staff/:userId/reset-authenticator, full admin).
+  const handleResetAuthenticator = async (userId: string) => {
+    try {
+      const res = await api.subAdmins.resetAuthenticator(userId);
+      toast.success(res?.message || 'Authenticator reset');
+      loadSubAdmins();
+    } catch (error: any) {
+      toast.error(error.response?.data?.message || 'Failed to reset the authenticator');
+    }
+  };
+
   const handleAssignPhantomAccess = async () => {
     if (!selectedUser) return;
     try {
@@ -168,6 +181,19 @@ export const SubAdminsList: React.FC = () => {
       key: 'mobile',
       label: 'Mobile',
       render: (user: User) => <span className="text-gray-400">{formatters.phone(user.mobile)}</span>,
+    },
+    {
+      key: 'authenticator',
+      label: 'Authenticator',
+      render: (user: User) => (
+        <span
+          className={`px-2 py-1 rounded text-xs font-medium ${
+            user.authenticatorEnrolled ? 'bg-green-500/20 text-green-500' : 'bg-gray-500/20 text-gray-500'
+          }`}
+        >
+          {user.authenticatorEnrolled ? 'Set up' : 'Not set up'}
+        </span>
+      ),
     },
     {
       key: 'permissions',
@@ -232,6 +258,14 @@ export const SubAdminsList: React.FC = () => {
             title="Edit House-Bettor Access"
           >
             <Edit size={16} />
+          </button>
+          <button
+            onClick={() => setConfirmReset(user)}
+            className="p-2 hover:bg-dark-700 rounded-lg transition-colors"
+            title="Reset Authenticator"
+            aria-label={`Reset authenticator for ${user.username}`}
+          >
+            <RotateCcw size={16} />
           </button>
           <button
             onClick={() => setConfirmDelete(user)}
@@ -451,6 +485,19 @@ export const SubAdminsList: React.FC = () => {
             </button>
           </div>
         </Modal>
+      )}
+
+      {/* ── Reset Authenticator Confirmation ── */}
+      {confirmReset && (
+        <ConfirmDialog
+          isOpen={!!confirmReset}
+          onClose={() => setConfirmReset(null)}
+          onConfirm={() => { handleResetAuthenticator(confirmReset.userId); setConfirmReset(null); }}
+          title="Reset Authenticator"
+          message={`Reset the authenticator for ${confirmReset.username}? Their app and recovery codes stop working and they are signed out everywhere. At their next sign-in they set up a new app.`}
+          type="danger"
+          confirmText="Reset"
+        />
       )}
 
       {/* ── Delete Confirmation ── */}

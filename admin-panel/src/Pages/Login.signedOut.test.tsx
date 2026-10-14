@@ -21,8 +21,7 @@ vi.mock('../services/sse', () => ({
 }));
 vi.mock('../services/api', () => ({
   default: {
-    auth: { login: vi.fn(), loginTwoFactor: vi.fn(), telegramLogin: vi.fn(), telegramLoginComplete: vi.fn(), logout, verifySession: vi.fn() },
-    telegram: { miniApp: vi.fn().mockResolvedValue({ success: true, available: false, botUsername: '', resetUrl: null }) },
+    auth: { login: vi.fn(), totp: vi.fn(), totpSetup: vi.fn(), totpActivate: vi.fn(), logout, verifySession: vi.fn() },
   },
 }));
 
@@ -119,66 +118,4 @@ describe('endRefusedSession keeps the reason across the reload', () => {
     expect(serverRefusal({ success: true, message: 'ok' })).toBeNull();
     expect(serverRefusal({ success: false, message: 'Account blocked' })).toBe('Account blocked');
   });
-});
-
-/**
- * The Telegram step (Step 3): the password is accepted, the sign-in is
- * approved in Telegram, and the screen polls `/login/2fa`. A refusal there is
- * said in the server's words (`role="alert"`, S44) and the polling stops.
- */
-describe('the Approve in Telegram step', () => {
-  beforeEach(() => { sessionStorage.clear(); localStorage.clear(); cleanup(); });
-
-  const TELEGRAM = { url: 'https://t.me/bb_bot/app?startapp=c1', botUsername: 'bb_bot', expiresAt: '2026-10-08T10:00:00Z' };
-
-  const toTelegramStep = async () => {
-    vi.resetModules();
-    const { default: api } = await import('../services/api');
-    (api.auth.login as any).mockResolvedValue({ kind: 'telegram', challengeToken: 'c-1', telegram: TELEGRAM, message: 'Approve this sign-in in Telegram.' });
-    const { Login } = await import('./Login');
-    const { fireEvent } = await import('@testing-library/react');
-    render(<MemoryRouter><Login /></MemoryRouter>);
-    fireEvent.change(screen.getByLabelText('Mobile number'), { target: { value: '9000000001' } });
-    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'pw' } });
-    fireEvent.click(screen.getByRole('button', { name: /Sign in/ }));
-    return api;
-  };
-
-  it('opens the Mini App link in a new tab and stops on a denial, in the server\'s words', async () => {
-    const api = await toTelegramStep();
-    (api.auth.loginTwoFactor as any).mockRejectedValue(Object.assign(new Error('Request failed with status code 401'), {
-      response: { status: 401, data: { success: false, code: 'TWO_FACTOR_DENIED', message: 'This sign-in was refused in Telegram.' } },
-    }));
-    const link = await screen.findByRole('link', { name: /Open Telegram/ });
-    expect(link.getAttribute('href')).toBe(TELEGRAM.url);
-    expect(link.getAttribute('target')).toBe('_blank');
-    expect(link.getAttribute('rel')).toContain('noopener');
-    const { waitFor } = await import('@testing-library/react');
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This sign-in was refused in Telegram.'), { timeout: 5000 });
-    expect(api.auth.loginTwoFactor).toHaveBeenCalledWith('c-1');
-    expect(api.auth.loginTwoFactor).toHaveBeenCalledTimes(1);
-  }, 10000);
-
-  it('keeps polling on 202 and signs in on approval (the opposite case)', async () => {
-    const api = await toTelegramStep();
-    (api.auth.loginTwoFactor as any)
-      .mockResolvedValueOnce({ kind: 'pending' })
-      .mockResolvedValue({ kind: 'session', session: { token: 't', admin: { userId: 'a-1', username: 'owner', isAdmin: true }, bootstrap: false } });
-    await screen.findByRole('link', { name: /Open Telegram/ });
-    const { useAuthStore } = await import('../services/auth');
-    const { waitFor } = await import('@testing-library/react');
-    await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(true), { timeout: 8000 });
-    expect(api.auth.loginTwoFactor).toHaveBeenCalledTimes(2);
-  }, 12000);
-
-  it('stops asking once the operator goes back', async () => {
-    const api = await toTelegramStep();
-    (api.auth.loginTwoFactor as any).mockResolvedValue({ kind: 'pending' });
-    await screen.findByRole('link', { name: /Open Telegram/ });
-    const { fireEvent } = await import('@testing-library/react');
-    fireEvent.click(screen.getByRole('button', { name: 'Back to sign in' }));
-    await new Promise((r) => setTimeout(r, 3500));
-    expect(api.auth.loginTwoFactor).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('Password')).toBeInTheDocument();
-  }, 10000);
 });

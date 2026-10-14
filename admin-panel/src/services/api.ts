@@ -52,10 +52,10 @@ api.interceptors.response.use(
     if (error.response?.status === 401 && storedToken()) {
       endRefusedSession(serverRefusal(error.response.data));
     }
-    // A held session that Telegram never approved is not a session: the 403
-    // `TWO_FACTOR_REQUIRED` every staff route answers once a bot is saved over a
-    // bootstrap (password-only) session. Any other 403 is "not permitted",
-    // which ends nothing.
+    // A held session without its second factor is not a session: the 403
+    // `TWO_FACTOR_REQUIRED` every staff route answers to a token that carries
+    // no authenticator code. Any other 403 is "not permitted", which ends
+    // nothing.
     const body = error.response?.data as { code?: unknown } | undefined;
     if (error.response?.status === 403 && body?.code === 'TWO_FACTOR_REQUIRED' && storedToken()) {
       endRefusedSession(serverRefusal(error.response.data));
@@ -67,39 +67,49 @@ api.interceptors.response.use(
 // --- AUTH ---------------------------------------------------------------------
 /**
  * The staff door (`/api/admin/login…`, backend/domains/identity/loginDoors.js).
- * Every staff sign-in is approved in Telegram (Step 3): the password leg
- * answers with a Telegram step, never a session, unless the platform is in the
- * bootstrap (no bot saved yet), when it answers a password-only session with
- * `bootstrap: true`.
+ * A staff sign-in is a mobile and password, then a 6-digit code from an
+ * authenticator app (owner, 2026-10-13; no Telegram). The password leg never
+ * answers a session: it answers which code step comes next, with a
+ * `challengeToken` that only the code legs accept.
  */
 
-/** A staff session as the door sends it: `{ token, user, bootstrap? }`. */
+/** A staff session as the door sends it. */
 export interface StaffSession {
   token: string;
   admin: Admin;
-  /** No bot saved yet: this session is a password alone (§33 bootstrap). */
-  bootstrap: boolean;
+  /** Only from `/login/totp/activate`: the ten recovery codes, shown once. */
+  recoveryCodes?: string[];
+  /** Only after signing in with a recovery code: how many are left. */
+  recoveryCodesLeft?: number;
 }
 
-/** What the password leg answered. */
+/** What the password leg answered: which code step is next. */
 export type LoginAnswer =
-  | { kind: 'session'; session: StaffSession }
-  /**
-   * Approve in Telegram, then poll `/login/2fa`: either a sign-in to approve
-   * (200 `twoFactorRequired`) or a first verification of this account's mobile
-   * (403 `TELEGRAM_VERIFICATION_REQUIRED`). The panel treats both the same.
-   */
-  | { kind: 'telegram'; challengeToken: string; telegram: TelegramBlock | null; message: string };
+  | { kind: 'totp'; challengeToken: string; message: string }
+  | { kind: 'totpSetup'; challengeToken: string; message: string };
 
-/** One poll of `/login/2fa`. A refusal (401 DENIED/EXPIRED, an account refusal) throws. */
-export type PollAnswer = { kind: 'pending' } | { kind: 'session'; session: StaffSession };
+/** `POST /api/admin/login/totp/setup` — what the person scans. */
+export interface TotpSetup {
+  secret: string;
+  otpauthUri: string;
+  qrDataUrl: string;
+}
 
-/** One poll of `/login/telegram/complete`. A refusal throws. */
-export type TelegramLoginAnswer = { kind: 'pending' } | { kind: 'passwordRequired' };
+/** `GET /api/admin/account/2fa` — never a secret. */
+export interface AuthenticatorState {
+  enrolled: boolean;
+  enrolledAt: string | null;
+  recoveryCodesLeft: number;
+  recoveryGeneratedAt: string | null;
+}
 
 const sessionOf = (data: any): StaffSession | null =>
   data?.success && data?.token
-    ? { token: data.token, admin: data.user, bootstrap: data.bootstrap === true }
+    ? {
+      token: data.token, admin: data.user,
+      ...(Array.isArray(data.recoveryCodes) ? { recoveryCodes: data.recoveryCodes as string[] } : {}),
+      ...(typeof data.recoveryCodesLeft === 'number' ? { recoveryCodesLeft: data.recoveryCodesLeft as number } : {}),
+    }
     : null;
 
 /** A 2xx the panel has no branch for, thrown in the shape every caller reads. */
@@ -108,8 +118,7 @@ const unexpected = (status: number, data: any): Error =>
 
 export const auth = {
   /**
-   * The password leg. `challengeToken` is sent only to finish a "Login with
-   * Telegram" whose approval has already arrived (`passwordRequired`).
+   * The password leg.
    *
    * loginType:
    *   'admin'         -- full admin
@@ -120,58 +129,40 @@ export const auth = {
     mobile: string,
     password: string,
     loginType: 'admin' | 'subadmin' | 'queue_manager' = 'admin',
-    challengeToken?: string,
   ): Promise<LoginAnswer> => {
-    try {
-      const res = await api.post<any>('/api/admin/login', {
-        mobile, password, loginType, ...(challengeToken ? { challengeToken } : {}),
-      });
-      const session = sessionOf(res.data);
-      if (session) return { kind: 'session', session };
-      // Not an error: the password was accepted and Telegram is next.
-      if (res.data?.twoFactorRequired && res.data?.challengeToken) {
-        return {
-          kind: 'telegram', challengeToken: res.data.challengeToken,
-          telegram: res.data.telegram ?? null, message: res.data.message || '',
-        };
-      }
-      throw unexpected(res.status, res.data);
-    } catch (err: any) {
-      const data = err?.response?.data;
-      if (err?.response?.status === 403 && data?.code === 'TELEGRAM_VERIFICATION_REQUIRED' && data?.challengeToken) {
-        return { kind: 'telegram', challengeToken: data.challengeToken, telegram: data.telegram ?? null, message: data.message || '' };
-      }
-      throw err;
-    }
-  },
-
-  /** Has Telegram answered? 202 keeps polling; a session signs in. */
-  loginTwoFactor: async (challengeToken: string): Promise<PollAnswer> => {
-    const res = await api.post<any>('/api/admin/login/2fa', { challengeToken });
-    if (res.status === 202) return { kind: 'pending' };
-    const session = sessionOf(res.data);
-    if (session) return { kind: 'session', session };
-    throw unexpected(res.status, res.data);
-  },
-
-  /** "Login with Telegram", from the browser: a challenge and its Mini App link. */
-  telegramLogin: async () => {
-    const res = await api.post<any>('/api/admin/login/telegram', {});
-    if (res.data?.pending && res.data?.challengeToken) {
+    const res = await api.post<any>('/api/admin/login', { mobile, password, loginType });
+    // Not an error: the password was accepted and a code is next.
+    if (res.data?.twoFactorRequired && res.data?.challengeToken) {
       return {
-        challengeToken: res.data.challengeToken as string,
-        telegram: (res.data.telegram ?? null) as TelegramBlock | null,
-        message: (res.data.message || '') as string,
+        kind: res.data.totpSetupRequired ? 'totpSetup' : 'totp',
+        challengeToken: res.data.challengeToken, message: res.data.message || '',
       };
     }
     throw unexpected(res.status, res.data);
   },
 
-  /** Has the Mini App approved the "Login with Telegram"? Then the password is next. */
-  telegramLoginComplete: async (challengeToken: string): Promise<TelegramLoginAnswer> => {
-    const res = await api.post<any>('/api/admin/login/telegram/complete', { challengeToken });
-    if (res.status === 202) return { kind: 'pending' };
-    if (res.data?.passwordRequired) return { kind: 'passwordRequired' };
+  /** The 6-digit code (or a recovery code), then a session. */
+  totp: async (challengeToken: string, code: string): Promise<StaffSession> => {
+    const res = await api.post<any>('/api/admin/login/totp', { challengeToken, code });
+    const session = sessionOf(res.data);
+    if (session) return session;
+    throw unexpected(res.status, res.data);
+  },
+
+  /** First sign-in: the secret and its QR. */
+  totpSetup: async (challengeToken: string): Promise<TotpSetup> => {
+    const res = await api.post<any>('/api/admin/login/totp/setup', { challengeToken });
+    if (res.data?.success && res.data?.qrDataUrl) {
+      return { secret: res.data.secret, otpauthUri: res.data.otpauthUri, qrDataUrl: res.data.qrDataUrl };
+    }
+    throw unexpected(res.status, res.data);
+  },
+
+  /** First sign-in: the first code. A session AND the recovery codes. */
+  totpActivate: async (challengeToken: string, code: string): Promise<StaffSession> => {
+    const res = await api.post<any>('/api/admin/login/totp/activate', { challengeToken, code });
+    const session = sessionOf(res.data);
+    if (session?.recoveryCodes) return session;
     throw unexpected(res.status, res.data);
   },
 
@@ -184,13 +175,7 @@ export const auth = {
   verifySession: async () => {
     const res = await api.get<any>('/api/v1/auth/me');
     if (res.data?.success && res.data?.user) {
-      // `bootstrap` is re-stated on every load: it ends the moment a bot is
-      // saved, and a banner read only at sign-in would outlive it.
-      return {
-        success: true,
-        data: { admin: res.data.user as Admin },
-        bootstrap: res.data.bootstrap === true,
-      };
+      return { success: true, data: { admin: res.data.user as Admin } };
     }
     return res.data;
   },
@@ -516,22 +501,10 @@ export const queueManager = {
 
 // --- TELEGRAM -----------------------------------------------------------------
 /**
- * One bot carries the Mini App that verifies every account and approves every
- * staff and merchant sign-in (Step 3; docs/PROJECT_STATUS.md, "API contract").
- * Server: backend/routes/admin/telegram.admin.routes.js and
- * backend/domains/telegram/miniApp.routes.js.
+ * One bot carries the Mini App that verifies every player and merchant account
+ * and approves merchant sign-ins (Step 3). Staff have no Telegram (owner,
+ * 2026-10-13). Server: backend/routes/admin/telegram.admin.routes.js.
  */
-
-/**
- * A Telegram block, as every door and the relink route send it: the Mini App
- * deep link to open, the bot it belongs to, and when the challenge behind it
- * lapses. §5 mirror of `openChallenge`'s `telegram` (backend/routes.js).
- */
-export interface TelegramBlock {
-  url: string;
-  botUsername: string;
-  expiresAt: string;
-}
 
 /** `GET|PUT /api/admin/telegram/bot` — the bot, never its token. */
 export interface TelegramBot {
@@ -542,25 +515,6 @@ export interface TelegramBot {
   miniAppShortName: string;
   updatedAt: string | null;
   updatedBy: string | null;
-}
-
-/** `GET /api/telegram/mini-app?panel=STAFF` — public. */
-export interface MiniAppInfo {
-  success: boolean;
-  available: boolean;
-  botUsername: string;
-  resetUrl: string | null;
-}
-
-/** `GET /api/admin/account/telegram` — the signed-in staff account's own link. */
-export interface MyTelegram {
-  available: boolean;
-  linked: boolean;
-  telegramUsername: string | null;
-  firstName: string | null;
-  verifiedAt: string | null;
-  linkedAt: string | null;
-  twoFactor: { enabled: boolean; required: boolean };
 }
 
 export const telegram = {
@@ -578,24 +532,26 @@ export const telegram = {
     const res = await api.put<TelegramBot>('/api/admin/telegram/bot', body);
     return res.data;
   },
+};
 
-  /** Whether Telegram is available for staff, and the "Forgot password" link. */
-  miniApp: async () => {
-    const res = await api.get<MiniAppInfo>('/api/telegram/mini-app', { params: { panel: 'STAFF' } });
-    return res.data;
+// --- MY ACCOUNT: the signed-in staff account's own authenticator --------------
+// Server: backend/routes/admin/account.admin.routes.js (SELF_ROUTES).
+export const account = {
+  authenticator: async (): Promise<AuthenticatorState> => {
+    const res = await api.get<any>('/api/admin/account/2fa');
+    return {
+      enrolled: res.data?.enrolled === true,
+      enrolledAt: res.data?.enrolledAt ?? null,
+      recoveryCodesLeft: Number(res.data?.recoveryCodesLeft ?? 0),
+      recoveryGeneratedAt: res.data?.recoveryGeneratedAt ?? null,
+    };
   },
 
-  myTelegram: async () => {
-    const res = await api.get<MyTelegram>('/api/admin/account/telegram');
-    return res.data;
-  },
-
-  /** Opens a RELINK challenge; approved from the NEW Telegram account. */
-  relink: async () => {
-    const res = await api.post<{ success: boolean; telegram: TelegramBlock; message?: string }>(
-      '/api/admin/account/telegram/relink', {},
-    );
-    return res.data;
+  /** Ten new recovery codes, shown once; needs a current authenticator code. */
+  regenerateRecoveryCodes: async (code: string): Promise<string[]> => {
+    const res = await api.post<any>('/api/admin/account/2fa/recovery-codes', { code });
+    if (res.data?.success && Array.isArray(res.data.recoveryCodes)) return res.data.recoveryCodes as string[];
+    throw unexpected(res.status, res.data);
   },
 };
 
@@ -729,6 +685,15 @@ export const subAdmins = {
   delete: async (subAdminId: string) => {
     const res = await api.delete(`/api/admin/sub-admins/${subAdminId}`);
     return res.data;
+  },
+
+  /**
+   * Forget a staff account's authenticator and end its sessions (full admin
+   * only, never your own). Their next sign-in sets up a new app.
+   */
+  resetAuthenticator: async (userId: string) => {
+    const res = await api.post(`/api/admin/staff/${userId}/reset-authenticator`);
+    return res.data as { success: boolean; hadAuthenticator?: boolean; message?: string };
   },
 
   /**
@@ -1149,6 +1114,7 @@ export default {
   queueManager,
   teams,
   telegram,
+  account,
   referrals,
   subAdmins,
   finance,

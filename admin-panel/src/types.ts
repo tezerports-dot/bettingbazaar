@@ -90,6 +90,8 @@ export interface User {
 
   roles: string[];
   subAdminPermissions?: Record<string, boolean>;
+  /** Only on `GET /api/admin/sub-admins` (subadmins.admin.routes.js): a yes/no, never the secret. */
+  authenticatorEnrolled?: boolean;
 
   isQueueManager: boolean;
   isMediator: boolean;

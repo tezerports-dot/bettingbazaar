@@ -23,7 +23,7 @@ vi.mock('./services/api', () => ({
   default: {
     auth: {
       verifySession: vi.fn(async () => (current.admin
-        ? { success: true, data: { admin: current.admin }, bootstrap: false }
+        ? { success: true, data: { admin: current.admin } }
         : { success: false })),
       logout: vi.fn(),
     },
@@ -44,7 +44,7 @@ import { useAuthStore } from './services/auth';
 const signInAs = (admin: Record<string, unknown>) => {
   current.admin = { userId: 's-1', username: 'staff', ...admin };
   useAuthStore.setState({
-    isAuthenticated: true, bootstrap: false, token: 't', admin: current.admin as any,
+    isAuthenticated: true, token: 't', admin: current.admin as any,
   });
 };
 
@@ -92,7 +92,7 @@ describe('a screen outside the grant', () => {
   it('still sends a person who is NOT signed in to the sign-in screen', async () => {
     window.location.hash = '#/users';
     current.admin = null;
-    useAuthStore.setState({ isAuthenticated: false, admin: null, token: null, bootstrap: false } as any);
+    useAuthStore.setState({ isAuthenticated: false, admin: null, token: null } as any);
     render(<App />);
     await new Promise((r) => setTimeout(r, 50));
     expect(window.location.hash).toBe('#/login');

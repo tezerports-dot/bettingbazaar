@@ -2,9 +2,8 @@
 /**
  * The staff door over the wire: the real mapper and the real store over a
  * stubbed HTTP client, which is the seam a dropped field is lost at (F-011 was
- * one line in the mapper). Step 3: every staff sign-in is approved in
- * Telegram, and the bootstrap (no bot saved yet) is a password-only session
- * the server marks `bootstrap: true`.
+ * one line in the mapper). Every staff sign-in is a password, then a code from
+ * an authenticator app (owner, 2026-10-13); the first one sets the app up.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -37,7 +36,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   useAuthStore.setState({
-    admin: null, token: null, isAuthenticated: false, isLoading: false, bootstrap: false,
+    admin: null, token: null, isAuthenticated: false, isLoading: false
   });
 });
 
@@ -45,37 +44,27 @@ const refused = (status: number, data: unknown) =>
   Object.assign(new Error(`Request failed with status code ${status}`), { response: { status, data } });
 
 describe('the password leg', () => {
-  it('signs in on a session and carries `bootstrap` to the store, persisted', async () => {
-    post.mockResolvedValue({ status: 200, data: { success: true, token: 't', user: ADMIN, bootstrap: true } });
+  it('answers the code step on `totpRequired`, holding no session', async () => {
+    post.mockResolvedValue({ status: 200, data: { success: false, twoFactorRequired: true, totpRequired: true, challengeToken: 'c-1', message: 'Enter the code' } });
     const answer = await useAuthStore.getState().login('9000000001', 'pw');
-    expect(answer.kind).toBe('session');
-    const s = useAuthStore.getState();
-    expect(s.isAuthenticated).toBe(true);
-    expect(s.bootstrap, 'the mapper dropped the flag the server sent').toBe(true);
-    expect(JSON.parse(localStorage.getItem('admin-auth') || '{}')?.state?.bootstrap).toBe(true);
-  });
-
-  it('leaves `bootstrap` false when the server does not send it', async () => {
-    post.mockResolvedValue({ status: 200, data: { success: true, token: 't', user: ADMIN } });
-    await useAuthStore.getState().login('9000000001', 'pw');
-    expect(useAuthStore.getState().bootstrap).toBe(false);
-  });
-
-  it('answers the Telegram step on `twoFactorRequired`, holding no session', async () => {
-    const telegram = { url: 'https://t.me/bb_bot/app?startapp=x', botUsername: 'bb_bot', expiresAt: '2026-10-08T10:00:00Z' };
-    post.mockResolvedValue({ status: 200, data: { success: false, twoFactorRequired: true, challengeToken: 'c-1', telegram, message: 'Approve' } });
-    const answer = await useAuthStore.getState().login('9000000001', 'pw');
-    expect(answer).toEqual({ kind: 'telegram', challengeToken: 'c-1', telegram, message: 'Approve' });
+    expect(answer).toEqual({ kind: 'totp', challengeToken: 'c-1', message: 'Enter the code' });
+    expect(post).toHaveBeenCalledWith('/api/admin/login', { mobile: '9000000001', password: 'pw', loginType: 'admin' });
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
-    expect(localStorage.getItem('admin-auth') || '').not.toContain('c-1');
+    expect(localStorage.getItem('admin-auth') || '', 'a challenge was persisted').not.toContain('c-1');
   });
 
-  it('answers the same step on 403 TELEGRAM_VERIFICATION_REQUIRED', async () => {
-    const telegram = { url: 'https://t.me/bb_bot/app?startapp=v', botUsername: 'bb_bot', expiresAt: '2026-10-08T10:00:00Z' };
-    post.mockRejectedValue(refused(403, { success: false, code: 'TELEGRAM_VERIFICATION_REQUIRED', challengeToken: 'v-1', telegram, message: 'Verify' }));
-    const answer = await useAuthStore.getState().login('9000000001', 'pw');
-    expect(answer.kind).toBe('telegram');
-    expect(answer.kind === 'telegram' && answer.challengeToken).toBe('v-1');
+  it('answers the setup step on `totpSetupRequired`', async () => {
+    post.mockResolvedValue({ status: 200, data: { success: false, twoFactorRequired: true, totpSetupRequired: true, challengeToken: 's-1', message: 'Set up' } });
+    const answer = await useAuthStore.getState().login('9000000001', 'pw', 'subadmin');
+    expect(answer).toEqual({ kind: 'totpSetup', challengeToken: 's-1', message: 'Set up' });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+  });
+
+  it('never adopts a session from the password leg, even if one were sent', async () => {
+    post.mockResolvedValue({ status: 200, data: { success: true, token: 't', user: ADMIN } });
+    await expect(useAuthStore.getState().login('9000000001', 'pw')).rejects.toBeTruthy();
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().isLoading).toBe(false);
   });
 
   it('throws any other refusal, in the server\'s words (the opposite case)', async () => {
@@ -83,45 +72,50 @@ describe('the password leg', () => {
     await expect(useAuthStore.getState().login('9000000001', 'bad')).rejects.toMatchObject({ response: { status: 401 } });
     expect(useAuthStore.getState().isLoading).toBe(false);
   });
-
-  it('sends the approved "Login with Telegram" token with the password', async () => {
-    post.mockResolvedValue({ status: 200, data: { success: true, token: 't', user: ADMIN } });
-    await useAuthStore.getState().login('9000000001', 'pw', 'admin', 'tg-1');
-    expect(post).toHaveBeenCalledWith('/api/admin/login', expect.objectContaining({ challengeToken: 'tg-1' }));
-  });
-
-  it('clears `bootstrap` on sign-out', async () => {
-    post.mockResolvedValue({ status: 200, data: { success: true, token: 't', user: ADMIN, bootstrap: true } });
-    await useAuthStore.getState().login('9000000001', 'pw');
-    post.mockResolvedValue({ status: 200, data: { success: true } });
-    await useAuthStore.getState().logout();
-    expect(useAuthStore.getState().bootstrap).toBe(false);
-  });
 });
 
-describe('waiting on Telegram', () => {
-  it('a 202 from /login/2fa is "keep polling"', async () => {
-    post.mockResolvedValue({ status: 202, data: { success: false, pending: true, code: 'TWO_FACTOR_PENDING' } });
-    expect(await api.auth.loginTwoFactor('c-1')).toEqual({ kind: 'pending' });
-    expect(post).toHaveBeenCalledWith('/api/admin/login/2fa', { challengeToken: 'c-1' });
-  });
-
-  it('a session from /login/2fa is a session', async () => {
+describe('the code legs', () => {
+  it('a code answers a session, which is held only once adopted', async () => {
     post.mockResolvedValue({ status: 200, data: { success: true, token: 't', user: ADMIN } });
-    const answer = await api.auth.loginTwoFactor('c-1');
-    expect(answer.kind).toBe('session');
+    const session = await api.auth.totp('c-1', '123456');
+    expect(post).toHaveBeenCalledWith('/api/admin/login/totp', { challengeToken: 'c-1', code: '123456' });
+    expect(session).toEqual({ token: 't', admin: ADMIN });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    useAuthStore.getState().adoptSession(session);
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(JSON.parse(localStorage.getItem('admin-auth') || '{}')?.state?.token).toBe('t');
   });
 
-  it('a denial is thrown with the server\'s words', async () => {
-    post.mockRejectedValue(refused(401, { success: false, code: 'TWO_FACTOR_DENIED', message: 'This sign-in was refused in Telegram.' }));
-    await expect(api.auth.loginTwoFactor('c-1')).rejects.toMatchObject({ response: { status: 401 } });
+  it('a recovery code carries how many are left', async () => {
+    post.mockResolvedValue({ status: 200, data: { success: true, token: 't', user: ADMIN, recoveryCodesLeft: 3 } });
+    expect((await api.auth.totp('c-1', 'ABCDE-FGHIJ')).recoveryCodesLeft).toBe(3);
   });
 
-  it('"Login with Telegram" completes into the password step', async () => {
-    post.mockResolvedValue({ status: 202, data: { success: false, pending: true } });
-    expect(await api.auth.telegramLoginComplete('tg-1')).toEqual({ kind: 'pending' });
-    post.mockResolvedValue({ status: 200, data: { success: false, passwordRequired: true } });
-    expect(await api.auth.telegramLoginComplete('tg-1')).toEqual({ kind: 'passwordRequired' });
+  it('a wrong code is thrown with the server\'s words', async () => {
+    post.mockRejectedValue(refused(401, { success: false, code: 'TOTP_INVALID', message: 'That code is not right.' }));
+    await expect(api.auth.totp('c-1', '000000')).rejects.toMatchObject({ response: { data: { code: 'TOTP_INVALID' } } });
+  });
+
+  it('setup answers the key and its QR', async () => {
+    post.mockResolvedValue({ status: 200, data: { success: true, secret: 'ABCD', otpauthUri: 'otpauth://totp/x', qrDataUrl: 'data:image/png;base64,AA' } });
+    expect(await api.auth.totpSetup('s-1')).toEqual({ secret: 'ABCD', otpauthUri: 'otpauth://totp/x', qrDataUrl: 'data:image/png;base64,AA' });
+    expect(post).toHaveBeenCalledWith('/api/admin/login/totp/setup', { challengeToken: 's-1' });
+  });
+
+  it('activate answers a session AND the ten recovery codes; without codes it is refused', async () => {
+    const codes = Array.from({ length: 10 }, (_, i) => `AAAA${i}-BBBBB`);
+    post.mockResolvedValue({ status: 200, data: { success: true, token: 't', user: ADMIN, recoveryCodes: codes } });
+    expect((await api.auth.totpActivate('s-1', '123456')).recoveryCodes).toEqual(codes);
+    post.mockResolvedValue({ status: 200, data: { success: true, token: 't', user: ADMIN } });
+    await expect(api.auth.totpActivate('s-1', '123456')).rejects.toBeTruthy();
+  });
+
+  it('sign-out clears the held session', async () => {
+    useAuthStore.getState().adoptSession({ token: 't', admin: ADMIN as any });
+    post.mockResolvedValue({ status: 200, data: { success: true } });
+    await useAuthStore.getState().logout();
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().token).toBeNull();
   });
 });
 
@@ -147,7 +141,7 @@ describe('waiting on Telegram', () => {
 describe('verifySession tells a refusal from a blip', () => {
   const signedIn = () => useAuthStore.setState({
     admin: ADMIN as any, token: 'good-token', isAuthenticated: true,
-    isLoading: false, bootstrap: false,
+    isLoading: false
   });
   const reject = (status?: number) => {
     const err: any = new Error(status ? `HTTP ${status}` : 'Network Error');
@@ -218,7 +212,7 @@ describe('a refused session is SAID on the sign-in form', () => {
   const KEY = 'adminSignedOutReason';
   const signedIn = () => useAuthStore.setState({
     admin: ADMIN as any, token: 'good-token', isAuthenticated: true,
-    isLoading: false, bootstrap: false,
+    isLoading: false
   });
   const refusal = (status: number, data: unknown) =>
     Object.assign(new Error(`HTTP ${status}`), { response: { status, data } });
@@ -289,13 +283,13 @@ describe('a refused session is SAID on the sign-in form', () => {
   });
 });
 
-describe('a held session Telegram never approved', () => {
+describe('a held session without its authenticator code', () => {
   it('is ended on 403 TWO_FACTOR_REQUIRED, with the server\'s words', async () => {
     sessionStorage.clear();
-    useAuthStore.setState({ admin: ADMIN as any, token: 'pwd-only', isAuthenticated: true, isLoading: false, bootstrap: true });
-    const err = refused(403, { success: false, code: 'TWO_FACTOR_REQUIRED', message: 'This sign-in has not been approved in Telegram.' });
+    useAuthStore.setState({ admin: ADMIN as any, token: 'pwd-only', isAuthenticated: true, isLoading: false });
+    const err = refused(403, { success: false, code: 'TWO_FACTOR_REQUIRED', message: 'This sign-in is missing its second step. Sign in again.' });
     await expect(interceptor.rejected!(err)).rejects.toBe(err);
-    expect(sessionStorage.getItem('adminSignedOutReason')).toBe('This sign-in has not been approved in Telegram.');
+    expect(sessionStorage.getItem('adminSignedOutReason')).toBe('This sign-in is missing its second step. Sign in again.');
     expect(localStorage.getItem('admin-auth')).toBeNull();
   });
 });

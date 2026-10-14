@@ -47,7 +47,7 @@ describe('a refused staff session', () => {
   it('is told why on the sign-in form, not shown a bare one', async () => {
     // Signed in, as a returning operator is: the store's envelope on disk.
     localStorage.setItem('admin-auth', JSON.stringify({
-      state: { token: 't', admin: SUB_ADMIN, isAuthenticated: true, bootstrap: false }, version: 0,
+      state: { token: 't', admin: SUB_ADMIN, isAuthenticated: true }, version: 0,
     }));
     window.location.hash = '#/users';
     verifySession.mockRejectedValue(Object.assign(new Error('HTTP 403'), {
@@ -68,7 +68,7 @@ describe('a refused staff session', () => {
 
   it('keeps an operator whose check merely failed signed in, with no alert (the opposite case)', async () => {
     localStorage.setItem('admin-auth', JSON.stringify({
-      state: { token: 't', admin: SUB_ADMIN, isAuthenticated: true, bootstrap: false }, version: 0,
+      state: { token: 't', admin: SUB_ADMIN, isAuthenticated: true }, version: 0,
     }));
     window.location.hash = '#/users';
     verifySession.mockRejectedValue(Object.assign(new Error('HTTP 502'), { response: { status: 502, data: {} } }));

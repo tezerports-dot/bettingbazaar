@@ -176,7 +176,7 @@ export async function beginEnrolment(user, { issuer }) {
     secret, issuer, algorithm: 'SHA1', digits: String(DIGITS), period: String(STEP_SECONDS),
   });
   const otpauthUri = `otpauth://totp/${label}?${params.toString()}`;
-  const qrDataUrl = await QRCode.toDataURL(otpauthUri, { errorCorrectionLevel: 'M', margin: 1, width: 240 });
+  const qrDataUrl = await QRCode.toDataURL(otpauthUri, { errorCorrectionLevel: 'M', margin: 2, width: 240 });
   return { secret, otpauthUri, qrDataUrl };
 }
 

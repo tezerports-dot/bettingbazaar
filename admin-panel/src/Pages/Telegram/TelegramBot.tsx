@@ -2,8 +2,9 @@
 /**
  * TelegramBot.tsx — the one bot (Step 3, owner 2026-10-07).
  *
- * One bot carries the Mini App that verifies every account and approves every
- * staff and merchant sign-in. Telegram suspends gambling bots, so replacing it
+ * One bot carries the Mini App that verifies every player and merchant and
+ * approves every merchant sign-in (staff sign in with an authenticator app,
+ * owner 2026-10-13). Telegram suspends gambling bots, so replacing it
  * is this form, not a deploy: paste a new token from @BotFather and save.
  * Links survive a swap — they key on the person's Telegram id, which belongs
  * to Telegram, not to the bot.
@@ -18,9 +19,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Bot, CheckCircle2, AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api, { type TelegramBot as BotView } from '../../services/api';
-import { useAuthStore } from '../../services/auth';
 import { formatters } from '../../utils/formatters';
-import { refusalText } from '../../hooks/useTelegramPoll';
+import { refusalText } from '../../utils/refusal';
 
 const label: React.CSSProperties = {
   display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 5,
@@ -67,7 +67,6 @@ export const TelegramBot: React.FC = () => {
     e.preventDefault();
     setSaving(true);
     setSaveError(null);
-    const wasBootstrap = useAuthStore.getState().bootstrap;
     try {
       const body: { token?: string; miniAppShortName: string } = { miniAppShortName: shortName.trim() };
       if (token.trim()) body.token = token.trim();
@@ -76,11 +75,6 @@ export const TelegramBot: React.FC = () => {
       setShortName(view.miniAppShortName || '');
       setToken('');
       toast.success(`Saved. The bot is @${view.botUsername}.`);
-      // This session was a password alone (no bot existed). Now one does, the
-      // server refuses it on the next request with TWO_FACTOR_REQUIRED;
-      // asking now ends it with those words on the sign-in form, where the
-      // operator signs in again and approves in Telegram.
-      if (wasBootstrap) await useAuthStore.getState().verifySession();
     } catch (err) {
       setSaveError(refusalText(err, 'Could not save the bot.'));
     } finally {
@@ -115,9 +109,8 @@ export const TelegramBot: React.FC = () => {
 
       {bot && !bot.configured && (
         <div className="card" style={{ padding: '14px 18px', fontSize: 12.5, lineHeight: 1.6, color: 'var(--text-2)' }}>
-          Until a bot is saved, nobody can verify an account or approve a sign-in, and staff sign in
-          with a password alone. Saving one ends that: every staff account, yours included, then signs
-          in again and approves it in Telegram.
+          Until a bot is saved, no player or merchant can verify their account, and no merchant can
+          approve a sign-in. Staff sign-in does not use Telegram.
         </div>
       )}
 

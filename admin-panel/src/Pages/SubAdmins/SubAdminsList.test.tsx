@@ -17,6 +17,7 @@ import userEvent from '@testing-library/user-event';
 const subAdmins = vi.hoisted(() => ({
   getAll: vi.fn(), create: vi.fn(), updatePermissions: vi.fn(), permissionCatalog: vi.fn(),
   listQueueManagers: vi.fn(), setQueueManager: vi.fn(), delete: vi.fn(), assignPhantomAccess: vi.fn(),
+  resetAuthenticator: vi.fn(),
 }));
 vi.mock('../../services/api', () => ({ default: { subAdmins } }));
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
@@ -80,5 +81,36 @@ describe('Sub-admins', () => {
     expect((await screen.findByRole('alert')).textContent).toMatch(/Server unavailable\. Sub-admins cannot be created or edited/);
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+
+  it('shows whether each has an authenticator', async () => {
+    subAdmins.getAll.mockResolvedValue({ success: true, data: [
+      { ...SUB, authenticatorEnrolled: true },
+      { ...SUB, userId: 'u-2', username: 'Ravi', authenticatorEnrolled: false },
+    ] });
+    render(<SubAdminsList />);
+    expect(await screen.findByText('Set up')).toBeTruthy();
+    expect(screen.getByText('Not set up')).toBeTruthy();
+  });
+
+  it('Reset Authenticator asks first, then resets that account and reloads the list', async () => {
+    subAdmins.getAll.mockResolvedValue({ success: true, data: [{ ...SUB, authenticatorEnrolled: true }] });
+    subAdmins.resetAuthenticator.mockResolvedValue({ success: true, hadAuthenticator: true, message: 'Authenticator reset.' });
+    render(<SubAdminsList />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Reset authenticator for Asha' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Reset Authenticator' });
+    expect(within(dialog).getByText(/signed out everywhere/)).toBeTruthy();
+    expect(subAdmins.resetAuthenticator, 'reset before the admin confirmed').not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Reset' }));
+    await waitFor(() => expect(subAdmins.resetAuthenticator).toHaveBeenCalledWith('u-1'));
+    await waitFor(() => expect(subAdmins.getAll).toHaveBeenCalledTimes(2));
+  });
+
+  it('Cancel on the reset dialog resets nothing (the opposite case)', async () => {
+    render(<SubAdminsList />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Reset authenticator for Asha' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Reset Authenticator' });
+    await userEvent.click(within(dialog).getByRole('button', { name: /Cancel/ }));
+    expect(subAdmins.resetAuthenticator).not.toHaveBeenCalled();
   });
 });
