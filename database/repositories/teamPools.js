@@ -98,6 +98,63 @@ export async function getPool(teamId) {
   return toPool(teamId, rows[0]);
 }
 
+// ── Where a pool's tokens are, and what is on its way in ──────────────────────
+//
+// `team_pools` says how much is available and how much is held; it does not say
+// what the held tokens are held FOR, or what the pool is owed by sells still in
+// their settlement window. The panels asked for exactly that (owner,
+// 2026-10-14): a merchant could not tell open orders from disputes, nor see the
+// sells about to land. One query shape, read per team (supervisor, merchant
+// account, admin) and per member (their own orders), so every screen splits the
+// same tokens the same way. A DISPLAY read (§9): nothing is admitted on it; the
+// hold taken at assignment is still the only check a buy passes.
+
+/** Live states in which a buy's tokens sit held in its team's pool. */
+export const POOL_HOLD_OPEN_STATES = Object.freeze(['ASSIGNED', 'PROCESSING', 'PAID']);
+/** States in which a buy's hold waits on a dispute (or the window to raise one). */
+export const POOL_HOLD_DISPUTE_STATES = Object.freeze(['DISPUTED', 'REJECTED']);
+
+const sqlList = (states) => states.map((x) => `'${x}'`).join(', ');
+
+/**
+ * The per-order split, as a SELECT over `order_states` narrowed by `scope` (a
+ * predicate the caller writes, e.g. `team_id = t.team_id`), for a LATERAL join
+ * or a statement of its own. Columns: held_open_paise, held_disputed_paise,
+ * open_buys, sells_settling_paise (a sell marked paid, inside its hold window:
+ * it joins the pool when the window passes), sells_disputed_paise, open_sells.
+ */
+export function poolExposureSql(scope) {
+  const open = sqlList(POOL_HOLD_OPEN_STATES);
+  const dispute = sqlList(POOL_HOLD_DISPUTE_STATES);
+  return `
+    SELECT COALESCE(sum(pool_held_paise) FILTER (WHERE state IN (${open})), 0)    AS held_open_paise,
+           COALESCE(sum(pool_held_paise) FILTER (WHERE state IN (${dispute})), 0) AS held_disputed_paise,
+           count(*) FILTER (WHERE order_type = 'DEPOSIT' AND state IN (${open}))::int AS open_buys,
+           COALESCE(sum(token_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL' AND state = 'PAID'), 0)     AS sells_settling_paise,
+           COALESCE(sum(token_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL' AND state = 'DISPUTED'), 0) AS sells_disputed_paise,
+           count(*) FILTER (WHERE order_type = 'WITHDRAWAL' AND state IN (${open}))::int AS open_sells
+      FROM order_states
+     WHERE ${scope} AND state IN (${open}, ${dispute})`;
+}
+
+/** The row `poolExposureSql` returns, in paise (BIGINT arrives as a string, trap 5). */
+export function toPoolExposure(row) {
+  return {
+    heldOpenPaise: toNum(row?.held_open_paise),
+    heldDisputedPaise: toNum(row?.held_disputed_paise),
+    openBuys: toNum(row?.open_buys),
+    sellsSettlingPaise: toNum(row?.sells_settling_paise),
+    sellsDisputedPaise: toNum(row?.sells_disputed_paise),
+    openSells: toNum(row?.open_sells),
+  };
+}
+
+/** One member's own orders, split the same way. */
+export async function memberExposure(merchantId) {
+  const { rows } = await pgQuery(poolExposureSql('merchant_id = $1'), [String(merchantId)], 'team_pool_member_exposure');
+  return toPoolExposure(rows[0]);
+}
+
 /** A team's pool ledger, newest first. */
 export async function listEntries(teamId, { limit = 50 } = {}) {
   const { rows } = await pgQuery(

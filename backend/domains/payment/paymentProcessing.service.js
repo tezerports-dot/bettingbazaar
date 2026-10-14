@@ -64,7 +64,7 @@ import {
 } from '#db/repositories/teamRouting.js';
 import { inrRoutingOf } from '../merchant/denominations.js';
 // The only shape of an order a player receives.
-import { toPlayerOrderView } from './playerOrderView.js';
+import { toPlayerOrderView, PLAYER_CANCEL_STATES } from './playerOrderView.js';
 // The mirror of it, pointing the other way: the one shape a MERCHANT receives.
 // This service pushes to both parties, so it needs both projections.
 import { toMerchantOrderView } from '../merchant/merchantOrderView.js';
@@ -1088,7 +1088,7 @@ export async function updateMerchantStatsOnComplete(merchantId, success, detail 
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// cancelOrder  — user or admin cancels a PENDING_QUEUE order
+// cancelOrder  — user or admin cancels an order no member has accepted yet
 // ═════════════════════════════════════════════════════════════════════════════
 export async function cancelOrder(actorId, isAdmin, orderId) {
   const order = await db.orders.getOrderRecord(orderId);
@@ -1103,8 +1103,16 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
   // `refundWithdrawal`'s own idempotency key stopped the second credit — which
   // means the protection lived in a different domain from the decision. The
   // transition decides now, and only the winner refunds.
+  //
+  // From the queue, or from a member who has not ACCEPTED yet
+  // (`PLAYER_CANCEL_STATES`): until then nobody was shown where to pay and
+  // nobody paid, so the player owes nothing and the member loses nothing. The
+  // "Finding a merchant" screen covers both states, and offering Cancel on it
+  // only while the order happened to be unassigned left the player stuck the
+  // moment a member was picked. A member accepting in the same instant is
+  // settled by the WHERE: one of the two moves wins and the other is refused.
   const cancelled = await cancelOrderState(order.orderId, {
-    expectFrom: 'PENDING_QUEUE',
+    expectFrom: [...PLAYER_CANCEL_STATES],
     set: {
       cancelReason: 'USER_CANCELLED',
       cancelledAt:  new Date(),
@@ -1122,11 +1130,22 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
   if (!cancelled.idempotent && order.type === 'WITHDRAWAL' && order.escrowLocked) {
     await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
   }
-  // A PENDING_QUEUE deposit holds nothing in a pool — a requeue releases its
-  // hold in the same transaction that moves it back. Releasing here anyway
-  // costs one query and is a no-op when there is nothing held.
+  // An ASSIGNED deposit holds its tokens in the member's team pool from the
+  // assigning transaction; they go back now. A PENDING_QUEUE one holds nothing
+  // (a requeue releases in the transaction that moves it back), so this is a
+  // no-op there.
   if (!cancelled.idempotent && order.type === 'DEPOSIT') {
     await db.teamPools.releaseBuyHold(order.orderId, { actor: 'cancel', reason: 'Order cancelled' });
+  }
+  // The member it was assigned to drops the card. Read off the MOVED row: the
+  // order may have been assigned between the read above and the cancel. Not
+  // counted against anyone: the player changed their mind before anything was
+  // asked of either side.
+  const heldBy = cancelled.order?.merchantId ?? null;
+  if (!cancelled.idempotent && heldBy) {
+    emitMerchantUpdate(String(heldBy), 'order_update', {
+      orderId: order.orderId, status: 'CANCELLED', cancelReason: 'USER_CANCELLED', server_ts: Date.now(),
+    });
   }
 
   await emitWalletUpdate(order.userId);

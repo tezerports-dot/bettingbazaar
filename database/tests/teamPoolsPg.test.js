@@ -40,7 +40,7 @@ describePg('team token pools (PostgreSQL)', () => {
     });
     await updateMerchant(merchantId, { merchantApprovalStatus: 'APPROVED' });
     made.push(merchantId);
-    expect(await setSupervisorRole(merchantId, { rail: 'UPI_BANK' })).toEqual({ ok: true });
+    expect(await setSupervisorRole(merchantId, { rail: 'UPI_BANK' })).toEqual({ ok: true, merchantId });
     return merchantId;
   };
   const team = async () => {

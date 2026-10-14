@@ -8,7 +8,8 @@
  * else: no password, no form. Signing up and signing in are the same action.
  * The first Verify of a Telegram account on a panel shares its contact, once:
  * that writes the LINK (`telegram_links`) to the account of that mobile, or
- * makes one (a player; a merchant application). Every later Verify is the
+ * makes one (a player only: a merchant's account is made by an admin with
+ * their mobile, owner 2026-10-14). Every later Verify is the
  * link's own Telegram. Players and merchants only (`TELEGRAM_AUDIENCES`). One
  * bot; no fleet, channel, templates or webhooks (CLAUDE.md §33).
  *
@@ -37,7 +38,6 @@
 import { pgQuery, withTransaction } from '../client.js';
 import { claimJoiningNumber } from './users.js';
 import { createAccountFromSignup } from './identity.js';
-import { createMerchantAccountWithin } from './merchants.js';
 import { recordJoinerEarnings } from './referrals.js';
 import { REFERRAL_REWARD_PAISE } from '../../backend/domains/referral/referralRewards.js';
 
@@ -541,8 +541,9 @@ async function linkWithin(client, account, { telegramUser, phone }) {
  *   - this Telegram account's link on the challenge's panel: that account;
  *   - a contact from this Telegram account (once, at the first Verify on that
  *     panel): the account of that mobile, linked (or relinked: the person
- *     changed Telegram account, not SIM) — or, with `signup`, a new one: a
- *     player, or a merchant application waiting for an admin.
+ *     changed Telegram account, not SIM) — or, with `signup`, a new PLAYER.
+ *     A merchant with no account on that mobile is refused
+ *     (NO_MERCHANT_ACCOUNT): an admin makes merchant accounts.
  *
  * A DENY needs only the fresh `initData`: the challenge id reached nobody but
  * the browser that asked, and refusing grants nothing.
@@ -607,18 +608,21 @@ export async function answerChallenge({
       account = await lockAccount(client, 'user_id = $1 AND account_type = $2', [mine[0].user_id, ch.audience]);
     } else if (contact) {
       account = await lockAccount(client, 'mobile = $1 AND account_type = $2', [contact.phone, ch.audience]);
-      if (!account && signup) {
+      if (!account && signup && ch.audience === 'PLAYER') {
         // First time on this panel, no account on that number: this IS the
-        // signup ("Continue with Telegram" is one action). The account, its
-        // link and — for a player — the joining number and the referrer's
-        // earnings commit with the approval, or none of them do.
-        account = await signUpWithin(client, ch.audience, contact.phone, signup);
+        // player's signup ("Continue with Telegram" is one action). The
+        // account, its link, the joining number and the referrer's earnings
+        // commit with the approval, or none of them do.
+        account = await signUpWithin(client, contact.phone, signup);
         created = true;
       }
     } else {
       refuse('CONTACT_REQUIRED');
     }
-    if (!account) refuse('NO_ACCOUNT');
+    // A merchant, supervisor or agent account is made by an admin, with the
+    // person's mobile (owner, 2026-10-14); their first Verify finds it by that
+    // mobile and links it. Telegram never makes one.
+    if (!account) refuse(ch.audience === 'MERCHANT' ? 'NO_MERCHANT_ACCOUNT' : 'NO_ACCOUNT');
 
     let outcome = { verified: false, relinked: false };
     if (!mine[0]) outcome = await linkWithin(client, account, { telegramUser, phone: contact.phone });
@@ -655,30 +659,15 @@ export async function answerChallenge({
   });
 }
 
-/**
- * The account a first Verify makes, inside the approving transaction: a
- * player (with the invite the sign-in carried), or a merchant APPLICATION —
- * PENDING until an admin approves it, so it signs nobody in yet.
- */
-async function signUpWithin(client, audience, phone, signup) {
+/** The player account a first Verify makes, inside the approving transaction. */
+async function signUpWithin(client, phone, signup) {
   const last4 = String(phone).slice(-4);
-  if (audience === 'PLAYER') {
-    const made = await createAccountFromSignup({
-      userId: signup.userId, username: `player${last4}`, mobile: phone,
-      referralCode: signup.referralCode, referredBy: signup.referredBy ?? null, client,
-    });
-    if (!made.ok) refuse(made.reason === 'mobile_taken' ? 'MOBILE_TAKEN' : 'DUPLICATE');
-    return lockAccount(client, 'user_id = $1 AND account_type = $2', [made.userId, 'PLAYER']);
-  }
-  // A merchant's username is unique and shown to other people, so it carries
-  // no part of the mobile (§24) and no digits at all: the account id spelled in
-  // letters (a–p for 0–f), unique because the id is. The merchant can rename it.
-  const letters = String(signup.userId).replace(/[0-9a-f]/g, (c) => String.fromCharCode(97 + parseInt(c, 16)));
-  const made = await createMerchantAccountWithin(client, {
-    userId: signup.userId, username: `merchant_${letters}`, mobile: phone,
+  const made = await createAccountFromSignup({
+    userId: signup.userId, username: `player${last4}`, mobile: phone,
+    referralCode: signup.referralCode, referredBy: signup.referredBy ?? null, client,
   });
-  if (!made.ok) refuse('MOBILE_TAKEN');
-  return lockAccount(client, 'user_id = $1 AND account_type = $2', [made.userId, 'MERCHANT']);
+  if (!made.ok) refuse(made.reason === 'mobile_taken' ? 'MOBILE_TAKEN' : 'DUPLICATE');
+  return lockAccount(client, 'user_id = $1 AND account_type = $2', [made.userId, 'PLAYER']);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

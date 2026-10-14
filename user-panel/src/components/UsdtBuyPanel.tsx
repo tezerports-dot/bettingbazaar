@@ -60,6 +60,8 @@ export interface UsdtOrder {
   fiatAmount?: number | null;
   usdtChain?: string;
   payTo?: UsdtPayTo | null;
+  /** Whether the player may still cancel it (the server's `canCancel`). */
+  canCancel?: boolean;
 }
 
 /**
@@ -100,7 +102,9 @@ export const UsdtBuyPanel: React.FC<{
   order?: UsdtOrder | null;
   /** Called after an order is created or paid, so the screen above refreshes. */
   onChanged?: () => void;
-}> = ({ bounds, tokensPerUsdt, chains, order = null, onChanged }) => {
+  /** Cancels the order on the server; resolves true when it is gone. */
+  onCancel?: (orderId: string) => Promise<boolean>;
+}> = ({ bounds, tokensPerUsdt, chains, order = null, onChanged, onCancel }) => {
   const [usdtText, setUsdtText] = useState('');
   const [chain, setChain] = useState<string | null>(null);
   const [txId, setTxId] = useState('');
@@ -172,6 +176,22 @@ export const UsdtBuyPanel: React.FC<{
             We are matching you with a merchant who accepts USDT on your chosen network.
             You will be shown their address here — do not send anything until then.
           </div>
+          {/* Cancel HERE, not only under Payment Orders: until a merchant
+              accepts, nothing has been asked of either side. */}
+          {order.canCancel && onCancel && (
+            <button
+              type="button"
+              onClick={async () => { setBusy(true); try { await onCancel(order.orderId); } finally { setBusy(false); } }}
+              disabled={busy}
+              style={{
+                marginTop: 12, width: '100%', padding: 11, borderRadius: 11, cursor: 'pointer',
+                fontWeight: 800, fontSize: 12, color: 'var(--red)', background: 'none',
+                border: '1px solid color-mix(in srgb,var(--red) 40%,transparent)', opacity: busy ? 0.5 : 1,
+              }}
+            >
+              {busy ? 'Cancelling…' : 'Cancel this purchase'}
+            </button>
+          )}
         </div>
       );
     }

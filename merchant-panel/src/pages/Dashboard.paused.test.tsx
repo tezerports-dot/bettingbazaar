@@ -17,9 +17,10 @@ const auth = vi.hoisted(() => ({ merchant: null as Record<string, unknown> | nul
 vi.mock('../services/AuthContext', () => ({
   useAuth: () => ({ merchant: auth.merchant, refreshProfile: vi.fn() }),
 }));
+const stats = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
 vi.mock('../services/api', () => ({
   api: {
-    getStats: vi.fn().mockResolvedValue({}),
+    getStats: vi.fn(async () => stats.value),
     getEarnings: vi.fn().mockResolvedValue({ earnings: null }),
     getWeeklyEarnings: vi.fn().mockResolvedValue({ weekly: [] }),
     toggleOnlineStatus: vi.fn(),
@@ -75,5 +76,37 @@ describe('the Dashboard shows no merchant balance', () => {
     expect(screen.queryByText(/BB Token balance/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Largest buy you can serve/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/1,000 BB/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The pool this merchant works from, and where its tokens are (owner,
+ * 2026-10-14): the server's figures (GET /merchant/stats `money`), split into
+ * what is free, what open orders lock, what waits on a dispute and what sells
+ * are about to add.
+ */
+describe('the Dashboard says where the tokens are', () => {
+  const none = { heldOpenPaise: 0, heldDisputedPaise: 0, openBuys: 0, sellsSettlingPaise: 0, sellsDisputedPaise: 0, openSells: 0 };
+  it('shows the team pool split by what it is locked in', async () => {
+    stats.value = { money: {
+      own: { ...none, heldOpenPaise: 500000, openBuys: 1 },
+      pool: { availablePaise: 9000000, heldPaise: 700000, exposure: { ...none, heldOpenPaise: 500000, heldDisputedPaise: 200000, openBuys: 2, sellsSettlingPaise: 100000, openSells: 1 } },
+    } };
+    show({});
+    expect(await screen.findByText('Your tokens')).toBeInTheDocument();
+    expect(screen.getByText('90,000 BB')).toBeInTheDocument();
+    expect(screen.getByText('Locked in open buys')).toBeInTheDocument();
+    expect(screen.getByText('Locked in disputes')).toBeInTheDocument();
+    expect(screen.getByText('2,000 BB')).toBeInTheDocument();
+    expect(screen.getByText(/Your own orders: 5,000 BB locked in 1 open buy/)).toBeInTheDocument();
+    stats.value = {};
+  });
+
+  it('shows nothing when the merchant has no pool and no open order', async () => {
+    stats.value = { money: { own: none, pool: null } };
+    show({});
+    expect(await screen.findByText(/Online · Accepting orders/)).toBeInTheDocument();
+    expect(screen.queryByText('Your tokens')).not.toBeInTheDocument();
+    stats.value = {};
   });
 });

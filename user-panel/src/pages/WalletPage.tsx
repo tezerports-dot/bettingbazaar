@@ -44,6 +44,9 @@ interface Balances { depositBalance: number; winningsBalance: number; lockedBala
  */
 interface BetLimits {
   maxStake: number;
+  /** Of the locked pocket, what the player's own sells hold, and what waits on a dispute (GET /api/user/bet-limits). */
+  lockedInSells: number;
+  lockedInDisputes: number;
   reservePercent: number;
   reserveLocked: number;
   total: number;
@@ -58,6 +61,10 @@ interface PaymentOrder {
   _id: string; orderId: string; type: 'DEPOSIT' | 'WITHDRAWAL'; status: string;
   tokenAmount: number; fiatAmount: number; rateUsed: number; createdAt: string;
   expiresAt?: string; paidAt?: string;
+  // Whether the player may still cancel it: queued, or assigned to a member who
+  // has not accepted (`PLAYER_CANCEL_STATES`, backend/domains/payment/
+  // playerOrderView.js). The server's answer; this screen keeps no list of it.
+  canCancel?: boolean;
   // Until when the player may dispute while the tokens are in escrow: a buy the
   // member rejected as unpaid, or a sell the member marked paid. Derived by the
   // server (`playerOrderView.js`, 2c+).
@@ -582,6 +589,8 @@ const WalletPage: React.FC = () => {
         });
         setLimits({
           maxStake: lim.maxStake ?? 0,
+          lockedInSells: lim.lockedInSells ?? 0,
+          lockedInDisputes: lim.lockedInDisputes ?? 0,
           reservePercent: lim.reservePercent ?? 0,
           reserveLocked: lim.reserveLocked ?? 0,
           total: lim.total ?? 0,
@@ -598,8 +607,13 @@ const WalletPage: React.FC = () => {
       // An INR buy only. A USDT buy in flight is `activeUsdtOrder`, drawn by
       // UsdtBuyPanel; taken here it replaced that panel with the INR payment
       // step, which named the USDT amount in rupees and offered no address.
-      const activeDeposit = orders.find((o: PaymentOrder) => o.type === 'DEPOSIT' && o.currency !== 'USDT' && ['ASSIGNED', 'PROCESSING', 'PAID'].includes(o.status));
-      const activeWithdrawal = orders.find((o: PaymentOrder) => o.type === 'WITHDRAWAL' && ['ASSIGNED', 'PROCESSING', 'PAID'].includes(o.status));
+      // PENDING_QUEUE too: an order still waiting for a member is the player's
+      // one open buy (or sell). Left out, the screen offered the size picker
+      // again, the server refused the second order, and the only way out was
+      // the Cancel on Payment Orders.
+      const live = ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID'];
+      const activeDeposit = orders.find((o: PaymentOrder) => o.type === 'DEPOSIT' && o.currency !== 'USDT' && live.includes(o.status));
+      const activeWithdrawal = orders.find((o: PaymentOrder) => o.type === 'WITHDRAWAL' && live.includes(o.status));
       if (activeDeposit && buyStep === 'amount') { setActiveBuyOrder(activeDeposit); setBuyStep('pay_now'); setSide('buy'); }
       if (activeWithdrawal && sellStep === 'amount') { setActiveSellOrder(activeWithdrawal); setSellStep('waiting'); setSide('sell'); }
     } catch (err: unknown) { console.error('[WalletPage/loadOrders]', err instanceof Error ? err.message : err); }
@@ -673,8 +687,17 @@ const WalletPage: React.FC = () => {
   }, [activeBuyOrder?.orderId, activeSellOrder?.orderId]);
 
   const cancelOrder = async (orderId: string) => {
-    try { await payments.cancelOrder(orderId); loadOrders(); }
-    catch (e: any) { alert(e?.message || 'Failed to cancel'); }
+    try { await payments.cancelOrder(orderId); loadOrders(); loadMeta(); return true; }
+    catch (e: any) { alert(e?.message || 'Failed to cancel'); loadOrders(); return false; }
+  };
+  // Cancel the order on screen, on the server, and only then leave it. The
+  // "✕ Cancel" here used to clear the screen and nothing else: the order lived
+  // on, so the next buy was refused as a second open order.
+  const [cancelling, setCancelling] = useState(false);
+  const cancelActive = async (orderId: string, reset: () => void) => {
+    setCancelling(true);
+    try { if (await cancelOrder(orderId)) reset(); }
+    finally { setCancelling(false); }
   };
 
   /**
@@ -810,7 +833,15 @@ const WalletPage: React.FC = () => {
           <div style={{ background: 'rgba(49,196,110,.1)', border: '1px solid rgba(49,196,110,.25)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#4bd486' }}>WINNINGS</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#8ff0b6' }}>{fmtT(balances.winningsBalance)}</div></div>
           {/* Its own tile, never folded into DEPOSIT — they spend differently. */}
           <div style={{ background: 'rgba(120,150,255,.09)', border: '1px solid rgba(120,150,255,.25)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#93a8f0' }}>RESERVE</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#b9c8ff' }}>{fmtT(balances.reserveBalance)}</div></div>
-          <div style={{ background: 'rgba(var(--brand-primary-rgb), .1)', border: '1px solid rgba(var(--brand-primary-rgb), .25)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#e0c060' }}>IN PLAY</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#f0d488' }}>{fmtT(balances.lockedBalance)}</div></div>
+          {/* Stakes on open bets only. The same pocket holds a sell's tokens
+              until it settles; those are named below, not shown as play. */}
+          <div style={{ background: 'rgba(var(--brand-primary-rgb), .1)', border: '1px solid rgba(var(--brand-primary-rgb), .25)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#e0c060' }}>IN PLAY</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#f0d488' }}>{fmtT(Math.max(0, r2(balances.lockedBalance - (limits?.lockedInSells ?? 0) - (limits?.lockedInDisputes ?? 0))))}</div></div>
+          {(limits?.lockedInSells ?? 0) > 0 && (
+            <div style={{ background: 'rgba(255,255,255,.05)', border: '1px solid rgba(255,255,255,.12)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#9c9484' }}>IN SELL ORDERS</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#EAE3CE' }}>{fmtT(limits?.lockedInSells ?? 0)}</div></div>
+          )}
+          {(limits?.lockedInDisputes ?? 0) > 0 && (
+            <div style={{ background: 'rgba(224,138,138,.08)', border: '1px solid rgba(224,138,138,.25)', borderRadius: 11, padding: '9px 11px' }}><div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em', color: '#e08a8a' }}>IN DISPUTE</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: '#f0b0b0' }}>{fmtT(limits?.lockedInDisputes ?? 0)}</div></div>
+          )}
         </div>
 
         {/* Only when it actually bites. A player whose reserve is fully usable
@@ -884,13 +915,14 @@ const WalletPage: React.FC = () => {
                         chains={rail.usdtChains}
                         order={activeUsdtOrder as any}
                         onChanged={() => { loadMeta(); loadOrders(); }}
+                        onCancel={(orderId) => cancelOrder(orderId)}
                       />
                     </div>
                   )}
                 </>
               ) : activeBuyOrder ? (
                 <>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}><span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>Complete payment</span><button onClick={resetBuy} style={{ fontSize: 11, color: 'var(--text3)', background: 'none', border: 'none', cursor: 'pointer' }}>✕ Cancel</button></div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}><span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>Complete payment</span>{activeBuyOrder.canCancel && <button onClick={() => { void cancelActive(activeBuyOrder.orderId, resetBuy); }} disabled={cancelling} style={{ fontSize: 11, fontWeight: 700, color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer', opacity: cancelling ? .5 : 1 }}>{cancelling ? 'Cancelling…' : '✕ Cancel order'}</button>}</div>
                   <BuyPaymentUI
                     order={activeBuyOrder}
                     onPaid={(patch) => setActiveBuyOrder(prev => prev ? { ...prev, ...patch } : prev)}
@@ -929,7 +961,10 @@ const WalletPage: React.FC = () => {
                     Merchant will send <b style={{ color: 'var(--green)' }}>{fmtINR(activeSellOrder.fiatAmount)}</b> to your saved account.
                     {activeSellOrder.userBankDetails?.accountNumber && <div style={{ marginTop: 6, color: 'var(--text3)' }}>{activeSellOrder.userBankDetails.bankName} ••••{activeSellOrder.userBankDetails.accountNumber.slice(-4)}</div>}
                   </div>
-                  <div style={{ background: 'color-mix(in srgb,var(--bombay) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--bombay) 30%,transparent)', borderRadius: 11, padding: 11, textAlign: 'center', fontSize: 11, color: 'var(--bombay)' }}>{['ASSIGNED', 'PROCESSING'].includes(activeSellOrder.status) ? '⏳ Merchant processing your payout…' : '✅ Payment sent. Waiting for final confirmation…'}</div>
+                  <div style={{ background: 'color-mix(in srgb,var(--bombay) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--bombay) 30%,transparent)', borderRadius: 11, padding: 11, textAlign: 'center', fontSize: 11, color: 'var(--bombay)' }}>{activeSellOrder.status === 'PENDING_QUEUE' || activeSellOrder.status === 'ASSIGNED' ? '⏳ Finding a merchant for your payout…' : activeSellOrder.status === 'PROCESSING' ? '⏳ Merchant processing your payout…' : '✅ Payment sent. Waiting for final confirmation…'}</div>
+                  {activeSellOrder.canCancel && (
+                    <button onClick={() => { void cancelActive(activeSellOrder.orderId, resetSell); }} disabled={cancelling} style={{ width: '100%', padding: 11, borderRadius: 11, border: '1px solid color-mix(in srgb,var(--red) 40%,transparent)', background: 'none', color: 'var(--red)', fontSize: 12, fontWeight: 800, cursor: 'pointer', opacity: cancelling ? .5 : 1 }}>{cancelling ? 'Cancelling…' : 'Cancel sell order'}</button>
+                  )}
                   <button onClick={resetSell} style={{ width: '100%', padding: 11, borderRadius: 11, border: 'none', background: 'var(--surface3)', color: 'var(--text2)', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>Back to overview</button>
                 </div>
               ) : null
@@ -998,7 +1033,7 @@ const WalletPage: React.FC = () => {
           {paymentOrders.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text3)' }}><div style={{ fontSize: 30, marginBottom: 6 }}>📋</div>No payment orders yet</div>
           ) : paymentOrders.map(order => {
-            const canCancel = order.status === 'PENDING_QUEUE';
+            const canCancel = order.canCancel === true;
             // An order that ended without ever being served can be tried again,
             // at the FRONT of the queue. Nothing happened on it — no assignment
             // means no transaction and nobody is liable — but the player still

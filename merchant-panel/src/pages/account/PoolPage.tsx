@@ -21,6 +21,7 @@ import { isOwner } from '../../utils/actor';
 import { formatTokens } from '../../utils/rail';
 import { Button, Card, CardTitle, Field, SegmentedControl, Skeleton, inputStyle } from '../../components/ui';
 import AccountShell, { Refusal } from './AccountShell';
+import { PoolBreakdown } from '../../components/PoolBreakdown';
 import type { PoolDirection } from '../../types';
 
 const errorText = (err: any, fallback: string): string => err?.message || fallback;
@@ -102,10 +103,9 @@ const PoolBody: React.FC = () => {
     <>
       <Card>
         <CardTitle title="Pool" sub="Buys routed to you hold their tokens here until they complete." />
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 11 }}>
+        <PoolBreakdown exposure={team.poolExposure} availablePaise={team.poolAvailablePaise} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 11, marginTop: 11 }}>
           {[
-            { label: 'Available', value: tokensOf(team.poolAvailablePaise) },
-            { label: 'Held for open buys', value: tokensOf(team.poolHeldPaise) },
             { label: `Commission paid (${team.commission.commissionPercent}%)`, value: tokensOf(team.commission.paidPaise) },
             { label: 'Commission owed', value: tokensOf(team.commission.owedPaise) },
           ].map((tile) => (

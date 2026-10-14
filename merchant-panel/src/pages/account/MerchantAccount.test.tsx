@@ -68,6 +68,7 @@ const OVERVIEW = {
   team: {
     teamId: 't-d', kind: 'DIRECT', ownerMerchantId: 'm-1', ownerName: 'Shop', ownerRef: 'M1', ownerStatus: 'ACTIVE',
     ownerApproval: 'APPROVED', ownerOnline: true, routingPriority: 3, name: 'Shop', poolAvailablePaise: 500000, poolHeldPaise: 100000,
+    poolExposure: { heldOpenPaise: 60000, heldDisputedPaise: 40000, openBuys: 1, sellsSettlingPaise: 250000, sellsDisputedPaise: 0, openSells: 1 },
     commission: { teamId: 't-d', buysPaise: 0, sellsPaise: 0, matchedPaise: 0, highPaise: 0, paidPaise: 0, owedPaise: 0, commissionPercent: 10, supervisorSharePercent: 0 },
     createdAt: '',
   },
@@ -261,6 +262,13 @@ describe('pool and reports', () => {
     api.requestMerchantPool.mockResolvedValue('req-1');
     at(ROUTES.ACCOUNT_POOL, OWNER, <PoolPage />);
     expect(await screen.findByText('5,000 BB')).toBeInTheDocument();
+    // Where the held tokens are, and what is on its way in (owner, 2026-10-14).
+    expect(screen.getByText('Locked in open buys')).toBeInTheDocument();
+    expect(screen.getByText('600 BB')).toBeInTheDocument();
+    expect(screen.getByText('Locked in disputes')).toBeInTheDocument();
+    expect(screen.getByText('400 BB')).toBeInTheDocument();
+    expect(screen.getByText('Incoming from sells')).toBeInTheDocument();
+    expect(screen.getByText('2,500 BB')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Tokens (whole number)'), { target: { value: '2000' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send request' }));
     await waitFor(() => expect(api.requestMerchantPool).toHaveBeenCalledWith('BUY', 2000, ''));

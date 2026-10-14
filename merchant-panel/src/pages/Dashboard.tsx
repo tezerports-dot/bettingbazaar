@@ -4,8 +4,9 @@
 // the cash team's Ready switch, three KPI tiles, the weekly earnings bars, what
 // is expiring soon, recent assignments and the merchant's record.
 //
-// A merchant holds no tokens — their team's pool does (PROJECT_STATUS §3.10) —
-// so there is no balance tile; their supervisor sees the pool on the Team page.
+// A merchant holds no tokens — their team's pool does (PROJECT_STATUS §3.10).
+// "Your tokens" shows that pool, split by what it is locked in, beside what
+// the merchant's own orders hold (GET /merchant/stats `money`).
 //
 // Every figure comes from the backend (GET /merchant/stats, /earnings,
 // /earnings/weekly, /profile and the live order queue). Where a figure has no
@@ -25,6 +26,7 @@ import { counterpartyOf, formatMoney, formatTokens, railOf } from '../utils/rail
 import { OrderStatus, type Earnings, type PaymentOrder, type Stats } from '../types';
 import { Card, CardTitle, Skeleton, StatusPill, cardStyle } from '../components/ui';
 import { CashReadyCard } from '../components/CashReadyCard';
+import { PoolBreakdown } from '../components/PoolBreakdown';
 import { availabilityOf } from '../utils/availability';
 
 interface WeeklyPoint { date: string; earnings: number; orders: number; }
@@ -192,6 +194,24 @@ const Dashboard: React.FC = () => {
             contact support to have new orders resumed.
           </div>
         </div>
+      )}
+
+      {/* Where the tokens are (owner, 2026-10-14): the pool this merchant
+          works from, and what their own orders lock or are about to add. */}
+      {stats?.money && (stats.money.pool || stats.money.own.openBuys + stats.money.own.openSells > 0) && (
+        <Card>
+          <CardTitle title="Your tokens" sub={stats.money.pool ? 'The pool your buy orders are paid from' : 'What your open orders hold'} />
+          {stats.money.pool
+            ? <PoolBreakdown exposure={stats.money.pool.exposure} availablePaise={stats.money.pool.availablePaise} />
+            : <PoolBreakdown exposure={stats.money.own} />}
+          {stats.money.pool && (stats.money.own.openBuys + stats.money.own.openSells > 0) && (
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 10 }}>
+              Your own orders: {formatTokens(stats.money.own.heldOpenPaise / 100)} locked in {stats.money.own.openBuys} open buy{stats.money.own.openBuys === 1 ? '' : 's'},
+              {' '}{formatTokens(stats.money.own.heldDisputedPaise / 100)} in disputes,
+              {' '}{formatTokens(stats.money.own.sellsSettlingPaise / 100)} incoming from sells.
+            </div>
+          )}
+        </Card>
       )}
 
       {/* KPI row */}

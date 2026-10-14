@@ -304,6 +304,89 @@ describePg('payment routes', () => {
     return o;
   };
 
+  // ── Cancelling before a member accepts ────────────────────────────────────
+  // The "Finding a merchant" screen covers the queue AND an assignment the
+  // member has not accepted yet; Cancel worked only in the first, so a player
+  // whose buy had just been routed was stuck until it expired.
+  const poolOf = async (teamId) => {
+    const { rows } = await withTransaction((c) => c.query(
+      'SELECT available_paise, held_paise FROM team_pools WHERE team_id = $1', [teamId]));
+    return { available: Number(rows[0].available_paise), held: Number(rows[0].held_paise) };
+  };
+
+  it('lets a player cancel a buy a member has not accepted yet, and gives the pool its hold back', async () => {
+    const before = await poolOf(team.teamId);
+    const { orderId, who } = await depositOrder({ state: 'ASSIGNED' });
+    const assigned = await getOrderRecord(orderId);
+    expect(assigned.poolHeldPaise).toBe(TOKENS * 100);
+    expect(await poolOf(team.teamId)).toEqual({ available: before.available - TOKENS * 100, held: before.held + TOKENS * 100 });
+    // The screens read the offer from the server, never their own list.
+    const status = await as(app, who).get(`/order/${orderId}/status`);
+    expect(status.body.canCancel).toBe(true);
+
+    const res = await as(app, who).post('/order/cancel').send({ orderId });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const row = await getOrderRecord(orderId);
+    expect(row.state).toBe('CANCELLED');
+    expect(row.cancelReason).toBe('USER_CANCELLED');
+    expect(row.poolHeldPaise).toBe(0);
+    // Both halves of the pool: the held tokens leave `held` AND land in `available`.
+    expect(await poolOf(team.teamId)).toEqual(before);
+    expect((await as(app, who).get(`/order/${orderId}/status`)).body.canCancel).toBe(false);
+    // A second tap is the same answer, and moves nothing twice.
+    expect((await as(app, who).post('/order/cancel').send({ orderId })).status).toBe(200);
+    expect(await poolOf(team.teamId)).toEqual(before);
+  });
+
+  it('refuses a cancel once the member has accepted, and keeps the hold', async () => {
+    const { orderId, who } = await depositOrder({ state: 'PROCESSING' });
+    const held = await poolOf(team.teamId);
+    expect((await as(app, who).get(`/order/${orderId}/status`)).body.canCancel).toBe(false);
+    const res = await as(app, who).post('/order/cancel').send({ orderId });
+    expect(res.status).toBe(409);
+    const row = await getOrderRecord(orderId);
+    expect(row.state).toBe('PROCESSING');
+    expect(row.poolHeldPaise).toBe(TOKENS * 100);
+    expect(await poolOf(team.teamId)).toEqual(held);
+  });
+
+  it('splits the pool by what its held tokens are held for, per team and per member', async () => {
+    const { getTeam } = await import('#db/repositories/teams.js');
+    const { memberExposure } = await import('#db/repositories/teamPools.js');
+    const before = await getTeam(team.teamId);
+    const open = await depositOrder({ state: 'ASSIGNED' });
+    // Past the ten-minute wait before a buy may be disputed.
+    const disputed = await depositOrder({ state: 'PAID', paidMinutesAgo: 11 });
+    expect((await as(app, disputed.who).post(`/order/${disputed.orderId}/dispute`)
+      .send({ reason: 'I paid and nothing arrived' })).status).toBe(200);
+    expect((await getOrderRecord(disputed.orderId)).state).toBe('DISPUTED');
+
+    const after = await getTeam(team.teamId);
+    // Each lock lands in its own bucket, and the buckets account for the
+    // whole of the pool's held tokens (they are the same tokens, split).
+    expect(after.poolExposure.heldOpenPaise - before.poolExposure.heldOpenPaise).toBe(TOKENS * 100);
+    expect(after.poolExposure.heldDisputedPaise - before.poolExposure.heldDisputedPaise).toBe(TOKENS * 100);
+    expect(after.poolExposure.openBuys - before.poolExposure.openBuys).toBe(1);
+    expect(after.poolExposure.heldOpenPaise + after.poolExposure.heldDisputedPaise).toBe(after.poolHeldPaise);
+
+    // One member's own orders only: the one holding the open buy sees it,
+    // and not the dispute a teammate (or they) may hold.
+    const holder = (await getOrderRecord(open.orderId)).merchantId;
+    const mine = await memberExposure(holder);
+    expect(mine.heldOpenPaise).toBeGreaterThanOrEqual(TOKENS * 100);
+    const { rows } = await withTransaction((c) => c.query(
+      `SELECT COALESCE(sum(pool_held_paise), 0) AS held FROM order_states
+        WHERE merchant_id = $1 AND state IN ('ASSIGNED','PROCESSING','PAID')`, [holder]));
+    expect(mine.heldOpenPaise).toBe(Number(rows[0].held));
+  });
+
+  it("refuses a cancel of somebody else's order", async () => {
+    const { orderId } = await depositOrder({ state: 'ASSIGNED' });
+    const stranger = await player();
+    expect((await as(app, stranger).post('/order/cancel').send({ orderId })).status).toBe(403);
+    expect((await getOrderRecord(orderId)).state).toBe('ASSIGNED');
+  });
+
   it('shows a player only their OWN orders', async () => {
     const mine = await depositOrder();
     const theirs = await depositOrder();
@@ -392,7 +475,7 @@ describePg('payment routes', () => {
     const res = await as(app, who).get(`/order/${orderId}/status`);
     expect(res.status).toBe(200);
     expect(Object.keys(res.body).sort()).toEqual(
-      ['expiresAt', 'payTo', 'proofScreenshot', 'status', 'success', 'utrNumber'],
+      ['canCancel', 'expiresAt', 'payTo', 'proofScreenshot', 'status', 'success', 'utrNumber'],
     );
   });
 

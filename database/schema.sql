@@ -4038,6 +4038,25 @@ CREATE OR REPLACE TRIGGER merchants_log_online_insert
 -- written before the rule is switched off first, which the trigger above logs
 -- as the end of its stretch.
 UPDATE merchants SET is_online = FALSE, last_online_toggle = now() WHERE is_supervisor AND is_online;
+
+-- An approved team member settles on the team's rail (`teams.approveMember`,
+-- owner 2026-10-14): USDT in a USDT team, INR in a cash or UPI/bank team, with
+-- the other rail's credentials cleared. Convergent (§32 S31) for members
+-- approved before the rule, whose Profile refused the credentials their team's
+-- orders need, so nothing on that rail was ever routed to them.
+UPDATE merchants m
+   SET accepted_currencies = ARRAY[x.currency]::text[],
+       bank_account_no          = CASE WHEN x.currency = 'USDT' THEN NULL ELSE m.bank_account_no END,
+       bank_ifsc                = CASE WHEN x.currency = 'USDT' THEN NULL ELSE m.bank_ifsc END,
+       bank_account_holder_name = CASE WHEN x.currency = 'USDT' THEN NULL ELSE m.bank_account_holder_name END,
+       usdt_address_trc20       = CASE WHEN x.currency = 'INR' THEN NULL ELSE m.usdt_address_trc20 END,
+       usdt_address_bep20       = CASE WHEN x.currency = 'INR' THEN NULL ELSE m.usdt_address_bep20 END
+  FROM (SELECT tm.merchant_id, CASE WHEN s.supervisor_rail = 'USDT' THEN 'USDT' ELSE 'INR' END AS currency
+          FROM team_members tm
+          JOIN teams t ON t.team_id = tm.team_id
+          JOIN merchants s ON s.merchant_id = t.supervisor_id
+         WHERE tm.status = 'APPROVED' AND s.supervisor_rail IS NOT NULL) x
+ WHERE m.merchant_id = x.merchant_id AND m.accepted_currencies[1] IS DISTINCT FROM x.currency;
 ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_supervisor_never_online;
 ALTER TABLE merchants ADD CONSTRAINT merchants_supervisor_never_online
   CHECK (NOT (is_supervisor AND is_online));

@@ -31,6 +31,7 @@ import { EmptyState } from '../../components/EmptyState';
 import { LoadingSpinner } from '../../components/LoadingSpinner';
 import { usePermissions } from '../../hooks/usePermission';
 import type { SupervisorRail, TeamMemberView, TeamPoolRequest, TeamRedFlag, TeamSupervisor, TeamView } from '../../types';
+import { poolExposureLine } from '../../types';
 
 /** Mirrors SUPERVISOR_RAILS in database/repositories/teams.js (§5). */
 const RAILS: Array<{ value: SupervisorRail; label: string }> = [
@@ -374,6 +375,9 @@ export const TeamsManager: React.FC = () => {
                   <span className="text-xs text-gray-400">
                     Pool: {tokens(t.poolAvailablePaise)} tokens{t.poolHeldPaise ? ` · ${tokens(t.poolHeldPaise)} held` : ''}
                   </span>
+                  {t.poolExposure && (t.poolExposure.openBuys + t.poolExposure.openSells > 0 || t.poolExposure.heldDisputedPaise > 0) && (
+                    <span className="text-xs text-gray-400">{poolExposureLine(t.poolExposure, tokens)}</span>
+                  )}
                   <span className="text-xs text-gray-400">
                     Commission: {tokens(t.commission.paidPaise)} paid on matched volume {tokens(t.commission.matchedPaise)}
                   </span>

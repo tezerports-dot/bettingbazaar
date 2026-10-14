@@ -353,6 +353,8 @@ export interface Earnings {
 }
 
 export interface Stats {
+  /** Where the tokens are (merchant.routes.js GET /stats). Absent when the read failed. */
+  money?: MerchantMoney;
   pending: number;
   processing: number;
   completedToday: number;
@@ -422,6 +424,8 @@ export interface Team {
   strength: 'WORKING' | 'STOPPED'; createdAt: string;
   /** The team's token pool, in paise (Step 2b). */
   poolAvailablePaise: number; poolHeldPaise: number;
+  /** What the held tokens are held for, and the sells on their way in. */
+  poolExposure: PoolExposure;
   /** Team commission (Step 2e): `toSummary` in database/repositories/teamCommission.js. */
   commission: TeamCommissionSummary;
 }
@@ -551,8 +555,23 @@ export interface SubMember {
 export interface DirectTeam {
   teamId: string; kind: 'DIRECT'; ownerMerchantId: string; ownerName: string; ownerRef: string;
   ownerStatus: string; ownerApproval: string; ownerOnline: boolean; routingPriority: number;
-  name: string; poolAvailablePaise: number; poolHeldPaise: number;
+  name: string; poolAvailablePaise: number; poolHeldPaise: number; poolExposure: PoolExposure;
   commission: TeamCommissionSummary; createdAt: string;
+}
+
+/**
+ * Where a pool's tokens are, per order: `toPoolExposure` in
+ * database/repositories/teamPools.js — §5, change them together. Paise.
+ */
+export interface PoolExposure {
+  heldOpenPaise: number; heldDisputedPaise: number; openBuys: number;
+  sellsSettlingPaise: number; sellsDisputedPaise: number; openSells: number;
+}
+
+/** GET /api/merchant/stats `money`: this merchant's own orders, and the pool they work from. */
+export interface MerchantMoney {
+  own: PoolExposure;
+  pool: { availablePaise: number; heldPaise: number; exposure: PoolExposure } | null;
 }
 
 /** `toFlag` (merchantProblems.js): a day the merchant's problems reached the threshold. It suspends nothing. */

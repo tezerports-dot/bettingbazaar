@@ -52,9 +52,9 @@ router.put('/merchants/:merchantId/supervisor', authenticate, hasPermission(AREA
     if (!out.ok) return refuse(res, out.reason);
     await db.audit.recordDetailed({
       performedBy: req.user.userId, category: 'TEAMS', targetType: 'MERCHANT', action: rail ? 'SUPERVISOR_SET' : 'SUPERVISOR_REMOVED',
-      details: { rail }, targetId: req.params.merchantId, ip: req.ip,
+      details: { rail }, targetId: out.merchantId, ip: req.ip,
     });
-    res.json({ success: true, message: rail ? `Now a supervisor on ${rail}.` : 'Supervisor role removed.' });
+    res.json({ success: true, merchantId: out.merchantId, message: rail ? `Now a supervisor on ${rail}.` : 'Supervisor role removed.' });
   } catch (err) { respondError(res, err, 'PUT /admin/merchants/:id/supervisor'); }
 });
 

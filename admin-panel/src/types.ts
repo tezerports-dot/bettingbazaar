@@ -537,6 +537,8 @@ export interface TeamView {
   strength: 'WORKING' | 'STOPPED'; createdAt: string;
   /** The team's token pool, in paise (Step 2b). */
   poolAvailablePaise: number; poolHeldPaise: number;
+  /** What the held tokens are held for, and the sells on their way in. */
+  poolExposure: PoolExposure;
   /** Team commission (Step 2e): mirrors `toSummary` in database/repositories/teamCommission.js — §5. */
   commission: {
     teamId: string; buysPaise: number; sellsPaise: number; matchedPaise: number;
@@ -575,4 +577,23 @@ export interface TeamMemberView {
   /** 1–5, the admin's; routing offers orders to the highest first (`setRoutingPriority`). */
   routingPriority: number;
   addedBy: string; addedAt: string; approvedBy: string | null; approvedAt: string | null;
+}
+
+/**
+ * Where a pool's tokens are, per order: `toPoolExposure` in
+ * database/repositories/teamPools.js — §5, change them together. Paise.
+ */
+export interface PoolExposure {
+  heldOpenPaise: number; heldDisputedPaise: number; openBuys: number;
+  sellsSettlingPaise: number; sellsDisputedPaise: number; openSells: number;
+}
+
+/** One line saying where a pool's held tokens are and what sells are bringing in. */
+export function poolExposureLine(x: PoolExposure | undefined, tokens: (paise: number) => string): string {
+  if (!x) return '';
+  const parts = [`${tokens(x.heldOpenPaise)} in ${x.openBuys} open buy${x.openBuys === 1 ? '' : 's'}`];
+  if (x.heldDisputedPaise) parts.push(`${tokens(x.heldDisputedPaise)} in disputes`);
+  if (x.sellsSettlingPaise) parts.push(`${tokens(x.sellsSettlingPaise)} incoming from sells`);
+  if (x.sellsDisputedPaise) parts.push(`${tokens(x.sellsDisputedPaise)} in disputed sells`);
+  return parts.join(' · ');
 }

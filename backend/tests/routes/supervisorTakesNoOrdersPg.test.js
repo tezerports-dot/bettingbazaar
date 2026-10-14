@@ -149,7 +149,7 @@ describePg('a supervisor takes no orders, so has no online switch', () => {
           setSupervisorRole(racer.merchantId, { rail: 'CASH' }),
           setOnline(racer.merchantId, true),
         ]);
-        expect(role).toEqual({ ok: true });
+        expect(role).toEqual({ ok: true, merchantId: racer.merchantId });
         const now = await pgQuery('SELECT is_supervisor, is_online FROM merchants WHERE merchant_id = $1', [racer.merchantId]);
         expect(now.rows[0]).toEqual({ is_supervisor: true, is_online: false });
         // The switch either went on before the promotion (and the promotion

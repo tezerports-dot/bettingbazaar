@@ -693,6 +693,25 @@ export async function pendingWithdrawalTotal(userId) {
 }
 
 /**
+ * Where a player's locked tokens are held by their own sells (owner,
+ * 2026-10-14): a sell's stake is locked with the order and stays locked until
+ * it settles or is refunded, beside the stakes on open bets in the same pocket.
+ * Split so the wallet can say which is which. Display only (§9): the escrow
+ * itself is the lock, never this read. Rupees, like `pendingWithdrawalTotal`.
+ */
+export async function playerSellEscrow(userId) {
+  const { rows } = await pgQuery(
+    `SELECT COALESCE(SUM(token_amount_paise) FILTER (WHERE state <> 'DISPUTED'), 0) AS in_orders,
+            COALESCE(SUM(token_amount_paise) FILTER (WHERE state = 'DISPUTED'), 0)  AS in_dispute
+       FROM order_states
+      WHERE user_id = $1 AND order_type = 'WITHDRAWAL' AND escrow_locked
+        AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED')`,
+    [String(userId)], 'order_player_sell_escrow',
+  );
+  return { inSellOrders: rupees(rows[0].in_orders), inDispute: rupees(rows[0].in_dispute) };
+}
+
+/**
  * Set detail on an order.
  *
  * Refuses an unknown field rather than dropping it. The document model

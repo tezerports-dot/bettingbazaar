@@ -92,6 +92,10 @@ export const PLAYER_ORDER_FIELDS = Object.freeze([
   // Workflow timestamps.
   'assignedAt', 'processingAt', 'paidAt', 'completedAt',
   'createdAt', 'updatedAt',
+
+  // Whether they may still cancel it: derived below from `PLAYER_CANCEL_STATES`
+  // (no column), declared here so the shape stays closed.
+  'canCancel',
 ]);
 
 /**
@@ -187,6 +191,17 @@ export const PLAYER_PAY_TO_BANK_FIELDS = Object.freeze([
 /** The states in which the player is shown where to pay, and may have paid. */
 export const PAY_DETAIL_STATES = Object.freeze(['PROCESSING', 'PAID', 'REJECTED', 'DISPUTED']);
 
+/**
+ * The states in which the player may still cancel their own order: waiting in
+ * the queue, or assigned to a member who has not yet accepted. Nobody has been
+ * shown where to pay or been paid, so nothing is owed by either side and the
+ * hold (a buy) or the stake (a sell) simply comes back. Once the member accepts
+ * (PROCESSING) the order runs to its deadline instead. `cancelOrder`
+ * (paymentProcessing.service.js) refuses any other state in the UPDATE's WHERE;
+ * the player's screens read `canCancel` and keep no copy of this list.
+ */
+export const PLAYER_CANCEL_STATES = Object.freeze(['PENDING_QUEUE', 'ASSIGNED']);
+
 function counterpartyFor(order) {
   const snapshot = order?.merchantSnapshot;
   if (!snapshot || typeof snapshot !== 'object') return undefined;
@@ -245,6 +260,10 @@ export function toPlayerOrderView(order) {
 
   const until = disputeDeadline(plain);
   if (until) view.disputeUntil = until;
+
+  // Whether the Cancel button is offered, from the one list the cancel route
+  // enforces, so no screen keeps its own idea of when an order can be dropped.
+  view.canCancel = PLAYER_CANCEL_STATES.includes(plain.status);
 
   return view;
 }

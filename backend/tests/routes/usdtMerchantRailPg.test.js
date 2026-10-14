@@ -322,6 +322,41 @@ describePg('the USDT merchant rail', () => {
 
   // ══ Who serves it ════════════════════════════════════════════════════════
   describe('who serves a USDT buy', () => {
+    it('puts an INR merchant approved into a USDT team on USDT, so they can add a wallet and be routed buys', async () => {
+      // The defect: a merchant joins a USDT team still settling in INR (every
+      // merchant starts on INR). Their Profile refused a wallet address as "an
+      // INR merchant account", routing asks for one on the order's chain, and so
+      // every USDT buy waited at "Finding a merchant" until it expired.
+      const member = await merchantActor();
+      expect((await db.merchants.getMerchant(member.merchantId)).acceptedCurrencies).toEqual(['INR']);
+      const team = await usdtTeam([member]);
+      const after = await db.merchants.getMerchant(member.merchantId);
+      expect(after.acceptedCurrencies).toEqual(['USDT']);
+      // The other rail's credentials go, as on the admin's own rail switch.
+      expect(after.bankDetails?.accountNo ?? null).toBeNull();
+
+      const merchantApp = mountRouter((await import('../../domains/merchant/merchant.routes.js')).default);
+      const saved = await as(merchantApp, member).put('/profile').send({ usdtAddressTrc20: trc20() });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+
+      const who = await actor({});
+      const order = await queuedUsdtBuy({ owner: who, chain: 'TRC20' });
+      expect(await tryAssignMerchant(await getOrderRecord(order.orderId))).toBe(true);
+      expect(await getOrderRecord(order.orderId)).toMatchObject({ status: 'ASSIGNED', merchantId: member.merchantId });
+      expect((await getPool(team.teamId)).heldPaise).toBeGreaterThan(0);
+
+      // And the rail stays the team's: an admin cannot switch it away while
+      // they are in the team (their orders could never reach them).
+      const adminApp = mountRouter((await import('../../domains/merchant/merchant.admin.routes.js')).default);
+      const admin = await actor({ isAdmin: true, roles: ['admin'] });
+      const refused = await as(adminApp, admin).put(`/merchants/${member.merchantId}/capabilities`).send({ merchantType: 'INR' });
+      expect(refused.status).toBe(409);
+      expect(refused.body.code).toBe('RAIL_SET_BY_TEAM');
+      expect((await db.merchants.getMerchant(member.merchantId)).acceptedCurrencies).toEqual(['USDT']);
+      // The same rail is not a change, and is accepted.
+      expect((await as(adminApp, admin).put(`/merchants/${member.merchantId}/capabilities`).send({ merchantType: 'USDT' })).status).toBe(200);
+    });
+
     it('assigns at the price the ORDER holds, not the price live at assignment', async () => {
       // The re-pricing window, through the path that used to open it. Creation
       // and assignment are minutes apart, and assignment used to read the rate

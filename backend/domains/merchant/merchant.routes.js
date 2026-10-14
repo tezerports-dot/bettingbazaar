@@ -1386,7 +1386,24 @@ router.get('/stats', merchantAuth, async (req, res) => {
             merchantId: req.merchantId, state: 'PAID', limit: 1,
         })).total;
 
-        res.json({ success: true, stats: { pending, processing, completedToday, paidPendingReview } });
+        // Where the tokens are (owner, 2026-10-14): what this merchant's own
+        // open orders hold, what waits on a dispute, what their sells are about
+        // to put in the pool; and the pool they work from — their team's once
+        // approved, or their merchant account's. Team-level figures only,
+        // never a teammate's row (§2 "What a member sees of the team").
+        const [own, membership, direct] = await Promise.all([
+            db.teamPools.memberExposure(req.merchantId),
+            db.teams.membershipOf(req.merchantId),
+            db.teams.directTeamOf(req.merchantId),
+        ]);
+        const team = direct ?? (membership?.member.status === 'APPROVED' ? membership.team : null);
+        const pool = team ? {
+            availablePaise: team.poolAvailablePaise,
+            heldPaise: team.poolHeldPaise,
+            exposure: team.poolExposure,
+        } : null;
+
+        res.json({ success: true, stats: { pending, processing, completedToday, paidPendingReview }, money: { own, pool } });
     } catch (err) {
         console.error('GET /merchant/stats error:', err);
         res.status(500).json({ success: false, message: 'Failed to fetch stats.' });
