@@ -1,426 +1,313 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The signup form and the login form, through a real database.
+ * The player's door, through a real database and the real routers: what it
+ * still serves, what it no longer serves, and where its limits are.
  *
- * ── Why this tier, and what it can and cannot see ──────────────────────────
- * The unit suite proves the rules (what a valid mobile looks like, what the
- * password policy refuses). This one proves the HANDLER: that a submitted form
- * writes a row, that a duplicate is refused by the index rather than by a read
- * the route did first, and that the refusal a player is shown names the field
- * they have to change.
+ * Since 2026-10-13/14 (owner) a player signs up and signs in by "Continue with
+ * Telegram" alone: no form, no password, no reset. The sign-in itself — the
+ * number match, the handoff ticket, signup by the first contact share — is
+ * driven in continueWithTelegramPg.test.js. This file holds what sits around
+ * it:
  *
- * What it cannot see — stated because §29 says absence of a failing check is
- * not evidence when no check covers the claim:
+ *   · the invite check (`GET /api/v1/auth/invite/:code`), which the sign-in
+ *     screen asks before the player presses anything;
+ *   · the account questions the door asks after Telegram has approved (a
+ *     blocked player gets no session; a staff account on the same mobile is
+ *     never the account a player's Verify enters);
+ *   · the removed form legs answer nothing;
+ *   · the limits, asserted by BEHAVIOUR through the mounted routers (§22: a
+ *     test reading a file's source is not a consumer): the captcha on the
+ *     player's Continue with Telegram and not the merchant's; the per-address
+ *     Telegram limiter; the account-creation budget on the Mini App doors that
+ *     make accounts, counting only the requests that made one.
  *
- *   · the CAPTCHA. `requireCaptcha` is a pass-through with no
- *     TURNSTILE_SECRET_KEY, which is how it ships and how every environment
- *     that has not configured Turnstile runs it. There is no secret key in this
- *     repository and there cannot be one, so no automated tier here exercises a
- *     real challenge.
- *   · the LIMITERS. They are mounted on the route in `playerAuth.routes.js` and
- *     keyed by IP; this harness mounts the router directly. The limiters have
- *     their own suite (`authLimiterSessions.test.js`) and the SCOPING decision —
- *     which limiter guards which kind of path — is asserted at the bottom of
- *     this file against the source, because that is where it was got wrong.
+ * Nothing reaches Telegram or Cloudflare: Mini App strings are signed with the
+ * test bot's token (miniAppFixture.js), and the captcha is refused for a
+ * MISSING token, which is answered before any network call.
  *
- * Every assertion reads the DATABASE afterwards. A 200 is not the assertion:
- * that is how a route once reported a settlement working while the function it
- * called threw on every call.
+ * Every case comes from its own addresses: the limiters are real and key on
+ * the address (`trust proxy` reads X-Forwarded-For).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import express from 'express';
+import cookieParser from 'cookie-parser';
+import request from 'supertest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
-import { getUserByMobile, getUserCredentials } from '#db/repositories/users.js';
-import { verifyPassword } from '../../domains/identity/password.util.js';
-import playerAuthRoutes from '../../domains/identity/playerAuth.routes.js';
-import { mountRouter, request } from './_harness.js';
-import { linkTelegram, saveTestBot, removeTestBot } from '../miniAppFixture.js';
+import { db } from '#db';
+import { newUserId, createUser, getUserByMobile, setRoles } from '#db/repositories/users.js';
+import { verifyJwt } from '../../domains/identity/jwt.util.js';
+import { doorRoute } from '../../domains/identity/loginDoors.js';
+import { RATE_LIMIT_TIERS } from '../../config/security.config.js';
+import {
+  saveTestBot, removeTestBot, linkTelegram, signInitData, signContact, freshTelegramUserId,
+} from '../miniAppFixture.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
-const app = mountRouter(playerAuthRoutes, { prefix: '/api/v1/auth' });
 
-/**
- * Every request arrives from a DIFFERENT address, in a different /24.
- *
- * The limiters are real and mounted per route — that is the point of putting
- * them there — so without this the second login in the file is answered by the
- * pace limiter and every assertion after it measures a 429. Supertest always
- * connects from 127.0.0.1, so the address has to be forwarded, which needs
- * `trust proxy`.
- *
- * This does NOT weaken anything. It says "these are twenty different people",
- * which is what the assertions are about: they are about the handler. The
- * limiters' own behaviour is asserted in `authLimiterSessions.test.js` and, for
- * the scoping decision, against the source at the bottom of this file.
- */
-app.set('trust proxy', true);
+// A /8 of this file's own, a fresh /24 per address: no subnet budget is shared
+// between cases, or with a rerun in the same process.
+const NET = 20 + Math.floor(Math.random() * 60);
 let addr = 0;
-const from = () => {
-  addr += 1;
-  // A fresh /24 each time, so the SUBNET limiter is not the thing being
-  // measured either.
-  return `10.${(addr >> 8) & 255}.${addr & 255}.7`;
-};
-const post = (path, body) => request(app).post(`/api/v1/auth${path}`)
-  .set('X-Forwarded-For', from()).send(body);
+const from = () => { addr += 1; return `${NET}.${(addr >> 8) & 255}.${addr & 255}.7`; };
+let n = 0;
+const RUN = String(Math.floor(Math.random() * 900) + 100);
+const freshMobile = (lead = '9') => `${lead}${RUN}${String(Date.now()).slice(-2)}${String(n += 1).padStart(4, '0')}`;
 
-/**
- * A fresh, valid form.
- *
- * Unique per RUN, not merely per call. The database survives between runs, so a
- * sequence starting at 1 every time collides with the accounts the last run
- * created and the whole suite reads as "duplicate" — §32 S19, a test asserting
- * a precondition it never established. The run prefix is random; the counter
- * keeps calls inside one run apart.
- */
-const RUN = String(Math.floor(Math.random() * 90000) + 10000);   // 5 digits
-let seq = 0;
-const form = (over = {}) => {
-  seq += 1;
-  const n = String(seq).padStart(4, '0');
-  return {
-    // 10 digits, starting 6-9 as an Indian mobile must: 1 + 5 run + 4 counter.
-    mobile: `9${RUN}${n}`,
-    password: 'a-long-enough-phrase',
-    confirmPassword: 'a-long-enough-phrase',
-    ...over,
+describePg('the player door (PostgreSQL)', () => {
+  let app;
+  const made = [];
+  const origin = process.env.PUBLIC_APP_ORIGIN;
+
+  beforeAll(async () => {
+    // Verify sends a HANDOFF to the site: it needs the site's address.
+    process.env.PUBLIC_APP_ORIGIN = 'https://bb.example';
+    await applySchema();
+    app = express();
+    app.set('trust proxy', true);
+    app.use(express.json());
+    app.use(cookieParser());
+    app.use('/api/v1/auth', (await import('../../domains/identity/playerAuth.routes.js')).default);
+    app.use('/api/merchant', (await import('../../domains/merchant/merchant.routes.js')).default);
+    app.use('/api/telegram', (await import('../../domains/telegram/miniApp.routes.js')).default);
+    await saveTestBot();
+  }, 60_000);
+
+  afterAll(async () => {
+    try {
+      // Trap 10: only this run's accounts. A STAFF twin is removed here; the
+      // players stay (referral rows and wallets point at them).
+      if (made.length) await pgQuery(`DELETE FROM users WHERE user_id = ANY($1) AND account_type = 'STAFF'`, [made]);
+    } finally {
+      if (origin === undefined) delete process.env.PUBLIC_APP_ORIGIN; else process.env.PUBLIC_APP_ORIGIN = origin;
+      await removeTestBot();
+      await closePg();
+    }
+  });
+
+  const post = (path, body, ip = from()) => request(app).post(path).set('X-Forwarded-For', ip).send(body);
+  const startParam = (telegram) => new URL(telegram.url).searchParams.get('startapp');
+
+  /** A verified player with an invite code of their own. */
+  const player = async () => {
+    const mobile = freshMobile('9');
+    const userId = newUserId();
+    const referralCode = `PA${RUN}${n}${Date.now() % 10000}`.slice(0, 16).toUpperCase();
+    await createUser({ userId, username: `player${mobile.slice(-4)}`, mobile, accountType: 'PLAYER', referralCode });
+    const tgId = await linkTelegram(userId);
+    return { userId, mobile, tgId, referralCode };
   };
-};
 
-describePg('POST /api/v1/auth/register — the signup form', () => {
-  beforeAll(async () => { await applySchema(); });
-  afterAll(async () => { await closePg(); });
-
-  it('creates the account, and the ROW says so', async () => {
-    const f = form();
-    const res = await post('/register', f);
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-
-    const user = await getUserByMobile(f.mobile, 'PLAYER');
-    expect(user).not.toBeNull();
-    expect(user.status).toBe('ACTIVE');
-    // No Aadhaar was asked for and none is held (owner, 2026-10-02): the row
-    // carries no KYC field at all.
-    expect(Object.keys(user).filter((k) => /kyc|aadhaar/i.test(k))).toEqual([]);
-  });
-
-  it('stores a VERIFIABLE hash, not the password', async () => {
-    const f = form();
-    await post('/register', f);
-    const user = await getUserByMobile(f.mobile, 'PLAYER');
-    const creds = await getUserCredentials(user.userId);
-    expect(creds.passwordHash).not.toContain(f.password);
-    // The real assertion: the login path can verify what signup wrote. A hash
-    // stored in a format `verifyPassword` cannot read would look perfectly fine
-    // in the column and reject every login.
-    expect((await verifyPassword(creds.passwordHash, f.password)).valid).toBe(true);
-  });
-
-  it('answers with the Telegram step, never a session (Step 3)', async () => {
-    await saveTestBot();
-    try {
-      const f = form();
-      const res = await post('/register', f);
-      expect(res.body).toMatchObject({ success: true, verificationRequired: true, verificationAvailable: true });
-      expect(res.body.token).toBeFalsy();
-      expect(res.body.challengeToken).toBeTruthy();
-      expect(res.body.telegram.url).toMatch(/^https:\/\/t\.me\/bb_test_miniapp_bot\?startapp=c[0-9a-f]{32}$/);
-      // No joining number yet: the contact share claims it. Asserted here too
-      // because this is the route somebody would "helpfully" add it to.
-      const user = await getUserByMobile(f.mobile, 'PLAYER');
-      expect(user.joiningNumber).toBeFalsy();
-    } finally { await removeTestBot(); }
-  });
-
-  it('keeps the account when no bot is configured, and says the step comes later', async () => {
-    await removeTestBot();
-    const f = form();
-    const res = await post('/register', f);
-    expect(res.body).toMatchObject({ success: true, verificationRequired: true, verificationAvailable: false, telegram: null });
-    expect(res.body.token).toBeFalsy();
-    expect(await getUserByMobile(f.mobile, 'PLAYER')).not.toBeNull();
-  });
-
-  it('names the FIELD in every refusal', async () => {
-    // §32 S14. A form that answers "invalid details" to six different mistakes
-    // sends the player back to guess which box is wrong, and the commonest
-    // wrong box — the mobile, where they typed +91 as well — looks identical to
-    // a correct one.
-    const cases = [
-      [{ mobile: '12345' }, /mobile/i],
-      [{ confirmPassword: 'something-else' }, /passwords do not match/i],
-      [{ password: 'short', confirmPassword: 'short' }, /at least 8 characters/i],
-      [{ referralCode: 'NOSUCHCODE' }, /invite code/i],
-    ];
-    for (const [over, pattern] of cases) {
-      const res = await post('/register', form(over));
-      expect(res.status, JSON.stringify(over)).toBe(400);
-      expect(res.body.message, JSON.stringify(over)).toMatch(pattern);
-    }
-  });
-
-  it('writes NOTHING when a refusal fires', async () => {
-    const f = form({ confirmPassword: 'different' });
-    await post('/register', f);
-    expect(await getUserByMobile(f.mobile, 'PLAYER')).toBeNull();
-  });
-
-  it('refuses a second account on one mobile, and says to log in', async () => {
-    const f = form();
-    await post('/register', f);
-    const again = await post('/register', form({ mobile: f.mobile }));
-    expect(again.status).toBe(409);
-    expect(again.body.message).toMatch(/log in instead/i);
-  });
-
-  it('ignores an Aadhaar a stale client still sends, and stores nothing of it', async () => {
-    // A panel built before 2026-10-02 still posts one. It must neither refuse
-    // the signup nor land anywhere.
-    const f = form({ aadhaar: '123456789012' });
-    expect((await post('/register', f)).status).toBe(200);
-    const user = await getUserByMobile(f.mobile, 'PLAYER');
-    expect(JSON.stringify(user)).not.toContain('123456789012');
-  });
-
-  it('attributes a referral, and REFUSES a code that matches nobody', async () => {
-    const referrer = form();
-    await post('/register', referrer);
-    const inviter = await getUserByMobile(referrer.mobile, 'PLAYER');
-
-    // Refused, not silently dropped. The path this replaced looked the code up
-    // at contact-share time and wrote null on a miss: the signup succeeded, the
-    // referrer never earned, and afterwards nobody could tell whether the code
-    // had been wrong or the payout had failed.
-    expect((await post('/register', form({ referralCode: 'GHOSTCODE' }))).status).toBe(400);
-
-    const invited = form({ referralCode: inviter.referralCode.toLowerCase() });
-    expect((await post('/register', invited)).status).toBe(200);
-    // Lower case on purpose: codes are generated upper case and looked up by
-    // exact match, so an un-normalised code matches nothing and costs the
-    // referrer their earning with no error anywhere.
-    expect((await getUserByMobile(invited.mobile, 'PLAYER')).referredBy).toBe(inviter.userId);
-  });
-});
-
-describePg('GET /api/v1/auth/invite/:code', () => {
-  beforeAll(async () => { await applySchema(); });
-  afterAll(async () => { await closePg(); });
-
-  it('confirms a real code and names who it belongs to', async () => {
-    const f = form();
-    await post('/register', f);
-    const inviter = await getUserByMobile(f.mobile, 'PLAYER');
-    const res = await request(app).get(`/api/v1/auth/invite/${inviter.referralCode}`)
-      .set('X-Forwarded-For', from());
-    expect(res.body).toMatchObject({ valid: true, invitedBy: inviter.username });
-  });
-
-  it('answers a nonsense code without an error', async () => {
-    // The signup form pre-fills this from a link and makes it non-editable when
-    // it arrived that way, so it asks before the player can act. A 500 here
-    // would render as a broken form for somebody who did nothing wrong.
-    const res = await request(app).get('/api/v1/auth/invite/NOSUCHCODE')
-      .set('X-Forwarded-For', from());
-    expect(res.status).toBe(200);
-    expect(res.body.valid).toBe(false);
-  });
-
-  it('leaks nothing beyond the username for a code somebody already holds', async () => {
-    const f = form();
-    await post('/register', f);
-    const inviter = await getUserByMobile(f.mobile, 'PLAYER');
-    const res = await request(app).get(`/api/v1/auth/invite/${inviter.referralCode}`)
-      .set('X-Forwarded-For', from());
-    const body = JSON.stringify(res.body);
-    expect(body).not.toContain(inviter.mobile);
-    expect(body).not.toContain(inviter.userId);
-  });
-});
-
-describePg('POST /api/v1/auth/login — the login form', () => {
-  beforeAll(async () => { await applySchema(); });
-  afterAll(async () => { await closePg(); });
-
-  it('signs a VERIFIED player in with the password the form set, and no Telegram', async () => {
-    const f = form();
-    await post('/register', f);
-    await linkTelegram((await getUserByMobile(f.mobile, 'PLAYER')).userId);
-    const res = await post('/login', { mobile: f.mobile, password: f.password });
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(res.body.token).toBeTruthy();
-  });
-
-  it('does not sign in an account Telegram has not verified: it hands back the step', async () => {
-    await saveTestBot();
-    try {
-      const f = form();
-      await post('/register', f);
-      const res = await post('/login', { mobile: f.mobile, password: f.password });
-      expect(res.status).toBe(403);
-      expect(res.body.code).toBe('TELEGRAM_VERIFICATION_REQUIRED');
-      expect(res.body.token).toBeFalsy();
-      expect(res.body.telegram.url).toContain('startapp=c');
-    } finally { await removeTestBot(); }
-  });
-
-  it('says Telegram is unavailable, not that the player is wrong, when no bot exists', async () => {
-    await removeTestBot();
-    const f = form();
-    await post('/register', f);
-    const res = await post('/login', { mobile: f.mobile, password: f.password });
-    expect(res.status).toBe(503);
-    expect(res.body.code).toBe('TELEGRAM_UNAVAILABLE');
-  });
-
-  it('answers a wrong password and an unknown number IDENTICALLY', async () => {
-    // A login form that says "no such account" is a way to test whether a given
-    // person gambles here.
-    const f = form();
-    await post('/register', f);
-    const wrong   = await post('/login', { mobile: f.mobile, password: 'not-the-password' });
-    const unknown = await post('/login', { mobile: '9111111111', password: 'not-the-password' });
-    expect(wrong.status).toBe(401);
-    expect(unknown.status).toBe(401);
-    expect(wrong.body.message).toBe(unknown.body.message);
-  });
-
-  it('cannot SEE a staff account at the player door at all', async () => {
-    // ── This got STRONGER, and the test had to change with it ────────────
-    // It used to sign a player up, flip `is_admin`, and assert the 403 that the
-    // door's role check produced. The door now scopes its READ by
-    // `account_type`, so a PLAYER row with `is_admin` set is still a player and
-    // is admitted — correctly. The separation is no longer a check that can be
-    // got wrong afterwards; it is a predicate in the query.
-    //
-    // So what is asserted is the real property: a STAFF account on a mobile is
-    // INVISIBLE to the player door, and its password does not work there.
-    const f = form();
-    await post('/register', f);                      // the PLAYER on that mobile
-    const { createUser, newUserId, setRoles } = await import('#db/repositories/users.js');
-    const { hashPassword } = await import('../../domains/identity/password.util.js');
-    const staff = await createUser({
-      userId: newUserId(), username: 'staff twin', mobile: f.mobile,
-      passwordHash: await hashPassword('the-staff-only-passphrase'),
-      status: 'ACTIVE', isAdmin: true, accountType: 'STAFF',
+  /** Continue with Telegram at the player door, MATCH, answered by `tgId`. */
+  const signInMatch = async (tgId, { phone = null } = {}) => {
+    const opened = (await post('/api/v1/auth/login/telegram', { delivery: 'MATCH' })).body;
+    expect(opened.challengeToken, JSON.stringify(opened)).toBeTruthy();
+    const ok = await post('/api/telegram/mini-app/approve', {
+      initData: signInitData({ telegramUserId: tgId, startParam: startParam(opened.telegram) }),
+      contact: phone ? signContact({ telegramUserId: tgId, phone }) : undefined,
+      decision: 'approve', pick: opened.matchNumber,
     });
-    expect(staff.created, 'a STAFF account on the same mobile').toBe(true);
-    await setRoles(staff.user.userId, ['admin']);
+    const done = await post('/api/v1/auth/login/telegram/complete', { challengeToken: opened.challengeToken });
+    return { opened, approval: ok, done };
+  };
 
-    // The staff password, at the player door.
-    const wrongDoor = await post('/login', { mobile: f.mobile, password: 'the-staff-only-passphrase' });
-    expect(wrongDoor.status).toBe(401);
+  // ── GET /invite/:code ──────────────────────────────────────────────────
+  describe('GET /api/v1/auth/invite/:code', () => {
+    it('confirms a real code, in any case, and names who it belongs to', async () => {
+      const inviter = await player();
+      for (const code of [inviter.referralCode, inviter.referralCode.toLowerCase()]) {
+        const res = await request(app).get(`/api/v1/auth/invite/${code}`).set('X-Forwarded-For', from());
+        expect(res.status).toBe(200);
+        expect(res.body).toMatchObject({ valid: true, code: inviter.referralCode, invitedBy: `player${inviter.mobile.slice(-4)}` });
+      }
+    });
 
-    // And it is answered exactly as an unknown number is — a door that
-    // distinguished them would let anybody map which mobiles hold staff
-    // accounts, one request at a time.
-    // A mobile no other test in this file has touched. The pace limiter keys
-    // on `req.body.mobile`, not the address, so reusing a number another case
-    // already probed measures the PACE instead of the door.
-    const unknown = await post('/login', { mobile: form().mobile, password: 'the-staff-only-passphrase' });
-    expect(wrongDoor.body.message).toBe(unknown.body.message);
+    it('answers a nonsense code without an error', async () => {
+      // The sign-in screen asks this before the player can act; a 500 would
+      // render as a broken screen for somebody who did nothing wrong.
+      const res = await request(app).get('/api/v1/auth/invite/NOSUCHCODE').set('X-Forwarded-For', from());
+      expect(res.status).toBe(200);
+      expect(res.body.valid).toBe(false);
+    });
 
-    // That the player's OWN password works on their own door is asserted by
-    // "signs a player in with the password the form set" above, on its own
-    // mobile. Repeating it here would be a second attempt on THIS mobile inside
-    // ten seconds, which the pace limiter answers — so the assertion would
-    // measure the pace, not the door (it did: 429).
+    it('leaks nothing beyond the username for a code somebody already holds', async () => {
+      const inviter = await player();
+      const res = await request(app).get(`/api/v1/auth/invite/${inviter.referralCode}`).set('X-Forwarded-For', from());
+      const body = JSON.stringify(res.body);
+      expect(body).not.toContain(inviter.mobile);
+      expect(body).not.toContain(inviter.userId);
+    });
+
+    it('checks no credential, so no credential limiter answers it (§32 S27, S28)', async () => {
+      const ip = from();
+      const answers = await Promise.all(Array.from({ length: RATE_LIMIT_TIERS.telegramLogin.max + 5 }, () => request(app)
+        .get('/api/v1/auth/invite/NOSUCHCODE').set('X-Forwarded-For', ip)));
+      expect(answers.every((r) => r.status === 200)).toBe(true);
+    });
   });
 
-  it('refuses a BLOCKED account with a reason a person can act on', async () => {
-    const f = form();
-    await post('/register', f);
-    const user = await getUserByMobile(f.mobile, 'PLAYER');
-    await pgQuery(`UPDATE users SET is_blocked = true, block_reason = 'x', blocked_at = now()
-                    WHERE user_id = $1`, [user.userId]);
-    const res = await post('/login', { mobile: f.mobile, password: f.password });
-    expect(res.status).toBe(403);
-    expect(res.body.message).toMatch(/blocked/i);
+  // ── What the door asks after Telegram approved ─────────────────────────
+  describe('the account questions after the approval', () => {
+    it('a blocked player\'s Verify is refused in Telegram, saying why, and the browser gets no session', async () => {
+      const p = await player();
+      await pgQuery(`UPDATE users SET is_blocked = true, block_reason = 'x', blocked_at = now() WHERE user_id = $1`, [p.userId]);
+      const { approval, done } = await signInMatch(p.tgId);
+      expect(approval.status, JSON.stringify(approval.body)).toBe(403);
+      expect(approval.body.code).toBe('ACCOUNT_BLOCKED');
+      expect(approval.body.message).toMatch(/blocked/i);
+      expect(done.body.token).toBeFalsy();
+    });
+
+    it('a player blocked between the approval and the poll gets no session: the door asks again', async () => {
+      const p = await player();
+      const opened = (await post('/api/v1/auth/login/telegram', { delivery: 'MATCH' })).body;
+      const ok = await post('/api/telegram/mini-app/approve', {
+        initData: signInitData({ telegramUserId: p.tgId, startParam: startParam(opened.telegram) }),
+        decision: 'approve', pick: opened.matchNumber,
+      });
+      expect(ok.body, JSON.stringify(ok.body)).toMatchObject({ approved: true });
+      await pgQuery(`UPDATE users SET is_blocked = true, block_reason = 'x', blocked_at = now() WHERE user_id = $1`, [p.userId]);
+      const done = await post('/api/v1/auth/login/telegram/complete', { challengeToken: opened.challengeToken });
+      expect(done.status, JSON.stringify(done.body)).toBe(403);
+      expect(done.body.code).toBe('ACCOUNT_BLOCKED');
+      expect(done.body.token).toBeFalsy();
+    });
+
+    it('a staff account on the same mobile is never what a player\'s Verify enters (§33.5)', async () => {
+      const mobile = freshMobile('9');
+      const staffId = newUserId();
+      made.push(staffId);
+      const staff = await createUser({
+        userId: staffId, username: `staff${mobile.slice(-4)}`, mobile, status: 'ACTIVE',
+        isAdmin: true, accountType: 'STAFF', passwordHash: 'argon2id$not-a-real-hash',
+      });
+      expect(staff.created).toBe(true);
+      await setRoles(staffId, ['admin']);
+
+      // A Telegram account whose own number is the staff member's shares it at
+      // the player door: a PLAYER account is made for it, the staff row is
+      // neither linked nor signed into.
+      const tgId = freshTelegramUserId();
+      const { approval, done } = await signInMatch(tgId, { phone: mobile });
+      expect(approval.body, JSON.stringify(approval.body)).toMatchObject({ approved: true, created: true });
+      expect(done.status, JSON.stringify(done.body)).toBe(200);
+      const playerRow = await getUserByMobile(mobile, 'PLAYER');
+      expect(playerRow.userId).not.toBe(staffId);
+      expect(verifyJwt(done.body.token).userId).toBe(playerRow.userId);
+      expect(await db.telegram.getLinkByUserId(staffId)).toBeFalsy();
+    });
   });
 
-  it('issues a Telegram CHALLENGE instead of a session when the player switched approval on', async () => {
-    await saveTestBot();
-    const f = form();
-    await post('/register', f);
-    const user = await getUserByMobile(f.mobile, 'PLAYER');
-    await linkTelegram(user.userId, { twoFactor: true });
-    const res = await post('/login', { mobile: f.mobile, password: f.password });
-    await removeTestBot();
-    expect(res.body.telegram.url).toContain('startapp=c');
-    // Deliberately NOT a logged-in success: a challenge is issued INSTEAD of a
-    // session, so nothing downstream can mistake it for one.
-    expect(res.body.success).toBe(false);
-    expect(res.body.twoFactorRequired).toBe(true);
-    expect(res.body.challengeToken).toBeTruthy();
-    expect(res.body.token).toBeFalsy();
-  });
-});
+  // ── The removed legs ───────────────────────────────────────────────────
+  describe('no form, no password', () => {
+    it('the player door serves no signup form, password login or reset; the merchant door no signup or password login', async () => {
+      for (const path of ['/register', '/login', '/login/2fa', '/password/reset', '/forgot-password']) {
+        const res = await post(`/api/v1/auth${path}`, { mobile: freshMobile('9'), password: 'a-long-enough-phrase', confirmPassword: 'a-long-enough-phrase' });
+        expect(res.status, path).toBe(404);
+      }
+      for (const path of ['/auth/signup', '/auth/login', '/auth/login/2fa']) {
+        const res = await post(`/api/merchant${path}`, { mobile: freshMobile('7'), password: 'a-long-enough-phrase' });
+        expect(res.status, path).toBe(404);
+      }
+    });
 
-/**
- * ── Which limiter guards which kind of path ────────────────────────────────
- *
- * Asserted against the SOURCE, because this is a mounting decision and there is
- * no runtime tier that can see it: the route tests mount the router directly,
- * and the limiters are keyed by IP.
- *
- * It is asserted at all because getting it wrong was measured, twice, on a
- * running server:
- *
- *   · `authLimiter` on the session router counted an expired-token `GET /me` as
- *     a failed login, so four page loads locked a player out of logging OUT
- *     (§32 S27);
- *   · `createSubnetLimiter('auth')` on the `/api/v1/auth` PREFIX counted every
- *     request at 32 per /24 per 30 minutes, so `GET /me` answered 429 from an
- *     address that had submitted no credential at all — and most Indian mobile
- *     traffic sits behind carrier-grade NAT, where a /24 is thousands of people.
- */
-const here = dirname(fileURLToPath(import.meta.url));
-const source = (p) => readFileSync(join(here, p), 'utf8');
-
-describe('the limiters guard credentials, and only credentials', () => {
-  const routes = source('../../domains/identity/playerAuth.routes.js');
-  const server = source('../../server.js');
-
-  it('puts the failure budget and the subnet limiter on the LOGIN route', () => {
-    const doors = source('../../domains/identity/loginDoors.js');
-    const chain = doors.slice(doors.indexOf('PLAYER: () => ['), doors.indexOf('STAFF: () => ['));
-    expect(chain).toMatch(/loginPaceLimiter/);
-    expect(chain).toMatch(/authLimiter/);
-    expect(chain).toMatch(/createSubnetLimiter\('auth'\)/);
-    expect(chain).toMatch(/globalSurgeBreaker\('auth'\)/);
-    expect(routes).toMatch(/router\.post\('\/login', \.\.\.doorRoute\('PLAYER', 'login'\)\)/);
-    // There is no reset token to spend here any more: a forgotten password is
-    // set in the Mini App, on a Telegram-signed proof, behind its own limiter.
-    expect(routes).not.toMatch(/router\.post\('\/password\/reset'/);
-    const miniApp = source('../../domains/telegram/miniApp.routes.js');
-    expect(miniApp).toMatch(/router\.post\('\/mini-app\/password-reset', miniAppLimiter,/);
+    it('no door can be given a password leg but the staff door', () => {
+      expect(() => doorRoute('PLAYER', 'login')).toThrow(/no login leg/);
+      expect(() => doorRoute('MERCHANT', 'login')).toThrow(/no login leg/);
+      expect(() => doorRoute('STAFF', 'telegram')).toThrow(/no telegram leg/);
+    });
   });
 
-  it('keeps BOTH off the signup route, which submits no secret', () => {
-    const chain = routes.slice(routes.indexOf('const signupChain'),
-                               routes.indexOf('router.post(\'/register\''));
-    expect(chain).not.toMatch(/authLimiter/);
-    expect(chain).not.toMatch(/loginPaceLimiter/);
-    expect(chain).toMatch(/signupLimiter/);
-  });
+  // ── Where the limits are, by behaviour ─────────────────────────────────
+  describe('the limits', () => {
+    it('the player\'s Continue with Telegram owes the captcha; the merchant\'s does not', async () => {
+      const before = process.env.TURNSTILE_SECRET_KEY;
+      process.env.TURNSTILE_SECRET_KEY = 'test-only-secret-never-sent';
+      try {
+        // No token: refused before any network call, and before a sign-in is opened.
+        const { rows: [{ c: challengesBefore }] } = await pgQuery(`SELECT count(*)::int AS c FROM telegram_challenges WHERE audience = 'PLAYER'`);
+        const playerDoor = await post('/api/v1/auth/login/telegram', { delivery: 'MATCH' });
+        expect(playerDoor.status, JSON.stringify(playerDoor.body)).toBe(403);
+        expect(playerDoor.body.code).toBe('CAPTCHA_REQUIRED');
+        const { rows: [{ c: challengesAfter }] } = await pgQuery(`SELECT count(*)::int AS c FROM telegram_challenges WHERE audience = 'PLAYER'`);
+        expect(challengesAfter).toBe(challengesBefore);
 
-  it('counts SUCCESSES on signup, so a typo never costs the next attempt', () => {
-    // §32 S13. The failures here are typos and the successes are the cost, so
-    // this limiter counts the opposite of every other one in the file.
-    expect(source('../../middleware/security.js'))
-      .toMatch(/signupLimiter[\s\S]{0,600}skipFailedRequests: true/);
-    expect(routes).toMatch(/createSubnetLimiter\('signup', \{ countOnly: 'successes' \}\)/);
-  });
+        const merchantDoor = await post('/api/merchant/auth/login/telegram', { delivery: 'MATCH' });
+        expect(merchantDoor.status, JSON.stringify(merchantDoor.body)).toBe(200);
+        expect(merchantDoor.body).toMatchObject({ pending: true });
+      } finally {
+        if (before === undefined) delete process.env.TURNSTILE_SECRET_KEY; else process.env.TURNSTILE_SECRET_KEY = before;
+      }
+      // Without a secret it is a pass-through, as it ships.
+      expect((await post('/api/v1/auth/login/telegram', { delivery: 'MATCH' })).status).toBe(200);
+    });
 
-  it('mounts no subnet limiter or surge breaker on either /api/v1/auth PREFIX', () => {
-    const mounts = server.split('\n').filter((l) => l.includes("app.use('/api/v1/auth'"));
-    expect(mounts.length).toBe(2);
-    for (const line of mounts) {
-      expect(line).not.toMatch(/createSubnetLimiter/);
-      expect(line).not.toMatch(/globalSurgeBreaker/);
-    }
+    it('opening a sign-in is paced per address', async () => {
+      const ip = from();
+      const { max } = RATE_LIMIT_TIERS.telegramLogin;
+      for (let i = 0; i < max; i += 1) {
+        expect((await post('/api/v1/auth/login/telegram', { delivery: 'MATCH' }, ip)).status).toBe(200);
+      }
+      const paced = await post('/api/v1/auth/login/telegram', { delivery: 'MATCH' }, ip);
+      expect(paced.status).toBe(429);
+      expect(paced.body.code).toBe('LOGIN_PACED');
+      // Another address is not paced by it.
+      expect((await post('/api/v1/auth/login/telegram', { delivery: 'MATCH' })).status).toBe(200);
+    });
+
+    it('the account-creation budget counts accounts made, never a refusal or a returning player (§32 S13)', async () => {
+      const ip = from();
+      const { max } = RATE_LIMIT_TIERS.signup;
+      const cont = (body) => post('/api/telegram/mini-app/continue', body, ip);
+
+      // Refusals from one address, past the budget: none is counted.
+      for (let i = 0; i < max + 2; i += 1) {
+        const tgId = freshTelegramUserId();
+        const res = await cont({
+          initData: signInitData({ telegramUserId: tgId }),
+          contact: signContact({ telegramUserId: freshTelegramUserId(), phone: freshMobile('9') }),
+        });
+        expect(res.body.code, JSON.stringify(res.body)).toBe('CONTACT_NOT_OWN');
+      }
+      // Returning players signing in from it, past the budget: none is counted.
+      for (let i = 0; i < max + 2; i += 1) {
+        const p = await player();
+        const res = await cont({ initData: signInitData({ telegramUserId: p.tgId }) });
+        expect(res.body, JSON.stringify(res.body)).toMatchObject({ success: true, created: false });
+      }
+      // Accounts made: the budget is spent by exactly these.
+      for (let i = 0; i < max; i += 1) {
+        const tgId = freshTelegramUserId();
+        const res = await cont({ initData: signInitData({ telegramUserId: tgId }), contact: signContact({ telegramUserId: tgId, phone: freshMobile('9') }) });
+        expect(res.body, JSON.stringify(res.body)).toMatchObject({ success: true, created: true });
+      }
+      const tgId = freshTelegramUserId();
+      const mobile = freshMobile('9');
+      const over = await cont({ initData: signInitData({ telegramUserId: tgId }), contact: signContact({ telegramUserId: tgId, phone: mobile }) });
+      expect(over.status, JSON.stringify(over.body)).toBe(429);
+      expect(await getUserByMobile(mobile, 'PLAYER')).toBeNull();
+    }, 60_000);
+
+    it('the Verify that answers a website\'s sign-in carries the same budget', async () => {
+      const ip = from();
+      const { max } = RATE_LIMIT_TIERS.signup;
+      const approveNew = async () => {
+        const opened = (await post('/api/v1/auth/login/telegram', { delivery: 'HANDOFF' })).body;
+        const tgId = freshTelegramUserId();
+        const mobile = freshMobile('9');
+        const res = await post('/api/telegram/mini-app/approve', {
+          initData: signInitData({ telegramUserId: tgId, startParam: startParam(opened.telegram) }),
+          contact: signContact({ telegramUserId: tgId, phone: mobile }),
+          decision: 'approve',
+        }, ip);
+        return { res, mobile };
+      };
+      for (let i = 0; i < max; i += 1) {
+        const { res } = await approveNew();
+        expect(res.body, JSON.stringify(res.body)).toMatchObject({ approved: true, created: true });
+      }
+      const { res, mobile } = await approveNew();
+      expect(res.status, JSON.stringify(res.body)).toBe(429);
+      expect(await getUserByMobile(mobile, 'PLAYER')).toBeNull();
+    }, 60_000);
   });
 });

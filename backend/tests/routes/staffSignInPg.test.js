@@ -58,7 +58,7 @@ describePg('staff sign-in with an authenticator app', () => {
     app.post('/api/admin/login/totp', ...doorRoute('STAFF', 'totp'));
     app.post('/api/admin/login/totp/setup', ...doorRoute('STAFF', 'totpSetup'));
     app.post('/api/admin/login/totp/activate', ...doorRoute('STAFF', 'totpActivate'));
-    app.post('/api/merchant/auth/login/2fa', ...doorRoute('MERCHANT', 'twoFactor'));
+    app.post('/api/merchant/auth/login/telegram/complete', ...doorRoute('MERCHANT', 'telegramComplete'));
     app.use('/api/admin', (await import('../../routes/admin/subadmins.admin.routes.js')).default);
     app.use('/api/admin', (await import('../../routes/admin/account.admin.routes.js')).default);
     admin = await staffAccount();
@@ -236,7 +236,7 @@ describePg('staff sign-in with an authenticator app', () => {
       const s = await staffAccount();
       await enrol(s);
       const first = await login(s);
-      const atMerchant = await post('/api/merchant/auth/login/2fa', { challengeToken: first.body.challengeToken });
+      const atMerchant = await post('/api/merchant/auth/login/telegram/complete', { challengeToken: first.body.challengeToken });
       expect(atMerchant.status).toBe(401);
       expect(atMerchant.body.token).toBeUndefined();
 

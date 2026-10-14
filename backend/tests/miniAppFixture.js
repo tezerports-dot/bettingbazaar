@@ -100,18 +100,17 @@ export async function removeTestBot() {
 
 /**
  * Mark an account verified, as the Mini App's contact share would: a link whose
- * phone is the account's mobile (the row's trigger insists). Staff and merchant
- * links carry Telegram approval, as the CHECK insists.
+ * phone is the account's mobile (the row's trigger insists).
  */
-export async function linkTelegram(userId, { telegramUserId = freshTelegramUserId(), twoFactor } = {}) {
+export async function linkTelegram(userId, { telegramUserId = freshTelegramUserId() } = {}) {
   const { pgQuery } = await import('../../database/client.js');
   const { rows } = await pgQuery(
-    `INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor)
-     SELECT user_id, account_type, $2, mobile, COALESCE($3, account_type <> 'PLAYER')
+    `INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone)
+     SELECT user_id, account_type, $2, mobile
        FROM users WHERE user_id = $1
      ON CONFLICT (user_id) DO UPDATE SET telegram_user_id = EXCLUDED.telegram_user_id
      RETURNING telegram_user_id`,
-    [String(userId), String(telegramUserId), twoFactor ?? null],
+    [String(userId), String(telegramUserId)],
   );
   if (!rows[0]) throw new Error(`linkTelegram: no account ${userId}`);
   return rows[0].telegram_user_id;

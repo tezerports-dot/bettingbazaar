@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * Revoked tokens and the signup writer, against a REAL PostgreSQL.
+ * Revoked tokens and the player writer, against a REAL PostgreSQL.
  *
  * The Aadhaar verification queue this file used to cover was removed with KYC
  * (owner, 2026-10-02). What remains carries one property worth a database:
@@ -59,15 +59,18 @@ describePg('identity (PostgreSQL)', () => {
     });
   });
 
-  describe('creating an account from the signup form', () => {
+  // `createAccountFromSignup` is the writer the first "Continue with Telegram"
+  // calls, inside the approving transaction (repositories/telegram.js). There
+  // is no form and no password (owner, 2026-10-14).
+  describe('creating a player account', () => {
     const signup = (over = {}) => ({
-      userId: 's-1', username: 's1', mobile: '9880000001', passwordHash: 'h', ...over,
+      userId: 's-1', username: 's1', mobile: '9880000001', ...over,
     });
 
-    it('writes an ACTIVE PLAYER row with no KYC field at all', async () => {
+    it('writes an ACTIVE PLAYER row with no password and no KYC field at all', async () => {
       expect(await createAccountFromSignup(signup())).toEqual({ ok: true, userId: 's-1' });
-      const { rows } = await pgQuery(`SELECT status, account_type FROM users WHERE user_id = 's-1'`);
-      expect(rows[0]).toEqual({ status: 'ACTIVE', account_type: 'PLAYER' });
+      const { rows } = await pgQuery(`SELECT status, account_type, password_hash FROM users WHERE user_id = 's-1'`);
+      expect(rows[0]).toEqual({ status: 'ACTIVE', account_type: 'PLAYER', password_hash: null });
       const cols = await pgQuery(
         `SELECT column_name FROM information_schema.columns WHERE table_name = 'users' AND column_name LIKE '%kyc%'`);
       expect(cols.rows).toEqual([]);

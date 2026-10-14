@@ -53,7 +53,9 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
     await closePg();
   });
 
-  const post = (path, body, ip = from()) => request(app).post(path).set('X-Forwarded-For', ip).send(body);
+  const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36';
+  const post = (path, body, ip = from()) => request(app).post(path).set('X-Forwarded-For', ip)
+    .set('User-Agent', ANDROID).set('CF-IPCity', 'Forged').send(body);
   const startParam = (telegram) => new URL(telegram.url).searchParams.get('startapp');
   const open = (body = {}) => post('/api/v1/auth/login/telegram', body);
   const complete = (challengeToken) => post('/api/v1/auth/login/telegram/complete', { challengeToken });
@@ -96,6 +98,7 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
       expect(ctx.start.choices).toHaveLength(3);
       expect(ctx.start.choices).toContain(opened.matchNumber);
       expect(JSON.stringify(ctx)).not.toMatch(/matchNumber/);
+      expect(ctx.start.request).toMatchObject({ city: '', device: 'Chrome on Android' });
 
       expect((await complete(opened.challengeToken)).status).toBe(202);
       const ok = await approve(opened, p.tgId, { pick: opened.matchNumber, initData });
@@ -322,6 +325,52 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
       });
       expect(res.body.code).toBe('CONTACT_NOT_OWN');
       expect(await getUserByMobile(mobile, 'PLAYER')).toBeNull();
+    });
+  });
+
+  describe('who asked, on the Verify screen', () => {
+    it('names the city only from the header the operator declared', async () => {
+      const prior = process.env.GEO_CITY_HEADER;
+      process.env.GEO_CITY_HEADER = 'X-Edge-City';
+      try {
+        const p = await player();
+        const opened = (await request(app).post('/api/v1/auth/login/telegram').set('X-Forwarded-For', '203.0.113.44')
+          .set('X-Edge-City', 'Mumbai').set('CF-IPCity', 'Forged').send({ delivery: 'MATCH' })).body;
+        const ctx = (await context(signInitData({ telegramUserId: p.tgId, startParam: startParam(opened.telegram) }))).body;
+        expect(ctx.start.request).toMatchObject({ ip: '203.0.113.44', city: 'Mumbai' });
+        expect(ctx.start.request.at).toBeTruthy();
+      } finally {
+        if (prior === undefined) delete process.env.GEO_CITY_HEADER; else process.env.GEO_CITY_HEADER = prior;
+      }
+    });
+  });
+
+  // ── What the database holds to, for every writer ───────────────────────
+  describe('what the database holds to', () => {
+    it("a player's ticket opens nothing at the merchant door, and is gone once tried there", async () => {
+      const p = await player();
+      const opened = (await open({ delivery: 'HANDOFF' })).body;
+      const ok = await approve(opened, p.tgId);
+      const hash = ticketHash(ticketOf(ok.body.redirectUrl));
+      expect((await db.telegram.redeemTicket({ ticketHash: hash, audience: 'MERCHANT' })).ok).toBe(false);
+      expect((await db.telegram.redeemTicket({ ticketHash: hash, audience: 'PLAYER' })).ok).toBe(false);
+    });
+
+    it('only a staff account may hold a password (users_password_staff_only)', async () => {
+      const ids = [];
+      try {
+        for (const accountType of ['PLAYER', 'MERCHANT']) {
+          const userId = newUserId(); ids.push(userId);
+          await expect(createUser({
+            userId, username: userId, mobile: freshMobile('8'), accountType, passwordHash: 'argon2id$x',
+          })).rejects.toThrow(/users_password_staff_only/);
+        }
+        const staffId = newUserId(); ids.push(staffId);
+        await createUser({ userId: staffId, username: staffId, mobile: freshMobile('8'), accountType: 'STAFF', passwordHash: 'argon2id$x' });
+        expect((await db.users.getUserCredentials(staffId)).passwordHash).toBe('argon2id$x');
+      } finally {
+        await pgQuery('DELETE FROM users WHERE user_id = ANY($1::text[])', [ids]);
+      }
     });
   });
 });

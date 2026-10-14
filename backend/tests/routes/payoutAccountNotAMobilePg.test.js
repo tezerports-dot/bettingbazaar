@@ -8,7 +8,7 @@
  * (owner, 2026-10-03: "make sure nowhere you expose anyone's mobile numbers").
  *
  * Pinned on every path that saves one (a player's bank details, a member's
- * profile, a member's signup) and on the row itself, with the opposite cases:
+ * profile) and on the row itself, with the opposite cases:
  * a ten-digit account at a regular bank and a twelve-digit payments-bank
  * account are accounts, not phone numbers, and go through.
  */
@@ -16,13 +16,12 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { getUser } from '#db/repositories/users.js';
 import { getMerchant, updateMerchant } from '#db/repositories/merchants.js';
-import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
+import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
 describePg('an account number that is a mobile number', () => {
   let userApp, merchantApp;
-  const signedUp = [];
   // Every account this run may give bank details to. A save the rule refuses
   // writes nothing — unless the rule is broken (a mutation run), and then the
   // row it let through must not outlive the run: it would fail the next
@@ -46,10 +45,6 @@ describePg('an account number that is a mobile number', () => {
     await pgQuery('UPDATE users SET bank_details = NULL WHERE user_id = ANY($1)', [players]);
     await pgQuery(`UPDATE merchants SET bank_account_no = NULL, bank_ifsc = NULL, bank_account_holder_name = 'A Member', bank_name = 'Some Bank'
                     WHERE merchant_id = ANY($1)`, [members]);
-    if (signedUp.length) {
-      await pgQuery('DELETE FROM merchants WHERE mobile = ANY($1)', [signedUp]);
-      await pgQuery(`DELETE FROM users WHERE mobile = ANY($1) AND account_type = 'MERCHANT'`, [signedUp]);
-    }
     await closePg();
   });
 
@@ -134,41 +129,24 @@ describePg('an account number that is a mobile number', () => {
     });
   });
 
-  describe('a member signing up with their bank account', () => {
-    const signup = (mobile, accountNo, ifsc) => request(merchantApp).post('/auth/signup').send({
-      username: `acct${Math.random().toString(36).slice(2, 10)}`, mobile, password: 'Correct-Horse-Battery-9!',
-      bankDetails: { accountNo, ifsc, bankName: 'Some Bank', accountHolderName: 'Applicant' },
-    });
-
-    it('is refused by name, and nothing is created', async () => {
-      const mobile = someoneElse();
-      signedUp.push(mobile);
-      refused(await signup(mobile, mobile, 'AIRP0000001'));
-      const { rows } = await pgQuery('SELECT 1 FROM users WHERE mobile = $1 AND account_type = \'MERCHANT\'', [mobile]);
-      expect(rows).toHaveLength(0);
-    });
-
-    it('goes through with a regular account', async () => {
-      const mobile = someoneElse();
-      signedUp.push(mobile);
-      const res = await signup(mobile, regularAccount(), 'HDFC0000777');
-      expect(res.status, JSON.stringify(res.body)).toBe(200);
-    });
-
-    // A UPI handle is usually the holder's mobile with a bank suffix, and a
-    // member keeps none (`merchants.bank_upi_id` was dropped; §2, §24). The
-    // application used to store one, top-level or inside the bank details.
-    it('keeps no UPI handle sent with the application', async () => {
-      const mobile = someoneElse();
-      signedUp.push(mobile);
-      const res = await request(merchantApp).post('/auth/signup').send({
-        username: `upi${Math.random().toString(36).slice(2, 10)}`, mobile, password: 'Correct-Horse-Battery-9!',
-        upiId: `${mobile}@okaxis`,
-        bankDetails: { accountNo: regularAccount(), ifsc: 'HDFC0000778', bankName: 'Some Bank', upiId: `${mobile}@ybl` },
+  // A member's application no longer carries a bank account (owner,
+  // 2026-10-14: a merchant applies by Continue with Telegram, and an admin's
+  // create takes a name and a mobile only), so `PUT /profile` above is the
+  // one route that writes a member's account. What the application used to
+  // be held to is held there.
+  //
+  // A UPI handle is usually the holder's mobile with a bank suffix, and a
+  // member keeps none (`merchants.bank_upi_id` was dropped; §2, §24).
+  describe('a member\'s UPI handle', () => {
+    it('is never kept, top-level or inside the bank details', async () => {
+      const member = await newMember();
+      const handle = someoneElse();
+      const res = await as(merchantApp, member).put('/profile').send({
+        upiId: `${handle}@okaxis`,
+        bankDetails: { accountHolderName: 'A Member', accountNo: regularAccount(), ifsc: 'HDFC0000778', bankName: 'Some Bank', upiId: `${handle}@ybl` },
       });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
-      const { rows } = await pgQuery('SELECT merchant_id FROM merchants WHERE mobile = $1', [mobile]);
-      const merchant = await getMerchant(rows[0].merchant_id);
+      const merchant = await getMerchant(member.merchantId);
       expect(merchant.bankDetails.bankName).toBe('Some Bank');
       expect(merchant.bankDetails).not.toHaveProperty('upiId');
       expect(JSON.stringify(merchant)).not.toMatch(/@okaxis|@ybl/);

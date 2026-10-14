@@ -114,22 +114,24 @@ describePg('the merchant record', () => {
   });
 
   // ── Credentials ───────────────────────────────────────────────────────────
-  it('keeps credentials OUT of the general reader, and reads the password from the LOGIN row', async () => {
-    // A merchant's password lives on its `users` login row, once (§33.5). It
-    // used to be stored on `merchants` too, and the reset and the login door
-    // each used a different copy (R6, 2026-09-30).
+  it('holds no password anywhere: the login row refuses one, and the merchant row has none', async () => {
+    // Merchants sign in with "Continue with Telegram" alone (owner,
+    // 2026-10-14): only a STAFF login row may carry a hash
+    // (`users_password_staff_only`), and `merchants` never held a copy (§33.5).
     const uid = `${ID}-login`;
     await pgQuery(
-      `INSERT INTO users (user_id, username, mobile, password_hash, account_type)
-       VALUES ($1, $1, $2, 'hashed-secret', 'MERCHANT')`, [uid, `7${RUN}${seq}`.slice(0, 10)]);
+      `INSERT INTO users (user_id, username, mobile, account_type)
+       VALUES ($1, $1, $2, 'MERCHANT')`, [uid, `7${RUN}${seq}`.slice(0, 10)]);
     await make({ userId: uid });
+    await expect(pgQuery(`UPDATE users SET password_hash = 'hashed-secret' WHERE user_id = $1`, [uid]))
+      .rejects.toThrow(/users_password_staff_only/);
+    expect((await getUserCredentials(uid)).passwordHash ?? null).toBeNull();
     const rendered = await getMerchant(ID);
-    expect(JSON.stringify(rendered)).not.toContain('hashed-secret');
     expect(rendered.passwordHash).toBeUndefined();
-
-    // The one credentials read, the one the merchant door asks (`loginHandler`).
-    const creds = await getUserCredentials(uid);
-    expect(creds.passwordHash).toBe('hashed-secret');
+    const { rows } = await pgQuery(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'merchants' AND column_name ILIKE '%password%'`);
+    expect(rows).toEqual([]);
   });
 
   // ── The rail ──────────────────────────────────────────────────────────────

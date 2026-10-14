@@ -1,13 +1,15 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * Player, staff and merchant are THREE accounts, and one mobile may hold all of
- * them — with three different passwords, none of which works at another door.
+ * them — each reached only at its own door: staff by password and
+ * authenticator code, player and merchant by "Continue with Telegram" (owner,
+ * 2026-10-14: players and merchants have no password).
  *
  * ── The owner's requirement, 2026-09-24 ────────────────────────────────────
  * "Users, merchants and admin/sub-admin are three separate entities. If a user
  * opens an account on the user panel those credentials only work for the user
  * panel, not the merchant panel or the admin panel — and the same person can
- * create each account separately with different passwords."
+ * create each account separately."
  *
  * ── Why this is a test and not a comment ──────────────────────────────────
  * Because it was already wrong twice while being built, in ways nothing else
@@ -17,40 +19,43 @@
  *     an index whose message named neither panel;
  *   · merchant signup writes a `users` row too, and without a type of its own
  *     that row defaulted to PLAYER — so a merchant could have signed into the
- *     PLAYER panel with their merchant password. Merchants living in their own
- *     table made them look separate when the login row was not.
+ *     PLAYER panel. Merchants living in their own table made them look
+ *     separate when the login row was not.
  *
- * ── The nine cases ────────────────────────────────────────────────────────
- * Three doors × three passwords. Three succeed, six must not, and the six are
- * asserted to say the SAME thing as each other — a refusal that distinguished
- * "wrong password" from "wrong panel" would let anybody map which of the three
- * account types a phone number holds.
+ * ── What is asserted ──────────────────────────────────────────────────────
+ * One person, one mobile, one Telegram account: Verify at the player door
+ * enters the player account and at the merchant door the merchant account,
+ * never the other; the staff door takes the staff password and nobody else's
+ * attempt. Wrong-door attempts are answered IDENTICALLY within a door — a
+ * refusal that distinguished "wrong password" from "no account here" would let
+ * anybody map which of the three account types a phone number holds.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
-import { linkTelegram, saveTestBot, removeTestBot } from '../miniAppFixture.js';
+import { linkTelegram, saveTestBot, removeTestBot, signInitData, freshTelegramUserId } from '../miniAppFixture.js';
 import { getUserByMobile, newUserId, createUser, setRoles, ACCOUNT_TYPES } from '#db/repositories/users.js';
 import { createMerchantAccount } from '#db/repositories/merchants.js';
 import { hashPassword } from '../../domains/identity/password.util.js';
 import playerAuthRoutes from '../../domains/identity/playerAuth.routes.js';
 import merchantRoutes from '../../domains/merchant/merchant.routes.js';
+import miniAppRoutes from '../../domains/telegram/miniApp.routes.js';
 import { loginHandler, LOGIN_DOOR } from '../../routes.js';
 import { loginPaceLimiter } from '../../middleware/security.js';
+import { verifyJwt } from '../../domains/identity/jwt.util.js';
 import { request } from './_harness.js';
 import express from 'express';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
-/** One mobile, three accounts, three passwords. Unique per RUN (§32 S19). */
+/** One mobile, three accounts. Unique per RUN (§32 S19). */
 const RUN = String(Math.floor(Math.random() * 90000) + 10000);
 const MOBILE = `9${RUN}0007`;
 // A mobile no door has an account for (same RUN, different tail).
 const NOBODY = `9${RUN}0008`;
-const PW = {
-  player:   'the-player-passphrase',
-  staff:    'the-staff-passphrase-x',
-  merchant: 'the-merchant-passphrase',
-};
+/** The staff account's password: the only password there is. */
+const STAFF_PW = 'the-staff-passphrase-x';
+/** The one Telegram account of the person who holds all three. */
+const TG = freshTelegramUserId();
 
 /**
  * The three doors, mounted as `server.js` mounts them.
@@ -66,6 +71,7 @@ app.use('/api/v1/auth', playerAuthRoutes);
 app.post('/api/admin/login',
   (req, res, next) => { req.loginDoor = LOGIN_DOOR.STAFF; next(); }, loginHandler);
 app.use('/api/merchant', merchantRoutes);
+app.use('/api/telegram', miniAppRoutes);
 
 /**
  * A fresh address per request, in a fresh /24.
@@ -78,51 +84,56 @@ let addr = 0;
 const from = () => { addr += 1; return `10.${(addr >> 8) & 255}.${addr & 255}.9`; };
 const post = (path, body) => request(app).post(path).set('X-Forwarded-For', from()).send(body);
 
-const DOORS = {
-  PLAYER:   '/api/v1/auth/login',
-  STAFF:    '/api/admin/login',
-  MERCHANT: '/api/merchant/auth/login',
-};
+/** The two Telegram doors' legs. */
+const TG_DOOR = { PLAYER: '/api/v1/auth', MERCHANT: '/api/merchant/auth' };
+const STAFF_LOGIN = '/api/admin/login';
 
 describePg('three separate entities, one mobile', () => {
+  const ids = {};
+  const startParam = (opened) => new URL(opened.telegram.url).searchParams.get('startapp');
+  /** Continue with Telegram at a door, Verify by the person's Telegram, and the poll. */
+  const continueAt = async (door, tgId = TG) => {
+    const opened = (await post(`${TG_DOOR[door]}/login/telegram`, { delivery: 'MATCH' })).body;
+    const verified = await post('/api/telegram/mini-app/approve', {
+      initData: signInitData({ telegramUserId: tgId, startParam: startParam(opened) }),
+      decision: 'approve', pick: opened.matchNumber,
+    });
+    return { opened, verified, session: await post(`${TG_DOOR[door]}/login/telegram/complete`, { challengeToken: opened.challengeToken }) };
+  };
+
   beforeAll(async () => {
     await applySchema();
 
-    // The PLAYER, through the form's own writer.
+    // The PLAYER, through the signup writer the first Verify calls.
     const { createAccountFromSignup } = await import('#db/repositories/identity.js');
     const player = await createAccountFromSignup({
-      userId: newUserId(), username: 'the player', mobile: MOBILE,
-      passwordHash: await hashPassword(PW.player),
-      aadhaarHash: `three-${RUN}`, aadhaarEncrypted: 'cipher', aadhaarLast4: '0007',
-      referralCode: `TRI${RUN}`,
+      userId: newUserId(), username: 'the player', mobile: MOBILE, referralCode: `TRI${RUN}`,
     });
     expect(player.ok, 'the player account').toBe(true);
 
     // The STAFF account, the way `POST /admin/sub-admins` writes one.
     const staff = await createUser({
       userId: newUserId(), username: 'the staff', mobile: MOBILE,
-      passwordHash: await hashPassword(PW.staff),
+      passwordHash: await hashPassword(STAFF_PW),
       status: 'ACTIVE', isAdmin: true, accountType: 'STAFF',
     });
     expect(staff.created, 'the staff account on the SAME mobile').toBe(true);
     await setRoles(staff.user.userId, ['admin']);
+    ids.staff = staff.user.userId;
 
-    // The MERCHANT, through merchant signup.
+    // The MERCHANT, the writer an application goes through, approved.
     const merchant = await createMerchantAccount({
-      userId: newUserId(), username: `merchant${RUN}`, mobile: MOBILE,
-      passwordHash: await hashPassword(PW.merchant), currency: 'INR',
+      userId: newUserId(), username: `merchant${RUN}`, mobile: MOBILE, currency: 'INR',
     });
     expect(merchant.ok, 'the merchant account on the SAME mobile').toBe(true);
     await pgQuery(
       `UPDATE merchants SET status='ACTIVE', merchant_approval_status='APPROVED'
         WHERE merchant_id = $1`, [merchant.merchant.merchantId]);
+    Object.assign(ids, { player: player.userId, merchant: merchant.userId, merchantId: merchant.merchant.merchantId });
 
-    // Step 3: the player and the merchant verified their mobile in Telegram at
-    // signup, and the one bot is configured. Merchants then owe Telegram's
-    // approval and staff an authenticator code (a challenge, not a session);
-    // a player signs in on the password. Staff have no Telegram (owner,
-    // 2026-10-13).
-    for (const id of [player.userId, merchant.userId]) await linkTelegram(id);
+    // One Telegram account verifies both: one link per panel (owner,
+    // 2026-10-13). Staff have no Telegram at all.
+    for (const id of [player.userId, merchant.userId]) await linkTelegram(id, { telegramUserId: TG });
     await saveTestBot();
   });
   afterAll(async () => { await removeTestBot(); await closePg(); });
@@ -161,54 +172,78 @@ describePg('three separate entities, one mobile', () => {
     await expect(getUserByMobile(MOBILE)).rejects.toThrow(/accountType/);
   });
 
-  it('admits each password at its OWN door, and nowhere else', async () => {
-    const seen = {};
-    for (const [door, path] of Object.entries(DOORS)) {
-      for (const [who, password] of Object.entries(PW)) {
-        // Every door now paces one credential try per mobile (loginDoors.js):
-        // the pace is not what this asks.
-        await loginPaceLimiter.resetKey(`p:${MOBILE}`);
-        const res = await post(path, { mobile: MOBILE, password });
-        // ADMITTED: a session, or the Telegram approval this door owes next.
-        seen[`${door}<-${who}`] = { status: res.status, ok: res.body.success === true || res.body.twoFactorRequired === true };
-      }
-    }
-    const expected = {
-      'PLAYER<-player': true,   'PLAYER<-staff': false,   'PLAYER<-merchant': false,
-      'STAFF<-player': false,   'STAFF<-staff': true,     'STAFF<-merchant': false,
-      'MERCHANT<-player': false, 'MERCHANT<-staff': false, 'MERCHANT<-merchant': true,
-    };
-    for (const [k, want] of Object.entries(expected)) {
-      expect(seen[k]?.ok, `${k} (answered ${seen[k]?.status})`).toBe(want);
-    }
+  it('holds a password on the staff row only', async () => {
+    const { rows } = await pgQuery(
+      'SELECT account_type, password_hash IS NOT NULL AS has_pw FROM users WHERE mobile = $1 ORDER BY account_type', [MOBILE]);
+    expect(rows).toEqual([
+      { account_type: 'MERCHANT', has_pw: false },
+      { account_type: 'PLAYER', has_pw: false },
+      { account_type: 'STAFF', has_pw: true },
+    ]);
+  });
+
+  it('admits each account at its OWN door, and nowhere else', async () => {
+    // The player door, Verify by the person's Telegram: the PLAYER account.
+    const atPlayer = await continueAt('PLAYER');
+    expect(atPlayer.session.status, JSON.stringify(atPlayer.session.body)).toBe(200);
+    expect(verifyJwt(atPlayer.session.body.token)).toMatchObject({ userId: ids.player, amr: ['tg'] });
+    expect(atPlayer.session.body.user.id).toBe(ids.player);
+
+    // The merchant door, the same Telegram: the MERCHANT account.
+    const atMerchant = await continueAt('MERCHANT');
+    expect(atMerchant.session.status, JSON.stringify(atMerchant.session.body)).toBe(200);
+    expect(verifyJwt(atMerchant.session.body.token)).toMatchObject({ userId: ids.merchant, merchantId: ids.merchantId, amr: ['tg'] });
+
+    // The staff door: the staff password opens the code step, for the staff row.
+    await loginPaceLimiter.resetKey(`p:${MOBILE}`);
+    const atStaff = await post(STAFF_LOGIN, { mobile: MOBILE, password: STAFF_PW });
+    expect(atStaff.body, JSON.stringify(atStaff.body)).toMatchObject({ success: false, twoFactorRequired: true });
+    expect(atStaff.body.telegram).toBeUndefined();
+
+    // And no Telegram door has a staff account behind it: Telegram cannot
+    // even be linked to one (the audience CHECK).
+    await expect(linkTelegram(ids.staff)).rejects.toThrow();
   });
 
   it('answers every wrong-door attempt IDENTICALLY within a door', async () => {
-    // Six refusals. A door that said "wrong password" for one and "this is a
-    // merchant account" for another would let anybody map which of the three
-    // account types a phone number holds, one request at a time.
-    for (const [door, path] of Object.entries(DOORS)) {
-      const wrong = Object.entries(PW).filter(([who]) => who.toUpperCase() !== door);
-      const said = [];
-      // The player door paces ONE credential try per mobile per 10 seconds.
-      // Without this the second and third tries were both answered 429 by the
-      // pacer, so the door's own wording was never compared at all and the
-      // check passed on two identical limiter replies (2g, 2026-10-04).
-      const unpaced = (mobile) => loginPaceLimiter.resetKey(`p:${mobile}`);
-      for (const [, password] of wrong) {
-        await unpaced(MOBILE);
-        const res = await post(path, { mobile: MOBILE, password });
-        said.push(`${res.status}:${res.body.message}`);
+    // The staff door: another account's guess, a second guess, and a mobile
+    // with no account at this door at all. The merchant door once answered an
+    // unknown mobile "No merchant account found for this mobile number" and a
+    // wrong password "Invalid credentials", so one request told anybody
+    // whether a number held an account (2g review, 2026-10-04).
+    const said = [];
+    for (const [mobile, password] of [[MOBILE, 'not-the-staff-password'], [MOBILE, 'the-player-passphrase'], [NOBODY, STAFF_PW]]) {
+      // The pace (one try per mobile per 10 s) is not what this asks.
+      await loginPaceLimiter.resetKey(`p:${mobile}`);
+      const res = await post(STAFF_LOGIN, { mobile, password });
+      said.push(`${res.status}:${res.body.message}`);
+    }
+    expect(new Set(said).size, `STAFF door said: ${said.join(' | ')}`).toBe(1);
+    expect(said[0], 'STAFF door answered the limiter, not the login').toMatch(/^401:/);
+
+    // The Telegram doors: a sign-in opened at the OTHER door, and a token
+    // that is nobody's, are answered alike — the approval of one account is
+    // never redeemed at another account's door.
+    const other = { PLAYER: 'MERCHANT', MERCHANT: 'PLAYER' };
+    for (const door of ['PLAYER', 'MERCHANT']) {
+      const { opened } = await continueAt(other[door]);
+      const tgSaid = [];
+      for (const challengeToken of [opened.challengeToken, 'not-a-token']) {
+        const res = await post(`${TG_DOOR[door]}/login/telegram/complete`, { challengeToken });
+        tgSaid.push(`${res.status}:${res.body.code}:${res.body.message}`);
+        expect(res.body.token).toBeUndefined();
       }
-      // And a mobile with NO account at this door at all. The merchant door
-      // answered it "No merchant account found for this mobile number" and a
-      // wrong password "Invalid credentials", so one request told anybody
-      // whether a number was a merchant's (2g review, 2026-10-04).
-      await unpaced(NOBODY);
-      const nobody = await post(path, { mobile: NOBODY, password: PW.player });
-      said.push(`${nobody.status}:${nobody.body.message}`);
-      expect(new Set(said).size, `${door} door said: ${said.join(' | ')}`).toBe(1);
-      expect(said[0], `${door} door answered the limiter, not the login`).toMatch(/^401:/);
+      expect(new Set(tgSaid).size, `${door} door said: ${tgSaid.join(' | ')}`).toBe(1);
+      expect(tgSaid[0]).toMatch(/^401:TWO_FACTOR_EXPIRED:/);
+    }
+  });
+
+  it('a Telegram account that verifies neither is not let into either', async () => {
+    const stranger = freshTelegramUserId();
+    for (const door of ['PLAYER', 'MERCHANT']) {
+      const { verified, session } = await continueAt(door, stranger);
+      expect(verified.body.code, door).toBe('CONTACT_REQUIRED');
+      expect(session.status, door).toBe(202);
     }
   });
 

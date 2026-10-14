@@ -1,9 +1,10 @@
-// GOVERNANCE: Read CLAUDE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * loginSessionPg.test.js — the payload every login hands back.
  *
  * `issueSession` is the ONE place a session comes into existence: the staff
- * password path, the second-factor path and the Telegram path all mint here.
+ * password-and-code path and "Continue with Telegram" both mint here, each
+ * saying what the sign-in proved (`amr`: ['pwd','otp'] or ['tg']).
  * So a defect in this payload is a defect in every login on the platform, which
  * is what made the one below worth a suite of its own.
  *
@@ -40,10 +41,14 @@ const fund = (field, paise, key) =>
 
 describePg('the session a login hands back', () => {
   let issueSession;
+  let verifyJwt;
+  /** A player's sign-in: "Continue with Telegram" proved it (`amr` ['tg']). */
+  const signIn = async (res) => issueSession(await getUserByMobile('9990001111', 'PLAYER'), res, { amr: ['tg'] });
 
   beforeAll(async () => {
     await applySchema();
     ({ issueSession } = await import('../../backend/routes.js'));
+    ({ verifyJwt } = await import('../../backend/domains/identity/jwt.util.js'));
   });
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
@@ -56,7 +61,7 @@ describePg('the session a login hands back', () => {
     await fund('winningsBalance', 75_50, 'f2');
 
     const { res, captured } = recorder();
-    await issueSession(await getUserByMobile('9990001111', 'PLAYER'), res);
+    await signIn(res);
 
     expect(captured.user.depositBalance).toBe(250);
     expect(captured.user.winningsBalance).toBe(75.5);
@@ -70,7 +75,7 @@ describePg('the session a login hands back', () => {
     await fund('reserveBalance', 500_00, 'f2');
 
     const { res, captured } = recorder();
-    await issueSession(await getUserByMobile('9990001111', 'PLAYER'), res);
+    await signIn(res);
 
     // The reserve is NOT freely spendable — only a percentage of a stake may
     // come from it — so folding it into "available" is what made players try
@@ -84,7 +89,7 @@ describePg('the session a login hands back', () => {
     await fund('lockedBalance', 40_00, 'f2');
 
     const { res, captured } = recorder();
-    await issueSession(await getUserByMobile('9990001111', 'PLAYER'), res);
+    await signIn(res);
 
     expect(captured.user.lockedBalance).toBe(40);
     expect(captured.user.walletBalance).toBe(100);
@@ -92,14 +97,14 @@ describePg('the session a login hands back', () => {
 
   it('shows zero for an account that genuinely has nothing', async () => {
     const { res, captured } = recorder();
-    await issueSession(await getUserByMobile('9990001111', 'PLAYER'), res);
+    await signIn(res);
     // Zero is the right answer here — the bug was that it was the ONLY answer.
     expect(captured.user.walletBalance).toBe(0);
   });
 
   it('records the login against the account', async () => {
     const { res, captured } = recorder();
-    await issueSession(await getUserByMobile('9990001111', 'PLAYER'), res);
+    await signIn(res);
 
     // Written to the ROW. The version this replaced assigned `lastLogin` to a
     // plain object and called `.save()` on it — a TypeError, so no login has
@@ -110,9 +115,15 @@ describePg('the session a login hands back', () => {
 
   it('identifies the account by its real id', async () => {
     const { res, captured } = recorder();
-    await issueSession(await getUserByMobile('9990001111', 'PLAYER'), res);
+    await signIn(res);
     expect(captured.user.id).toBe('u1');
     expect(captured.user._id).toBe('u1');
     expect(captured.token).toBeTruthy();
+    expect(verifyJwt(captured.token)).toMatchObject({ userId: 'u1', amr: ['tg'] });
+  });
+
+  it('refuses to mint a session that does not say what the sign-in proved', async () => {
+    const { res } = recorder();
+    await expect(issueSession(await getUserByMobile('9990001111', 'PLAYER'), res)).rejects.toThrow(/amr/);
   });
 });

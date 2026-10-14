@@ -40,7 +40,6 @@ import {
 } from '../../domains/payment/paymentProcessing.service.js';
 import { settleHold } from '../../domains/payment/withdrawalHold.service.js';
 import { teamFixture, readyToPay } from '../teamFixture.js';
-import request from 'supertest';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -48,6 +47,7 @@ const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
 
 describePg('team oversight', () => {
   let panel; let teamApp; let teamAdmin; let playerApp; let disputeApp; let admin; let seq = 0;
+  let merchantAdmin; let fullAdmin;
   const teams = teamFixture();
   const ownTeams = [];
   const players = [];
@@ -66,6 +66,8 @@ describePg('team oversight', () => {
     playerApp = mountRouter((await import('../../domains/payment/payment.routes.js')).default);
     disputeApp = mountRouter((await import('../../domains/disputes/disputeResolution.admin.routes.js')).default);
     admin = await actor({ isSubAdmin: true, permissions: { canManageTeams: true, canResolveDisputes: true } });
+    merchantAdmin = mountRouter((await import('../../domains/merchant/merchant.admin.routes.js')).default);
+    fullAdmin = await actor({ isAdmin: true, roles: ['admin'] });
     today = (await pgQuery(`SELECT to_char((now() AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS d`)).rows[0].d;
     // A run that died before its cleanup left today claimed; this suite owns it.
     await forgetDay();
@@ -273,10 +275,13 @@ describePg('team oversight', () => {
   it('refuses a mobile number in a name other people see: a merchant username, a team name', async () => {
     const mobile = `9${String(Date.now()).slice(-9)}`;
     try {
-      const signup = await request(panel).post('/auth/signup')
-        .send({ username: `raj ${mobile}`, mobile, password: 'Correct-Horse-Battery-9!' });
-      expect(signup.status, JSON.stringify(signup.body)).toBe(400);
-      expect(signup.body.code).toBe('NAME_IS_A_MOBILE');
+      // A merchant's username is written by an admin's create (a merchant's
+      // own Continue with Telegram names them `merchant<last four>`, and no
+      // merchant route edits it).
+      const created = await as(merchantAdmin, fullAdmin).post('/merchants/create')
+        .send({ username: `raj ${mobile}`, mobile });
+      expect(created.status, JSON.stringify(created.body)).toBe(400);
+      expect(created.body.code).toBe('NAME_IS_A_MOBILE');
       expect((await pgQuery("SELECT 1 FROM users WHERE mobile = $1 AND account_type = 'MERCHANT'", [mobile])).rowCount).toBe(0);
     } finally {
       // A broken rule lets the account in, and a row the restored CHECK would
