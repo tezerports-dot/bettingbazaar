@@ -40,7 +40,9 @@ const field = (id: string) => document.getElementById(id) as HTMLInputElement;
 const saveButton = () => screen.getAllByRole('button', { name: /save/i }).pop() as HTMLButtonElement;
 
 const paint = async () => {
-  getConfig.mockResolvedValue({ success: true, data: served });
+  getConfig.mockResolvedValue({ success: true, data: served, help: {
+    inrRoutingMode: { what: 'Who serves rupee orders. USDT always goes to agents.', example: 'MERCHANTS' },
+  } });
   render(<SystemSettings />);
   await screen.findByText('INR Orders');
   await waitFor(() => expect(screen.getByRole('radio', { name: 'Agents' })).toBeChecked());
@@ -52,7 +54,8 @@ describe('INR orders go to: Agents / Merchants', () => {
   it('saves the switch and says how many waiting orders moved', async () => {
     updateConfig.mockResolvedValue({ success: true, rerailedOrders: 3 });
     await paint();
-    expect(screen.getByText(/USDT orders always go to agent teams/)).toBeInTheDocument();
+    // The setting's help is the server's (configHelp.js), rendered under it.
+    expect(screen.getByText(/USDT always goes to agents/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('radio', { name: 'Merchants' }));
     fireEvent.click(saveButton());
     await waitFor(() => expect(updateConfig).toHaveBeenCalled());

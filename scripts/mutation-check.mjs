@@ -3344,15 +3344,16 @@ const MUTATIONS = [
     id: 'MBR1', file: 'backend/domains/markets/bet.routes.js', config: PG,
     test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
     why: 'a player who never read the board rules can stake money on a board',
-    from: `if (await db.boardRules.acceptedVersion(userId) < BOARD_RULES_VERSION) {`,
+    from: `if (!(await db.boardRules.acceptsCurrent(userId))) {`,
     to: `if (false) {`,
   },
   {
-    id: 'MBR2', file: 'backend/domains/user/user.routes.js', config: PG,
+    id: 'MBR2', config: PG,
     test: 'backend/tests/routes/boardRulesAndGeneralPg.test.js',
     why: 'a version the player was never shown is recorded as accepted, so the next rules change is never put in front of them',
-    from: `if (version !== BOARD_RULES_VERSION) {`,
-    to: `if (!version) {`,
+    file: 'database/repositories/boardRules.js',
+    from: "WHERE user_id = $1 AND account_type = 'PLAYER' AND $2 = ${CURRENT_VERSION_SQL}",
+    to: "WHERE user_id = $1 AND account_type = 'PLAYER'",
   },
 
   // ── VIP and GENERAL boards apart (owner, 2026-10-08) ────────────────────────

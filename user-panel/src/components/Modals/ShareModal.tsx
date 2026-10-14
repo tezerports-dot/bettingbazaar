@@ -9,6 +9,7 @@ import { isNativeShell } from '../../services/nativeLifecycle';
 import { brandLogo, fallBackToMark } from '../../services/brandAssets';
 import { SystemConfigData } from '../../types';
 import { refreshTelegramEntry, rememberedTelegramEntry } from '../../services/telegramEntry';
+import { platform } from '../../services/api';
 
 const backend = getBackend();
 
@@ -22,10 +23,17 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
 
   // The Telegram link that keeps working if the site's address is ever blocked.
   const [telegram, setTelegram] = useState(rememberedTelegramEntry);
+  // Whether an admin has published an Android release. Until one is, the APK
+  // option is not offered at all and players use the web app (owner,
+  // 2026-10-14); unknown (a failed check) counts as not available.
+  const [androidAvailable, setAndroidAvailable] = useState(false);
 
   useEffect(() => {
     backend.getSystemConfig().then(setConfig).catch(console.error);
     void refreshTelegramEntry().then(setTelegram);
+    platform.androidAppAvailable()
+      .then((res) => setAndroidAvailable(res?.available === true))
+      .catch(() => setAndroidAvailable(false));
   }, []);
 
   const handleShare = async (title: string, url: string) => {
@@ -121,7 +129,8 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
                 </button>
             </div>
 
-            {/* OPTION 2: ANDROID APK */}
+            {/* OPTION 2: ANDROID APK — only once a release is published. */}
+            {androidAvailable && (
             <div className="bg-[#121826] p-4 rounded-xl border border-slate-700 flex items-center justify-between group hover:border-green-500/50 transition-colors">
                 <div className="text-left">
                     <div className="text-white font-bold text-sm flex items-center gap-2">
@@ -137,6 +146,7 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
                     <span>⬇️</span> Download
                 </button>
             </div>
+            )}
 
             {/* OPTION: TELEGRAM — Telegram's address, so it survives a blocked domain. */}
             {telegram && (

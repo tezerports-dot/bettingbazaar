@@ -31,6 +31,7 @@ import { PaymentsPage } from './Pages/Payments/PaymentsPage';
 import { BrandingSettings } from './Pages/Branding/BrandingSettings';
 import { FAQManager } from './Pages/Content/FAQManager';
 import { SupportLinks } from './Pages/Content/SupportLinks';
+import { RulesPopup } from './Pages/Content/RulesPopup';
 import { ImagesPage } from './Pages/Images/ImagesPage';
 import { SystemSettings } from './Pages/Settings/SystemSettings';
 import { PlayerScreenSettings } from './Pages/Settings/PlayerScreenSettings';
@@ -300,6 +301,11 @@ const App: React.FC = () => {
         <Route path="/content/slides" element={<Navigate to="/images?tab=pages" replace />} />
         <Route path="/content/cdn" element={<Navigate to="/images?tab=library" replace />} />
         <Route path="/app-assets" element={<Navigate to="/images?tab=logos" replace />} />
+        <Route path="/content/rules-popup" element={
+          <PermRoute permission="canManageContent">
+            <Layout><RulesPopup /></Layout>
+          </PermRoute>
+        } />
         <Route path="/content/support" element={
           <PermRoute permission="canManageContent">
             <Layout><SupportLinks /></Layout>

@@ -13,7 +13,7 @@ import {
   MessageCircle, Shield, History, Scale, Search, Sun, Moon, Bell,
   SlidersHorizontal, Trophy, Star, Gamepad2, Bot, Share2,
   type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, Hourglass, Fingerprint,
-  Ghost, Smartphone, ShieldBan, KeyRound, Wallet } from 'lucide-react';
+  Ghost, Smartphone, ShieldBan, KeyRound, Wallet, ScrollText } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -100,6 +100,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/winners-manager',          icon: Trophy,        label: 'Winners Manager', title: 'Winners Manager', sub: 'Real & phantom winner surfacing', permission: 'canManageContent' },
     { path: '/referrals',                icon: Share2,        label: 'Referrals',       title: 'Referral Programme', sub: 'Fund the payout queue in joining order', permission: 'canManageReferrals' },
     { path: '/images',                   icon: ImageIcon,     label: 'Images',          title: 'Images',          sub: 'Every image of the player app: promo cards per screen, board, logo, banners', permission: 'canManageContent' },
+    { path: '/content/rules-popup',      icon: ScrollText,    label: 'Rules Pop-up',    title: 'Rules Pop-up',    sub: 'The board rules players read and accept before betting', permission: 'canManageContent' },
     { path: '/branding',                 icon: Palette,       label: 'Branding',        title: 'Branding',        sub: 'App name, colours, tagline & panel names', permission: 'canManageContent' },
     { path: '/android-app',              icon: Smartphone,    label: 'Android App',     title: 'Android App',     sub: 'Upload, publish & force updates', permission: 'canManageAndroidApp' },
   ] },

@@ -32,6 +32,7 @@ const PAGE_ORIGIN = window.location.origin;
 let config: Partial<SystemConfigData> | null = null;
 let configFails = false;
 let native = false;
+let androidPublished = true;
 
 vi.mock('../../services/backend.service', () => ({
   getBackend: () => ({
@@ -45,6 +46,9 @@ vi.mock('../../services/backend.service', () => ({
 vi.mock('../../services/apiUrl', () => ({ apiUrl: (p: string) => `${API_ORIGIN}${p}` }));
 vi.mock('../../services/originFailover', () => ({ currentOrigin: () => API_ORIGIN }));
 vi.mock('../../services/nativeLifecycle', () => ({ isNativeShell: () => native }));
+vi.mock('../../services/api', () => ({
+  platform: { androidAppAvailable: async () => ({ success: true, available: androidPublished }) },
+}));
 
 const { default: ShareModal } = await import('./ShareModal');
 
@@ -68,12 +72,13 @@ const show = async (onClose = () => {}) => {
 };
 
 const shareButton = () => screen.getByRole('button', { name: /Share Link|Copied!|Copy failed|Unavailable/i });
-const downloadButton = () => screen.getByRole('button', { name: /Download/i });
+const downloadButton = () => screen.findByRole('button', { name: /Download/i });
 
 beforeEach(() => {
   config = { webUrl: 'https://bazaarclash.example' } as SystemConfigData;
   configFails = false;
   native = false;
+  androidPublished = true;
   localStorage.clear();
   open.mockReset();
   vi.stubGlobal('open', open);
@@ -91,7 +96,7 @@ describe('ShareModal — the APK link', () => {
     // THE ANDROID BUG. A relative path here points at the handset inside the
     // Capacitor shell, and the button silently downloads nothing.
     await show();
-    await userEvent.click(downloadButton());
+    await userEvent.click(await downloadButton());
     expect(open).toHaveBeenCalledWith(`${API_ORIGIN}/api/download/android`, '_blank');
   });
 
@@ -100,7 +105,7 @@ describe('ShareModal — the APK link', () => {
     // opening the endpoint keeps a swapped build live without a redeploy.
     // Baking the URL into the button would freeze it at page-load time.
     await show();
-    await userEvent.click(downloadButton());
+    await userEvent.click(await downloadButton());
     expect(open).not.toHaveBeenCalledWith(expect.stringContaining('cdn.example'), expect.anything());
   });
 
@@ -108,13 +113,22 @@ describe('ShareModal — the APK link', () => {
     // The endpoint is a constant path; it does not need the config to work.
     configFails = true;
     await show();
-    await userEvent.click(downloadButton());
+    await userEvent.click(await downloadButton());
     expect(open).toHaveBeenCalledWith(`${API_ORIGIN}/api/download/android`, '_blank');
+  });
+
+  it('offers no APK at all until an admin has published a release (owner, 2026-10-14)', async () => {
+    androidPublished = false;
+    await show();
+    await screen.findByText('Play on Web');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByRole('button', { name: /Download/i })).toBeNull();
+    expect(screen.queryByText('APK')).toBeNull();
   });
 
   it('opens the download outside the app', async () => {
     await show();
-    await userEvent.click(downloadButton());
+    await userEvent.click(await downloadButton());
     expect(open.mock.calls[0][1]).toBe('_blank');
   });
 });

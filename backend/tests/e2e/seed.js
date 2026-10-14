@@ -7,7 +7,6 @@ import { createRequest, fulfilRequest, getPool } from '#db/repositories/teamPool
 import { setCashReady, RAILS } from '#db/repositories/teamRouting.js';
 import { getTreasuryBalances, ACCOUNTS } from '#db/repositories/treasury.js';
 import { rid } from './harness.js';
-import { BOARD_RULES_VERSION } from '../../domains/markets/boardRules.js';
 import { encryptField } from '../../domains/identity/fieldCrypto.util.js';
 import { base32Encode, stepAt } from '../../domains/identity/totp.service.js';
 import crypto from 'node:crypto';
@@ -58,7 +57,7 @@ export async function seedPlayer({ balancePaise = 0, verified = true, boardRules
   // The Telegram verification every account completes at signup (Step 3).
   if (verified) await verifyActor({ userId, mobile, audience: 'PLAYER' });
   // The board rules every player accepts before a first bet (owner, 2026-10-08).
-  if (boardRules) await db.boardRules.accept(userId, BOARD_RULES_VERSION);
+  if (boardRules) await db.boardRules.accept(userId, await db.boardRules.currentVersion());
 
   // A seeded balance comes OUT OF THE PLATFORM'S OWN HOLDING, posted with the
   // credit: since the conservation guards (owner, 2026-10-07) a wallet that

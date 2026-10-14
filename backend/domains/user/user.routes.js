@@ -54,7 +54,7 @@ import { getUserLedger, getBalances } from '../wallet/walletAuthority.service.js
 import { publicCycleView } from '../markets/cyclePublicView.js';
 import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
-import { boardRules, BOARD_RULES_VERSION } from '../markets/boardRules.js';
+import { renderBoardRules } from '../markets/boardRules.js';
 import { enabledBoards, publicBoard } from '../markets/cycleTypes.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
 import { serverError, respondError, refusal } from '../../shared/httpError.js';
@@ -335,18 +335,21 @@ router.get('/v1/boards', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The board rules a player is shown and accepts before betting (owner,
-// 2026-10-08). The text is `domains/markets/boardRules.js`, with the winnings
-// fee in force; the bet route refuses until the current version is accepted.
+// 2026-10-08). The text is the newest an admin published (Admin › Rules
+// pop-up, `database/repositories/boardRules.js`), or the built-in one, with
+// the winnings fee and multiplier in force; the bet route refuses until the
+// current version is accepted.
 //
-// GET  /api/v1/board-rules               — public: { version, sections }
+// GET  /api/v1/board-rules               — public: { version, heading, intro, sections }
 // GET  /api/user/board-rules             — { version, acceptedVersion }
 // POST /api/user/board-rules/accept      — { version } (must be the current one)
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/v1/board-rules', async (req, res) => {
   try {
-    const config = await getSystemConfig();
-    return res.json({ success: true, ...boardRules({
+    const [config, text] = await Promise.all([getSystemConfig(), db.boardRules.currentText()]);
+    return res.json({ success: true, ...renderBoardRules(text, {
       feePercent: config.winningsFeePercent,
+      multiplier: config.payoutMultiplier,
       // schema default: false (database/spec/config.spec.js riskRules)
       bothSides: !(config.riskRules?.blockOppositeSideBetting ?? false),
     }) });
@@ -357,8 +360,10 @@ router.get('/v1/board-rules', async (req, res) => {
 
 router.get('/user/board-rules', authenticatePlayer, async (req, res) => {
   try {
-    const acceptedVersion = await db.boardRules.acceptedVersion(req.user.userId);
-    return res.json({ success: true, version: BOARD_RULES_VERSION, acceptedVersion });
+    const [version, acceptedVersion] = await Promise.all([
+      db.boardRules.currentVersion(), db.boardRules.acceptedVersion(req.user.userId),
+    ]);
+    return res.json({ success: true, version, acceptedVersion });
   } catch (error) {
     return respondError(res, error, 'GET /api/user/board-rules', { message: 'Could not load the board rules' });
   }
@@ -367,11 +372,13 @@ router.get('/user/board-rules', authenticatePlayer, async (req, res) => {
 router.post('/user/board-rules/accept', authenticatePlayer, async (req, res) => {
   try {
     const version = Number(req.body?.version);
-    if (version !== BOARD_RULES_VERSION) {
-      throw refusal(409, 'BOARD_RULES_CHANGED', 'The board rules have changed. Please read them again.');
-    }
-    const r = await db.boardRules.accept(req.user.userId, version);
-    if (!r.ok) throw refusal(404, 'ACCOUNT_NOT_FOUND', 'Account not found');
+    // Only the CURRENT version, asked again in the accepting UPDATE's WHERE
+    // (`accept`), so a publish between the two is never recorded as accepted.
+    const r = Number.isInteger(version) && version > 0
+      ? await db.boardRules.accept(req.user.userId, version)
+      : { ok: false, reason: 'changed' };
+    if (!r.ok && r.reason === 'not_found') throw refusal(404, 'ACCOUNT_NOT_FOUND', 'Account not found');
+    if (!r.ok) throw refusal(409, 'BOARD_RULES_CHANGED', 'The board rules have changed. Please read them again.');
     return res.json({ success: true, acceptedVersion: r.version });
   } catch (error) {
     return respondError(res, error, 'POST /api/user/board-rules/accept', { message: 'Could not save that you accepted the rules' });

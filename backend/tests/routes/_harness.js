@@ -25,8 +25,7 @@ import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { signToken } from '../../domains/identity/paseto.util.js';
 import { createUser, updateUser, setRoles } from '#db/repositories/users.js';
-import { accept as acceptBoardRules } from '#db/repositories/boardRules.js';
-import { BOARD_RULES_VERSION } from '../../domains/markets/boardRules.js';
+import { accept as acceptBoardRules, currentVersion as currentBoardRulesVersion } from '#db/repositories/boardRules.js';
 import {
   createMerchant, updateMerchant, newMerchantId, generateMerchantPublicRef,
 } from '#db/repositories/merchants.js';
@@ -132,7 +131,7 @@ export async function actor({
   if (roles.length) await setRoles(id, roles);
   // A player reads and accepts the board rules before a first bet (owner,
   // 2026-10-08); a test of that gate asks for a player who has not.
-  if (accountType === 'PLAYER' && boardRules) await acceptBoardRules(id, BOARD_RULES_VERSION);
+  if (accountType === 'PLAYER' && boardRules) await acceptBoardRules(id, await currentBoardRulesVersion());
 
   // What the sign-in would have proved: a staff sign-in ends with an
   // authenticator code (owner, 2026-10-13), so a staff actor's token says so;

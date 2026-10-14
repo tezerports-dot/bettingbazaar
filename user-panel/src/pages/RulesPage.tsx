@@ -49,7 +49,7 @@ const RulesPage: React.FC = () => {
         </div>
 
         <div style={{ ...card, marginBottom: 16 }}>
-          <div className="font-grotesk" style={{ fontWeight: 800, fontSize: 15, color: 'var(--text)', marginBottom: 10 }}>🏆 Results, house bets and payouts</div>
+          <div className="font-grotesk" style={{ fontWeight: 800, fontSize: 15, color: 'var(--text)', marginBottom: 10 }}>🏆 {rules?.heading || 'Board rules'}</div>
           {rules ? <BoardRulesSections rules={rules} /> : (
             <p role={rulesError ? 'alert' : 'status'} style={{ fontSize: 12, color: 'var(--text2)', margin: 0 }}>{rulesError || 'Loading the rules…'}</p>
           )}

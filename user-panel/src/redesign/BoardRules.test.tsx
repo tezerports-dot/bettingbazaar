@@ -17,7 +17,7 @@ let accepted = 0;
 beforeEach(() => {
   accepted = 0;
   api.get.mockReset().mockImplementation(async (path: string) => (path === '/api/v1/board-rules'
-    ? { success: true, version: 1, sections: [{ title: 'How a round is won', body: 'The side with LESS real player money wins.' }] }
+    ? { success: true, version: 1, heading: 'How the boards work', intro: 'Please read this before you bet.', sections: [{ title: 'How a round is won', body: 'The side with LESS real player money wins.' }] }
     : { success: true, version: 1, acceptedVersion: accepted }));
   api.post.mockReset().mockImplementation(async (_p: string, body: any) => { accepted = body.version; return { success: true, acceptedVersion: accepted }; });
 });

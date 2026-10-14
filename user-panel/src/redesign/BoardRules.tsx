@@ -3,8 +3,10 @@
  * The board rules a player reads and accepts before betting (owner,
  * 2026-10-08: tell players how the boards work).
  *
- * The text is the server's (`GET /api/v1/board-rules`, owned by
- * `backend/domains/markets/boardRules.js`); the panel keeps no copy of it.
+ * The text is the server's (`GET /api/v1/board-rules`: the version an admin
+ * published under Admin › Rules pop-up, else the built-in one in
+ * `backend/domains/markets/boardRules.js`); the panel keeps no copy of it,
+ * not even the heading.
  * The pop-up opens on the board screen when this player has not accepted the
  * current version (`GET /api/user/board-rules`), and again whenever the bet
  * route answers `BOARD_RULES_NOT_ACCEPTED` (GameContext dispatches
@@ -15,6 +17,8 @@ import { platform, player } from '../services/api';
 
 export interface BoardRulesText {
   version: number;
+  heading: string;
+  intro: string;
   sections: { title: string; body: string }[];
 }
 
@@ -29,7 +33,7 @@ export function useBoardRulesText() {
     setError('');
     try {
       const res: any = await platform.boardRules();
-      if (res?.success) setRules({ version: res.version, sections: res.sections });
+      if (res?.success) setRules({ version: res.version, heading: res.heading, intro: res.intro, sections: res.sections });
       else throw new Error(res?.message);
     } catch (e: any) {
       setError(e?.message || 'Could not load the board rules');
@@ -41,10 +45,10 @@ export function useBoardRulesText() {
 
 export const BoardRulesSections: React.FC<{ rules: BoardRulesText }> = ({ rules }) => (
   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-    {rules.sections.map((s) => (
-      <div key={s.title}>
+    {rules.sections.map((s, i) => (
+      <div key={`${i}-${s.title}`}>
         <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>{s.title}</div>
-        <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 3, lineHeight: 1.5 }}>{s.body}</div>
+        <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 3, lineHeight: 1.5, whiteSpace: 'pre-line' }}>{s.body}</div>
       </div>
     ))}
   </div>
@@ -101,11 +105,11 @@ export const BoardRulesModal: React.FC<{ isAuthenticated: boolean }> = ({ isAuth
         background: 'var(--bg)', border: '1px solid var(--line2)', boxShadow: 'var(--shadow)',
       }}>
         <h2 id="board-rules-title" className="font-grotesk" style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 800, color: 'var(--text)' }}>
-          How the boards work
+          {rules?.heading || 'Board rules'}
         </h2>
-        <p style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--text3)' }}>
-          Please read this before you bet. You can read it again any time on the Rules page.
-        </p>
+        {rules?.intro && (
+          <p style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--text3)', whiteSpace: 'pre-line' }}>{rules.intro}</p>
+        )}
         {rules ? <BoardRulesSections rules={rules} /> : (
           <p role={loadError ? 'alert' : 'status'} style={{ fontSize: 12, color: 'var(--text2)' }}>
             {loadError || 'Loading the rules…'}

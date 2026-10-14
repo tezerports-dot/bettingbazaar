@@ -2001,6 +2001,28 @@ ALTER TABLE users ADD CONSTRAINT users_play_profile_known CHECK (play_profile IN
 -- 0 = never; the bet route refuses until it reaches the current version.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS board_rules_version INTEGER NOT NULL DEFAULT 0;
 
+-- The board rules text an admin published (owner, 2026-10-14: "we need it
+-- editable"), one row per version, written only by
+-- `repositories/boardRules.js` (`publish`). The newest row is what players
+-- read and accept; with none, the built-in text (`DEFAULT_BOARD_RULES`,
+-- `domains/markets/boardRules.js`) at `BOARD_RULES_BASE_VERSION`. Append-only:
+-- an edit is a new version, so what a player accepted stays on record.
+CREATE TABLE IF NOT EXISTS board_rules_texts (
+  version      INTEGER PRIMARY KEY,
+  heading      TEXT NOT NULL,
+  intro        TEXT NOT NULL,
+  sections     JSONB NOT NULL,
+  published_by TEXT,
+  published_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT board_rules_texts_version CHECK (version > 0),
+  CONSTRAINT board_rules_texts_heading CHECK (length(btrim(heading)) BETWEEN 1 AND 80),
+  CONSTRAINT board_rules_texts_intro CHECK (length(intro) <= 400),
+  CONSTRAINT board_rules_texts_sections CHECK (
+    jsonb_typeof(sections) = 'array' AND jsonb_array_length(sections) BETWEEN 1 AND 30)
+);
+CREATE OR REPLACE TRIGGER board_rules_texts_append_only
+  BEFORE UPDATE OR DELETE ON board_rules_texts FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
 CREATE TABLE IF NOT EXISTS promo_grants (
   grant_id                TEXT PRIMARY KEY,
   user_id                 TEXT NOT NULL,

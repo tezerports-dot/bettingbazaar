@@ -28,6 +28,10 @@ export const winners = (period: string, limit = 10): Promise<any> =>
 export const leaderboard = (period: string): Promise<any> =>
   apiClient.get(`/api/leaderboard/${period}`, DISPLAY);
 
+/** Whether an Android release is published to offer (`GET /api/app/android/available`). */
+export const androidAppAvailable = (): Promise<{ success?: boolean; available?: boolean }> =>
+  apiClient.get('/api/app/android/available');
+
 /** A crash in the UI, for the admin's error log. Best-effort: never throws. */
 export const reportCrash = (report: Record<string, unknown>): void => {
   apiClient.post('/api/internal/error-report', report).catch(() => {});
