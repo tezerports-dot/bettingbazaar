@@ -162,11 +162,11 @@ export async function sessionIsLive(token, decoded, login) {
  *
  *   STAFF     `otp` — a code from the authenticator app (owner, 2026-10-13).
  *             Always: there is no bootstrap, with or without a Telegram bot.
- *   MERCHANT  `tg` — the account's own Telegram.
- *   PLAYER    none: a player who switched approval on is asked for it AT the
- *             login.
+ *   MERCHANT  `tg` — the account's own Telegram sign-in, which IS the second
+ *   PLAYER    factor (owner, 2026-10-14): neither has a password, so a session
+ *             that does not say Telegram signed it in is one no door mints.
  */
-const SECOND_FACTOR = Object.freeze({ STAFF: 'otp', MERCHANT: 'tg' });
+const SECOND_FACTOR = Object.freeze({ STAFF: 'otp', MERCHANT: 'tg', PLAYER: 'tg' });
 
 /**
  * Does this session lack the second factor its account type owes?

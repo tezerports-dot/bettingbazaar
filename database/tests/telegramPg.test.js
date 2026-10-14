@@ -1,27 +1,28 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The one bot, the links it proves and the questions the Mini App answers
- * (Step 3, owner 2026-10-07), against a REAL PostgreSQL.
+ * The one bot, the links it proves and the "Continue with Telegram" sign-ins
+ * the Mini App answers (owner, 2026-10-13/14), against a REAL PostgreSQL.
  *
  * The properties here are the database's: one bot row; a link whose phone IS
  * the account's mobile and whose panel IS the account's type; one account per
  * Telegram account per panel; a signed Mini App string acted on once; a
- * challenge redeemed by exactly one of N racing polls; and a refusal that rolls
- * back everything it touched, the claim of the proof included.
+ * sign-in redeemed by exactly one of N racing polls, only at its own door; a
+ * first Verify that links (or makes) the account and books the referral in
+ * the same transaction; and a refusal that rolls back everything it touched,
+ * the claim of the proof included.
  *
  * Expiry is asserted on the READS: a sweep that is late must not make a
  * challenge usable.
  */
+import crypto from 'crypto';
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { createUser, getUser, newUserId } from '../repositories/users.js';
 import {
   getBot, getBotSecrets, saveBot,
   getLinkByUserId, getLinkByTelegramId, listLinksForTelegramUser,
-  enablePlayerTwoFactor,
-  createChallenge, getChallenge, redeemChallenge,
-  answerChallenge, telegramSignIn, signUpVerifiedPlayer, resetPasswordByContact,
-  sweepExpired,
+  createChallenge, getChallenge, redeemChallenge, redeemTicket,
+  answerChallenge, sweepExpired, DELIVERY,
 } from '../repositories/telegram.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -31,36 +32,48 @@ let seq = 0;
 const proof = () => ({ hash: `h${Date.now()}_${seq += 1}`, expiresAt: new Date(Date.now() + 300_000) });
 const tgUser = (id, over = {}) => ({ id, username: `u${id}`, firstName: `F${id}`, ...over });
 const contactOf = (user, phone) => ({ ...proof(), userId: user.id, phone });
+/** The number the asking browser shows, and the three the Mini App offers. */
+const MATCH = { number: 42, choices: [17, 42, 88] };
+const ticketOf = () => {
+  const ticket = crypto.randomBytes(32).toString('hex');
+  return { ticket, hash: crypto.createHash('sha256').update(ticket).digest('hex'), ttlSeconds: 120 };
+};
 
 async function account({ mobile = '9876543210', accountType = 'PLAYER', referredBy = null, ...over } = {}) {
   const userId = newUserId();
   await createUser({
-    userId, username: `acct${seq += 1}`, mobile, passwordHash: '$argon2id$fake',
+    userId, username: `acct${seq += 1}`, mobile,
     accountType, referredBy, referralCode: `RC${seq}`, ...over,
   });
   return userId;
 }
 
-async function challenge({ purpose = 'VERIFY', audience = 'PLAYER', userId = null, ttlSeconds = 300 } = {}) {
-  return createChallenge({ challengeId: `c${newUserId()}${seq += 1}`, purpose, audience, userId, ttlSeconds });
+async function challenge({ audience = 'PLAYER', ttlSeconds = 300, delivery = DELIVERY.MATCH } = {}) {
+  return createChallenge({
+    challengeId: `c${newUserId()}${seq += 1}`, audience, ttlSeconds,
+    delivery, match: delivery === DELIVERY.MATCH ? MATCH : null,
+  });
 }
 
-async function verify(userId, user, phone, audience = 'PLAYER') {
-  const ch = await challenge({ purpose: 'VERIFY', audience, userId });
-  return answerChallenge({
-    challengeId: ch.challengeId, decision: 'approve', telegramUser: user,
-    initData: proof(), contact: contactOf(user, phone),
-  });
+/** The Mini App's Verify on `ch`, with the right number unless told otherwise. */
+const approve = (ch, user, { phone = null, initData = proof(), pick = MATCH.number, ...over } = {}) => answerChallenge({
+  challengeId: ch.challengeId, decision: 'approve', telegramUser: user, initData,
+  contact: phone ? contactOf(user, phone) : null, pick, ...over,
+});
+
+/** A first Verify on `audience` by `user`, sharing the contact `phone`. */
+async function verify(user, phone, audience = 'PLAYER') {
+  return approve(await challenge({ audience }), user, { phone });
 }
 
 const count = async (table, where = 'TRUE', params = []) =>
   (await pgQuery(`SELECT count(*)::int AS n FROM ${table} WHERE ${where}`, params)).rows[0].n;
 
-describePg('Telegram, Step 3 (PostgreSQL)', () => {
+describePg('Telegram, Continue with Telegram (PostgreSQL)', () => {
   beforeAll(async () => { await applySchema(); });
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
-    await pgQuery(`TRUNCATE telegram_bot, telegram_links, telegram_challenges,
+    await pgQuery(`TRUNCATE telegram_bot, telegram_links, telegram_challenges, telegram_handoff_tickets,
                             telegram_init_data_uses, referral_earnings, users
                    RESTART IDENTITY CASCADE`);
   });
@@ -95,62 +108,66 @@ describePg('Telegram, Step 3 (PostgreSQL)', () => {
     });
   });
 
-  describe('verification at signup', () => {
-    it('links the account when the shared phone is its mobile, and books the joining number', async () => {
+  describe('the first Verify on a panel: the contact share', () => {
+    it('links the account whose mobile the shared phone is, and books the joining number', async () => {
       const id = await account();
-      const r = await verify(id, tgUser('111'), '9876543210');
-      expect(r).toMatchObject({ ok: true, kind: 'VERIFY', approved: true, verified: true, userId: id });
-      expect(await getLinkByUserId(id)).toMatchObject({ telegramUserId: '111', phone: '9876543210', twoFactor: false });
+      const r = await verify(tgUser('111'), '9876543210');
+      expect(r).toMatchObject({ ok: true, approved: true, verified: true, created: false, userId: id });
+      expect(await getLinkByUserId(id)).toMatchObject({ telegramUserId: '111', phone: '9876543210', audience: 'PLAYER' });
       expect((await getUser(id)).joiningNumber).toBeTruthy();
     });
 
-    it('refuses a contact on another number and leaves no claim, so the person can retry', async () => {
+    it('refuses a contact on a number with no account and leaves no claim, so the person can retry', async () => {
       const id = await account();
-      const ch = await challenge({ userId: id });
+      const ch = await challenge();
       const user = tgUser('111');
       const initData = proof();
-      const r = await answerChallenge({
-        challengeId: ch.challengeId, decision: 'approve', telegramUser: user,
-        initData, contact: contactOf(user, '9000000000'),
-      });
-      expect(r).toEqual({ ok: false, code: 'CONTACT_MISMATCH' });
+      const r = await approve(ch, user, { initData, phone: '9000000000' });
+      expect(r).toEqual({ ok: false, code: 'NO_ACCOUNT' });
       expect(await getLinkByUserId(id)).toBeNull();
       expect(await count('telegram_init_data_uses')).toBe(0);
       expect((await getChallenge(ch.challengeId)).status).toBe('PENDING');
       // The same initData, now with the right contact, goes through.
-      const ok = await answerChallenge({
-        challengeId: ch.challengeId, decision: 'approve', telegramUser: user,
-        initData, contact: contactOf(user, '9876543210'),
-      });
-      expect(ok.ok).toBe(true);
+      const ok = await approve(ch, user, { initData, phone: '9876543210' });
+      expect(ok).toMatchObject({ ok: true, userId: id });
     });
 
     it('refuses a contact that belongs to another Telegram account', async () => {
       const id = await account();
-      const ch = await challenge({ userId: id });
+      const ch = await challenge();
       const r = await answerChallenge({
-        challengeId: ch.challengeId, decision: 'approve', telegramUser: tgUser('111'),
+        challengeId: ch.challengeId, decision: 'approve', telegramUser: tgUser('111'), pick: MATCH.number,
         initData: proof(), contact: contactOf(tgUser('222'), '9876543210'),
       });
       expect(r.code).toBe('CONTACT_NOT_OWN');
+      expect(await getLinkByUserId(id)).toBeNull();
     });
 
     it('acts on a signed string once', async () => {
-      const id = await account();
+      await account();
       const user = tgUser('111');
       const initData = proof();
-      const ch = await challenge({ userId: id });
-      await answerChallenge({ challengeId: ch.challengeId, decision: 'approve', telegramUser: user, initData, contact: contactOf(user, '9876543210') });
-      const ch2 = await challenge({ purpose: 'LOGIN', userId: id });
-      const again = await answerChallenge({ challengeId: ch2.challengeId, decision: 'approve', telegramUser: user, initData });
+      expect((await approve(await challenge(), user, { initData, phone: '9876543210' })).ok).toBe(true);
+      const again = await approve(await challenge(), user, { initData });
       expect(again.code).toBe('INIT_DATA_REPLAYED');
     });
 
-    it('needs a contact to verify, even from the right Telegram account', async () => {
+    it('needs a contact from a Telegram account this panel has never seen', async () => {
       const id = await account();
-      const ch = await challenge({ userId: id });
-      const r = await answerChallenge({ challengeId: ch.challengeId, decision: 'approve', telegramUser: tgUser('111'), initData: proof() });
+      const r = await approve(await challenge(), tgUser('111'));
       expect(r.code).toBe('CONTACT_REQUIRED');
+      expect(await getLinkByUserId(id)).toBeNull();
+    });
+
+    it('a wrong number links nothing: the whole act rolls back, the claim of the proof included', async () => {
+      const id = await account();
+      const ch = await challenge();
+      const r = await approve(ch, tgUser('111'), { phone: '9876543210', pick: 17 });
+      expect(r.code).toBe('WRONG_NUMBER');
+      expect(await getLinkByUserId(id)).toBeNull();
+      expect((await getUser(id)).joiningNumber).toBeFalsy();
+      expect(await count('telegram_init_data_uses')).toBe(0);
+      expect((await getChallenge(ch.challengeId)).status).toBe('PENDING');
     });
 
     it('one Telegram account verifies one account per panel, and one per panel only', async () => {
@@ -158,288 +175,245 @@ describePg('Telegram, Step 3 (PostgreSQL)', () => {
       const merchant = await account({ mobile: '9876543210', accountType: 'MERCHANT' });
       const other = await account({ mobile: '9123456789' });
       const user = tgUser('111');
-      expect((await verify(player, user, '9876543210')).ok).toBe(true);
-      expect((await verify(merchant, user, '9876543210', 'MERCHANT')).ok).toBe(true);
-      // The other player's number is not this Telegram account's, so it is
-      // refused for that first; a forged phone match is the index's to refuse.
-      expect((await verify(other, user, '9123456789')).code).toBe('TELEGRAM_ALREADY_LINKED');
+      expect((await verify(user, '9876543210')).userId).toBe(player);
+      expect((await verify(user, '9876543210', 'MERCHANT')).userId).toBe(merchant);
+      // A Telegram account already linked on this panel signs in ITS account:
+      // another number's contact does not move it to a second player.
+      expect((await verify(user, '9123456789')).userId).toBe(player);
+      expect(await getLinkByUserId(other)).toBeNull();
       expect(await listLinksForTelegramUser('111')).toHaveLength(2);
-      expect((await getLinkByUserId(merchant)).twoFactor).toBe(true);
+      // And the index is the guarantee for any writer.
+      await expect(pgQuery(`INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone) VALUES ($1,'PLAYER','111','9123456789')`, [other]))
+        .rejects.toThrow(/telegram_links_one_per_panel/);
     });
 
-    it('the row refuses a phone that is not the mobile, a merchant link without 2FA, any staff link, and a link across panels', async () => {
+    it('the row refuses a phone that is not the mobile, any staff link, and a link across panels', async () => {
       const id = await account();
-      const merchant = await account({ mobile: '9222222222', accountType: 'MERCHANT' });
       const staff = await account({ mobile: '9111111111', accountType: 'STAFF' });
       await expect(pgQuery(`INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone) VALUES ($1,'PLAYER','9','9000000000')`, [id]))
         .rejects.toThrow(/telegram_link_phone_is_mobile|mobile/);
-      await expect(pgQuery(`INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor) VALUES ($1,'MERCHANT','9','9222222222',FALSE)`, [merchant]))
-        .rejects.toThrow(/telegram_links_merchant_two_factor/);
-      await expect(pgQuery(`INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor) VALUES ($1,'STAFF','9','9111111111',TRUE)`, [staff]))
+      await expect(pgQuery(`INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone) VALUES ($1,'STAFF','9','9111111111')`, [staff]))
         .rejects.toThrow(/telegram_links_audience_check/);
-      await expect(pgQuery(`INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor) VALUES ($1,'MERCHANT','9','9876543210',TRUE)`, [id]))
+      await expect(pgQuery(`INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone) VALUES ($1,'MERCHANT','9','9876543210')`, [id]))
         .rejects.toThrow(/telegram_links_account/);
+      expect(await count('telegram_links')).toBe(0);
     });
 
-    it('books level-1 and level-2 referral earnings at verification, never at signup', async () => {
+    it('books level-1 and level-2 referral earnings at verification, never before', async () => {
       const top = await account({ mobile: '9000000001' });
       const mid = await account({ mobile: '9000000002', referredBy: top });
-      await verify(top, tgUser('1'), '9000000001');
-      await verify(mid, tgUser('2'), '9000000002');
+      await verify(tgUser('1'), '9000000001');
+      await verify(tgUser('2'), '9000000002');
       const joiner = await account({ mobile: '9000000003', referredBy: mid });
       expect(await count('referral_earnings', 'source_user_id = $1', [joiner])).toBe(0);
-      await verify(joiner, tgUser('3'), '9000000003');
+      await verify(tgUser('3'), '9000000003');
       const { rows } = await pgQuery(`SELECT earner_id, level FROM referral_earnings WHERE source_user_id = $1 ORDER BY level`, [joiner]);
       expect(rows).toEqual([{ earner_id: mid, level: 1 }, { earner_id: top, level: 2 }]);
     });
 
-    it('a relink from the same Telegram account books nothing twice', async () => {
+    it('a later Verify from the same Telegram account books nothing twice', async () => {
       const top = await account({ mobile: '9000000001' });
       const joiner = await account({ mobile: '9000000003', referredBy: top });
-      await verify(joiner, tgUser('3'), '9000000003');
+      await verify(tgUser('3'), '9000000003');
       const number = (await getUser(joiner)).joiningNumber;
-      const again = await verify(joiner, tgUser('3'), '9000000003');
-      expect(again).toMatchObject({ ok: true, verified: false, relinked: false });
+      const again = await verify(tgUser('3'), '9000000003');
+      expect(again).toMatchObject({ ok: true, verified: false, relinked: false, userId: joiner });
       expect((await getUser(joiner)).joiningNumber).toBe(number);
       expect(await count('referral_earnings', 'source_user_id = $1', [joiner])).toBe(1);
     });
 
-    it('refuses a blocked or closed account', async () => {
-      const id = await account();
-      await pgQuery(`UPDATE users SET is_blocked = TRUE, block_reason = 'test', blocked_at = now() WHERE user_id = $1`, [id]);
-      expect((await verify(id, tgUser('1'), '9876543210')).code).toBe('ACCOUNT_BLOCKED');
+    it('refuses a blocked or closed account, and links neither', async () => {
+      const blocked = await account();
+      await pgQuery(`UPDATE users SET is_blocked = TRUE, block_reason = 'test', blocked_at = now() WHERE user_id = $1`, [blocked]);
+      expect((await verify(tgUser('1'), '9876543210')).code).toBe('ACCOUNT_BLOCKED');
+      const closed = await account({ mobile: '9123456789' });
+      await pgQuery(`UPDATE users SET status = 'DELETED', deleted_at = now(), deleted_by = 'admin-test' WHERE user_id = $1`, [closed]);
+      expect((await verify(tgUser('2'), '9123456789')).code).toBe('ACCOUNT_CLOSED');
+      expect(await getLinkByUserId(blocked)).toBeNull();
+      expect(await getLinkByUserId(closed)).toBeNull();
     });
   });
 
   describe('challenges', () => {
     it('ten racing polls redeem one approval once', async () => {
       const id = await account();
-      const ch = await challenge({ userId: id });
-      await answerChallenge({ challengeId: ch.challengeId, decision: 'approve', telegramUser: tgUser('1'), initData: proof(), contact: contactOf(tgUser('1'), '9876543210') });
+      const ch = await challenge();
+      expect((await approve(ch, tgUser('1'), { phone: '9876543210' })).ok).toBe(true);
       const polls = await Promise.all(Array.from({ length: 10 }, () =>
-        redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER', purposes: ['VERIFY', 'LOGIN'] })));
-      expect(polls.filter((p) => p.ok)).toHaveLength(1);
+        redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER' })));
+      expect(polls.filter((p) => p.ok)).toEqual([{ ok: true, userId: id }]);
       expect(polls.filter((p) => !p.ok).every((p) => p.state === 'EXPIRED')).toBe(true);
     });
 
     it('a pending challenge says PENDING, a denied one DENIED, and neither redeems', async () => {
-      const id = await account();
-      const ch = await challenge({ purpose: 'LOGIN', userId: id });
-      expect(await redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER', purposes: ['LOGIN'] }))
+      await account();
+      const ch = await challenge();
+      expect(await redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER' }))
         .toEqual({ ok: false, state: 'PENDING' });
-      await answerChallenge({ challengeId: ch.challengeId, decision: 'deny', telegramUser: tgUser('1'), initData: proof() });
-      expect(await redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER', purposes: ['LOGIN'] }))
+      const denied = await answerChallenge({ challengeId: ch.challengeId, decision: 'deny', telegramUser: tgUser('1'), initData: proof() });
+      expect(denied).toMatchObject({ ok: true, approved: false });
+      expect(await redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER' }))
         .toEqual({ ok: false, state: 'DENIED' });
     });
 
-    it('is redeemed only at its own door, for its own purposes and account', async () => {
+    it('is redeemed only at its own door, and only by its own delivery', async () => {
       const id = await account();
-      const other = await account({ mobile: '9123456789' });
-      const ch = await challenge({ userId: id });
-      await answerChallenge({ challengeId: ch.challengeId, decision: 'approve', telegramUser: tgUser('1'), initData: proof(), contact: contactOf(tgUser('1'), '9876543210') });
-      expect((await redeemChallenge({ challengeId: ch.challengeId, audience: 'MERCHANT', purposes: ['VERIFY'] })).ok).toBe(false);
-      expect((await redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER', purposes: ['TELEGRAM_LOGIN'] })).ok).toBe(false);
-      expect((await redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER', purposes: ['VERIFY'], userId: other })).ok).toBe(false);
-      expect((await redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER', purposes: ['VERIFY'], userId: id })).ok).toBe(true);
+      const ch = await challenge();
+      await approve(ch, tgUser('1'), { phone: '9876543210' });
+      expect((await redeemChallenge({ challengeId: ch.challengeId, audience: 'MERCHANT' })).ok).toBe(false);
+      expect(await redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER' })).toEqual({ ok: true, userId: id });
+
+      // A HANDOFF sign-in is never spent by a poll: only its ticket, once, at its door.
+      const handoff = await challenge({ delivery: DELIVERY.HANDOFF });
+      const t = ticketOf();
+      expect((await approve(handoff, tgUser('1'), { pick: null, ticket: t })).ok).toBe(true);
+      expect(await redeemChallenge({ challengeId: handoff.challengeId, audience: 'PLAYER' }))
+        .toEqual({ ok: false, state: 'APPROVED' });
+      // A ticket presented at another door is spent and opens nothing.
+      expect(await redeemTicket({ ticketHash: t.hash, audience: 'MERCHANT' })).toEqual({ ok: false });
+      expect(await redeemTicket({ ticketHash: t.hash, audience: 'PLAYER' })).toEqual({ ok: false });
+
+      const handoff2 = await challenge({ delivery: DELIVERY.HANDOFF });
+      const t2 = ticketOf();
+      await approve(handoff2, tgUser('1'), { pick: null, ticket: t2 });
+      const both = await Promise.all([1, 2, 3].map(() => redeemTicket({ ticketHash: t2.hash, audience: 'PLAYER' })));
+      expect(both.filter((r) => r.ok)).toEqual([{ ok: true, userId: id }]);
     });
 
     it('an expired challenge can be neither answered nor redeemed, before any sweep', async () => {
       const id = await account();
-      const ch = await challenge({ userId: id });
+      const ch = await challenge();
       await pgQuery(`UPDATE telegram_challenges SET expires_at = now() - interval '1 second' WHERE challenge_id = $1`, [ch.challengeId]);
-      const r = await answerChallenge({ challengeId: ch.challengeId, decision: 'approve', telegramUser: tgUser('1'), initData: proof(), contact: contactOf(tgUser('1'), '9876543210') });
+      const r = await approve(ch, tgUser('1'), { phone: '9876543210' });
       expect(r.code).toBe('CHALLENGE_EXPIRED');
       expect(await getLinkByUserId(id)).toBeNull();
+
+      const approved = await challenge();
+      expect((await approve(approved, tgUser('1'), { phone: '9876543210' })).ok).toBe(true);
+      await pgQuery(`UPDATE telegram_challenges SET expires_at = now() - interval '1 second' WHERE challenge_id = $1`, [approved.challengeId]);
+      expect(await redeemChallenge({ challengeId: approved.challengeId, audience: 'PLAYER' }))
+        .toEqual({ ok: false, state: 'EXPIRED' });
     });
 
     it('an approval re-dates the challenge to the short redeem window', async () => {
-      const id = await account();
-      const ch = await challenge({ userId: id, ttlSeconds: 900 });
-      await answerChallenge({ challengeId: ch.challengeId, decision: 'approve', telegramUser: tgUser('1'), initData: proof(), contact: contactOf(tgUser('1'), '9876543210'), redeemWindowSeconds: 60 });
+      await account();
+      const ch = await challenge({ ttlSeconds: 900 });
+      await approve(ch, tgUser('1'), { phone: '9876543210', redeemWindowSeconds: 60 });
       const { rows } = await pgQuery(`SELECT extract(epoch FROM expires_at - now())::int AS s FROM telegram_challenges WHERE challenge_id = $1`, [ch.challengeId]);
       expect(rows[0].s).toBeLessThanOrEqual(60);
     });
 
-    it('a sign-in approval from the linked Telegram needs no contact; from a new one it needs a matching contact, which relinks', async () => {
+    it('the linked Telegram needs no contact; a new one needs a matching contact, which relinks', async () => {
       const id = await account();
-      await verify(id, tgUser('1'), '9876543210');
-      const ch = await challenge({ purpose: 'LOGIN', userId: id });
-      expect((await answerChallenge({ challengeId: ch.challengeId, decision: 'approve', telegramUser: tgUser('1'), initData: proof() })).ok).toBe(true);
+      await verify(tgUser('1'), '9876543210');
+      expect(await approve(await challenge(), tgUser('1'))).toMatchObject({ ok: true, userId: id });
 
-      const ch2 = await challenge({ purpose: 'LOGIN', userId: id });
-      expect((await answerChallenge({ challengeId: ch2.challengeId, decision: 'approve', telegramUser: tgUser('2'), initData: proof() })).code)
-        .toBe('CONTACT_REQUIRED');
-      const moved = await answerChallenge({ challengeId: ch2.challengeId, decision: 'approve', telegramUser: tgUser('2'), initData: proof(), contact: contactOf(tgUser('2'), '9876543210') });
-      expect(moved).toMatchObject({ ok: true, relinked: true });
+      const ch2 = await challenge();
+      expect((await approve(ch2, tgUser('2'))).code).toBe('CONTACT_REQUIRED');
+      const moved = await approve(ch2, tgUser('2'), { phone: '9876543210' });
+      expect(moved).toMatchObject({ ok: true, relinked: true, verified: false, userId: id });
       const link = await getLinkByUserId(id);
       expect(link.telegramUserId).toBe('2');
       expect(new Date(link.linkedAt).getTime()).toBeGreaterThanOrEqual(new Date(link.verifiedAt).getTime());
+      expect(await getLinkByTelegramId('1', 'PLAYER')).toBeNull();
     });
 
-    it('a player turns Telegram approval on directly, and off only through an approved challenge', async () => {
-      const id = await account();
-      await verify(id, tgUser('1'), '9876543210');
-      expect((await enablePlayerTwoFactor(id)).twoFactor).toBe(true);
-      const ch = await challenge({ purpose: 'TWO_FACTOR_OFF', userId: id });
-      expect((await getLinkByUserId(id)).twoFactor).toBe(true);
-      await answerChallenge({ challengeId: ch.challengeId, decision: 'approve', telegramUser: tgUser('1'), initData: proof() });
-      expect((await getLinkByUserId(id)).twoFactor).toBe(false);
-    });
-
-    it('a merchant\'s Telegram approval cannot be switched off', async () => {
-      const id = await account({ accountType: 'MERCHANT' });
-      await verify(id, tgUser('1'), '9876543210', 'MERCHANT');
-      expect(await enablePlayerTwoFactor(id)).toBeNull();
-      await expect(pgQuery(`UPDATE telegram_links SET two_factor = FALSE WHERE user_id = $1`, [id]))
-        .rejects.toThrow(/telegram_links_merchant_two_factor/);
-    });
-  });
-
-  describe('Login with Telegram', () => {
-    it('inside the Mini App: finds the linked account of THIS panel only', async () => {
-      const id = await account();
-      await verify(id, tgUser('1'), '9876543210');
-      expect(await telegramSignIn({ audience: 'PLAYER', telegramUser: tgUser('1'), initData: proof() }))
-        .toEqual({ ok: true, userId: id });
-      expect((await telegramSignIn({ audience: 'MERCHANT', telegramUser: tgUser('1'), initData: proof() })).code)
-        .toBe('NO_LINKED_ACCOUNT');
-    });
-
-    it('for a merchant, writes an APPROVED challenge the password then spends, bound to that account', async () => {
-      const merchant = await account({ mobile: '9111111111', accountType: 'MERCHANT' });
-      await verify(merchant, tgUser('7'), '9111111111', 'MERCHANT');
-      const r = await telegramSignIn({ audience: 'MERCHANT', telegramUser: tgUser('7'), initData: proof(), challengeId: 'cmerch1' });
-      expect(r.ok).toBe(true);
-      const other = await account({ mobile: '9222222222', accountType: 'MERCHANT' });
-      expect((await redeemChallenge({ challengeId: 'cmerch1', audience: 'MERCHANT', purposes: ['TELEGRAM_LOGIN'], userId: other })).ok).toBe(false);
-      expect((await redeemChallenge({ challengeId: 'cmerch1', audience: 'MERCHANT', purposes: ['TELEGRAM_LOGIN'], userId: merchant })).ok).toBe(true);
-    });
-
-    it('refuses the STAFF audience in every writer: staff have no Telegram', async () => {
-      const staff = await account({ mobile: '9111111111', accountType: 'STAFF', isAdmin: true });
-      await expect(verify(staff, tgUser('7'), '9111111111', 'STAFF')).rejects.toThrow(/audience/i);
-      await expect(telegramSignIn({ audience: 'STAFF', telegramUser: tgUser('7'), initData: proof(), challengeId: 'cstaff1' }))
-        .rejects.toThrow(/audience/i);
-      await expect(pgQuery(`INSERT INTO telegram_challenges (challenge_id, purpose, audience, status, expires_at) VALUES ('cstaff2','TELEGRAM_LOGIN','STAFF','PENDING', now() + interval '5 minutes')`))
-        .rejects.toThrow(/telegram_challenges_audience_check|violates/);
-    });
-
-    it('outside Telegram: an unbound challenge is bound to the account the Mini App proves', async () => {
-      const id = await account();
-      await verify(id, tgUser('1'), '9876543210');
-      const ch = await challenge({ purpose: 'TELEGRAM_LOGIN' });
-      const r = await answerChallenge({ challengeId: ch.challengeId, decision: 'approve', telegramUser: tgUser('1'), initData: proof() });
-      expect(r).toMatchObject({ ok: true, userId: id });
-      expect(await redeemChallenge({ challengeId: ch.challengeId, audience: 'PLAYER', purposes: ['TELEGRAM_LOGIN'] }))
-        .toMatchObject({ ok: true, userId: id });
+    it('a Telegram account linked on one panel is a stranger on the other', async () => {
+      await account();
+      await verify(tgUser('1'), '9876543210');
+      expect((await approve(await challenge({ audience: 'MERCHANT' }), tgUser('1'))).code).toBe('CONTACT_REQUIRED');
+      expect(await getLinkByTelegramId('1', 'MERCHANT')).toBeNull();
     });
 
     it('an unlinked Telegram account must share a contact, and a number with no account is refused', async () => {
-      const ch = await challenge({ purpose: 'TELEGRAM_LOGIN' });
-      expect((await answerChallenge({ challengeId: ch.challengeId, decision: 'approve', telegramUser: tgUser('9'), initData: proof() })).code)
-        .toBe('CONTACT_REQUIRED');
-      expect((await answerChallenge({ challengeId: ch.challengeId, decision: 'approve', telegramUser: tgUser('9'), initData: proof(), contact: contactOf(tgUser('9'), '9000000009') })).code)
-        .toBe('NO_ACCOUNT');
+      const ch = await challenge();
+      expect((await approve(ch, tgUser('9'))).code).toBe('CONTACT_REQUIRED');
+      expect((await approve(ch, tgUser('9'), { phone: '9000000009' })).code).toBe('NO_ACCOUNT');
+      expect(await count('users')).toBe(0);
+    });
+
+    it('refuses the STAFF audience in every writer and reader: staff have no Telegram', async () => {
+      await account({ mobile: '9111111111', accountType: 'STAFF', isAdmin: true, passwordHash: '$argon2id$fake' });
+      await expect(challenge({ audience: 'STAFF' })).rejects.toThrow(/audience/i);
+      await expect(redeemChallenge({ challengeId: 'x', audience: 'STAFF' })).rejects.toThrow(/audience/i);
+      await expect(redeemTicket({ ticketHash: 'a'.repeat(64), audience: 'STAFF' })).rejects.toThrow(/audience/i);
+      await expect(getLinkByTelegramId('7', 'STAFF')).rejects.toThrow(/audience/i);
+      await expect(answerChallenge({
+        challengeId: 'cstaff0', decision: 'approve', telegramUser: tgUser('7'), initData: proof(),
+        contact: contactOf(tgUser('7'), '9111111111'), open: { audience: 'STAFF', ttlSeconds: 300 },
+      })).rejects.toThrow(/audience/i);
+      await expect(pgQuery(`INSERT INTO telegram_challenges (challenge_id, audience, status, expires_at, delivery) VALUES ('cstaff2','STAFF','PENDING', now() + interval '5 minutes', 'HANDOFF')`))
+        .rejects.toThrow(/telegram_challenges_audience_check|violates/);
+      expect(await count('telegram_challenges')).toBe(0);
+      expect(await count('telegram_init_data_uses')).toBe(0);
     });
   });
 
-  describe('signup inside the Mini App', () => {
-    it('creates the account already verified, its mobile taken from Telegram, with the referral booked', async () => {
+  describe('signup is the first Verify', () => {
+    it('makes the player already verified, its mobile taken from Telegram, with the referral booked', async () => {
       const ref = await account({ mobile: '9000000001' });
-      await verify(ref, tgUser('1'), '9000000001');
-      const user = tgUser('5');
-      const r = await signUpVerifiedPlayer({
-        userId: newUserId(), username: 'newp', passwordHash: '$argon2id$x', referralCode: 'NEWP0001',
-        referredBy: ref, telegramUser: user, initData: proof(), contact: contactOf(user, '9555555555'),
+      await verify(tgUser('1'), '9000000001');
+      const userId = newUserId();
+      const r = await approve(await challenge(), tgUser('5'), {
+        phone: '9555555555', signup: { userId, referralCode: 'NEWP0001', referredBy: ref },
       });
-      expect(r.ok).toBe(true);
-      expect(await getUser(r.userId)).toMatchObject({ mobile: '9555555555', referredBy: ref });
-      expect(await getLinkByTelegramId('5', 'PLAYER')).toMatchObject({ userId: r.userId });
-      expect(await count('referral_earnings', 'source_user_id = $1', [r.userId])).toBe(1);
+      expect(r).toMatchObject({ ok: true, created: true, verified: true, userId });
+      expect(await getUser(userId)).toMatchObject({ mobile: '9555555555', referredBy: ref, accountType: 'PLAYER' });
+      expect(await getLinkByTelegramId('5', 'PLAYER')).toMatchObject({ userId });
+      expect(await count('referral_earnings', 'source_user_id = $1', [userId])).toBe(1);
+      const { rows } = await pgQuery('SELECT password_hash FROM users WHERE user_id = $1', [userId]);
+      expect(rows[0].password_hash).toBeNull();
     });
 
-    it('a taken mobile is refused and nothing is left behind', async () => {
-      await account({ mobile: '9555555555' });
-      const user = tgUser('5');
-      const r = await signUpVerifiedPlayer({
-        userId: newUserId(), username: 'newp', passwordHash: '$argon2id$x', referralCode: 'NEWP0002',
-        telegramUser: user, initData: proof(), contact: contactOf(user, '9555555555'),
+    it('makes a merchant an application waiting for an admin, linked', async () => {
+      const userId = newUserId();
+      // Its own number: a merchants row outlives the TRUNCATE above, so it is removed in the finally.
+      const mobile = `96${String(Date.now()).slice(-8)}`;
+      try {
+        const r = await approve(await challenge({ audience: 'MERCHANT' }), tgUser('6'), {
+          phone: mobile, signup: { userId },
+        });
+        expect(r).toMatchObject({ ok: true, created: true, userId, panel: 'MERCHANT' });
+        expect((await getUser(userId)).accountType).toBe('MERCHANT');
+        const { rows } = await pgQuery('SELECT status FROM merchants WHERE user_id = $1', [userId]);
+        expect(rows[0].status).toBe('PENDING');
+        expect(await getLinkByTelegramId('6', 'MERCHANT')).toMatchObject({ userId });
+      } finally {
+        await pgQuery('DELETE FROM merchants WHERE user_id = $1', [userId]);
+      }
+    });
+
+    it('a number that already has an account links that account and makes no second one', async () => {
+      const existing = await account({ mobile: '9555555555' });
+      const r = await approve(await challenge(), tgUser('5'), {
+        phone: '9555555555', signup: { userId: newUserId(), referralCode: 'NEWP0002' },
       });
-      expect(r.code).toBe('MOBILE_TAKEN');
+      expect(r).toMatchObject({ ok: true, created: false, userId: existing });
       expect(await count('users')).toBe(1);
-      expect(await count('telegram_init_data_uses')).toBe(0);
     });
-  });
 
-  describe('password reset by contact', () => {
-    const hashOf = async (id) => (await pgQuery('SELECT password_hash FROM users WHERE user_id = $1', [id])).rows[0].password_hash;
-    const cutoffOf = async (id) => (await getUser(id)).sessionsValidFrom;
-    const reset = (over = {}) => {
-      const user = over.telegramUser || tgUser('1');
-      return resetPasswordByContact({
-        panel: 'PLAYER', telegramUser: user, initData: proof(), contact: contactOf(user, '9876543210'),
-        passwordHash: '$argon2id$new', validFrom: new Date(), ...over,
+    it('a refused signup leaves nothing behind: no account, no link, no claim', async () => {
+      const userId = newUserId();
+      const r = await approve(await challenge(), tgUser('5'), {
+        phone: '9555555555', pick: 88, signup: { userId, referralCode: 'NEWP0003' },
       });
-    };
-
-    it('sets the password and the session cutoff of the account of that mobile on that panel, verifying it on the way', async () => {
-      const id = await account();
-      const validFrom = new Date();
-      expect(await reset({ validFrom })).toMatchObject({ ok: true, userId: id, verified: true });
-      expect(await hashOf(id)).toBe('$argon2id$new');
-      expect(new Date(await cutoffOf(id)).getTime()).toBe(validFrom.getTime());
-      expect(await getLinkByUserId(id)).toMatchObject({ telegramUserId: '1', phone: '9876543210' });
-    });
-
-    it('acts once on one proof: the same initData cannot reset twice', async () => {
-      const id = await account();
-      const initData = proof();
-      expect((await reset({ initData })).ok).toBe(true);
-      const again = await reset({ initData, passwordHash: '$argon2id$second' });
-      expect(again.ok).toBe(false);
-      expect(await hashOf(id)).toBe('$argon2id$new');
-    });
-
-    it('a panel with no account on that mobile is refused, and nothing is spent or changed', async () => {
-      const id = await account();
-      expect((await reset({ panel: 'MERCHANT' })).code).toBe('NO_ACCOUNT');
-      expect(await hashOf(id)).toBe('$argon2id$fake');
+      expect(r.code).toBe('WRONG_NUMBER');
+      expect(await getUser(userId)).toBeNull();
+      expect(await count('telegram_links')).toBe(0);
       expect(await count('telegram_init_data_uses')).toBe(0);
-      expect(await getLinkByUserId(id)).toBeNull();
-    });
-
-    it("a player's share never reaches the staff account on the same mobile (§33.5)", async () => {
-      const player = await account();
-      const staff = await account({ accountType: 'STAFF', isAdmin: true });
-      expect((await reset()).userId).toBe(player);
-      expect(await hashOf(player)).toBe('$argon2id$new');
-      expect(await hashOf(staff)).toBe('$argon2id$fake');
-      expect(await cutoffOf(staff)).toBeFalsy();
-    });
-
-    it("refuses a contact that is not the opener's own", async () => {
-      const id = await account();
-      const r = await reset({ contact: contactOf(tgUser('2'), '9876543210') });
-      expect(r.code).toBe('CONTACT_NOT_OWN');
-      expect(await hashOf(id)).toBe('$argon2id$fake');
-    });
-
-    it('is refused without a hash or a cutoff: a reset that evicted nobody would be a gesture', async () => {
-      await account();
-      await expect(reset({ passwordHash: '' })).rejects.toThrow(/passwordHash/);
-      await expect(reset({ validFrom: null })).rejects.toThrow(/validFrom/);
     });
   });
 
   describe('the sweep', () => {
-    it('reclaims expired proofs and day-old challenges, and leaves live ones', async () => {
+    it('reclaims expired proofs, lapsed tickets and day-old challenges, and leaves live ones', async () => {
       await pgQuery(`INSERT INTO telegram_init_data_uses (hash, expires_at) VALUES ('old', now() - interval '1 second'), ('live', now() + interval '5 minutes')`);
-      const id = await account();
-      const old = await challenge({ userId: id });
+      const old = await challenge();
       await pgQuery(`UPDATE telegram_challenges SET expires_at = now() - interval '25 hours' WHERE challenge_id = $1`, [old.challengeId]);
-      const live = await challenge({ userId: id });
+      const live = await challenge();
+      await pgQuery(`INSERT INTO telegram_handoff_tickets (ticket_hash, challenge_id, expires_at) VALUES ($1, $2, now() - interval '1 second')`,
+        [ticketOf().hash, live.challengeId]);
       const swept = await sweepExpired();
-      expect(swept).toEqual({ challenges: 1, initDataUses: 1 });
+      expect(swept).toEqual({ challenges: 1, initDataUses: 1, tickets: 1 });
       expect(await count('telegram_init_data_uses')).toBe(1);
       expect(await getChallenge(live.challengeId)).toBeTruthy();
     });
@@ -448,20 +422,18 @@ describePg('Telegram, Step 3 (PostgreSQL)', () => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Signup: a FORM, and nothing else.
+// The player writer behind the first Verify.
 //
-// `createAccountFromSignup` takes what a person typed — the mobile on their
-// Telegram account and a password — and writes the account. There is no
-// Aadhaar (KYC removed, owner 2026-10-02). No Telegram identity is created
-// here, by design: the contact share proves the number AFTERWARDS, and an
-// identity written at signup would be an unproven one that the gate would then
-// have to distinguish from a proven one.
+// `createAccountFromSignup` writes a player from the mobile Telegram proved,
+// inside the approving transaction (`answerChallenge`). There is no password
+// and no Aadhaar (owner, 2026-10-02 and 2026-10-14). It writes no Telegram link
+// itself: the approval links the account in the same transaction.
 // ─────────────────────────────────────────────────────────────────────────────
 import { createAccountFromSignup } from '../repositories/identity.js';
 
 const signup = (over = {}) => ({
   userId: newUserId(), mobile: '9990001111', username: 'newplayer',
-  passwordHash: '$argon2id$fake', referralCode: 'MYCODE01', ...over,
+  referralCode: 'MYCODE01', ...over,
 });
 
 describePg('signup (PostgreSQL)', () => {
@@ -477,7 +449,7 @@ describePg('signup (PostgreSQL)', () => {
     expect(await getUser(r.userId)).toMatchObject({ mobile: '9990001111', status: 'ACTIVE' });
   });
 
-  it('creates NO Telegram link — that is the next step, and it is separate', async () => {
+  it('creates NO Telegram link by itself — the approval that called it links it', async () => {
     const r = await createAccountFromSignup(signup());
     expect(await getLinkByUserId(r.userId)).toBeNull();
     const { rows } = await pgQuery('SELECT count(*)::int AS n FROM telegram_links');
@@ -493,17 +465,18 @@ describePg('signup (PostgreSQL)', () => {
     expect((await getUser(r.userId)).joiningNumber).toBeFalsy();
   });
 
-  it('sets a password hash, because the form is now the door', async () => {
+  it('writes no password: a player signs in with Telegram alone', async () => {
     const r = await createAccountFromSignup(signup());
     const { rows } = await pgQuery('SELECT password_hash FROM users WHERE user_id = $1', [r.userId]);
-    expect(rows[0].password_hash).toBe('$argon2id$fake');
+    expect(rows[0].password_hash).toBeNull();
   });
 
-  it('refuses to write an account with no password at all', async () => {
-    // A row with a NULL hash would be an account nobody can sign into and
-    // nothing would ever say so. Refused at the boundary rather than written.
-    await expect(createAccountFromSignup(signup({ passwordHash: null })))
-      .rejects.toThrow(/passwordHash/);
+  it('the row refuses a password on any account but staff', async () => {
+    const r = await createAccountFromSignup(signup());
+    await expect(pgQuery(`UPDATE users SET password_hash = '$argon2id$x' WHERE user_id = $1`, [r.userId]))
+      .rejects.toThrow(/users_password_staff_only/);
+    const { rows } = await pgQuery('SELECT password_hash FROM users WHERE user_id = $1', [r.userId]);
+    expect(rows[0].password_hash).toBeNull();
   });
 
   it('refuses a second account on one mobile, and leaves nothing behind', async () => {

@@ -818,20 +818,13 @@ export async function deleteMerchant(merchantId) {
  * All three rows commit together or none of them do, so the half-created
  * merchant is not a state that exists and the login path has nothing to repair.
  *
+ * The login has no password (owner, 2026-10-14): a merchant signs in with
+ * "Continue with Telegram", and the first contact share links this account.
+ *
  * @returns {{ok:true, merchant, userId}}
  *          {{ok:false, reason:'MOBILE_TAKEN'|'CREDENTIALS_TAKEN'}}
  */
-export async function createMerchantAccount({
-  userId, username, mobile, email = null, passwordHash,
-  currency = 'INR', bankDetails = null, usdtAddressTrc20 = null, usdtAddressBep20 = null,
-  // A MERCHANT ACCOUNT (owner, 2026-10-11): its DIRECT team is created in this
-  // same transaction (`createDirectTeamWithin`), so there is no instant at
-  // which it is a merchant without its pool's team.
-  direct = false,
-}) {
-  if (!mobile) throw new Error('createMerchantAccount requires a mobile');
-  if (!passwordHash) throw new Error('createMerchantAccount requires a passwordHash');
-
+export async function createMerchantAccount(fields) {
   const pool = await getPool();
   if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
   const client = await connectGuarded(pool);
@@ -839,62 +832,9 @@ export async function createMerchantAccount({
 
   try {
     await client.query('BEGIN');
-
-    // The account. `ON CONFLICT DO NOTHING` on (mobile, account_type), so a
-    // second MERCHANT application on a registered number is REFUSED by the
-    // index rather than by a prior lookup two applicants can both pass — and a
-    // number that already holds a player or staff account is no longer a reason
-    // to refuse a merchant one.
-    // NO `email` column here. `users.email` was removed with the player email
-    // (CLAUDE.md §2: "there are none beyond the mobile"), and this INSERT kept
-    // naming it — so EVERY merchant signup threw `column "email" of relation
-    // "users" does not exist`, was caught, and answered "Signup failed. Please
-    // try again." No merchant could ever self-register, and the message named
-    // nothing an applicant or support could act on.
-    //
-    // The merchant's own email is a different thing and still stored, on
-    // `merchants` — §2 says so explicitly, and `createMerchant` below takes it.
-    //
-    // ── 'MERCHANT', and the conflict target moved with it ─────────────────
-    // A mobile is unique PER ACCOUNT TYPE now (2026-09-24), so `ON CONFLICT
-    // (mobile)` matches no constraint at all and this INSERT throws — which the
-    // catch below turns into "Signup failed. Please try again." for every
-    // applicant, exactly the way the `email` column did before it.
-    //
-    // The type itself is the load-bearing half. Without it this row is written
-    // as a PLAYER, and the player login door — which scopes its read by type —
-    // would admit a merchant signing in with their merchant password. The three
-    // panels are separate accounts by the owner's decision; this is where the
-    // merchant one says so.
-    const account = await client.query(
-      `INSERT INTO users (user_id, username, mobile, password_hash, status,
-                          roles, account_type)
-       VALUES ($1, $2, $3, $4, 'ACTIVE', ARRAY['merchant'], 'MERCHANT')
-       ON CONFLICT (mobile, account_type) DO NOTHING
-       RETURNING user_id`,
-      [String(userId), username ?? '', String(mobile), passwordHash],
-    );
-    if (!account.rows.length) {
-      await client.query('ROLLBACK');
-      return { ok: false, reason: 'MOBILE_TAKEN' };
-    }
-    const uid = account.rows[0].user_id;
-
-    const merchant = await createMerchant({
-      merchantId: newMerchantId(), userId: uid,
-      // Never the mobile: a name is shown to other people, a number is not.
-      name: username || 'Member',
-      username, mobile, email,
-      currency, status: 'PENDING', bankDetails, usdtAddressTrc20, usdtAddressBep20,
-      client,
-    });
-    if (direct) {
-      const team = await createDirectTeamWithin(client, { merchantId: merchant.merchantId, name: merchant.name });
-      if (!team.ok) throw new Error(`createMerchantAccount: merchant account refused (${team.reason})`);
-    }
-
-    await client.query('COMMIT');
-    return { ok: true, merchant, userId: uid };
+    const made = await createMerchantAccountWithin(client, fields);
+    await client.query(made.ok ? 'COMMIT' : 'ROLLBACK');
+    return made;
   } catch (error) {
     failure = error;
     try { await client.query('ROLLBACK'); } catch { /* already unwound */ }
@@ -903,11 +843,6 @@ export async function createMerchantAccount({
     // because "signup failed" tells an applicant nothing they can act on.
     if (error.code === '23505') {
       return { ok: false, reason: 'CREDENTIALS_TAKEN', constraint: error.constraint };
-    }
-    // An account number that is a mobile number (schema.sql, Step 2d): named
-    // for the same reason.
-    if (error.code === '23514' && error.constraint === 'merchants_bank_account_not_a_mobile') {
-      return { ok: false, reason: 'ACCOUNT_IS_A_MOBILE' };
     }
     // A username that is, or carries, a mobile number (schema.sql, Step 2f):
     // the name is shown to other people.
@@ -918,6 +853,54 @@ export async function createMerchantAccount({
   } finally {
     client.release(failure ?? undefined);
   }
+}
+
+/**
+ * `createMerchantAccount`'s rows, inside the caller's transaction: the merchant
+ * application "Continue with Telegram" makes is written in the transaction that
+ * approves the sign-in (`telegram.answerChallenge`). A taken mobile is an
+ * answer (`ON CONFLICT DO NOTHING`); any other refusal throws, and the caller's
+ * transaction rolls back with it.
+ */
+export async function createMerchantAccountWithin(client, {
+  userId, username, mobile, email = null,
+  currency = 'INR', bankDetails = null, usdtAddressTrc20 = null, usdtAddressBep20 = null,
+  // A MERCHANT ACCOUNT (owner, 2026-10-11): its DIRECT team is created in this
+  // same transaction (`createDirectTeamWithin`), so there is no instant at
+  // which it is a merchant without its pool's team.
+  direct = false,
+}) {
+  if (!mobile) throw new Error('createMerchantAccount requires a mobile');
+
+  // The account. `ON CONFLICT DO NOTHING` on (mobile, account_type), so a
+  // second MERCHANT application on a registered number is REFUSED by the
+  // index rather than by a prior lookup two applicants can both pass — and a
+  // number that already holds a player or staff account is no longer a reason
+  // to refuse a merchant one. 'MERCHANT', stated: without it the row is a
+  // PLAYER, and the player door would admit it.
+  const account = await client.query(
+    `INSERT INTO users (user_id, username, mobile, status, roles, account_type)
+     VALUES ($1, $2, $3, 'ACTIVE', ARRAY['merchant'], 'MERCHANT')
+     ON CONFLICT (mobile, account_type) DO NOTHING
+     RETURNING user_id`,
+    [String(userId), username ?? '', String(mobile)],
+  );
+  if (!account.rows.length) return { ok: false, reason: 'MOBILE_TAKEN' };
+  const uid = account.rows[0].user_id;
+
+  const merchant = await createMerchant({
+    merchantId: newMerchantId(), userId: uid,
+    // Never the mobile: a name is shown to other people, a number is not.
+    name: username || 'Member',
+    username, mobile, email,
+    currency, status: 'PENDING', bankDetails, usdtAddressTrc20, usdtAddressBep20,
+    client,
+  });
+  if (direct) {
+    const team = await createDirectTeamWithin(client, { merchantId: merchant.merchantId, name: merchant.name });
+    if (!team.ok) throw new Error(`createMerchantAccount: merchant account refused (${team.reason})`);
+  }
+  return { ok: true, merchant, userId: uid };
 }
 
 /**

@@ -157,24 +157,25 @@ exported constants. `SystemConfig.x` lives in `config_documents`, declared in
 | Home promo card images | `promo_content_images`, one image per screen (`LAPTOP`/`TABLET`/`PHONE`/`SMALL_PHONE`, sizes and places in `database/spec/promoDevices.js`, sent beside the cards as `devices`), written only by `database/repositories/content.js` with the card in one transaction; a published card needs one; a home card has no `file_url` (`promo_home_uses_device_images`). A screen shows a card only with its own image. Every image of the player app is edited on Admin › Images and nowhere else (owner, 2026-10-10). |
 | Upload categories | `services/cdn.service.js`: chat attachments, payment proofs, branding assets, Android APKs. Nothing else. |
 | The one Telegram bot | `miniAppBot()` (`domains/telegram/telegramClient.js`) over `telegram_bot` (one row, token encrypted), saved only by `PUT /api/admin/telegram/bot` after Telegram's `getMe`; its 30 s cache is the only cache. No channel, fleet, recovery bot, template or webhook. |
-| Whose mobile Telegram verified | `telegram_links` (`database/repositories/telegram.js`): one row per player or merchant account (`TELEGRAM_AUDIENCES`; the audience CHECK refuses STAFF), `phone` = the account's `mobile` (trigger), `audience` = `account_type`, one account per panel per Telegram account; merchant rows carry `two_factor` (`telegram_links_merchant_two_factor`). Written only from a signed Mini App contact share. |
+| Whose mobile Telegram verified | `telegram_links` (`database/repositories/telegram.js`): one row per player or merchant account (`TELEGRAM_AUDIENCES`; the audience CHECK refuses STAFF), `phone` = the account's `mobile` (trigger), `audience` = `account_type`, one account per panel per Telegram account. Written only from a signed Mini App contact share, the first Verify of "Continue with Telegram" (§33.1). |
 | The player app's origin | `publicAppOrigin()` (`backend/config/publicAppOrigin.js`). No link is minted to the admin or merchant panel. |
 | The API host player apps are sent to | `SystemConfig.apiHost` (Admin > Settings > API Host), one of `API_ALLOWED_HOSTS` (`backend/config/apiHosts.js`, checked on save by the spec's `oneOf`) or '' for none; served as discovery's answer by `GET /api/v1/client/endpoint`. The app accepts it only if the host is on its own build-time allowlist or in its verified signed gateway document, and fails over across every one of them (`originFailover.ts`). No saved setting adds a host: only a gateway document signed OFFLINE (`scripts/gateway-config.mjs`; the key never on a server or in git) and verified by the app against its build-time key (`gatewayConfig.ts`, mirror of `domains/configuration/gatewayConfig.js`): `bb-gateway-config/1`, 1–8 plain lowercase hostnames, at most 400 days, refused once expired or below the version floor the app holds per key. Its state (served with version, host count and expiry, or refused and why) is shown read-only under Admin › Settings › API Host (`gatewayDocumentStatus`, the same read the route serves by). Runbook: `docs/governance/GATEWAY_KEY_ROTATION.md`. |
 | A panel's name on screen | `PANEL_NAME` (`domains/identity/audiences.js`). |
 | How the player app reaches the network | `user-panel/src/services/secureTransport.ts` (`secureFetch`, `openEventStream`), the only caller of `fetch`/`EventSource` in `user-panel/src` (lint `no-restricted-globals`). In the Android shell an https request to another host is sent by the native `SecureHttpPlugin` through `SecureNetwork`'s one OkHttp client, whose resolver is `SecureDns`: DNS-over-HTTPS (Cloudflare, then Google, reached at fixed addresses) first; the phone's resolver only when none can be reached (then for 5 minutes) or none knows the name. Never fails closed: TLS with system CAs and no cleartext is the guarantee (owner, 2026-10-10). The update download uses the same client. What the WebView loads itself (images, game iframes) stays on the phone's DNS. |
 | Which endpoint a player screen calls | `user-panel/src/services/api/` (one module per domain, re-exported by `index.ts`), over `apiClient`: screens in `pages/`, `components/` and `redesign/` import neither `apiClient` nor `secureTransport` (lint `no-restricted-imports`). Only public display reads (boards, board rules, announcements, winners, leaderboard, game providers and catalogue) ask `staleOnError`: on a transport failure or a 5xx they get the last good answer, kept per path for at most `FALLBACK_MAX_AGE_MS` (24 h); never a balance, an order or the system config (§9). |
-| A Telegram approval | `telegram_challenges` (VERIFY, LOGIN, TELEGRAM_LOGIN, RELINK, TWO_FACTOR_OFF), players and merchants only (audience CHECK), answered by the Mini App (`miniApp.routes.js`) and redeemed once by the polling door, guards in the UPDATE's WHERE; each `initData`/contact proof claimed once (`telegram_init_data_uses`). |
+| A Telegram sign-in | `telegram_challenges`, every row a "Continue with Telegram" (no purpose column), players and merchants only (audience CHECK), answered by the Mini App's Verify or Deny (`miniApp.routes.js`) in one transaction (`answerChallenge`), guards in the UPDATE's WHERE; each `initData`/contact proof claimed once (`telegram_init_data_uses`). `delivery` says how the approval reaches a browser: MATCH (the browser shows a two-digit `match_number`, Telegram offers three `match_choices`, a wrong pick is a strike, three strikes deny; redeemed once by that browser's poll, `redeemChallenge`) or HANDOFF (Verify opens the site on that device with a one-time ticket in the fragment, `#/tg/<ticket>`; never spent by a poll). |
+| A handoff ticket | `telegram_handoff_tickets` (`database/repositories/telegram.js`): 256 random bits, stored only as its SHA-256 (`ticketHash`), one per HANDOFF challenge, 60 s by the DATABASE clock, spent once with its challenge at its own door (`redeemTicket`, guards in the WHERE). The site reads it from the fragment and removes it before anything else (`TelegramTicketPage`, `nativeDeepLink.ts`; merchant `telegramTicket.ts`). |
 | A staff account's authenticator | `staff_totp` (one row per STAFF account), written only by `database/repositories/totp.js` through `domains/identity/totp.service.js` (§33.8): the encrypted secret, the last step spent, the recovery code hashes. Replaced only by a full admin's reset or `scripts/reset-staff-access.mjs`. Panels see a yes/no (`authenticatorEnrolled`, `GET /api/admin/account/2fa`), never a secret. |
-| Whether an account may sign in | Its own door (§33.2). A player or merchant needs a `telegram_links` row (verified); a staff account needs its authenticator (§33.8). A session's `amr` says what was proved: STAFF needs `otp`, MERCHANT needs `tg` (`SECOND_FACTOR`, `secondFactorMissing`, synchronous); there is no bootstrap. |
+| Whether an account may sign in | Its own door (§33.2). A player or merchant signs in only through Telegram (`telegram_links`); a staff account needs its authenticator (§33.8). A session's `amr` says what was proved: STAFF needs `otp`, MERCHANT and PLAYER need `tg` (`SECOND_FACTOR`, `secondFactorMissing`, synchronous); there is no bootstrap. |
 | An account's population | `users.account_type` (`PLAYER`/`STAFF`/`MERCHANT`); mobile unique per type; `getUserByMobile` requires the type. Never move, promote or link an account across panels; staff flags only on STAFF rows. |
 | Whether a session is still valid | `sessions_valid_from` + `sessionIsLive()` (`domains/identity/auth.middleware.js`), on EVERY path that verifies a token (middleware, `/me`, `merchantAuth`, SSE, socket joins). |
-| A merchant's password | `users.password_hash` on its login row, never on `merchants`. |
-| Password reset | Players and merchants: `domains/identity/passwordReset.service.js` (`resetFromMiniApp`), in the Mini App: the new password, checked against the account's floor BEFORE the proof is spent, then a contact share matching the account's mobile; set with every session evicted in the transaction that spends the proof (`telegram.resetPasswordByContact`). Never a session; no token, no link. Staff: `scripts/reset-staff-access.mjs` only (§33.6). |
-| Login doors | `LOGIN_DOOR` (`backend/routes.js`), one `loginHandler`; the read is scoped by `account_type` on every leg. Which legs a door has: `DOOR_LEGS` (`loginDoors.js`, §33.4). The staff code legs are `totpLoginHandler`, `totpSetupHandler`, `totpActivateHandler`; the Telegram legs refuse any door but a player's or a merchant's (`telegramDoor`). |
+| Who has a password | Staff only: `users.password_hash`, refused on any other row (`users_password_staff_only`; owner, 2026-10-14). Players and merchants (sub-members included) have none and no reset. |
+| Password reset | Staff only: `scripts/reset-staff-access.mjs` (§33.6). |
+| Login doors | `LOGIN_DOOR` (`backend/routes.js`); the read is scoped by `account_type` on every leg. Which legs a door has: `DOOR_LEGS` (`loginDoors.js`, §33.4). The staff legs are `loginHandler` (password) and `totpLoginHandler`, `totpSetupHandler`, `totpActivateHandler`; the Telegram legs (`telegramLoginHandler`, `telegramLoginCompleteHandler`, `telegramTicketHandler`) refuse any door but a player's or a merchant's (`telegramDoor`) and seat through one `signInRedeemed`. |
 | Which panel a session may use | `belongsElsewhere`/`refuseWrongPanel`: `authenticatePlayer` on every player route; `authenticate` never admits MERCHANT; `403 WRONG_PANEL` (S51). |
 | Who gets a security alert | The webhook (`SystemConfig.alertWebhookUrl`, else `ALERT_WEBHOOK_URL`), the one sink of `services/alerting.service.js`. Staff have no Telegram, so the bot messages nobody (owner, 2026-10-13). |
-| Valid mobile, referral code | `backend/domains/identity/signupFields.js`; the panel mirror (`indianMobile`) changes in the same commit. |
-| Password policy | `backend/domains/identity/passwordPolicy.js`; floors 12 staff, 8 player. |
+| Valid mobile, referral code | `backend/domains/identity/signupFields.js`. |
+| Password policy | `backend/domains/identity/passwordPolicy.js`; staff only, floor 12. |
 | Notifications | `notify()` (`domains/communication/communication.service.js`); never write a notification row directly. |
 | Transaction and bet validation | `domains/risk/riskValidation.service.js`. |
 | Cycle timing / vocabulary | `cycleGenerator.service.js` computes (`GAME_CORE.ts` display only); `cycleTypes.js` names only, throws on unknown. |
@@ -625,58 +626,62 @@ Ask each question of the change in front of you.
 
 ---
 
-## 33. Signing up is a FORM. Telegram verifies a player's or merchant's mobile; staff use an authenticator app.
+## 33. Players and merchants Continue with Telegram; staff use a password and an authenticator app.
 
-- **33.1 The form creates the account** (mobile, password, confirmation,
-  optional invite code, and a captcha on the player's form; a referral link's
-  code is pre-filled and locked). It
-  answers with a Telegram step, never a session: the Mini App's contact share,
-  signed by Telegram, must be the account's own mobile (players and merchants;
-  a staff account is made by an admin, never by a form).
-  A referral counts only once the joiner is verified, in that transaction.
-- **33.2 Sign-in** is mobile and password at the account's own door, plus a
-  captcha at the player's only: staff and merchants "only need 2FA" (owner,
-  2026-10-08). An unverified player or merchant is answered
-  `TELEGRAM_VERIFICATION_REQUIRED`; merchants (always) and players (by their
-  own switch) approve each sign-in in Telegram. "Login with Telegram" signs a
-  player in on Telegram alone; merchants still give their password with it.
-  **Staff** (admin, sub-admin, queue manager, mediator) give a 6-digit code
-  from an authenticator app (33.8) and have **no Telegram anywhere**: no link,
-  no challenge, no Telegram leg, no alert, no Mini App reset (owner,
-  2026-10-13; this reverses the 2026-10-07 "Telegram only" 2FA for STAFF only,
-  merchants keep it). There is no bootstrap: a staff sign-in owes its code
-  whether or not a bot is saved.
+- **33.1 One button, signup and sign-in alike** (owner, 2026-10-14): "Continue
+  with Telegram" opens a sign-in; the Mini App's Verify (or Deny) answers it.
+  A Telegram account with no link on that panel shares its contact once, at
+  that Verify (Telegram's signed string, its user equal to the opener): the
+  account of that mobile is linked, or one is made in the same transaction (a
+  player with the invite the sign-in carried, locked; a merchant as a PENDING
+  application an admin approves). Nothing is typed; no password exists for a
+  player or a merchant (`users_password_staff_only`). A staff account is made
+  by an admin, never by Telegram. A referral counts in the transaction that
+  makes the account.
+- **33.2 Sign-in.** Players and merchants: 33.1, plus an invisible captcha on
+  the player's Continue with Telegram only (staff and merchants "only need
+  2FA", owner 2026-10-08). The Telegram sign-in IS the merchant's second factor
+  (`amr: ['tg']`). How the approval reaches a browser is `delivery`: HANDOFF
+  where Telegram runs on the same device (the Android app, an Android browser),
+  MATCH elsewhere, with the link also drawn as a QR on a wide screen. A typed
+  code is never asked for on a phone. No bot saved is said plainly (503
+  `TELEGRAM_UNAVAILABLE`). **Staff** (admin, sub-admin, queue manager,
+  mediator) give their mobile and password and a 6-digit code from an
+  authenticator app (33.8) and have **no Telegram anywhere**: no link, no
+  challenge, no Telegram leg, no alert (owner, 2026-10-13). There is no
+  bootstrap: a staff sign-in owes its code whether or not a bot is saved.
 - **33.3 The Mini App** (`user-panel/mini-app.html`, `miniApp.routes.js`) acts
   only on what Telegram signed: `initData` proved on every request and claimed
   once by the request that acts; a contact as Telegram's signed string, its
-  user equal to the opener. What it does is the signed `start_param`, never the
-  body. **Nothing it does grants a merchant session without the password**, and
-  it serves no staff account (`TELEGRAM_AUDIENCES`; the `telegram_links` and
-  `telegram_challenges` audience CHECKs refuse STAFF).
-- **33.4 Limiters guard credentials:** credential limiters sit on the credential
-  routes, never the `/api/v1/auth` prefix; every door's legs come from
-  `doorRoute` (`loginDoors.js`), which mounts only the legs `DOOR_LEGS` allows
-  that door (STAFF: `login`, `totp`, `totpSetup`, `totpActivate`; PLAYER and
-  MERCHANT: `login`, `twoFactor`, `telegram`, `telegramComplete`) and throws at
-  boot for any other. Every code leg is on `twoFactorLimiter`. Signup submits
-  no secret: it bounds accounts per address, counting successes only.
+  user equal to the opener. What it answers is the signed `start_param`, never
+  the body. It mints no session: the browser that asked (MATCH poll) or the
+  site the ticket opens (HANDOFF) is signed in by `routes.js`, which asks every
+  account question again. It serves no staff account (`TELEGRAM_AUDIENCES`; the
+  `telegram_links` and `telegram_challenges` audience CHECKs refuse STAFF).
+  Residual risk, accepted: a HANDOFF ticket link opened by someone else's
+  browser signs THAT browser in (login CSRF); the ticket lives 60 s, is spent
+  once, travels only in a fragment, and Verify names the destination first.
+- **33.4 Limiters per leg:** limiters sit on the leg routes, never the
+  `/api/v1/auth` prefix; every door's legs come from `doorRoute`
+  (`loginDoors.js`), which mounts only the legs `DOOR_LEGS` allows that door
+  (STAFF: `login`, `totp`, `totpSetup`, `totpActivate`; PLAYER and MERCHANT:
+  `telegram`, `telegramComplete`, `telegramTicket`) and throws at boot for any
+  other. Every code leg and the poll are on `twoFactorLimiter`. The Mini App
+  doors that can make an account bound accounts per address, counting only the
+  requests that made one (`accountWasCreated`).
 - **33.5 Three entities:** player, staff and merchant accounts are separate, even on
   one mobile. A query that can match two populations gets a predicate in the
   WHERE, plus a second refusal where takeover is possible. A constraint whose
   definition may change is dropped and re-added.
-- **33.6 Password reset:** players and merchants in the Mini App: the new
-  password, then a contact share matching the account's mobile. The password is
-  checked against the account type's floor before the proof is spent; setting
-  it evicts every session in the same statement (checked on both authenticated
-  paths). No token, no link. **Staff:** a lost phone is a full admin's reset of
+- **33.6 Password reset:** staff only. A lost phone is a full admin's reset of
   the authenticator (`POST /api/admin/staff/:userId/reset-authenticator`, never
   their own); a forgotten password, or the only admin locked out, is
   `scripts/reset-staff-access.mjs` on the server (`deploy/VPS_UBUNTU_SETUP.md`),
   the new password from `NEW_STAFF_PASSWORD` in the environment, never an
-  argument.
+  argument. Players and merchants have nothing to reset.
 - **33.7 Relink, never unlink:** a player or merchant moves to another
-  Telegram account only by that account sharing a contact with the same
-  mobile. A player turns approval off only with their Telegram's approval.
+  Telegram account only by that account pressing Continue with Telegram and
+  sharing a contact with the same mobile.
 - **33.8 The staff authenticator** (`staff_totp`, written only by
   `database/repositories/totp.js`; the arithmetic in
   `domains/identity/totp.service.js`): RFC 6238 on `node:crypto`, SHA-1, 6
@@ -759,7 +764,7 @@ Gates: `check:no-mongo` (definition of done) · `lint` (root and each panel) · 
 
 Tests: `test:unit` · `test:pg` (real PostgreSQL) · `test:e2e` (whole server,
 three actors, pen test) · `test:browser` (every screen; needs `BB_BASE`) ·
-`test:captcha-doors` · `test:signin-journey` (the three sign-in screens and the Mini App, typed into; needs `BB_BASE`) · `test:drive`
+`test:captcha-doors` · `test:signin-journey` (the three sign-in screens and the Mini App, driven in a browser; needs `BB_BASE`) · `test:drive`
 (every control pressed) · `test:mutate` (database + bystander; `bb_drive`) ·
 `test:bet-button` · `test:ghost-mode` ·
 `test:operations -- --cron --restore --sse` · `loadtest:scale -- --seed

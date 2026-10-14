@@ -60,11 +60,11 @@ describePg('staff authenticator (PostgreSQL)', () => {
       await pgQuery('ALTER TABLE telegram_challenges DROP CONSTRAINT telegram_challenges_audience_check');
       try {
         await pgQuery(
-          `INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor)
-           VALUES ($1, 'STAFF', $2, $3, TRUE)`, [s.userId, `tg${s.userId}`, s.mobile]);
+          `INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone)
+           VALUES ($1, 'STAFF', $2, $3)`, [s.userId, `tg${s.userId}`, s.mobile]);
         await pgQuery(
-          `INSERT INTO telegram_challenges (challenge_id, purpose, audience, user_id, expires_at)
-           VALUES ($1, 'LOGIN', 'STAFF', $2, now() + interval '5 minutes')`, [`c${s.userId}`, s.userId]);
+          `INSERT INTO telegram_challenges (challenge_id, audience, user_id, expires_at, delivery)
+           VALUES ($1, 'STAFF', $2, now() + interval '5 minutes', 'HANDOFF')`, [`c${s.userId}`, s.userId]);
       } finally {
         await applySchema();
         await applySchema();
@@ -86,19 +86,19 @@ describePg('staff authenticator (PostgreSQL)', () => {
     it('refuses a STAFF Telegram link and a STAFF challenge', async () => {
       const s = await staff();
       await expect(pgQuery(
-        `INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor)
-         VALUES ($1, 'STAFF', $2, $3, TRUE)`, [s.userId, `tg${s.userId}`, s.mobile],
+        `INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone)
+         VALUES ($1, 'STAFF', $2, $3)`, [s.userId, `tg${s.userId}`, s.mobile],
       )).rejects.toMatchObject({ constraint: 'telegram_links_audience_check' });
       await expect(pgQuery(
-        `INSERT INTO telegram_challenges (challenge_id, purpose, audience, user_id, expires_at)
-         VALUES ($1, 'LOGIN', 'STAFF', $2, now() + interval '5 minutes')`, [`c${s.userId}`, s.userId],
+        `INSERT INTO telegram_challenges (challenge_id, audience, user_id, expires_at, delivery)
+         VALUES ($1, 'STAFF', $2, now() + interval '5 minutes', 'HANDOFF')`, [`c${s.userId}`, s.userId],
       )).rejects.toMatchObject({ constraint: 'telegram_challenges_audience_check' });
     });
 
     it('refuses an authenticator row for a player or merchant account', async () => {
       for (const accountType of ['PLAYER', 'MERCHANT']) {
         const userId = newUserId();
-        await createUser({ userId, username: `p${userId.slice(-6)}`, mobile: mobile(), passwordHash: 'x', accountType });
+        await createUser({ userId, username: `p${userId.slice(-6)}`, mobile: mobile(), accountType });
         await expect(totpRepo.savePending(userId, 'v1:x:y:z'), accountType).rejects.toMatchObject({ code: '23503' });
         await expect(pgQuery(
           `INSERT INTO staff_totp (user_id, account_type, pending_secret_enc, pending_at)
@@ -273,7 +273,7 @@ describePg('staff authenticator (PostgreSQL)', () => {
 
     it('touches nothing for an account that is not STAFF', async () => {
       const userId = newUserId();
-      await createUser({ userId, username: `p${userId.slice(-6)}`, mobile: mobile(), passwordHash: 'x', accountType: 'PLAYER' });
+      await createUser({ userId, username: `p${userId.slice(-6)}`, mobile: mobile(), accountType: 'PLAYER' });
       expect(await svc.resetEnrolment(userId)).toEqual({ ok: false, hadAuthenticator: false });
       expect((await getUser(userId)).sessionsValidFrom ?? null).toBeNull();
     });
@@ -318,7 +318,7 @@ describePg('staff authenticator (PostgreSQL)', () => {
     it('finds no staff account behind a player\'s mobile', async () => {
       const userId = newUserId();
       const m = mobile();
-      await createUser({ userId, username: `p${userId.slice(-6)}`, mobile: m, passwordHash: 'x', accountType: 'PLAYER' });
+      await createUser({ userId, username: `p${userId.slice(-6)}`, mobile: m, accountType: 'PLAYER' });
       expect(await resetStaffAccess({ mobile: m })).toMatchObject({ ok: false });
     });
   });

@@ -47,8 +47,8 @@ function useMediaQuery(query: string): boolean {
   return matches;
 }
 
-/** The QR's modules as one SVG path, a 1×1 square per dark module. */
-function qrPath(link: string): { size: number; d: string } | null {
+/** The QR's modules as one SVG path, a 1×1 square per dark module (also the Telegram link's QR). */
+export function qrPath(link: string): { size: number; d: string } | null {
   try {
     const { modules } = QRCode.create(link, { errorCorrectionLevel: 'M' });
     let d = '';

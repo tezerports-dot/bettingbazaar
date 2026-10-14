@@ -10,17 +10,18 @@
  * (`/login/totp/setup`, `/login/totp/activate`). The staff door has only those
  * legs (`loginDoors.js`).
  *
- * ── Players and merchants (Step 3, owner 2026-10-07) ──────────────────────
- * A sign-in is a mobile, a password and a captcha, at the door of the
- * account's own panel (CLAUDE.md §33):
+ * ── Players and merchants (owner, 2026-10-13/14) ──────────────────────────
+ * "Continue with Telegram" and nothing else: no password, no form. Signing up
+ * and signing in are the same action (CLAUDE.md §33):
  *
- *   • An account whose mobile Telegram has not yet verified is not signed in:
- *     it is answered 403 TELEGRAM_VERIFICATION_REQUIRED with a Mini App link,
- *     and finishing that step signs it in (`/login/2fa`).
- *   • A merchant sign-in is also approved in the account's own Telegram (the
- *     second factor); a player's is, only if they switched it on.
- *   • "Login with Telegram" (`/login/telegram`): a player is signed in by
- *     Telegram alone; merchants still give their password.
+ *   • `/login/telegram` opens the sign-in. On a phone that runs Telegram it is
+ *     a HANDOFF: Verify opens the site with a one-time ticket, spent at
+ *     `/login/telegram/ticket`. Elsewhere it is a MATCH: this browser shows a
+ *     two-digit number, the Mini App offers three, and this browser polls
+ *     `/login/telegram/complete` for the approval.
+ *   • The first Verify on a panel shares the contact once, which links the
+ *     account of that mobile or makes one (a player; a merchant application).
+ *   • For a merchant, the Telegram sign-in IS the second factor (`amr` 'tg').
  *
  * Every leg of every door is one handler here, mounted per door with that
  * door's limits (`loginDoors.js`). Writing a door's legs as copies would be the
@@ -34,7 +35,7 @@ import { getBalances } from './domains/wallet/walletAuthority.service.js';
 import { db } from '#db';
 // AQ-2: sign/verify via the single PASETO authority (PASETO/Ed25519, iss/aud stamped).
 import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.util.js';
-// AQ-8: password hashing authority (argon2id + bcrypt verify-fallback).
+// AQ-8: password hashing authority (argon2id + bcrypt verify-fallback). Staff only.
 import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
 import { isTokenRevoked, revokeToken } from '#db/repositories/identity.js';
 import { verifyChallenge, issueChallenge, isChallengeToken } from './domains/identity/twoFactorChallenge.js';
@@ -47,13 +48,8 @@ import {
   beginEnrolment, completeEnrolment, checkSignInCode,
 } from './domains/identity/totp.service.js';
 import { currentBranding } from './domains/branding/brandingPayload.js';
-import { normalisePhone } from './domains/identity/signupFields.js';
-import {
-  openChallenge, newChallengeId, telegramUnavailable, REDEEM_WINDOW_SECONDS,
-} from './domains/identity/telegramChallenge.service.js';
-import { miniAppBot } from './domains/telegram/telegramClient.js';
-import { verifyInitData } from './domains/telegram/miniAppAuth.js';
-import { miniAppRefusal } from './domains/telegram/miniAppRefusals.js';
+import { normalisePhone, normaliseReferralCode } from './domains/identity/signupFields.js';
+import { openChallenge, ticketHash } from './domains/identity/telegramChallenge.service.js';
 import { respondError, refusal } from './shared/httpError.js';
 import { TELEGRAM_AUDIENCES } from '#db/repositories/telegram.js';
 import { formatMerchant } from './domains/merchant/merchantSelfView.js';
@@ -209,7 +205,8 @@ async function sessionFor(door, user, res, { amr, merchant = null, staff = null 
  * the admin panel). `extra` is merged into the answer (a staff sign-in's
  * recovery codes, or how many are left).
  */
-export async function issueSession(user, res, { amr = ['pwd'], extra = {} } = {}) {
+export async function issueSession(user, res, { amr, extra = {} } = {}) {
+  if (!Array.isArray(amr) || !amr.length) throw new Error('issueSession: say what this sign-in proved (amr)');
   let role = 'user';
   if (user.isAdmin)          role = 'admin';
   else if (user.isSubAdmin)  role = 'subadmin';
@@ -259,7 +256,8 @@ export async function issueSession(user, res, { amr = ['pwd'], extra = {} } = {}
  * The merchant session. Its token carries `merchantId` and `isMerchant`, which
  * is how `merchantAuth` knows it, and the same `amr` every session carries.
  */
-export async function issueMerchantSession(merchant, res, { amr = ['pwd'], staff = null } = {}) {
+export async function issueMerchantSession(merchant, res, { amr, staff = null } = {}) {
+  if (!Array.isArray(amr) || !amr.length) throw new Error('issueMerchantSession: say what this sign-in proved (amr)');
   // A sub-member's session names their own login (`staffUserId`), whose
   // cutoff and row decide it on every request (`merchantLoginRow`).
   const token = signToken({
@@ -281,34 +279,17 @@ export async function issueMerchantSession(merchant, res, { amr = ['pwd'], staff
   });
 }
 
-/**
- * The Telegram step an unverified account owes before it can be signed in:
- * 403 TELEGRAM_VERIFICATION_REQUIRED with a fresh Mini App link. Finishing it
- * signs them in through `/login/2fa`, because they have just proved both the
- * password and the phone.
- */
-async function verificationRequired(door, user, req, res, loginType) {
-  const opened = await openChallenge({ purpose: 'VERIFY', door: door.accountType, userId: user.userId, req, loginType });
-  return res.status(403).json({
-    success: false,
-    code: 'TELEGRAM_VERIFICATION_REQUIRED',
-    verificationRequired: true,
-    challengeToken: opened.challengeToken,
-    telegram: opened.telegram,
-    message: 'Verify your mobile number in Telegram to finish. Open the link, share your contact, then come back here.',
-  });
-}
-
-// ── POST {door}/login ────────────────────────────────────────────────────────
+// ── POST /api/admin/login ─────────────────────────────────────────────────────
+// The staff door's password leg, and the only password leg there is: players
+// and merchants have no password (owner, 2026-10-14). `doorRoute` mounts it at
+// the staff door alone.
 export async function loginHandler(req, res) {
   try {
-    const { mobile, password, loginType = null, challengeToken = null } = req.body || {};
+    const { mobile, password, loginType = null } = req.body || {};
     if (!mobile || !password) {
       return send(res, { status: 400, code: 'CREDENTIALS_REQUIRED', message: 'Enter your mobile number and password.' });
     }
-    // Defaults to STAFF: a caller that never set a door would be a test, and a
-    // default of "anyone" is the wrong way for that to fail.
-    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+    const door = LOGIN_DOOR.STAFF;
 
     // The read is scoped by the door's population (§33.5). The mobile is read
     // the way the form normalises it, so `+91 98765 43210` finds `9876543210`.
@@ -322,7 +303,7 @@ export async function loginHandler(req, res) {
     if (!valid) return send(res, INVALID_CREDENTIALS);
 
     // Upgrade a legacy bcrypt hash to argon2id, persisted in its own statement
-    // so a sign-in that stops at a Telegram step still upgrades it.
+    // so a sign-in that stops at the code step still upgrades it.
     if (needsRehash) {
       try {
         await db.users.updateUser(user.userId, { passwordHash: await hashPassword(password) });
@@ -334,49 +315,9 @@ export async function loginHandler(req, res) {
     const refused = accountRefusal(door, user, loginType);
     if (refused) return send(res, refused);
 
-    // ── Staff: the authenticator app, never Telegram (owner, 2026-10-13) ───
-    // No session yet, with or without a bot: the code is the next leg.
-    if (door.accountType === 'STAFF') return staffCodeRequired(user, res, loginType);
-
-    const bot = await miniAppBot();
-
-    // ── Verified yet? ──────────────────────────────────────────────────────
-    const link = await db.telegram.getLinkByUserId(user.userId);
-    if (!link) {
-      if (!bot) throw telegramUnavailable();
-      return verificationRequired(door, user, req, res, loginType);
-    }
-
-    const { merchant, staff, refusal: notActive } = await merchantRefusal(door, user);
-    if (notActive) return send(res, notActive);
-
-    // ── Second factor ──────────────────────────────────────────────────────
-    // Always for merchants (the link's CHECK says so); a player's own switch
-    // otherwise.
-    if (!link.twoFactor) return sessionFor(door, user, res, { amr: ['pwd'], merchant, staff });
-
-    // A Telegram sign-in already approved for THIS account at THIS door — the
-    // merchant "Login with Telegram", finished with the password.
-    // The account is in the redeem's WHERE, so another account's approval
-    // spends nothing here.
-    const presented = verifyChallenge(challengeToken, door.accountType);
-    if (presented) {
-      const spent = await db.telegram.redeemChallenge({
-        challengeId: presented.challengeId, audience: door.accountType,
-        purposes: ['TELEGRAM_LOGIN'], userId: user.userId,
-      });
-      if (spent.ok) return sessionFor(door, user, res, { amr: ['pwd', 'tg'], merchant, staff });
-    }
-
-    if (!bot) throw telegramUnavailable();
-    const opened = await openChallenge({ purpose: 'LOGIN', door: door.accountType, userId: user.userId, req, loginType });
-    return res.status(200).json({
-      success: false,               // deliberately NOT a logged-in success
-      twoFactorRequired: true,
-      challengeToken: opened.challengeToken,
-      telegram: opened.telegram,
-      message: 'Approve this sign-in in Telegram. Open the link on your phone, then come back here.',
-    });
+    // The authenticator app, never Telegram (owner, 2026-10-13): no session
+    // yet; the code is the next leg.
+    return staffCodeRequired(user, res, loginType);
   } catch (e) {
     return respondError(res, e, 'auth/login', { message: 'Sign-in failed. Please try again.' });
   }
@@ -507,7 +448,7 @@ function notRedeemed(res, state) {
   if (state === 'DENIED') {
     return send(res, {
       status: 401, code: 'TWO_FACTOR_DENIED',
-      message: 'This sign-in was refused in Telegram. If that was not you, change your password.',
+      message: 'This sign-in was refused in Telegram. Press Continue with Telegram to start again.',
     });
   }
   return send(res, {
@@ -517,98 +458,36 @@ function notRedeemed(res, state) {
 }
 
 /**
- * POST {door}/login/2fa `{ challengeToken }` — the browser that signed in (or
- * signed up) asks whether Telegram has answered.
+ * POST {door}/login/telegram `{ delivery?, referralCode? }` — "Continue with
+ * Telegram": opens the sign-in and gives the browser its Mini App link.
  *
- * Redeems a VERIFY or LOGIN challenge of this door, once, and re-asks every
- * account question the first leg asked: the challenge proves the password was
- * right minutes ago, nothing more.
- */
-export async function loginTwoFactorHandler(req, res) {
-  try {
-    const door = telegramDoor(req);
-    const { challengeToken } = req.body || {};
-    if (!challengeToken) {
-      return send(res, { status: 400, code: 'CHALLENGE_REQUIRED', message: 'Sign in again to continue.' });
-    }
-    const challenge = verifyChallenge(challengeToken, door.accountType);
-    if (!challenge?.userId) return notRedeemed(res, 'EXPIRED');
-
-    const spent = await db.telegram.redeemChallenge({
-      challengeId: challenge.challengeId, audience: door.accountType,
-      purposes: ['VERIFY', 'LOGIN'], userId: challenge.userId,
-    });
-    if (!spent.ok) return notRedeemed(res, spent.state);
-
-    const user = await db.users.getUser(spent.userId);
-    const refused = accountRefusal(door, user, challenge.loginType);
-    if (refused) return send(res, refused);
-    const { merchant, staff, refusal: notActive } = await merchantRefusal(door, user);
-    if (notActive) {
-      // Verified, and still waiting for approval: say so, so the panel can
-      // show "verified" rather than an error.
-      return send(res, { ...notActive, verified: spent.purpose === 'VERIFY' });
-    }
-    return sessionFor(door, user, res, { amr: ['pwd', 'tg'], merchant, staff });
-  } catch (e) {
-    return respondError(res, e, 'auth/login/2fa', { message: 'Sign-in failed. Please try again.' });
-  }
-}
-
-/**
- * POST {door}/login/telegram `{ initData? }` — "Login with Telegram".
- *
- * Inside Telegram (the Mini App sends its `initData`), the signed string is the
- * proof: a player is signed in on it; merchants are handed a token that their
- * password then completes. Outside Telegram, a challenge is opened
- * and the browser is given its Mini App link to open, and polls
- * `/login/telegram/complete` (owner reading 2026-10-07: the Login Widget only
- * serves one domain per bot, and three panels and the app are not one domain).
+ * How the approval will reach a browser is the caller's to say (`delivery`):
+ * HANDOFF on the phone that will open Telegram itself, MATCH elsewhere. Either
+ * is safe whoever asks: a HANDOFF is never spent by this browser's poll, only
+ * by the ticket Verify opens on the device that pressed it
+ * (repositories/telegram.js, `redeemTicket`), and a MATCH is approved only
+ * with the number this browser shows. No bot is the platform's state, said
+ * plainly (503 TELEGRAM_UNAVAILABLE).
  */
 export async function telegramLoginHandler(req, res) {
   try {
     const door = telegramDoor(req);
-    const bot = await miniAppBot();
-    if (!bot) throw telegramUnavailable();
-
-    const raw = req.body?.initData;
-    if (!raw) {
-      const opened = await openChallenge({ purpose: 'TELEGRAM_LOGIN', door: door.accountType, userId: null, req });
-      return res.status(200).json({
-        success: false, pending: true,
-        challengeToken: opened.challengeToken,
-        telegram: opened.telegram,
-        message: 'Open Telegram to sign in, then come back here.',
-      });
-    }
-
-    const proof = verifyInitData(raw, { botToken: bot.token });
-    if (!proof.ok) return send(res, miniAppRefusal(proof.reason));
-
     const isPlayer = door.accountType === 'PLAYER';
-    const challengeId = isPlayer ? null : newChallengeId();
-    const signedIn = await db.telegram.telegramSignIn({
-      audience: door.accountType, telegramUser: proof.user,
-      initData: { hash: proof.hash, expiresAt: proof.expiresAt },
-      challengeId, redeemWindowSeconds: REDEEM_WINDOW_SECONDS,
-      requestedIp: req.ip, requestedAgent: req.get('user-agent') || '',
+    const opened = await openChallenge({
+      door: door.accountType, req,
+      delivery: req.body?.delivery === 'HANDOFF' ? 'HANDOFF' : 'MATCH',
+      referralCode: isPlayer ? normaliseReferralCode(req.body?.referralCode) : null,
     });
-    if (!signedIn.ok) return send(res, miniAppRefusal(signedIn.code));
-
-    const user = await db.users.getUser(signedIn.userId);
-    const refused = accountRefusal(door, user);
-    if (refused) return send(res, refused);
-
-    if (!isPlayer) {
-      return res.status(200).json({
-        success: false, passwordRequired: true,
-        challengeToken: issueChallenge({
-          userId: null, door: door.accountType, challengeId, ttlSeconds: REDEEM_WINDOW_SECONDS,
-        }),
-        message: 'Telegram confirmed it is you. Enter your mobile number and password to finish.',
-      });
-    }
-    return sessionFor(door, user, res, { amr: ['tg'] });
+    return res.status(200).json({
+      success: false, pending: true,
+      challengeToken: opened.challengeToken,
+      telegram: opened.telegram,
+      delivery: opened.delivery,
+      matchNumber: opened.matchNumber,
+      message: opened.delivery === 'HANDOFF'
+        ? 'Open Telegram and press Verify. It brings you back here signed in.'
+        : 'Open Telegram, choose the number shown here, and press Verify.',
+    });
   } catch (e) {
     return respondError(res, e, 'auth/login/telegram', { message: 'Telegram sign-in failed. Please try again.' });
   }
@@ -616,12 +495,13 @@ export async function telegramLoginHandler(req, res) {
 
 /**
  * POST {door}/login/telegram/complete `{ challengeToken }` — has the Mini App
- * answered a "Login with Telegram" opened outside Telegram?
+ * answered this browser's sign-in?
  *
- * A player is signed in on the approval (spent here, once). Merchants are
- * told their password is next, and the approval is spent only
- * when the password arrives with this same token (`loginHandler`), bound in
- * that redeem to the account the password proved.
+ * A MATCH approval is spent here, once, and every account question is asked
+ * again (an admin may have blocked the account, or a merchant application may
+ * still be waiting). A HANDOFF is never this browser's to spend: its session
+ * went to the device that pressed Verify, through the ticket; the poll is told
+ * that it happened.
  */
 export async function telegramLoginCompleteHandler(req, res) {
   try {
@@ -629,27 +509,63 @@ export async function telegramLoginCompleteHandler(req, res) {
     const challenge = verifyChallenge(req.body?.challengeToken, door.accountType);
     if (!challenge) return notRedeemed(res, 'EXPIRED');
 
-    if (door.accountType !== 'PLAYER') {
-      const state = db.telegram.stateOf(await db.telegram.getChallenge(challenge.challengeId), {
-        audience: door.accountType, purposes: ['TELEGRAM_LOGIN'],
-      });
-      if (state !== 'APPROVED') return notRedeemed(res, state);
-      return res.status(200).json({
-        success: false, passwordRequired: true,
-        message: 'Telegram confirmed it is you. Enter your mobile number and password to finish.',
-      });
+    const row = await db.telegram.getChallenge(challenge.challengeId);
+    if (row?.delivery === 'HANDOFF' && row.audience === door.accountType) {
+      if (row.status === 'APPROVED' || row.status === 'REDEEMED') {
+        return res.status(200).json({
+          success: false, handedOff: true,
+          message: 'Verified in Telegram. You are signed in where Telegram opened the site.',
+        });
+      }
+      return notRedeemed(res, db.telegram.stateOf(row, { audience: door.accountType }));
     }
 
     const spent = await db.telegram.redeemChallenge({
-      challengeId: challenge.challengeId, audience: door.accountType, purposes: ['TELEGRAM_LOGIN'],
+      challengeId: challenge.challengeId, audience: door.accountType,
     });
     if (!spent.ok) return notRedeemed(res, spent.state);
-    const user = await db.users.getUser(spent.userId);
-    const refused = accountRefusal(door, user);
-    if (refused) return send(res, refused);
-    return sessionFor(door, user, res, { amr: ['tg'] });
+    return signInRedeemed(door, spent.userId, res);
   } catch (e) {
     return respondError(res, e, 'auth/login/telegram/complete', { message: 'Telegram sign-in failed. Please try again.' });
+  }
+}
+
+/**
+ * The session for a redeemed Telegram sign-in, after every account question
+ * the door asks: the approval is seconds old, and an admin may have blocked
+ * the account in those seconds; a merchant must be APPROVED and ACTIVE.
+ */
+async function signInRedeemed(door, userId, res) {
+  const user = await db.users.getUser(userId);
+  const refused = accountRefusal(door, user);
+  if (refused) return send(res, refused);
+  const { merchant, staff, refusal: notActive } = await merchantRefusal(door, user);
+  if (notActive) return send(res, notActive);
+  return sessionFor(door, user, res, { amr: ['tg'], merchant, staff });
+}
+
+/**
+ * POST {door}/login/telegram/ticket `{ ticket }` — the site, opened by the Mini
+ * App at `#/tg/<ticket>`, exchanges the ticket for the session.
+ *
+ * The ticket is spent once, with its HANDOFF challenge, at this door
+ * (`redeemTicket`). Every account question is asked again: the approval is
+ * seconds old, and an admin may have blocked the account in those seconds.
+ */
+export async function telegramTicketHandler(req, res) {
+  try {
+    const door = telegramDoor(req);
+    const ticket = String(req.body?.ticket || '');
+    const spent = ticket ? await db.telegram.redeemTicket({ ticketHash: ticketHash(ticket), audience: door.accountType }) : { ok: false };
+    if (!spent.ok) {
+      return send(res, {
+        status: 401, code: 'TICKET_INVALID',
+        message: 'This sign-in link has already been used or has expired. Press Continue with Telegram again.',
+      });
+    }
+    return signInRedeemed(door, spent.userId, res);
+  } catch (e) {
+    return respondError(res, e, 'auth/login/telegram/ticket', { message: 'Telegram sign-in failed. Please try again.' });
   }
 }
 

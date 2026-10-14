@@ -63,13 +63,14 @@ function toStaff(r, assignments = []) {
 }
 
 /**
- * Add a sub-member: their login and their row, in ONE transaction.
+ * Add a sub-member: their login and their row, in ONE transaction. The login
+ * has no password (owner, 2026-10-14): the sub-member signs in with "Continue
+ * with Telegram", and their first contact share of this mobile links it.
  * Returns { ok: true, staff } or { ok: false, reason: 'MOBILE_TAKEN' |
  * 'NAME_IS_A_MOBILE' | 'not_direct' }.
  */
-export async function addStaff(merchantId, { userId, mobile, passwordHash, name, roles, createdBy }) {
+export async function addStaff(merchantId, { userId, mobile, name, roles, createdBy }) {
   if (!mobile) throw bad('Enter the sub-member\'s mobile number.');
-  if (!passwordHash) throw new Error('addStaff requires a passwordHash');
   const cleanName = String(name ?? '').trim();
   if (!cleanName || cleanName.length > 60) throw bad('Enter the sub-member\'s name (1 to 60 characters).');
   const clean = cleanRoles(roles);
@@ -78,11 +79,11 @@ export async function addStaff(merchantId, { userId, mobile, passwordHash, name,
       // A MERCHANT login, refused by the (mobile, account_type) index rather
       // than by a prior read two requests could both pass.
       const account = await client.query(
-        `INSERT INTO users (user_id, username, mobile, password_hash, status, roles, account_type)
-         VALUES ($1, $2, $3, $4, 'ACTIVE', ARRAY['merchant'], 'MERCHANT')
+        `INSERT INTO users (user_id, username, mobile, status, roles, account_type)
+         VALUES ($1, $2, $3, 'ACTIVE', ARRAY['merchant'], 'MERCHANT')
          ON CONFLICT (mobile, account_type) DO NOTHING
          RETURNING user_id`,
-        [String(userId), cleanName, String(mobile), passwordHash]);
+        [String(userId), cleanName, String(mobile)]);
       if (!account.rows.length) return { ok: false, reason: 'MOBILE_TAKEN' };
       const { rows } = await client.query(
         `INSERT INTO merchant_staff (staff_id, merchant_id, user_id, name, roles, created_by)

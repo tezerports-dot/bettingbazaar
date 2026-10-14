@@ -21,6 +21,7 @@ import { useTheme } from './ThemeContext';
 import { useViewport } from './useViewport';
 import { fmt } from './format';
 import AuthModal from '../components/Modals/AuthModal';
+import InstallAppButton from './InstallAppButton';
 import NotificationBell from '../components/Layout/NotificationBell';
 import { PromoCarousel, useHomeCards } from './BoardExtras';
 import ShareModal from '../components/Modals/ShareModal';
@@ -30,7 +31,7 @@ import { ProfileSwitch, usePlayProfile } from './ProfileSwitch';
 
 interface ShellContextValue {
   isAuthenticated: boolean;
-  openAuth: (mode?: 'login' | 'register') => void;
+  openAuth: () => void;
   openMenu: () => void;
 }
 const ShellContext = createContext<ShellContextValue | undefined>(undefined);
@@ -146,7 +147,6 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [logoFailed, setLogoFailed] = useState(false);
 
   const logoSrc = useHeaderLogo();
@@ -172,7 +172,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   const onGeneral = general?.profile === 'GENERAL';
   const totalBal = isAuthenticated ? (onGeneral ? general!.promoBalance : spendableBalance(user)) : null;
 
-  const openAuth = (mode: 'login' | 'register' = 'login') => { setAuthMode(mode); setAuthOpen(true); setMenuOpen(false); };
+  const openAuth = () => { setAuthOpen(true); setMenuOpen(false); };
   const openMenu = () => setMenuOpen(true);
 
   const [shareOpen, setShareOpen] = useState(false);
@@ -238,6 +238,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
         </div>
       ))}
       <div style={{ flex: 1 }} />
+      {railOpen && <InstallAppButton style={{ marginTop: 12 }} />}
       {isAuthenticated && (
         <button type="button" onClick={() => { logout(); navigate('/'); }} title={railOpen ? undefined : 'Sign Out'} aria-label={railOpen ? undefined : 'Sign Out'} style={{
           width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: railOpen ? '9px 10px' : '9px 0', justifyContent: railOpen ? 'flex-start' : 'center',
@@ -249,8 +250,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
       )}
       {!isAuthenticated && railOpen && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
-          <button type="button" onClick={() => openAuth('login')} style={{ padding: 10, borderRadius: 11, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>Sign In</button>
-          <button type="button" onClick={() => openAuth('register')} style={{ padding: 10, borderRadius: 11, border: '1px solid var(--line2)', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: 'var(--gold-ink)', background: 'color-mix(in srgb,var(--gold) 8%,transparent)' }}>Register</button>
+          <button type="button" onClick={() => openAuth()} style={{ padding: 10, borderRadius: 11, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>Sign in or join</button>
         </div>
       )}
     </nav>
@@ -297,7 +297,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
               </svg>
             </button>
           )}
-          <button onClick={() => (isAuthenticated ? go('/wallet') : openAuth('login'))} style={{
+          <button onClick={() => (isAuthenticated ? go('/wallet') : openAuth())} style={{
             display: 'flex', alignItems: 'center', gap: compact ? 6 : 9, background: 'var(--pill)', border: '1px solid var(--pill-line)',
             padding: compact ? '6px 10px 6px 6px' : '7px 13px 7px 8px', borderRadius: 999, cursor: 'pointer', boxShadow: 'var(--shadow-sm)',
           }}>
@@ -464,13 +464,13 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
                 ))}
               </nav>
               <div style={{ flex: 'none', padding: '12px 16px 14px', borderTop: '1px solid var(--line)' }}>
+                <InstallAppButton style={{ marginBottom: 10 }} />
                 <button onClick={toggleTheme} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 10, marginBottom: 10, borderRadius: 12, border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text)', cursor: 'pointer', fontWeight: 700, fontSize: 12 }}>
                   <span aria-hidden="true">{theme === 'dark' ? '☀️' : '🌙'}</span>{theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
                 </button>
                 {!isAuthenticated ? (
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button onClick={() => openAuth('login')} style={{ flex: 1, padding: 11, borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>Sign In</button>
-                    <button onClick={() => openAuth('register')} style={{ flex: 1, padding: 11, borderRadius: 12, border: '1px solid var(--line2)', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: 'var(--gold-ink)', background: 'color-mix(in srgb,var(--gold) 8%,transparent)' }}>Register</button>
+                    <button onClick={() => openAuth()} style={{ flex: 1, padding: 11, borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>Sign in or join</button>
                   </div>
                 ) : (
                   <button onClick={() => { logout(); setMenuOpen(false); navigate('/'); }} style={{ width: '100%', padding: 11, borderRadius: 12, border: '1px solid color-mix(in srgb,var(--red) 35%,transparent)', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: 'var(--red)', background: 'color-mix(in srgb,var(--red) 8%,transparent)' }}>🚪 Sign Out</button>
@@ -481,7 +481,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
           </>
         )}
 
-        {authOpen && !isAuthenticated && <AuthModal onClose={() => setAuthOpen(false)} initialMode={authMode} />}
+        {authOpen && !isAuthenticated && <AuthModal onClose={() => setAuthOpen(false)} />}
         {shareOpen && <ShareModal onClose={() => setShareOpen(false)} />}
 
       </div>

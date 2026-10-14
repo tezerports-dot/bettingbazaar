@@ -26,8 +26,6 @@ import express from 'express';
 import { db } from '#db';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { respondError } from '../../shared/httpError.js';
-import { hashPassword } from '../identity/password.util.js';
-import { assertStaffPassword } from '../identity/passwordPolicy.js';
 import { normalisePhone, isValidMobile } from '../identity/signupFields.js';
 import { NAME_IS_A_MOBILE_MESSAGE } from '../identity/mobileInText.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
@@ -137,20 +135,14 @@ const closeStreams = (staff) => { try { global.sseManager?.closeMerchantClientsF
 
 router.post('/account/staff', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
   try {
-    const { name, password, roles } = req.body ?? {};
+    const { name, roles } = req.body ?? {};
     if (!isValidMobile(req.body?.mobile)) {
       return res.status(400).json({ success: false, code: 'MOBILE_INVALID',
         message: 'Enter the sub-member\'s 10-digit mobile number — the one on their Telegram account — without +91.' });
     }
     const mobile = normalisePhone(req.body.mobile);
-    try {
-      assertStaffPassword(password, { mobile, username: name }, 'merchant');
-    } catch (e) {
-      return res.status(e.status || 400).json({ success: false, code: e.code, message: e.message });
-    }
     const out = await db.merchantStaff.addStaff(req.merchantId, {
-      userId: db.users.newUserId(), mobile, passwordHash: await hashPassword(password),
-      name, roles, createdBy: req.userId,
+      userId: db.users.newUserId(), mobile, name, roles, createdBy: req.userId,
     });
     if (!out.ok && out.reason === 'MOBILE_TAKEN') {
       return res.status(409).json({ success: false, code: 'MOBILE_TAKEN', message: 'That mobile number already has a merchant login.' });
@@ -159,8 +151,9 @@ router.post('/account/staff', merchantAuth, requireMerchantAccount, ownerOnly, a
       return res.status(400).json({ success: false, code: 'NAME_IS_A_MOBILE', message: NAME_IS_A_MOBILE_MESSAGE });
     }
     if (!out.ok) return res.status(403).json({ success: false, code: 'NOT_A_MERCHANT_ACCOUNT', message: 'This is not a merchant account.' });
-    // They sign in at the merchant door, and verify their mobile in Telegram
-    // there first like every merchant login (§33).
+    // No password (owner, 2026-10-14): they sign in with "Continue with
+    // Telegram" at the merchant door, and their first Verify shares the
+    // contact of this mobile, which links this login (§33).
     res.status(201).json({ success: true, staff: out.staff });
   } catch (err) {
     respondError(res, err, 'POST /merchant/account/staff', { message: 'Could not add the sub-member.' });

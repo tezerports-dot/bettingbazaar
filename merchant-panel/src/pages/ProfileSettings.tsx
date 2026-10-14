@@ -20,7 +20,6 @@ import { availabilityOf } from '../utils/availability';
 import { actorOf, ROLE_LABEL } from '../utils/actor';
 import { api } from '../services/api';
 import { useViewport } from '../hooks/useViewport';
-import TelegramCard from '../components/TelegramCard';
 import { SUCCESS_MESSAGES } from '../constants';
 import {
   formatTokens, railOf,
@@ -43,7 +42,6 @@ export const SubMemberProfile: React.FC = () => {
   if (actor.isOwner) return null;
   return (
     <div style={{ maxWidth: 840, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <TelegramCard />
       <Card>
         <CardTitle title="Signed in as a sub-member" sub={`Of the merchant account ${merchant?.username ?? ''}`.trim()} />
         <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)' }}>{actor.name}</div>
@@ -215,7 +213,6 @@ const OwnerProfileSettings: React.FC = () => {
     <div style={{ maxWidth: 840, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: isMobile ? 14 : 16 }}>
       {/* Account security first: the Telegram account every sign-in is
           approved from, and moving it. */}
-      <TelegramCard />
 
       {/* Performance */}
       <Card>

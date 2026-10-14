@@ -28,15 +28,14 @@ export const bep20 = () => '0x' + Array.from({ length: 40 }, () => '0123456789ab
  * without this row cannot sign in: it is the state production reaches, not an
  * optional extra (§32 S16). Written directly because the real writer proves a
  * contact Telegram signed, and there is no Telegram here. The phone is the
- * account's mobile (the row's trigger insists), and merchant links carry 2FA
- * (its CHECK insists). Players and merchants only: a STAFF account has no
+ * account's mobile (the row's trigger insists). Players and merchants only: a STAFF account has no
  * Telegram (owner, 2026-10-13) — see `enrolAuthenticator`.
  */
 export async function verifyActor({ userId, mobile, audience }) {
   if (audience === 'STAFF') throw new Error('verifyActor: staff have no Telegram; use enrolAuthenticator');
   await pgQuery(
-    `INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor)
-     VALUES ($1, $2, $3, $4, $2 <> 'PLAYER')
+    `INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone)
+     VALUES ($1, $2, $3, $4)
      ON CONFLICT (user_id) DO NOTHING`,
     [userId, audience, String(7_000_000_000 + Math.floor(Math.random() * 999_999_999)), mobile],
     'e2e_verify_actor',
@@ -131,11 +130,11 @@ export async function seedMerchant({
   // right; the fixture was describing a merchant with no login.
   const merchantUserId = rid('muser');
   await pgQuery(
-    `INSERT INTO users (user_id, username, mobile, password_hash, status,
+    `INSERT INTO users (user_id, username, mobile, status,
                         roles, account_type)
-     VALUES ($1, $2, $3, $4, 'ACTIVE', ARRAY['merchant'], 'MERCHANT')
+     VALUES ($1, $2, $3, 'ACTIVE', ARRAY['merchant'], 'MERCHANT')
      ON CONFLICT (mobile, account_type) DO NOTHING`,
-    [merchantUserId, merchant.username ?? name, mobile, 'x'.repeat(60)],
+    [merchantUserId, merchant.username ?? name, mobile],
     'e2e_merchant_login',
   );
   // The MERCHANT panel gates too (§33.7), through the merchant fleet and the

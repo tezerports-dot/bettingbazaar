@@ -6,9 +6,11 @@
  * The App Link filter in AndroidManifest.xml routes taps on
  * `https://<PUBLIC_APP_ORIGIN>/#/…` to this app: a link to a screen of the
  * site, shared anywhere, opens that screen in the app the player already has
- * instead of a browser. No link the platform sends carries a credential: the
- * password reset is finished inside the Mini App (2026-10-08), and sign-in is a
- * form (CLAUDE.md §33), so nothing here grants a session or spends a token.
+ * instead of a browser. One link the platform sends carries a credential:
+ * Verify in the Mini App opens `https://<site>/#/tg/<ticket>` on the phone that
+ * pressed it (owner, 2026-10-13), and here that lands on the app's own
+ * `#/tg/<ticket>` screen, which spends the one-time ticket for the session
+ * (`pages/TelegramTicketPage.tsx`). Nothing in this file spends it.
  *
  * The manifest routes the tap; this takes the URL Android hands over and
  * turns it into a navigation inside the app.

@@ -1,36 +1,29 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The signup form and the login form.
+ * The player's way in: one "Continue with Telegram" button (owner, 2026-10-14).
  *
  * ── What this replaced ─────────────────────────────────────────────────────
- * Nineteen tests about a six-digit code the bot DMed, and a Sign-up tab whose
- * only control was a deep link into that bot. Both are gone (owner decision,
- * 2026-09-23) and the tests had to go with them: a suite pinning a design
- * decision has to be rewritten by the change that reverses the decision, or it
- * fails as a false alarm and gets deleted by somebody in a hurry — which loses
- * the properties that DID survive.
+ * Twenty-five tests of a signup form and a login form (mobile, password,
+ * confirm, invite, pace countdown, Forgot password). The owner deleted the
+ * player password: signing up and signing in are one action in Telegram. A
+ * suite pinning a design decision is rewritten by the change that reverses
+ * it, keeping what survived:
  *
- * Three survived and are asserted below, because each one is a real defect if
- * it regresses:
+ *   · the invite a referral link brought is applied, cannot be changed, and
+ *     the screen CONFIRMS whose it is, or says plainly that it is dead;
+ *   · no Aadhaar, no KYC (owner, 2026-10-02);
+ *   · no bot configured is said plainly, never a button that cannot work.
  *
- *   · the login form says NOTHING about whether a number is registered;
- *   · a refusal is shown VERBATIM, because the server names the field;
- *   · a Telegram step (verify, approve) is a second STEP, never an error.
- *
- * And two are new, both from the owner's spec: the invite code is pre-filled
- * and NON-EDITABLE when the player arrived by a referral link, and the screen
- * confirms whose code it is — a field nobody can change had better be right.
+ * ContinueWithTelegram.test.tsx proves the button itself.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const register = vi.fn();
-const signIn = vi.fn();
 const signInWithTelegram = vi.fn();
 const pollTelegramStep = vi.fn();
 vi.mock('../../services/GameContext', () => ({
-  useGame: () => ({ register, signIn, signInWithTelegram, pollTelegramStep }),
+  useGame: () => ({ signInWithTelegram, pollTelegramStep }),
 }));
 
 const checkInvite = vi.fn();
@@ -38,13 +31,6 @@ const getTelegramSetup = vi.fn();
 vi.mock('../../services/backend.service', () => ({
   getBackend: () => ({ checkInvite, getTelegramSetup }),
 }));
-
-/** What the server answers when the account owes a Telegram step. */
-const STEP = {
-  kind: 'telegram', leg: 'challenge', challengeToken: 'chal-1',
-  telegram: { url: 'https://t.me/bb_bot?startapp=cabc', botUsername: 'bb_bot', expiresAt: '' },
-  message: 'Open the link, share your contact, then come back here.',
-} as const;
 
 let stored: string | null = null;
 vi.mock('../../services/referralCapture', () => ({
@@ -54,302 +40,82 @@ vi.mock('../../services/referralCapture', () => ({
 const { default: AuthModal } = await import('./AuthModal');
 
 const onClose = vi.fn();
-const open = (mode: 'login' | 'register' = 'login') =>
-  render(<AuthModal onClose={onClose} initialMode={mode} />);
-
-const field = (name: RegExp) => screen.getByLabelText(name) as HTMLInputElement;
-
-async function fillSignup(over: Partial<Record<string, string>> = {}) {
-  await userEvent.type(field(/mobile number/i), over.mobile ?? '9876543210');
-  await userEvent.type(field(/^password$/i), over.password ?? 'a-long-enough-phrase');
-  await userEvent.type(field(/confirm password/i), over.confirm ?? 'a-long-enough-phrase');
-}
+const open = () => render(<AuthModal onClose={onClose} />);
 
 beforeEach(() => {
   stored = null;
   onClose.mockReset();
-  register.mockReset().mockResolvedValue(STEP);
-  signIn.mockReset().mockResolvedValue({ kind: 'done', user: {} });
-  signInWithTelegram.mockReset().mockResolvedValue({ ...STEP, leg: 'telegramLogin' });
+  signInWithTelegram.mockReset().mockResolvedValue({
+    kind: 'telegram', challengeToken: 'chal-1', delivery: 'MATCH', matchNumber: 47, message: '',
+    telegram: { url: 'https://t.me/bb_bot?startapp=cabc', botUsername: 'bb_bot', expiresAt: '' },
+  });
   pollTelegramStep.mockReset().mockResolvedValue('pending');
-  getTelegramSetup.mockReset().mockResolvedValue({ available: true, botUsername: 'bb_bot', resetUrl: 'https://t.me/bb_bot?startapp=reset-PLAYER' });
+  getTelegramSetup.mockReset().mockResolvedValue({ available: true, botUsername: 'bb_bot' });
   checkInvite.mockReset().mockResolvedValue({ valid: true, invitedBy: 'player3210' });
 });
 
-describe('the signup form', () => {
-  it('addresses every field by the name printed next to it', async () => {
-    // §32 S24: 124 labels on this platform sat next to the control they named
-    // with no htmlFor and no id, so the text was on screen and the control was
-    // not ADDRESSABLE by it. Untestable and unusable have one cause, and this
-    // whole file would be impossible without the fix.
-    open('register');
-    for (const name of [/mobile number/i, /^password$/i,
-                        /confirm password/i, /invite code/i]) {
-      expect(field(name)).toBeTruthy();
-    }
+describe('the sign-in screen', () => {
+  it('offers one button, and nothing to type', async () => {
+    open();
+    expect(await screen.findByRole('button', { name: /continue with telegram/i })).toBeTruthy();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(document.querySelector('input')).toBeNull();
+    expect(screen.queryByRole('tab')).toBeNull();
   });
 
-  it('submits what the player typed, then shows the Telegram step', async () => {
-    // Step 3: the account is not usable until Telegram verifies the mobile,
-    // so a signup ends on the link to open, never on a closed modal.
-    open('register');
-    await fillSignup();
-    await userEvent.click(screen.getByRole('button', { name: /create account/i }));
-    expect(register).toHaveBeenCalledWith({
-      mobile: '9876543210',
-      password: 'a-long-enough-phrase', confirmPassword: 'a-long-enough-phrase',
-      referralCode: undefined,
-    });
-    expect(onClose).not.toHaveBeenCalled();
-    const link = await screen.findByRole('link', { name: /open telegram/i });
-    expect(link.getAttribute('href')).toBe(STEP.telegram.url);
-    expect(screen.getByText(STEP.message)).toBeTruthy();
-  });
-
-  it('says so, without a link, when Telegram is not configured', async () => {
-    register.mockResolvedValue({ kind: 'unavailable', message: 'Your account is created. Sign in later to finish.' });
-    open('register');
-    await fillSignup();
-    await userEvent.click(screen.getByRole('button', { name: /create account/i }));
-    expect((await screen.findByRole('status')).textContent).toMatch(/sign in later/i);
-    expect(screen.queryByRole('link', { name: /open telegram/i })).toBeNull();
-  });
-
-  it('keeps every character typed into every field', async () => {
-    // §32 S23. `FakeWinnersManager` declared its field component inside itself,
-    // so React remounted it on every keystroke and typing "Rahul" left "R". A
-    // test that types ONE character passes, which is why this types many into
-    // every box and reads them all back.
-    open('register');
-    await fillSignup({ mobile: '9000011111' });
-    expect(field(/mobile number/i).value).toBe('9000011111');
-    expect(field(/^password$/i).value).toBe('a-long-enough-phrase');
-  });
-
-  it('holds the button until the form can possibly succeed', async () => {
-    open('register');
-    const button = screen.getByRole('button', { name: /create account/i }) as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
-    await fillSignup();
-    expect(button.disabled).toBe(false);
-  });
-
-  it('keeps non-digits out of the mobile box', async () => {
-    open('register');
-    await userEvent.type(field(/mobile number/i), '98765-43210');
-    expect(field(/mobile number/i).value).toBe('9876543210');
+  it('says the same button makes a new account', async () => {
+    open();
+    expect(await screen.findByText(/same button creates your account/i)).toBeTruthy();
   });
 
   it('asks for no Aadhaar — KYC was removed (owner, 2026-10-02)', async () => {
-    open('register');
-    expect(screen.queryByLabelText(/aadhaar/i)).toBeNull();
+    open();
+    await screen.findByRole('button', { name: /continue with telegram/i });
+    expect(screen.queryByText(/aadhaar/i)).toBeNull();
   });
 
-  it('strips a country code the player typed as well as the one on screen', async () => {
-    // FOUND BY TYPING IT. `+91 98765 43210` used to land as `9198765432`: ten
-    // digits, starting with a 9, indistinguishable from a real number to every
-    // check on both sides. The account would be created on a number that is
-    // not theirs, the Telegram contact share would then match nothing forever,
-    // and `users.mobile` is never mutable — so the player sits at the
-    // verification gate permanently and support cannot fix it either.
-    //
-    // Both boxes, because the login box has the same "+91" printed beside it
-    // and the same person types into it.
-    for (const [screenName, label] of [
-      ['register', /mobile number/i] as const,
-      ['login', /mobile number/i] as const,
-    ]) {
-      const view = render(<AuthModal onClose={onClose} initialMode={screenName as 'login' | 'register'} />);
-      await userEvent.type(field(label), '+91 98765 43210');
-      expect(field(label).value, screenName).toBe('9876543210');
-      view.unmount();
-    }
-  });
-
-  it('strips a leading zero, the other way an Indian number gets written', async () => {
-    open('register');
-    await userEvent.type(field(/mobile number/i), '09876543210');
-    expect(field(/mobile number/i).value).toBe('9876543210');
-  });
-
-  it('shows the server refusal VERBATIM, because it names the field', async () => {
-    register.mockRejectedValue(new Error('Enter your 10-digit mobile number — the one on your Telegram account — without +91.'));
-    open('register');
-    await fillSignup();
-    await userEvent.click(screen.getByRole('button', { name: /create account/i }));
-    expect(await screen.findByRole('alert')).toHaveProperty(
-      'textContent', 'Enter your 10-digit mobile number — the one on your Telegram account — without +91.');
-    expect(onClose).not.toHaveBeenCalled();
-  });
-
-  it('tells them what happens next, before they submit', async () => {
-    // Somebody who does not know a Telegram step is coming will read the gate
-    // that appears a second later as an error.
-    open('register');
-    expect(screen.getByText(/share your contact to verify it/i)).toBeTruthy();
-  });
-});
-
-describe('the invite code, when the player arrived by a referral link', () => {
-  it('pre-fills it and does NOT let them edit it', async () => {
-    // Owner's requirement. A code somebody retypes is a code that can be
-    // mistyped, and a mistyped code silently costs the referrer their earning —
-    // the worst possible shape for an attribution bug.
-    stored = 'ALICE123';
-    open('register');
-    const box = field(/invite code/i);
-    expect(box.value).toBe('ALICE123');
-    expect(box.disabled).toBe(true);
-  });
-
-  it('confirms whose code it is', async () => {
-    stored = 'ALICE123';
-    open('register');
-    expect(await screen.findByText(/invited by/i)).toBeTruthy();
-    expect(screen.getByText('player3210')).toBeTruthy();
-    expect(checkInvite).toHaveBeenCalledWith('ALICE123');
-  });
-
-  it('offers a way out when the link carried a dead code', async () => {
-    // Without this the player is stuck: a field they cannot edit, holding a
-    // code the server will refuse by name, with no control that changes it.
-    // §32 S22 in reverse — a state with no control at all.
-    checkInvite.mockResolvedValue({ valid: false });
-    stored = 'DEADCODE';
-    open('register');
-    await userEvent.click(await screen.findByRole('button', { name: /clear it/i }));
-    expect(field(/invite code/i).value).toBe('');
-  });
-
-  it('leaves the box EDITABLE for somebody who arrived on their own', async () => {
-    open('register');
-    const box = field(/invite code/i);
-    expect(box.disabled).toBe(false);
-    await userEvent.type(box, 'friend9');
-    // Upper-cased on the way in: codes are generated upper case and looked up
-    // by exact match, so a lower-case entry matches nothing.
-    expect(box.value).toBe('FRIEND9');
-  });
-});
-
-describe('the login form', () => {
-  it('signs in and closes', async () => {
-    open('login');
-    await userEvent.type(field(/mobile number/i), '9876543210');
-    await userEvent.type(field(/^password$/i), 'a-long-enough-phrase');
-    await userEvent.click(screen.getByRole('button', { name: /^log in$/i }));
-    expect(signIn).toHaveBeenCalledWith('9876543210', 'a-long-enough-phrase');
-    expect(onClose).toHaveBeenCalled();
-  });
-
-  it('promises nothing about whether the number is registered', async () => {
-    // A login form that says "no such account" is a way to test whether a given
-    // person gambles here. The server answers a wrong password and an unknown
-    // number identically; this screen must not add a distinction of its own.
-    signIn.mockRejectedValue(new Error('Invalid credentials'));
-    open('login');
-    await userEvent.type(field(/mobile number/i), '9876543210');
-    await userEvent.type(field(/^password$/i), 'wrong');
-    await userEvent.click(screen.getByRole('button', { name: /^log in$/i }));
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toBe('Invalid credentials');
-    expect(alert.textContent).not.toMatch(/not registered|no account|unknown/i);
-  });
-
-  it('treats a Telegram step as a STEP, not an error', async () => {
-    // Approval on, or a mobile never verified: the password was right. A
-    // screen that read that as a failure would show "Invalid credentials" to
-    // somebody whose password was correct.
-    signIn.mockResolvedValue(STEP);
-    open('login');
-    await userEvent.type(field(/mobile number/i), '9876543210');
-    await userEvent.type(field(/^password$/i), 'a-long-enough-phrase');
-    await userEvent.click(screen.getByRole('button', { name: /^log in$/i }));
-
-    expect(screen.queryByRole('alert')).toBeNull();
-    expect(onClose).not.toHaveBeenCalled();
-    expect(await screen.findByRole('link', { name: /open telegram/i })).toBeTruthy();
-  });
-
-  it('polls the step and closes once Telegram approves', async () => {
-    signIn.mockResolvedValue(STEP);
-    pollTelegramStep.mockResolvedValue('done');
-    open('login');
-    await userEvent.type(field(/mobile number/i), '9876543210');
-    await userEvent.type(field(/^password$/i), 'a-long-enough-phrase');
-    await userEvent.click(screen.getByRole('button', { name: /^log in$/i }));
-    await vi.waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 5000 });
-    expect(pollTelegramStep).toHaveBeenCalledWith('challenge', 'chal-1');
-  });
-
-  it('stops polling and shows the refusal when Telegram denies it', async () => {
-    signIn.mockResolvedValue(STEP);
-    pollTelegramStep.mockRejectedValue(new Error('This sign-in was refused in Telegram.'));
-    open('login');
-    await userEvent.type(field(/mobile number/i), '9876543210');
-    await userEvent.type(field(/^password$/i), 'a-long-enough-phrase');
-    await userEvent.click(screen.getByRole('button', { name: /^log in$/i }));
-    expect((await screen.findByRole('alert', {}, { timeout: 5000 })).textContent).toMatch(/refused in telegram/i);
-    expect(onClose).not.toHaveBeenCalled();
-    expect(screen.queryByRole('link', { name: /open telegram/i })).toBeNull();
-  });
-
-  it('offers Log in with Telegram, polled on its own route', async () => {
-    open('login');
-    await userEvent.click(await screen.findByRole('button', { name: /log in with telegram/i }));
+  it('opens the sign-in when pressed (ContinueWithTelegram.test.tsx proves the rest)', async () => {
+    open();
+    await userEvent.click(await screen.findByRole('button', { name: /continue with telegram/i }));
     expect(signInWithTelegram).toHaveBeenCalled();
     expect(await screen.findByRole('link', { name: /open telegram/i })).toBeTruthy();
   });
 
-  it('sends Forgot password to the Mini App reset link', async () => {
-    open('login');
-    const link = await screen.findByRole('link', { name: /forgot password/i });
-    expect(link.getAttribute('href')).toBe('https://t.me/bb_bot?startapp=reset-PLAYER');
+  it('says plainly that nobody can sign in when no bot is configured', async () => {
+    getTelegramSetup.mockResolvedValue({ available: false, botUsername: '' });
+    open();
+    expect((await screen.findByRole('alert')).textContent).toMatch(/telegram is not set up on this site yet/i);
+    expect(screen.queryByRole('button', { name: /continue with telegram/i })).toBeNull();
   });
 
-  it('offers neither Telegram button when no bot is configured', async () => {
-    getTelegramSetup.mockResolvedValue({ available: false, botUsername: '', resetUrl: null });
-    open('login');
-    await screen.findByRole('button', { name: /^log in$/i });
-    await Promise.resolve();
-    expect(screen.queryByRole('button', { name: /log in with telegram/i })).toBeNull();
-    expect(screen.queryByRole('link', { name: /forgot password/i })).toBeNull();
+  it('says the site could not be reached, rather than that Telegram is off, when the setup read fails', async () => {
+    getTelegramSetup.mockRejectedValue(new Error('network'));
+    open();
+    expect((await screen.findByRole('alert')).textContent).toMatch(/could not reach the site/i);
+  });
+});
+
+describe('the invite code, when the player arrived by a referral link', () => {
+  it('confirms whose code it is, and offers no box to change it', async () => {
+    stored = 'ALICE123';
+    open();
+    expect(await screen.findByText(/invited by/i)).toBeTruthy();
+    expect(screen.getByText('player3210')).toBeTruthy();
+    expect(checkInvite).toHaveBeenCalledWith('ALICE123');
+    expect(document.querySelector('input')).toBeNull();
   });
 
-  it('counts down instead of blaming the password when the server PACES it', async () => {
-    // `/login` is paced at one attempt per ten seconds, keyed on the MOBILE, so
-    // a player who mistypes and immediately retries will hit it. Without this,
-    // the refusal sits beside a button that still looks pressable: they press
-    // it, extend the window, and the form reads as broken rather than
-    // throttled. The paced fields have to survive the throw for this to work.
-    signIn.mockRejectedValue(Object.assign(new Error('Too many attempts. Try again in 10 seconds.'), {
-      code: 'LOGIN_PACED', retryAfter: 10,
-    }));
-    open('login');
-    await userEvent.type(field(/mobile number/i), '9876543210');
-    await userEvent.type(field(/^password$/i), 'a-long-enough-phrase');
-    await userEvent.click(screen.getByRole('button', { name: /^log in$/i }));
-
-    const button = await screen.findByRole('button', { name: /try again in \d+s/i });
-    expect((button as HTMLButtonElement).disabled).toBe(true);
-    // And it must NOT be reported as a bad password.
-    expect(screen.queryByRole('alert')).toBeNull();
+  it('says plainly when the link carried a dead code', async () => {
+    checkInvite.mockResolvedValue({ valid: false });
+    stored = 'DEADCODE';
+    open();
+    expect(await screen.findByText(/DEADCODE.*not recognised/i)).toBeTruthy();
+    expect(screen.queryByText(/invited by/i)).toBeNull();
   });
 
-  it('offers a way to the signup form, and back', async () => {
-    open('login');
-    await userEvent.click(screen.getByRole('button', { name: /create an account/i }));
-    expect(field(/confirm password/i)).toBeTruthy();
-    await userEvent.click(screen.getByRole('tab', { name: /log in/i }));
-    expect(field(/mobile number/i)).toBeTruthy();
-  });
-
-  it('offers NO sign-in code and NO bot link — the bot cannot sign anybody in', async () => {
-    // The security half of the 2026-09-23 change, asserted from the screen: a
-    // compromised or suspended bot must not be an account takeover, and with a
-    // fleet of hundreds that stopped being hypothetical.
-    open('login');
-    expect(screen.queryByText(/send code|sign-in code|telegram/i)).toBeNull();
-    expect(screen.queryByRole('link')).toBeNull();
+  it('checks no code for somebody who arrived on their own', async () => {
+    open();
+    await screen.findByRole('button', { name: /continue with telegram/i });
+    expect(checkInvite).not.toHaveBeenCalled();
   });
 });

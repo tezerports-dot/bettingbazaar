@@ -32,7 +32,7 @@ import { analyticsWindowFor } from '../constants';
 import { platform } from './api';
 import { getBackend, setCdnBaseUrl } from './backend.service';
 import { decodeCyclePhase, decodeCycleResult } from './realtimeProtocol';
-import type { SignInStep } from './backend.interface';
+import type { SignInStep, TelegramDelivery } from './backend.interface';
 import { applyBranding } from './branding';
 
 
@@ -95,44 +95,16 @@ const poolStats = (d: any): LiveStats => {
   return { totalDelhi, totalBombay, totalPool: totalDelhi + totalBombay, poolsHidden: false };
 };
 
-/**
- * What the signup form submits.
- *
- * Declared here rather than inline so the form, the context and the backend
- * agree on one shape — a screen that quietly stopped sending `confirmPassword`
- * would be answered "the two passwords do not match" for a field it never
- * filled in.
- */
-export interface RegisterForm {
-  mobile: string;
-  password: string;
-  confirmPassword: string;
-  /** Pre-filled and non-editable when the player arrived by a referral link. */
-  referralCode?: string;
-}
-
 interface GameContextType {
   user: User | null;
   isAuthenticated: boolean;
   isOnline: boolean;
-  /**
-   * Create an account from the signup form. Answers with the Telegram step the
-   * account owes before it can be used (Step 3); never seats anybody.
-   *
-   * Throws with the server's own sentence on a refusal: every one of them names
-   * the FIELD that is wrong.
-   */
-  register: (form: RegisterForm) => Promise<SignInStep>;
-  /**
-   * Sign in with the mobile and password: seated (`done`), or the Telegram
-   * step owed first. A step is deliberately not a throw: the password was
-   * right, and the form has a next screen to show.
-   */
-  signIn: (mobile: string, password: string) => Promise<SignInStep>;
-  /** "Login with Telegram": the step to open. */
-  signInWithTelegram: () => Promise<SignInStep>;
+  /** "Continue with Telegram", the one way in: the step to open. */
+  signInWithTelegram: (opts?: { delivery?: TelegramDelivery; referralCode?: string }) => Promise<SignInStep>;
+  /** The `#/tg/<ticket>` page: the ticket exchanged for the session, and the player seated. */
+  signInWithTicket: (ticket: string) => Promise<void>;
   /** Ask once whether Telegram has answered; seats the player when it has. */
-  pollTelegramStep: (leg: 'challenge' | 'telegramLogin', challengeToken: string) => Promise<'pending' | 'done'>;
+  pollTelegramStep: (challengeToken: string) => Promise<'pending' | 'done' | 'handedOff'>;
   logout: () => void;
   /**
    * The switched-on boards, in the admin's home-page order
@@ -892,25 +864,19 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   }, [user?.id]);
 
   // ── AUTH ──────────────────────────────────────────────────────────────────
-  // ── AUTH ──────────────────────────────────────────────────────────────────
-  // The transport seats the token (realBackend's one seater); this seats the
-  // PLAYER, from the user the same response carried. One function for every
-  // way in, so none of them can show a wallet the others do not.
-  const seatStep = (step: SignInStep): SignInStep => {
-    if (step.kind === 'done') setUser({ ...step.user } as User);
-    return step;
+  // The transport seats the token (realBackend's one seater); these seat the
+  // PLAYER, from the user the same response carried.
+  const signInWithTelegram = async (opts?: { delivery?: TelegramDelivery; referralCode?: string }): Promise<SignInStep> =>
+    backend.loginWithTelegram(opts);
+
+  const signInWithTicket = async (ticket: string) => {
+    setUser({ ...(await backend.redeemTelegramTicket(ticket)) } as User);
   };
 
-  const register = async (form: RegisterForm): Promise<SignInStep> => backend.register(form);
-
-  const signIn = async (mobile: string, password: string): Promise<SignInStep> =>
-    seatStep(await backend.login(mobile, password));
-
-  const signInWithTelegram = async (): Promise<SignInStep> => backend.loginWithTelegram();
-
-  const pollTelegramStep = async (leg: 'challenge' | 'telegramLogin', challengeToken: string) => {
-    const r = await backend.pollSignIn(leg, challengeToken);
+  const pollTelegramStep = async (challengeToken: string) => {
+    const r = await backend.pollSignIn(challengeToken);
     if (r.state === 'done') { setUser({ ...r.user } as User); return 'done' as const; }
+    if (r.state === 'handedOff') return 'handedOff' as const;
     return 'pending' as const;
   };
 
@@ -998,7 +964,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
 
   return (
     <GameContext.Provider value={{
-      user, isAuthenticated: !!user, isOnline, register, signIn, signInWithTelegram, pollTelegramStep, logout,
+      user, isAuthenticated: !!user, isOnline, signInWithTelegram, signInWithTicket, pollTelegramStep, logout,
       boards, currentBoard,
       cycleType, setCycleType, cycles, currentCycle,
       pastCycles: myPastCycles, audience, setAudience, loadCycleHistory, gameState: currentCycle.status, serverTimeOffset,

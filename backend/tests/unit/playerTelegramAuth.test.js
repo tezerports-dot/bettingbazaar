@@ -1,26 +1,18 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The form is the door, and the bot cannot mint a session.
+ * Players and merchants Continue with Telegram; only staff type a password.
  *
- * ── What this replaces, and why it had to be replaced rather than fixed ─────
- * `telegramOnlyAuth.test.js` asserted the OPPOSITE of every property below: no
- * player password, no `/login`, no `/register`, and a one-time link built to
- * leak as little as possible. All of that was correct until 2026-09-23 and is
- * now exactly wrong. A test that pins a design decision has to be rewritten by
- * the change that reverses the decision, or it fails as a false alarm and gets
- * deleted by somebody in a hurry — which loses the properties that DID survive.
- *
- * Three survived, and they are the ones that matter most here:
+ * ── What this replaces ──────────────────────────────────────────────────────
+ * `playerFormAuth.test.js` pinned the form (owner, 2026-09-23): `/register`,
+ * `/login`, `/login/2fa`. The owner reversed that on 2026-10-14: one "Continue
+ * with Telegram" button, signup and sign-in the same action, and the password
+ * deleted for players and merchants. A test that pins a design decision is
+ * rewritten by the change that reverses it, keeping what survived:
  *
  *   • one session issuer, still (`issueSession`, one `res.cookie` in the file);
- *   • the role check still runs AFTER the password, so the 403 cannot be used
- *     to sort phone numbers into staff and non-staff;
- *   • it still runs on BOTH legs of the login, so a challenge minted at one
- *     door cannot be redeemed at the other.
- *
- * Everything else here is about ABSENCE, which is what an ordinary test cannot
- * see: a happy-path suite for the form login passes just as well with a bot
- * that still hands out one-time links sitting beside it.
+ *   • the door is asked on every leg, so an approval opened at one door cannot
+ *     be redeemed at another;
+ *   • a handler mounted without a door refuses rather than defaulting.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'fs';
@@ -44,11 +36,25 @@ const player   = read('../../domains/identity/playerAuth.routes.js');
 const telegram = read('../../domains/telegram/miniApp.routes.js');
 const schema   = read('../../../database/schema.sql');
 
-describe('a player signs up and signs in with a form', () => {
-  it('serves /register, /login and /login/2fa on the player router', () => {
-    expect(player).toMatch(/router\.post\('\/register'/);
-    expect(player).toMatch(/router\.post\('\/login'/);
-    expect(player).toMatch(/router\.post\('\/login\/2fa'/);
+describe('a player continues with Telegram, and types nothing', () => {
+  it('serves only the Telegram legs on the player router: no form, no password', () => {
+    expect(player).toMatch(/router\.post\('\/login\/telegram'/);
+    expect(player).toMatch(/router\.post\('\/login\/telegram\/complete'/);
+    expect(player).toMatch(/router\.post\('\/login\/telegram\/ticket'/);
+    expect(player).not.toMatch(/router\.post\('\/register'/);
+    expect(player).not.toMatch(/router\.post\('\/login'[,)]/);
+    expect(player).not.toMatch(/router\.post\('\/login\/2fa'/);
+    expect(player).not.toMatch(/password/i);
+  });
+
+  it('keeps no password for anybody but staff, in the schema itself', () => {
+    expect(schema).toMatch(/CONSTRAINT users_password_staff_only\s+CHECK \(account_type = 'STAFF' OR password_hash IS NULL\)/);
+    expect(schema).toMatch(/DROP TABLE IF EXISTS password_resets/);
+  });
+
+  it('deleted the player and merchant password services outright', () => {
+    expect(existsSync(path('../../domains/identity/passwordReset.service.js'))).toBe(false);
+    expect(existsSync(path('../../domains/identity/accountTelegram.js'))).toBe(false);
   });
 
   it('mounts that router under /api/v1/auth', () => {
@@ -83,10 +89,12 @@ describe('the Telegram surface grants access only through the one issuer', () =>
     expect(schema).not.toMatch(/CREATE TABLE IF NOT EXISTS telegram_login_codes/);
   });
 
-  it('the Mini App mints no token of its own: it calls the one issuer, naming Telegram', () => {
+  it('the Mini App mints no session at all: the website redeems, through the one issuer', () => {
+    // The Mini App answers a sign-in; the browser that asked (or the site the
+    // ticket opens) is signed in by routes.js, with `amr` naming Telegram.
     expect(telegram).not.toMatch(/signToken/);
-    expect(telegram).toMatch(/import \{ issueSession \} from '\.\.\/\.\.\/routes\.js'/);
-    for (const call of telegram.match(/issueSession\([^)]*\)/g) || []) expect(call).toMatch(/'tg'/);
+    expect(telegram).not.toMatch(/issueSession|issueMerchantSession/);
+    expect(routes).toMatch(/sessionFor\(door, user, res, \{ amr: \['tg'\]/);
     expect(telegram).not.toMatch(/router\.post\('\/exchange'/);
     expect(telegram).not.toMatch(/router\.post\('\/otp\//);
   });
@@ -110,26 +118,23 @@ describe('one session issuer, and a door that says who it admits', () => {
   });
 
   it('states the guest list as a DOOR rather than a hardcoded predicate', () => {
-    // Two doors now — staff and player — and they differ in exactly one thing.
-    // Writing the second as a second handler would copy the password read, the
-    // blocked-account refusal, the argon2 upgrade and the 2FA decision, and §5
-    // says what happens next.
+    // Three doors, one table: which legs each has is `DOOR_LEGS`.
     expect(routes).toMatch(/export const LOGIN_DOOR/);
     expect(routes).toMatch(/STAFF:\s*\{/);
     expect(routes).toMatch(/PLAYER:\s*\{/);
   });
 
-  it('applies the door on BOTH legs of the login', () => {
-    // A challenge proves a password was right five minutes ago. If only the
-    // password leg checked the door, a player's valid challenge posted to the
-    // staff endpoint would be redeemed by the staff handler.
-    // Step 3: one `accountRefusal` asks it, and every leg calls that.
+  it('asks the door on every leg that signs in', () => {
+    // One `accountRefusal` asks it: the staff password leg, and the one place
+    // every Telegram redemption (poll or ticket) passes through.
     expect((routes.match(/door\.admits\(user\)/g) || []).length).toBe(1);
-    expect((routes.match(/accountRefusal\(door, user/g) || []).length).toBeGreaterThanOrEqual(4);
+    expect(routes).toMatch(/async function signInRedeemed\(door, userId, res\) \{\s*const user = await db\.users\.getUser\(userId\);\s*const refused = accountRefusal\(door, user\)/);
+    expect((routes.match(/return signInRedeemed\(door, /g) || []).length).toBe(2);
   });
 
-  it('defaults an unmounted call to the STAFF door, never to "anyone"', () => {
-    expect(routes).toMatch(/req\.loginDoor \|\| LOGIN_DOOR\.STAFF/);
+  it('refuses a Telegram leg mounted without a player or merchant door, never defaulting', () => {
+    expect(routes).toMatch(/const door = req\.loginDoor;\s*if \(!door \|\| !TELEGRAM_AUDIENCES\.includes\(door\.accountType\)\)/);
+    expect(routes).toMatch(/const door = LOGIN_DOOR\.STAFF;/);
   });
 
   it('checks the door AFTER the password, never before', () => {
@@ -137,7 +142,7 @@ describe('one session issuer, and a door that says who it admits', () => {
     // somebody who already knows the password, or the endpoint becomes a way to
     // sort phone numbers into staff and non-staff.
     const handler = routes.slice(routes.indexOf('export async function loginHandler'),
-                                 routes.indexOf('export async function loginTwoFactorHandler'));
+                                 routes.indexOf('async function staffCodeRequired'));
     const pwAt   = handler.indexOf('verifyPassword');
     const doorAt = handler.indexOf('accountRefusal(door, user');
     expect(pwAt).toBeGreaterThan(-1);

@@ -33,6 +33,7 @@ import RulesPage   from './pages/RulesPage';
 import FaqPage     from './pages/FaqPage';
 import MyBetsPage  from './pages/MyBetsPage';
 import SupportPage from './pages/SupportPage';
+import TelegramTicketPage from './pages/TelegramTicketPage';
 
 // ── LAZY GAME SECTIONS ────────────────────────────────────────────────────────
 const CasinoPage          = React.lazy(() => import('./pages/CasinoPage'));
@@ -309,6 +310,8 @@ const App: React.FC = () => (
 
                           {/* Info */}
                           <Route path="/results"         element={<ResultsPage />} />
+                          {/* Where Verify in the Mini App sends a player: the one-time ticket, exchanged. */}
+                          <Route path="/tg/:ticket"      element={<TelegramTicketPage />} />
                           <Route path="/promo"           element={<PromoPage />} />
                           <Route path="/rules"           element={<RulesPage />} />
                           <Route path="/faq"             element={<FaqPage />} />

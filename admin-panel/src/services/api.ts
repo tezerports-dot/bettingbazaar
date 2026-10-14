@@ -310,7 +310,7 @@ export const merchants = {
   // `kind`: 'AGENT' (works in a team under a supervisor) or 'DIRECT' (a
   // merchant account: INR, its own pool, accounts and sub-members). Owner,
   // 2026-10-11; the server refuses any other value (UNKNOWN_KIND).
-  create: async (data: { username: string; mobile: string; password: string; email?: string; kind: 'AGENT' | 'DIRECT' }) => {
+  create: async (data: { username: string; mobile: string; email?: string; kind: 'AGENT' | 'DIRECT' }) => {
     const res = await api.post('/api/admin/merchants/create', data);
     return res.data;
   },

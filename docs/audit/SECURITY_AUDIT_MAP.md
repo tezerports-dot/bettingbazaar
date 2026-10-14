@@ -3540,8 +3540,8 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 315 |
-| Reachable with **no auth middleware** | 38 |
+| Route declarations in `backend/**` | 304 |
+| Reachable with **no auth middleware** | 39 |
 | Staff routes carrying an **area** (permission key) | 169 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 8 |
 
@@ -3578,14 +3578,15 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /v1/game/cycles/history  (backend/domains/user/user.routes.js)`
 - `GET /v1/system/config  (backend/domains/user/user.routes.js)`
 - `GET /v1/winners  (backend/routes/winners.routes.js)`
-- `POST /auth/login  (backend/domains/merchant/merchant.routes.js)`
-- `POST /auth/signup  (backend/domains/merchant/merchant.routes.js)`
+- `POST /auth/login/telegram  (backend/domains/merchant/merchant.routes.js)`
+- `POST /auth/login/telegram/complete  (backend/domains/merchant/merchant.routes.js)`
+- `POST /login/telegram  (backend/domains/identity/playerAuth.routes.js)`
+- `POST /login/telegram/complete  (backend/domains/identity/playerAuth.routes.js)`
+- `POST /login/telegram/ticket  (backend/domains/identity/playerAuth.routes.js)`
 - `POST /logout  (backend/routes.js)`
 - `POST /mini-app/approve  (backend/domains/telegram/miniApp.routes.js)`
 - `POST /mini-app/context  (backend/domains/telegram/miniApp.routes.js)`
-- `POST /mini-app/password-reset  (backend/domains/telegram/miniApp.routes.js)`
-- `POST /mini-app/signup  (backend/domains/telegram/miniApp.routes.js)`
-- `POST /register  (backend/domains/identity/playerAuth.routes.js)`
+- `POST /mini-app/continue  (backend/domains/telegram/miniApp.routes.js)`
 - `POST /v1/client/endpoint-events  (backend/routes/clientTelemetry.routes.js)`
 - `POST /wallet/:providerKey  (backend/domains/casino/gameProvider.routes.js)`
 
@@ -3608,9 +3609,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 452 |
-| Parameters only (safe by construction) | 298 |
-| Interpolating into statement text (each needs a reading) | 148 |
+| `pgQuery` call sites | 454 |
+| Parameters only (safe by construction) | 301 |
+| Interpolating into statement text (each needs a reading) | 147 |
 | Statement text built elsewhere and passed in (each needs a reading) | 6 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
@@ -3627,9 +3628,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 130 | 0 | 0 |
+| `user-panel` | 136 | 0 | 0 |
 | `admin-panel` | 125 | 0 | 0 |
-| `merchant-panel` | 63 | 0 | 0 |
+| `merchant-panel` | 62 | 0 | 0 |
 
 <!-- END GENERATED -->
 

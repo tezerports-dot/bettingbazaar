@@ -2,9 +2,10 @@
 /**
  * A merchant account's sub-members (owner, 2026-10-11 — Phase B).
  *
- * Each sub-member has their own login at the merchant door (mobile and
- * password; they verify the mobile in Telegram at their first sign-in, like
- * every merchant login) and one or more roles:
+ * Each sub-member has their own login at the merchant door: the mobile the
+ * owner adds here. They sign in with Continue with Telegram, sharing that
+ * mobile's contact once, like every merchant login (owner, 2026-10-14: no
+ * password). And one or more roles:
  *
  *   Deposit verifier      (DEPOSITS)     works the buys paid into the accounts
  *                                        assigned to them for deposits;
@@ -58,7 +59,6 @@ const RoleBoxes: React.FC<{ idPrefix: string; roles: StaffRole[]; onChange: (nex
 
 export const AddSubMemberForm: React.FC<{ onAdded: () => Promise<void> }> = ({ onAdded }) => {
   const [mobile, setMobile] = useState('');
-  const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [roles, setRoles] = useState<StaffRole[]>([]);
   const [busy, setBusy] = useState(false);
@@ -68,9 +68,9 @@ export const AddSubMemberForm: React.FC<{ onAdded: () => Promise<void> }> = ({ o
     setRefusal('');
     setBusy(true);
     try {
-      await api.addSubMember({ mobile: mobile.trim(), password, name: name.trim(), roles });
+      await api.addSubMember({ mobile: mobile.trim(), name: name.trim(), roles });
       toast.success(`${name.trim() || 'Sub-member'} added. They sign in at the merchant door and verify in Telegram.`);
-      setMobile(''); setPassword(''); setName(''); setRoles([]);
+      setMobile(''); setName(''); setRoles([]);
       await onAdded();
     } catch (err) {
       setRefusal(errorText(err, 'Could not add the sub-member.'));
@@ -81,16 +81,13 @@ export const AddSubMemberForm: React.FC<{ onAdded: () => Promise<void> }> = ({ o
 
   return (
     <Card>
-      <CardTitle title="Add a sub-member" sub="Their own login for this merchant account. They verify their mobile in Telegram when they first sign in." />
+      <CardTitle title="Add a sub-member" sub="Their own login for this merchant account. They sign in with Continue with Telegram, on the Telegram of this mobile." />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
         <Field label="Name" htmlFor="sm-new-name">
           <input id="sm-new-name" value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} maxLength={60} />
         </Field>
         <Field label="Mobile (10 digits, on their Telegram)" htmlFor="sm-new-mobile">
           <input id="sm-new-mobile" value={mobile} inputMode="numeric" autoComplete="off" onChange={(e) => setMobile(e.target.value)} style={inputStyle} />
-        </Field>
-        <Field label="Password" htmlFor="sm-new-password" hint="A strong password: if it is too short or too simple, the refusal below says what to change.">
-          <input id="sm-new-password" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} style={inputStyle} />
         </Field>
       </div>
       <div style={{ marginTop: 12 }}>

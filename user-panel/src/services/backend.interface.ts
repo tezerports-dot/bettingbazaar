@@ -13,76 +13,53 @@ import {
 export interface TelegramBlock { url: string; botUsername: string; expiresAt: string }
 
 /**
- * What a sign-in or signup leaves the form to do next.
+ * What "Continue with Telegram" leaves the screen to do next.
  *
  * `done`: seated. `telegram`: open `telegram.url` and poll with
- * `challengeToken` (`leg` says which route answers the poll). `password`: a
- * "Login with Telegram" that Telegram approved and the password must finish
- * (staff and merchants only; never a player, kept for one shape across doors).
+ * `challengeToken`. `unavailable`: no bot is configured, said plainly.
  */
 export type SignInStep =
   | { kind: 'done'; user: User }
-  | { kind: 'telegram'; leg: 'challenge' | 'telegramLogin'; challengeToken: string;
-      telegram: TelegramBlock | null; message: string }
+  | { kind: 'telegram'; challengeToken: string;
+      telegram: TelegramBlock | null; message: string;
+      /** How the approval comes back, and the MATCH number to show. */
+      delivery?: TelegramDelivery; matchNumber?: number | null }
   | { kind: 'unavailable'; message: string };
 
-/** One poll of a Telegram step: still waiting, or seated. A refusal throws. */
-export type PollResult = { state: 'pending' } | { state: 'done'; user: User };
+/**
+ * How an approved "Continue with Telegram" reaches a browser (CLAUDE.md §33):
+ * MATCH, this screen polls and shows a number the Mini App must match;
+ * HANDOFF, Telegram opens the site on the phone that pressed Verify.
+ */
+export type TelegramDelivery = 'MATCH' | 'HANDOFF';
+
+/**
+ * One poll of a Telegram step: still waiting, seated, or handed off (verified,
+ * and the session went where Telegram opened the site). A refusal throws.
+ */
+export type PollResult = { state: 'pending' } | { state: 'done'; user: User } | { state: 'handedOff'; message: string };
 
 /** `GET /api/telegram/mini-app?panel=PLAYER`. */
-export interface TelegramSetup { available: boolean; botUsername: string; resetUrl: string | null }
-
-/** The signed-in player's own Telegram (`GET /api/v1/auth/telegram`). */
-export interface MyTelegram {
-  available: boolean; linked: boolean; telegramUsername: string; firstName: string;
-  verifiedAt: string | null; linkedAt: string | null;
-  twoFactor: { enabled: boolean; required: boolean };
-}
+export interface TelegramSetup { available: boolean; botUsername: string }
 
 export interface Backend {
   // --- AUTH ---
   //
-  // A FORM. Telegram proves the mobile once, at signup, through the Mini App
-  // (Step 3, owner 2026-10-07), and approves a sign-in only when the player
-  // switched that on. Nothing the bot does grants a session by itself except
-  // "Login with Telegram", which proves the same Telegram account the signup
-  // verified.
+  // "Continue with Telegram", and nothing else (owner, 2026-10-14): no
+  // password, no form, no reset. Signing up and signing in are one action;
+  // the first Verify shares the contact once and makes the account.
 
-  /**
-   * Create an account from the SIGNUP FORM. Never a session: the account is
-   * usable once its mobile is verified in Telegram, so this answers with the
-   * Telegram step (or `unavailable` when no bot is configured).
-   */
-  register(form: {
-    mobile: string; password: string; confirmPassword: string;
-    referralCode?: string; captchaToken?: string;
-  }): Promise<SignInStep>;
+  /** Ask once whether Telegram has answered; seats on approval. */
+  pollSignIn(challengeToken: string): Promise<PollResult>;
 
-  /**
-   * Sign in with the mobile and password: seated, or the Telegram step an
-   * unverified account (or a player with Telegram approval on) owes first.
-   *
-   * A wrong password and an unknown number are deliberately the same refusal.
-   */
-  login(mobile: string, password: string, captchaToken?: string): Promise<SignInStep>;
+  /** "Continue with Telegram": opens a sign-in whose link the player opens. */
+  loginWithTelegram(opts?: { delivery?: TelegramDelivery; referralCode?: string }): Promise<SignInStep>;
 
-  /** Ask once whether Telegram has answered a step; seats on approval. */
-  pollSignIn(leg: 'challenge' | 'telegramLogin', challengeToken: string): Promise<PollResult>;
+  /** The one-time ticket the Mini App opened this site with, exchanged for the session. */
+  redeemTelegramTicket(ticket: string): Promise<User>;
 
-  /** "Login with Telegram": opens a challenge whose link the player opens. */
-  loginWithTelegram(): Promise<SignInStep>;
-
-  /** Is Telegram available, and the "Forgot password" link. Public. */
+  /** Is Telegram available. Public. */
   getTelegramSetup(): Promise<TelegramSetup>;
-
-  /** The Profile screen's Telegram card. */
-  getMyTelegram(): Promise<MyTelegram>;
-  /** Move to another Telegram account: the link to open in THAT account. */
-  relinkTelegram(): Promise<{ telegram: TelegramBlock; message?: string }>;
-  /** The player's own switch: on at once; off once Telegram approves (202). */
-  setTelegramTwoFactor(enabled: boolean): Promise<{
-    twoFactor?: { enabled: boolean; required: boolean };
-    approvalRequired?: boolean; telegram?: TelegramBlock; message?: string }>;
 
   /** Is this invite code real, and whose? Used to confirm a pre-filled code. */
   checkInvite(code: string): Promise<{ valid: boolean; code?: string; invitedBy?: string }>;

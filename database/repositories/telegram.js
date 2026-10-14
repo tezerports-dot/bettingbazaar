@@ -1,19 +1,16 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * repositories/telegram.js — the one bot, the links it proves, the questions
- * the Mini App answers, and the passwords it resets (Step 3, owner
- * 2026-10-07).
+ * repositories/telegram.js — the one bot, the links it proves, and the
+ * "Continue with Telegram" sign-ins the Mini App answers.
  *
- * ── What Telegram is for now ────────────────────────────────────────────────
- * "they must verify and share contact on signup ... now they can do login
- * without telegram mini app but add also login with telegram button too."
- *
- * An account is created by a form and cannot be used until its holder shares,
- * in the Mini App, the Telegram contact whose phone IS the form's mobile. That
- * share writes a LINK (`telegram_links`). After it the link is the merchant
- * second factor, an optional "Login with Telegram", and how a forgotten
- * password is reset. Players and merchants only (`TELEGRAM_AUDIENCES`). One bot; no fleet, channel, templates or
- * webhooks (CLAUDE.md §33).
+ * ── What Telegram is for now (owner, 2026-10-13/14) ────────────────────────
+ * Players and merchants sign in with "Continue with Telegram" and nothing
+ * else: no password, no form. Signing up and signing in are the same action.
+ * The first Verify of a Telegram account on a panel shares its contact, once:
+ * that writes the LINK (`telegram_links`) to the account of that mobile, or
+ * makes one (a player; a merchant application). Every later Verify is the
+ * link's own Telegram. Players and merchants only (`TELEGRAM_AUDIENCES`). One
+ * bot; no fleet, channel, templates or webhooks (CLAUDE.md §33).
  *
  * ── Every act on a Mini App proof is ONE transaction ───────────────────────
  * The signed `initData` and contact are bearer proofs for five minutes
@@ -40,6 +37,7 @@
 import { pgQuery, withTransaction } from '../client.js';
 import { claimJoiningNumber } from './users.js';
 import { createAccountFromSignup } from './identity.js';
+import { createMerchantAccountWithin } from './merchants.js';
 import { recordJoinerEarnings } from './referrals.js';
 import { REFERRAL_REWARD_PAISE } from '../../backend/domains/referral/referralRewards.js';
 
@@ -150,7 +148,7 @@ export async function saveBot({
 // ═══════════════════════════════════════════════════════════════════════════
 
 const LINK_COLUMNS = `user_id, audience, telegram_user_id, phone, telegram_username,
-  first_name, two_factor, verified_at, linked_at`;
+  first_name, verified_at, linked_at`;
 
 const toLink = (r) => (r ? {
   userId: r.user_id,
@@ -159,7 +157,6 @@ const toLink = (r) => (r ? {
   phone: r.phone,
   telegramUsername: r.telegram_username,
   firstName: r.first_name,
-  twoFactor: r.two_factor === true,
   verifiedAt: r.verified_at,
   linkedAt: r.linked_at,
 } : null);
@@ -211,40 +208,23 @@ export async function listLinksForTelegramUser(telegramUserId) {
   return rows.map((r) => ({ audience: r.audience, userId: r.user_id, mobile: r.mobile }));
 }
 
-/**
- * A player switches Telegram approval of their password sign-ins ON. Turning it
- * OFF is not here: it needs their Telegram's approval (`answerChallenge`,
- * TWO_FACTOR_OFF), or a stolen password would switch it off first.
- */
-export async function enablePlayerTwoFactor(userId) {
-  const { rows } = await pgQuery(
-    `UPDATE telegram_links SET two_factor = TRUE
-      WHERE user_id = $1 AND audience = 'PLAYER'
-      RETURNING ${LINK_COLUMNS}`,
-    [String(userId)], 'tg_link_2fa_on',
-  );
-  return toLink(rows[0]);
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // CHALLENGES — a question put to the Mini App
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const CHALLENGE_PURPOSE = Object.freeze({
-  VERIFY: 'VERIFY',
-  LOGIN: 'LOGIN',
-  TELEGRAM_LOGIN: 'TELEGRAM_LOGIN',
-  RELINK: 'RELINK',
-  TWO_FACTOR_OFF: 'TWO_FACTOR_OFF',
-});
-
-const CHALLENGE_COLUMNS = `challenge_id, purpose, audience, user_id, status, created_at,
+const CHALLENGE_COLUMNS = `challenge_id, audience, user_id, status, created_at,
   expires_at, decided_at, telegram_user_id, redeemed_at, requested_ip, requested_agent,
+  requested_city, delivery, match_number, match_choices, match_strikes, referral_code,
   (expires_at > now()) AS live`;
+
+/** How an approved sign-in reaches a browser (schema.sql, "The number match and the handoff"). */
+export const DELIVERY = Object.freeze({ MATCH: 'MATCH', HANDOFF: 'HANDOFF' });
+
+/** Wrong picks a MATCH sign-in survives: the third refuses it. */
+export const MATCH_STRIKES = 3;
 
 const toChallenge = (r) => (r ? {
   challengeId: r.challenge_id,
-  purpose: r.purpose,
   audience: r.audience,
   userId: r.user_id,
   status: r.status,
@@ -255,27 +235,77 @@ const toChallenge = (r) => (r ? {
   redeemedAt: r.redeemed_at,
   requestedIp: r.requested_ip,
   requestedAgent: r.requested_agent,
+  requestedCity: r.requested_city || '',
+  delivery: r.delivery,
+  // The right number is the requesting browser's to show and nobody else's:
+  // it is read here for the answer's own check and never sent by a route.
+  matchNumber: r.match_number === null ? null : Number(r.match_number),
+  matchChoices: Array.isArray(r.match_choices) ? r.match_choices.map(Number) : null,
+  matchStrikes: Number(r.match_strikes || 0),
+  referralCode: r.referral_code || null,
   // On the DATABASE clock, so the app server's clock never decides.
   live: r.live === true,
 } : null);
 
-/** Open a challenge. `userId` is null only for an unbound Telegram login. */
+/**
+ * Open a "Continue with Telegram" sign-in. Nobody is named yet: the approval
+ * binds it to the account of the Telegram account that presses Verify.
+ *
+ * It says how its approval will reach a browser (`delivery`): a MATCH one
+ * carries its number and the three choices the Mini App offers (the caller
+ * draws them, `drawMatch`); a HANDOFF one has none.
+ */
 export async function createChallenge({
-  challengeId, purpose, audience, userId = null, ttlSeconds,
-  requestedIp = '', requestedAgent = '',
+  challengeId, audience, ttlSeconds,
+  requestedIp = '', requestedAgent = '', requestedCity = '',
+  delivery = DELIVERY.MATCH, match = null, referralCode = null,
 }) {
   assertAudience(audience, 'createChallenge');
-  if (!CHALLENGE_PURPOSE[purpose]) throw new Error(`createChallenge: unknown purpose ${purpose}`);
+  if (!DELIVERY[delivery]) throw new Error(`createChallenge: unknown delivery ${delivery}`);
+  if (delivery === DELIVERY.MATCH && !match) throw new Error('createChallenge: a MATCH sign-in needs its number');
   const { rows } = await pgQuery(
     `INSERT INTO telegram_challenges
-       (challenge_id, purpose, audience, user_id, expires_at, requested_ip, requested_agent)
-     VALUES ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval, $6, $7)
+       (challenge_id, audience, expires_at, requested_ip, requested_agent,
+        delivery, match_number, match_choices, referral_code, requested_city)
+     VALUES ($1, $2, now() + ($3 || ' seconds')::interval, $4, $5, $6, $7, $8::smallint[], $9, $10)
      RETURNING ${CHALLENGE_COLUMNS}`,
-    [String(challengeId), purpose, audience, userId ? String(userId) : null, String(ttlSeconds),
-      String(requestedIp || '').slice(0, 64), String(requestedAgent || '').slice(0, 256)],
+    [String(challengeId), audience, String(ttlSeconds),
+      String(requestedIp || '').slice(0, 64), String(requestedAgent || '').slice(0, 256),
+      delivery, match ? match.number : null, match ? match.choices : null,
+      referralCode ? String(referralCode) : null, String(requestedCity || '').slice(0, 80)],
     'tg_challenge_create',
   );
   return toChallenge(rows[0]);
+}
+
+/**
+ * A pick in the Mini App that is NOT the challenge's number: one strike, and
+ * the third refuses the sign-in. Its own statement, committed whatever happens
+ * next, because a wrong pick must cost something even though the approval it
+ * came with is refused (the approval's own UPDATE re-asks the number in its
+ * WHERE, §32 S6). A right pick, or a challenge with no number, changes nothing.
+ *
+ * @returns {Promise<{wrong: false} | {wrong: true, strikesLeft: number, denied: boolean}>}
+ */
+export async function strike({ challengeId, pick, telegramUserId }) {
+  const { rows } = await pgQuery(
+    `UPDATE telegram_challenges
+        SET match_strikes = match_strikes + 1,
+            status = CASE WHEN match_strikes + 1 >= $3 THEN 'DENIED' ELSE status END,
+            decided_at = CASE WHEN match_strikes + 1 >= $3 THEN now() ELSE decided_at END,
+            telegram_user_id = CASE WHEN match_strikes + 1 >= $3 THEN $4 ELSE telegram_user_id END
+      WHERE challenge_id = $1 AND status = 'PENDING' AND expires_at > now()
+        AND match_number IS NOT NULL AND match_number IS DISTINCT FROM $2::smallint
+      RETURNING match_strikes, status`,
+    [String(challengeId), Number.isInteger(pick) ? pick : null, MATCH_STRIKES, String(telegramUserId)],
+    'tg_challenge_strike',
+  );
+  if (!rows[0]) return { wrong: false };
+  return {
+    wrong: true,
+    strikesLeft: Math.max(0, MATCH_STRIKES - Number(rows[0].match_strikes)),
+    denied: rows[0].status === 'DENIED',
+  };
 }
 
 export async function getChallenge(challengeId) {
@@ -288,49 +318,74 @@ export async function getChallenge(challengeId) {
 }
 
 /**
- * Spend an APPROVED challenge — once.
+ * Spend an APPROVED challenge — once, by the browser that polls it.
  *
- * The state, the purpose, the panel, the account and the database clock are
- * all in the UPDATE's WHERE, so two polls arriving together produce one
- * session and one "expired" (§32 S6). When nothing was spent, the row is read
- * to say WHY, so the panel can keep polling (`PENDING`) or stop.
+ * Only a MATCH challenge is spent by a poll: a HANDOFF one is spent only by
+ * its ticket (`redeemTicket`), on the device that pressed Verify, so the
+ * browser that opened it — perhaps somebody else's — never gets its session.
+ * The state, the panel, the delivery and the database clock are all in the
+ * UPDATE's WHERE, so two polls arriving together produce one session and one
+ * "expired" (§32 S6). When nothing was spent, the row is read to say WHY, so
+ * the panel can keep polling (`PENDING`) or stop.
  *
  * @param {object} p
  * @param {string} p.challengeId
  * @param {string} p.audience       the door the browser is at
- * @param {string[]} p.purposes     what this door may redeem here
- * @param {string|null} [p.userId]  when the caller already knows whose it is
- * @returns {Promise<{ok: true, userId: string, purpose: string}
- *          | {ok: false, state: 'PENDING'|'DENIED'|'EXPIRED'}>}
+ * @returns {Promise<{ok: true, userId: string}
+ *          | {ok: false, state: 'PENDING'|'APPROVED'|'DENIED'|'EXPIRED'}>}
  */
-export async function redeemChallenge({ challengeId, audience, purposes, userId = null }) {
+export async function redeemChallenge({ challengeId, audience }) {
   assertAudience(audience, 'redeemChallenge');
   const { rows } = await pgQuery(
     `UPDATE telegram_challenges SET status = 'REDEEMED', redeemed_at = now()
-      WHERE challenge_id = $1 AND audience = $2 AND purpose = ANY($3::text[])
-        AND status = 'APPROVED' AND expires_at > now()
-        AND ($4::text IS NULL OR user_id = $4)
-      RETURNING user_id, purpose`,
-    [String(challengeId), audience, purposes, userId ? String(userId) : null],
+      WHERE challenge_id = $1 AND audience = $2
+        AND status = 'APPROVED' AND expires_at > now() AND delivery = 'MATCH'
+      RETURNING user_id`,
+    [String(challengeId), audience],
     'tg_challenge_redeem',
   );
-  if (rows[0]) return { ok: true, userId: rows[0].user_id, purpose: rows[0].purpose };
-  return { ok: false, state: stateOf(await getChallenge(challengeId), { audience, purposes, userId }) };
+  if (rows[0]) return { ok: true, userId: rows[0].user_id };
+  return { ok: false, state: stateOf(await getChallenge(challengeId), { audience }) };
 }
 
-/**
- * What a challenge means to the browser holding it, without spending it: the
- * merchant Telegram-first sign-in reads this to say "now your
- * password", and spends it only when the password arrives.
- */
-export function stateOf(challenge, { audience, purposes, userId = null }) {
-  if (!challenge || challenge.audience !== audience || !purposes.includes(challenge.purpose)
-      || (userId && challenge.userId && String(challenge.userId) !== String(userId))) {
-    return 'EXPIRED';
-  }
+/** What a challenge means to a browser at this door, without spending it. */
+export function stateOf(challenge, { audience }) {
+  if (!challenge || challenge.audience !== audience) return 'EXPIRED';
   if (challenge.status === 'DENIED') return 'DENIED';
   if (!challenge.live || challenge.status === 'REDEEMED') return 'EXPIRED';
   return challenge.status; // PENDING or APPROVED
+}
+
+/**
+ * Spend a handoff ticket — once — at the door it was minted for.
+ *
+ * The ticket and its HANDOFF challenge are spent in ONE statement: the ticket
+ * unused and unexpired, the challenge APPROVED, unexpired and of this panel,
+ * all on the database clock (§32 S6). Two tabs presenting one ticket get one
+ * session. A ticket that fails any of it is spent anyway: it was shown once.
+ *
+ * @param {object} p
+ * @param {string} p.ticketHash  SHA-256 hex of the ticket the site was opened with
+ * @param {string} p.audience    the door it is presented at
+ * @returns {Promise<{ok: true, userId: string} | {ok: false}>}
+ */
+export async function redeemTicket({ ticketHash, audience }) {
+  assertAudience(audience, 'redeemTicket');
+  if (!/^[0-9a-f]{64}$/.test(String(ticketHash || ''))) return { ok: false };
+  const { rows } = await pgQuery(
+    `WITH spent AS (
+       UPDATE telegram_handoff_tickets SET used_at = now()
+        WHERE ticket_hash = $1 AND used_at IS NULL AND expires_at > now()
+        RETURNING challenge_id
+     )
+     UPDATE telegram_challenges c SET status = 'REDEEMED', redeemed_at = now()
+       FROM spent
+      WHERE c.challenge_id = spent.challenge_id AND c.audience = $2
+        AND c.delivery = 'HANDOFF' AND c.status = 'APPROVED' AND c.expires_at > now()
+      RETURNING c.user_id`,
+    [String(ticketHash), audience], 'tg_ticket_redeem',
+  );
+  return rows[0] ? { ok: true, userId: rows[0].user_id } : { ok: false };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -393,8 +448,8 @@ async function linkWithin(client, account, { telegramUser, phone }) {
     if (!prev[0]) {
       await client.query(
         `INSERT INTO telegram_links
-           (user_id, audience, telegram_user_id, phone, telegram_username, first_name, two_factor)
-         VALUES ($1, $2, $3, $4, $5, $6, $2 <> 'PLAYER')`,
+           (user_id, audience, telegram_user_id, phone, telegram_username, first_name)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         [account.user_id, account.account_type, tgId, String(phone),
           String(telegramUser.username || ''), String(telegramUser.firstName || '')],
       );
@@ -428,34 +483,45 @@ async function linkWithin(client, account, { telegramUser, phone }) {
 }
 
 /**
- * The Mini App's answer to a challenge.
+ * The Mini App's answer to a "Continue with Telegram" sign-in.
  *
- * What each purpose needs, beyond a fresh `initData` opened ON this challenge
- * (its `start_param` is the challenge id, signed by Telegram):
+ * Beyond a fresh `initData` opened ON this challenge (its `start_param` is the
+ * challenge id, signed by Telegram), approving needs one of:
  *
- *   VERIFY, RELINK      a contact from this Telegram account whose phone is the
- *                       account's mobile. VERIFY links; RELINK moves the link.
- *   LOGIN               the account's linked Telegram account — or a matching
- *   TWO_FACTOR_OFF      contact from a new one, which relinks (the person lost
- *                       their old Telegram, not their SIM).
- *   TELEGRAM_LOGIN      the panel's link of this Telegram account, which binds
- *                       the challenge to that account — or a matching contact,
- *                       which verifies or relinks the account of that mobile.
+ *   - this Telegram account's link on the challenge's panel: that account;
+ *   - a contact from this Telegram account (once, at the first Verify on that
+ *     panel): the account of that mobile, linked (or relinked: the person
+ *     changed Telegram account, not SIM) — or, with `signup`, a new one: a
+ *     player, or a merchant application waiting for an admin.
  *
  * A DENY needs only the fresh `initData`: the challenge id reached nobody but
  * the browser that asked, and refusing grants nothing.
  *
  * Approval re-dates the challenge to `now() + redeemWindowSeconds`: an
- * approval is redeemed by the polling browser within seconds, and one left
- * lying for the rest of a fifteen-minute window is a session nobody is
- * waiting for.
+ * approval is redeemed by the polling browser (or its ticket) within seconds,
+ * and one left lying for the rest of the window is a session nobody is waiting
+ * for.
  */
 export async function answerChallenge({
   challengeId, decision, telegramUser, initData, contact = null, redeemWindowSeconds = 120,
+  pick = null, ticket = null, signup = null, open = null,
 }) {
   if (!['approve', 'deny'].includes(decision)) throw new Error(`answerChallenge: decision ${decision}`);
   return acting(async (client) => {
     await claimProof(client, initData);
+    if (open) {
+      // Opened from the bot itself (no website asked): the HANDOFF sign-in is
+      // created here, in the transaction that answers it, so it exists only
+      // once somebody has pressed Verify.
+      assertAudience(open.audience, 'answerChallenge');
+      await client.query(
+        `INSERT INTO telegram_challenges
+           (challenge_id, audience, expires_at, delivery, referral_code)
+         VALUES ($1, $2, now() + ($3 || ' seconds')::interval, 'HANDOFF', $4)`,
+        [String(challengeId), open.audience, String(open.ttlSeconds),
+          open.audience === 'PLAYER' && open.referralCode ? String(open.referralCode) : null],
+      );
+    }
     if (contact) {
       if (String(contact.userId) !== String(telegramUser.id)) refuse('CONTACT_NOT_OWN');
       await claimProof(client, contact);
@@ -477,173 +543,92 @@ export async function answerChallenge({
           WHERE challenge_id = $1 AND status = 'PENDING'`,
         [ch.challengeId, tgId],
       );
-      return { ok: true, kind: ch.purpose, panel: ch.audience, approved: false, relinked: false, verified: false };
+      return { ok: true, panel: ch.audience, approved: false, relinked: false, verified: false };
     }
 
     // ── Whose account this approves ────────────────────────────────────
     let account = null;
-    if (ch.userId) {
-      account = await lockAccount(client, 'user_id = $1 AND account_type = $2', [ch.userId, ch.audience]);
-    } else {
-      const { rows: mine } = await client.query(
-        `SELECT user_id FROM telegram_links WHERE telegram_user_id = $1 AND audience = $2`,
-        [tgId, ch.audience],
-      );
-      if (mine[0]) {
-        account = await lockAccount(client, 'user_id = $1 AND account_type = $2', [mine[0].user_id, ch.audience]);
-      } else if (contact) {
-        account = await lockAccount(client, 'mobile = $1 AND account_type = $2', [contact.phone, ch.audience]);
-      } else {
-        refuse('CONTACT_REQUIRED');
+    let created = false;
+    const { rows: mine } = await client.query(
+      `SELECT user_id FROM telegram_links WHERE telegram_user_id = $1 AND audience = $2`,
+      [tgId, ch.audience],
+    );
+    if (mine[0]) {
+      account = await lockAccount(client, 'user_id = $1 AND account_type = $2', [mine[0].user_id, ch.audience]);
+    } else if (contact) {
+      account = await lockAccount(client, 'mobile = $1 AND account_type = $2', [contact.phone, ch.audience]);
+      if (!account && signup) {
+        // First time on this panel, no account on that number: this IS the
+        // signup ("Continue with Telegram" is one action). The account, its
+        // link and — for a player — the joining number and the referrer's
+        // earnings commit with the approval, or none of them do.
+        account = await signUpWithin(client, ch.audience, contact.phone, signup);
+        created = true;
       }
+    } else {
+      refuse('CONTACT_REQUIRED');
     }
     if (!account) refuse('NO_ACCOUNT');
 
-    const { rows: links } = await client.query(
-      `SELECT telegram_user_id FROM telegram_links WHERE user_id = $1`, [account.user_id],
-    );
-    const linkedHere = links[0] && String(links[0].telegram_user_id) === tgId;
-
     let outcome = { verified: false, relinked: false };
-    const needsContactAlways = ch.purpose === 'VERIFY' || ch.purpose === 'RELINK';
-    if (needsContactAlways || !linkedHere) {
-      if (!contact) refuse('CONTACT_REQUIRED');
-      outcome = await linkWithin(client, account, { telegramUser, phone: contact.phone });
-    }
+    if (!mine[0]) outcome = await linkWithin(client, account, { telegramUser, phone: contact.phone });
 
-    if (ch.purpose === 'TWO_FACTOR_OFF') {
-      await client.query(
-        `UPDATE telegram_links SET two_factor = FALSE WHERE user_id = $1 AND audience = 'PLAYER'`,
-        [account.user_id],
-      );
-    }
-
-    await client.query(
+    // The number is asked again HERE, in the approving UPDATE's WHERE, with
+    // the strike count: a wrong pick (`strike`) committed apart from this, so
+    // nothing read above may stand in for it (§32 S6).
+    const approved = await client.query(
       `UPDATE telegram_challenges
           SET status = 'APPROVED', decided_at = now(), telegram_user_id = $2, user_id = $3,
               expires_at = now() + ($4 || ' seconds')::interval
-        WHERE challenge_id = $1 AND status = 'PENDING'`,
-      [ch.challengeId, tgId, account.user_id, String(redeemWindowSeconds)],
+        WHERE challenge_id = $1 AND status = 'PENDING' AND expires_at > now()
+          AND match_strikes < $6
+          AND (delivery = 'HANDOFF' OR match_number = $5::smallint)`,
+      [ch.challengeId, tgId, account.user_id, String(redeemWindowSeconds),
+        Number.isInteger(pick) ? pick : null, MATCH_STRIKES],
     );
-    return {
-      ok: true, kind: ch.purpose, panel: ch.audience, approved: true,
-      relinked: outcome.relinked, verified: outcome.verified, userId: account.user_id,
-    };
-  });
-}
+    if (approved.rowCount !== 1) refuse(ch.delivery === DELIVERY.MATCH ? 'WRONG_NUMBER' : 'CHALLENGE_ANSWERED');
 
-/**
- * "Login with Telegram" from INSIDE the Mini App: the `initData` is the proof.
- *
- * Claims it and finds the panel's account this Telegram account verifies. A
- * player is signed in by the caller on the answer; merchants still
- * owe their password (owner reading, 2026-10-07), so for them an APPROVED
- * challenge is written in the same transaction and the password sign-in spends
- * it.
- */
-export async function telegramSignIn({
-  audience, telegramUser, initData, challengeId = null, redeemWindowSeconds = 120,
-  requestedIp = '', requestedAgent = '',
-}) {
-  assertAudience(audience, 'telegramSignIn');
-  return acting(async (client) => {
-    await claimProof(client, initData);
-    const { rows } = await client.query(
-      `SELECT user_id FROM telegram_links WHERE telegram_user_id = $1 AND audience = $2`,
-      [String(telegramUser.id), audience],
-    );
-    if (!rows[0]) refuse('NO_LINKED_ACCOUNT');
-    const account = await lockAccount(client, 'user_id = $1 AND account_type = $2', [rows[0].user_id, audience]);
-    if (!account) refuse('NO_LINKED_ACCOUNT');
-    if (challengeId) {
+    // A HANDOFF approval travels as a ticket the Mini App opens on the site;
+    // only its hash is written (`telegram_handoff_tickets`).
+    if (ch.delivery === DELIVERY.HANDOFF) {
+      if (!ticket?.hash) throw new Error('answerChallenge: a HANDOFF approval needs a ticket');
       await client.query(
-        `INSERT INTO telegram_challenges
-           (challenge_id, purpose, audience, user_id, status, expires_at, decided_at,
-            telegram_user_id, requested_ip, requested_agent)
-         VALUES ($1, 'TELEGRAM_LOGIN', $2, $3, 'APPROVED', now() + ($4 || ' seconds')::interval,
-                 now(), $5, $6, $7)`,
-        [String(challengeId), audience, account.user_id, String(redeemWindowSeconds),
-          String(telegramUser.id), String(requestedIp || '').slice(0, 64),
-          String(requestedAgent || '').slice(0, 256)],
+        `INSERT INTO telegram_handoff_tickets (ticket_hash, challenge_id, expires_at)
+         VALUES ($1, $2, now() + ($3 || ' seconds')::interval)`,
+        [String(ticket.hash), ch.challengeId, String(ticket.ttlSeconds)],
       );
     }
-    return { ok: true, userId: account.user_id };
-  });
-}
-
-/**
- * A player signs up INSIDE the Mini App (a referral link opens it there): the
- * account is created already verified, its mobile taken from Telegram's own
- * contact, and the link, the joining number and the referral earnings are the
- * same transaction as the account.
- */
-export async function signUpVerifiedPlayer({
-  userId, username, passwordHash, referralCode, referredBy = null,
-  telegramUser, initData, contact,
-}) {
-  return acting(async (client) => {
-    await claimProof(client, initData);
-    if (String(contact.userId) !== String(telegramUser.id)) refuse('CONTACT_NOT_OWN');
-    await claimProof(client, contact);
-
-    const created = await createAccountFromSignup({
-      userId, username, mobile: contact.phone, passwordHash, referralCode, referredBy, client,
-    });
-    if (!created.ok) refuse(created.reason === 'mobile_taken' ? 'MOBILE_TAKEN' : 'DUPLICATE');
-
-    const account = await lockAccount(client, 'user_id = $1 AND account_type = $2', [created.userId, 'PLAYER']);
-    const outcome = await linkWithin(client, account, { telegramUser, phone: contact.phone });
-    return { ok: true, userId: created.userId, joiningNumber: outcome.joiningNumber };
-  });
-}
-
-/**
- * "I've forgotten my password", answered in the Mini App: the contact proves
- * the phone, the account of that mobile ON THAT PANEL is the one reset, and the
- * share verifies or relinks it on the way.
- *
- * The new password and the session cutoff are written in the SAME transaction
- * as the proof is claimed (2026-10-08). There is no reset token: a token minted
- * here would have to be carried to a page that sets the password, and the
- * merchant and admin panels have no such page; the person is already in the
- * Mini App with the proof in hand, so the password is set where they are.
- * One transaction also means a refusal leaves nothing behind: the proof is
- * not spent, nothing is linked, the old password still works.
- *
- * `validFrom` is the caller's clock, the one that stamps a session's `iat`
- * (`sessionSuperseded` compares the two): the database's clock running ahead of
- * the server's would refuse the session they sign in with straight after.
- */
-export async function resetPasswordByContact({
-  panel, telegramUser, initData, contact, passwordHash, validFrom,
-}) {
-  assertAudience(panel, 'resetPasswordByContact');
-  if (!passwordHash) throw new Error('resetPasswordByContact requires a passwordHash');
-  if (!(validFrom instanceof Date) || Number.isNaN(validFrom.getTime())) {
-    throw new Error('resetPasswordByContact requires validFrom (a Date)');
-  }
-  return acting(async (client) => {
-    await claimProof(client, initData);
-    if (String(contact.userId) !== String(telegramUser.id)) refuse('CONTACT_NOT_OWN');
-    await claimProof(client, contact);
-
-    const account = await lockAccount(client, 'mobile = $1 AND account_type = $2', [contact.phone, panel]);
-    if (!account) refuse('NO_ACCOUNT');
-    const outcome = await linkWithin(client, account, { telegramUser, phone: contact.phone });
-
-    // The password and the cutoff in ONE statement: the commonest reason
-    // somebody resets is that a session they did not open holds the account,
-    // and a reset that leaves those sessions alive is a gesture (§33.6).
-    await client.query(
-      `UPDATE users SET password_hash = $2, sessions_valid_from = $3, updated_at = now()
-        WHERE user_id = $1 AND account_type = $4`,
-      [account.user_id, String(passwordHash), validFrom, panel],
-    );
     return {
-      ok: true, userId: account.user_id,
-      verified: outcome.verified, relinked: outcome.relinked,
+      ok: true, panel: ch.audience, approved: true, delivery: ch.delivery,
+      relinked: outcome.relinked, verified: outcome.verified, created, userId: account.user_id,
     };
   });
+}
+
+/**
+ * The account a first Verify makes, inside the approving transaction: a
+ * player (with the invite the sign-in carried), or a merchant APPLICATION —
+ * PENDING until an admin approves it, so it signs nobody in yet.
+ */
+async function signUpWithin(client, audience, phone, signup) {
+  const last4 = String(phone).slice(-4);
+  if (audience === 'PLAYER') {
+    const made = await createAccountFromSignup({
+      userId: signup.userId, username: `player${last4}`, mobile: phone,
+      referralCode: signup.referralCode, referredBy: signup.referredBy ?? null, client,
+    });
+    if (!made.ok) refuse(made.reason === 'mobile_taken' ? 'MOBILE_TAKEN' : 'DUPLICATE');
+    return lockAccount(client, 'user_id = $1 AND account_type = $2', [made.userId, 'PLAYER']);
+  }
+  // A merchant's username is unique and shown to other people, so it carries
+  // no part of the mobile (§24) and no digits at all: the account id spelled in
+  // letters (a–p for 0–f), unique because the id is. The merchant can rename it.
+  const letters = String(signup.userId).replace(/[0-9a-f]/g, (c) => String.fromCharCode(97 + parseInt(c, 16)));
+  const made = await createMerchantAccountWithin(client, {
+    userId: signup.userId, username: `merchant_${letters}`, mobile: phone,
+  });
+  if (!made.ok) refuse('MOBILE_TAKEN');
+  return lockAccount(client, 'user_id = $1 AND account_type = $2', [made.userId, 'MERCHANT']);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -662,8 +647,13 @@ export async function sweepExpired() {
     `DELETE FROM telegram_challenges WHERE expires_at <= now() - interval '1 day'`, [], 'tg_sweep_challenges');
   const uses = await pgQuery(
     `DELETE FROM telegram_init_data_uses WHERE expires_at <= now()`, [], 'tg_sweep_init_data');
+  // A ticket goes with its challenge (ON DELETE CASCADE); one that lapsed
+  // sooner is worthless the moment it lapses.
+  const tickets = await pgQuery(
+    `DELETE FROM telegram_handoff_tickets WHERE expires_at <= now()`, [], 'tg_sweep_tickets');
   return {
     challenges: challenges.rowCount ?? 0,
     initDataUses: uses.rowCount ?? 0,
+    tickets: tickets.rowCount ?? 0,
   };
 }

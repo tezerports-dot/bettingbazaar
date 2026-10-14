@@ -1,210 +1,155 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
-// Operator sign-in and merchant application — design handoff
-// "BB Merchant Panel.dc.html". A merchant's settlement rail is assigned by an
-// admin after approval, so it is deliberately not asked for here.
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+// Operator sign-in — design handoff "BB Merchant Panel.dc.html". One button,
+// "Continue with Telegram" (owner, 2026-10-14): no password, no form. A first
+// Verify shares the contact once and submits a merchant application, which an
+// admin approves (and assigns its settlement rail) before it can sign in. A
+// sub-member signs in the same way, with the Telegram on the mobile their
+// merchant added.
+//
+// How the approval comes back is decided per device (`deliveryHere`):
+//   HANDOFF  an Android browser: Telegram is on this phone, and Verify opens
+//            the panel on it with a one-time ticket (`#/tg/<ticket>`, read and
+//            removed at startup by services/telegramTicket.ts, spent here).
+//   MATCH    anywhere else: this screen shows a two-digit number, Telegram
+//            offers three, Verify counts only with the right one, and this
+//            screen gets the session by polling. The link is also a QR.
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate } from 'react-router';
-import { Lock, Smartphone, Mail, User as UserIcon, ShieldCheck, CheckCircle, Send } from 'lucide-react';
-import { useAuth, type TelegramChallenge } from '../services/AuthContext';
-import { useRetryCountdown } from '../hooks/useRetryCountdown';
+import { ShieldCheck, CheckCircle, Send } from 'lucide-react';
+import { useAuth } from '../services/AuthContext';
 import { useTelegramPoll } from '../hooks/useTelegramPoll';
-import { api } from '../services/api';
+import { api, type TelegramDelivery, type TelegramSignIn } from '../services/api';
+import { takeTelegramTicket } from '../services/telegramTicket';
 import { APP_CONFIG, ROUTES } from '../constants';
-import type { AuthResponse, MiniAppSetup, TelegramLink } from '../types';
-import { Banner, Button, Field, Logo, Spinner, inputStyle } from '../components/ui';
+import type { AuthResponse, MiniAppSetup } from '../types';
+import { Button, Logo, Spinner } from '../components/ui';
 import { TelegramStep } from '../components/TelegramStep';
 import { PlatformUnreachable } from '../components/PlatformUnreachable';
 
-type Tab = 'login' | 'signup';
+/** HANDOFF where Telegram runs on this same device and can open the panel on it; MATCH elsewhere. */
+export function deliveryHere(): TelegramDelivery {
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  return /Android/i.test(ua) ? 'HANDOFF' : 'MATCH';
+}
 
-const MIN_PASSWORD_LENGTH = 8; // backend: merchant.routes.js POST /auth/signup
-
-/** What the screen is waiting on in Telegram. */
-type Wait =
-  /** A VERIFY or LOGIN challenge, polled at `/login/2fa` (sign-in or signup). */
-  | { kind: 'challenge'; challenge: TelegramChallenge; from: Tab }
-  /** "Login with Telegram", polled at `/login/telegram/complete`. */
-  | { kind: 'telegram-login'; challengeToken: string; telegram: TelegramLink | null; message: string };
-
-/** The finished-but-not-signed-in screen: an application in, or a verified merchant awaiting approval. */
+/** The finished-but-not-signed-in screen: an application waiting for an admin. */
 interface Notice { title: string; body: string; }
 
 /** The body `request()` attaches to a refusal. */
-type Refusal = { status?: number; message?: string; data?: { code?: string; verified?: boolean; message?: string } };
+type Refusal = { status?: number; message?: string; data?: { code?: string; message?: string } };
 
 const refusalText = (err: unknown, fallback: string): string => {
   const e = err as Refusal;
   return (typeof e?.data?.message === 'string' && e.data.message) || e?.message || fallback;
 };
 
+/** An application an admin has not approved yet: a state to explain, not a failure. */
+const isWaitingApplication = (err: unknown): boolean => {
+  const e = err as Refusal;
+  return e?.status === 403 && e.data?.code === 'MERCHANT_NOT_ACTIVE';
+};
+
 const LoginPage: React.FC = () => {
-  const { merchant, loading: authLoading, login, acceptSession, unreachable, refreshProfile } = useAuth();
-  const [tab, setTab] = useState<Tab>('login');
-
-  const [mobile, setMobile] = useState('');
-  const [password, setPassword] = useState('');
-  const [signingIn, setSigningIn] = useState(false);
-  const [loginError, setLoginError] = useState<string | null>(null);
-
-  // Sign-in is paced at one attempt per 10 seconds. Without a visible timer a
-  // 429 reads as a broken form, and the natural response — retry immediately —
-  // extends the window it is trying to escape.
-  const { secondsLeft, blocked, startFrom } = useRetryCountdown();
+  const { merchant, loading: authLoading, acceptSession, unreachable, refreshProfile } = useAuth();
 
   // Why the panel just signed this merchant out — a suspension, a session
-  // ended elsewhere — in the server's words, so the form is not the first and
-  // only thing they see (§32 S48). Read once per page load.
+  // ended elsewhere — in the server's words (§32 S48). Read once per page load.
   const [signedOutReason] = useState(() => api.signedOutReason());
 
-  const [form, setForm] = useState({ username: '', mobile: '', email: '', password: '', confirmPassword: '' });
-  const [applying, setApplying] = useState(false);
-  const [applyError, setApplyError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [starting, setStarting] = useState(false);
 
-  // ── Telegram ──────────────────────────────────────────────────────────────
-  // Whether the platform's bot is set up, and the "Forgot password" link.
-  // Unknown (null) hides both buttons, as `available: false` does.
+  /** A refusal that may be an application still waiting: said as such. */
+  const refused = useCallback((err: unknown, fallback: string) => {
+    if (isWaitingApplication(err)) {
+      setNotice({ title: 'Application waiting for approval', body: refusalText(err, 'Your account is waiting for an admin to approve it.') });
+      return;
+    }
+    setError(refusalText(err, fallback));
+  }, []);
+
+  // ── Is Telegram set up ────────────────────────────────────────────────────
   const [setup, setSetup] = useState<MiniAppSetup | null>(null);
+  const [setupFailed, setSetupFailed] = useState(false);
   useEffect(() => {
     let live = true;
-    api.getMiniAppSetup().then((s) => { if (live) setSetup(s); }).catch(() => { /* hidden, as unavailable */ });
+    api.getMiniAppSetup()
+      .then((s) => { if (live) setSetup(s); })
+      .catch(() => { if (live) setSetupFailed(true); });
     return () => { live = false; };
   }, []);
 
-  const [wait, setWait] = useState<Wait | null>(null);
+  // ── The ticket Verify opened this panel with, spent once ─────────────────
+  const [redeeming, setRedeeming] = useState(false);
+  const ticketTaken = useRef(false);
+  useEffect(() => {
+    if (ticketTaken.current) return;
+    ticketTaken.current = true;
+    const ticket = takeTelegramTicket();
+    if (ticket === null) return;
+    if (!ticket) {
+      setError('This sign-in link is not valid. Press Continue with Telegram again.');
+      return;
+    }
+    setRedeeming(true);
+    api.redeemTelegramTicket(ticket)
+      .then((session) => acceptSession(session))
+      .catch((err) => refused(err, 'This sign-in link has already been used or has expired. Press Continue with Telegram again.'))
+      .finally(() => setRedeeming(false));
+  }, [acceptSession, refused]);
+
+  // ── Waiting on Telegram ───────────────────────────────────────────────────
+  const [wait, setWait] = useState<TelegramSignIn | null>(null);
   const [waitError, setWaitError] = useState<string | null>(null);
-  const [startingTelegram, setStartingTelegram] = useState(false);
-  /** An approved "Login with Telegram" token the password now completes. */
-  const [telegramApproved, setTelegramApproved] = useState<string | null>(null);
+  const [handedOff, setHandedOff] = useState<string | null>(null);
+  const endWait = useCallback(() => { setWait(null); setWaitError(null); setHandedOff(null); }, []);
 
-  const endWait = useCallback(() => { setWait(null); setWaitError(null); }, []);
-
-  const challengeToken = wait?.kind === 'challenge' ? wait.challenge.challengeToken : null;
-  const challengePoll = useMemo(
-    () => (challengeToken && !waitError ? () => api.pollLoginChallenge(challengeToken) : null),
-    [challengeToken, waitError],
+  const token = wait?.challengeToken ?? null;
+  const poll = useMemo(
+    () => (token && !waitError && !handedOff ? () => api.pollTelegramSignIn(token) : null),
+    [token, waitError, handedOff],
   );
-  useTelegramPoll<AuthResponse>(challengePoll, {
-    onDone: (session) => { endWait(); acceptSession(session); },
-    onError: (err) => {
-      const e = err as Refusal;
-      // Verified, and the account still waits for an admin: that is the
-      // signup finishing, not a failure.
-      if (e?.status === 403 && e.data?.code === 'MERCHANT_NOT_ACTIVE' && e.data.verified) {
-        endWait();
-        setNotice({ title: 'Mobile verified', body: 'Verified. Your account is waiting for approval.' });
+  useTelegramPoll<AuthResponse | 'handedOff'>(poll, {
+    onDone: (answer) => {
+      if (answer === 'handedOff') {
+        setHandedOff('Verified in Telegram. You are signed in where Telegram opened the panel; you can close this page.');
         return;
       }
-      setWaitError(refusalText(err, 'Telegram approval failed. Please sign in again.'));
-    },
-  });
-
-  const telegramLoginToken = wait?.kind === 'telegram-login' ? wait.challengeToken : null;
-  const telegramLoginPoll = useMemo(
-    () => (telegramLoginToken && !waitError ? () => api.pollTelegramLogin(telegramLoginToken) : null),
-    [telegramLoginToken, waitError],
-  );
-  useTelegramPoll<true>(telegramLoginPoll, {
-    onDone: () => {
-      setTelegramApproved(telegramLoginToken);
       endWait();
-      setTab('login');
+      acceptSession(answer);
     },
-    onError: (err) => setWaitError(refusalText(err, 'Telegram sign-in failed. Please try again.')),
+    onError: (err) => {
+      if (isWaitingApplication(err)) { endWait(); refused(err, ''); return; }
+      setWaitError(refusalText(err, 'Telegram sign-in failed. Please try again.'));
+    },
   });
 
   if (!authLoading && merchant) return <Navigate to={ROUTES.DASHBOARD} replace />;
   /**
    * `ROUTES.LOGIN` is `/`, and it is the path a merchant lands on — so this
    * screen, not `ProtectedRoute`, is where a held session with no profile
-   * behind it is actually seen. Guarding only the protected routes left the
-   * sign-in form showing to signed-in merchants, which a green unit test did
-   * not notice and a browser did.
+   * behind it is actually seen.
    */
   if (!authLoading && !merchant && unreachable) {
     return <PlatformUnreachable onRetry={refreshProfile} />;
   }
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSigningIn(true);
-    setLoginError(null);
+  const handleContinue = async () => {
+    setStarting(true);
+    setError(null);
     try {
-      const step = await login({ mobile, password, challengeToken: telegramApproved ?? undefined });
-      setTelegramApproved(null);
-      if (step) {
-        setWaitError(null);
-        setWait({ kind: 'challenge', challenge: step, from: 'login' });
-      }
-    } catch (err) {
-      // Shown in the server's words. A pace refusal also starts the
-      // countdown, so the button says how long rather than just refusing again.
-      startFrom(err);
-      setLoginError(refusalText(err, 'Login failed'));
-    } finally {
-      setSigningIn(false);
-    }
-  };
-
-  const handleTelegramLogin = async () => {
-    setStartingTelegram(true);
-    setLoginError(null);
-    try {
-      const opened = await api.startTelegramLogin();
+      const opened = await api.startTelegramSignIn(deliveryHere());
       setWaitError(null);
-      setTelegramApproved(null);
-      setWait({ kind: 'telegram-login', challengeToken: opened.challengeToken, telegram: opened.telegram, message: opened.message || '' });
+      setHandedOff(null);
+      setWait(opened);
     } catch (err) {
-      setLoginError(refusalText(err, 'Telegram sign-in failed. Please try again.'));
+      setError(refusalText(err, 'Telegram sign-in is not available right now.'));
     } finally {
-      setStartingTelegram(false);
+      setStarting(false);
     }
   };
-
-  const handleApply = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setApplyError(null);
-    if (form.password !== form.confirmPassword) { setApplyError('Passwords do not match'); return; }
-    if (form.password.length < MIN_PASSWORD_LENGTH) { setApplyError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`); return; }
-    setApplying(true);
-    try {
-      const res = await api.merchantSignup({
-        username: form.username,
-        mobile: form.mobile,
-        email: form.email || undefined,
-        password: form.password,
-        confirmPassword: form.confirmPassword,
-      });
-      if (!res.success) { setApplyError(res.message || 'Application failed'); return; }
-      if (res.challengeToken && res.telegram) {
-        setWaitError(null);
-        setWait({
-          kind: 'challenge', from: 'signup',
-          challenge: { challengeToken: res.challengeToken, telegram: res.telegram, message: res.message, verify: true },
-        });
-      } else {
-        // No bot set up yet (`verificationAvailable: false`): the server says
-        // what happens next — verification at the first sign-in.
-        setNotice({ title: 'Application submitted', body: res.message });
-      }
-    } catch (error) {
-      setApplyError(refusalText(error, 'Application failed'));
-    } finally {
-      setApplying(false);
-    }
-  };
-
-  const tabStyle = (value: Tab): React.CSSProperties => ({
-    flex: 1, padding: 10, border: 0, borderRadius: 11, cursor: 'pointer', fontSize: 13, fontWeight: 700,
-    background: tab === value ? 'var(--surface)' : 'transparent',
-    color: tab === value ? 'var(--brand)' : 'var(--muted)',
-    boxShadow: tab === value ? 'var(--shadow)' : 'none',
-    transition: 'background .15s ease, color .15s ease',
-  });
-
-  const iconStyle: React.CSSProperties = { position: 'absolute', left: 13, top: 12, color: 'var(--muted)' };
-  const withIcon: React.CSSProperties = { ...inputStyle, padding: '12px 14px 12px 40px', fontSize: 14, borderRadius: 12 };
 
   return (
     <div style={{
@@ -240,29 +185,23 @@ const LoginPage: React.FC = () => {
           background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 20,
           boxShadow: 'var(--shadow)', overflow: 'hidden',
         }}>
-          {/* The tab strip is hidden while Telegram is awaited: the password
-              has already been accepted, and wandering to the other tab would
-              silently abandon a challenge that expires in minutes. */}
-          {!wait && !notice && (
-          <div style={{ display: 'flex', padding: 6, gap: 4, background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
-            <button type="button" onClick={() => setTab('login')} style={tabStyle('login')}>Login</button>
-            <button type="button" onClick={() => setTab('signup')} style={tabStyle('signup')}>Apply as Merchant</button>
-          </div>
-          )}
-
           <div style={{ padding: '22px 22px 24px' }}>
-            {wait ? (
+            {redeeming ? (
+              <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, fontWeight: 600, color: 'var(--text-2)' }}>
+                <Spinner /> Signing you in…
+              </div>
+            ) : wait ? (
               <TelegramStep
-                title={wait.kind === 'telegram-login'
-                  ? 'Login with Telegram'
-                  : wait.challenge.verify ? 'Verify your mobile in Telegram' : 'Approve in Telegram'}
-                body={(wait.kind === 'telegram-login' ? wait.message : wait.challenge.message)
-                  || 'Open the link on your phone, approve in Telegram, then come back here.'}
-                telegram={wait.kind === 'telegram-login' ? wait.telegram : wait.challenge.telegram}
-                waiting={!waitError}
+                title="Continue in Telegram"
+                body={handedOff
+                  || (wait.delivery === 'MATCH'
+                    ? 'Open Telegram, choose the number shown here, and press Verify.'
+                    : 'Open Telegram and press Verify. It brings you back here signed in.')}
+                telegram={handedOff ? null : wait.telegram}
+                matchNumber={handedOff || wait.delivery !== 'MATCH' ? null : wait.matchNumber}
+                waiting={!waitError && !handedOff}
                 error={waitError}
                 onBack={endWait}
-                backLabel={wait.kind === 'challenge' && wait.from === 'signup' ? 'Back to login' : 'Back to sign in'}
               />
             ) : notice ? (
               <div style={{ textAlign: 'center', padding: '14px 0' }}>
@@ -271,176 +210,55 @@ const LoginPage: React.FC = () => {
                   {notice.title}
                 </div>
                 <p role="status" style={{ fontSize: 13, fontWeight: 600, color: 'var(--muted)', lineHeight: 1.55, margin: '0 0 18px' }}>
-                  {notice.body} An admin reviews your application and assigns your settlement rail — INR or USDT.
-                  You can sign in once it is approved.
+                  {notice.body}
                 </p>
-                <Button variant="outline" tone="neutral" full onClick={() => { setNotice(null); setTab('login'); }} style={{ borderColor: 'var(--border)', color: 'var(--text)' }}>
-                  Back to login
+                <Button variant="outline" tone="neutral" full onClick={() => setNotice(null)} style={{ borderColor: 'var(--border)', color: 'var(--text)' }}>
+                  Back to sign in
                 </Button>
               </div>
-            ) : tab === 'login' ? (
-              <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                {telegramApproved && (
-                  <Banner tone="ok" title="Telegram confirmed it is you">
-                    Enter your mobile number and password to finish.{' '}
-                    <button type="button" onClick={() => setTelegramApproved(null)} style={{
-                      background: 'none', border: 0, padding: 0, color: 'var(--brand)', fontWeight: 700, cursor: 'pointer',
-                    }}>
-                      Cancel
-                    </button>
-                  </Banner>
-                )}
-                <Field label="Mobile number" htmlFor="login-mobile">
-                  <div style={{ position: 'relative' }}>
-                    <Smartphone size={17} style={iconStyle} />
-                    <input
-                      id="login-mobile"
-                      value={mobile}
-                      onChange={(e) => setMobile(e.target.value)}
-                      placeholder="10-digit mobile"
-                      inputMode="numeric"
-                      autoComplete="username"
-                      required
-                      style={withIcon}
-                    />
-                  </div>
-                </Field>
-                <Field label="Password" htmlFor="login-password">
-                  <div style={{ position: 'relative' }}>
-                    <Lock size={17} style={iconStyle} />
-                    <input
-                      id="login-password"
-                      type="password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="Enter password"
-                      autoComplete="current-password"
-                      required
-                      style={withIcon}
-                    />
-                  </div>
-                </Field>
-                {loginError && (
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {error && (
                   <div role="alert" style={{
                     padding: '10px 12px', borderRadius: 10, fontSize: 12.5, fontWeight: 600, lineHeight: 1.5,
                     background: 'var(--danger-bg)', color: 'var(--danger)',
                   }}>
-                    {loginError}
+                    {error}
                   </div>
                 )}
-                <Button type="submit" full busy={signingIn} disabled={!mobile || !password || blocked} style={{ padding: 13, fontSize: 14, borderRadius: 12 }}>
-                  {blocked ? `Try again in ${secondsLeft}s` : signingIn ? 'Signing in…' : 'Sign in securely'}
-                </Button>
-                {setup?.available && !telegramApproved && (
-                  <Button variant="outline" full busy={startingTelegram} onClick={handleTelegramLogin} style={{ padding: 12, fontSize: 13.5, borderRadius: 12 }}>
-                    <Send size={15} /> Login with Telegram
-                  </Button>
-                )}
-                {setup?.available && setup.resetUrl && (
-                  <a href={setup.resetUrl} target="_blank" rel="noopener noreferrer" style={{
-                    textAlign: 'center', fontSize: 12.5, fontWeight: 700, color: 'var(--brand)',
+                {setup?.available ? (
+                  <>
+                    <Button full busy={starting} onClick={handleContinue} style={{ padding: 13, fontSize: 14, borderRadius: 12 }}>
+                      <Send size={15} /> Continue with Telegram
+                    </Button>
+                    <p style={{ margin: 0, textAlign: 'center', fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55 }}>
+                      New merchant? The same button submits your application; an admin reviews it and
+                      assigns your settlement rail (INR or USDT) before you can sign in. Sub-members:
+                      use the Telegram on the mobile your merchant added.
+                    </p>
+                  </>
+                ) : setup ? (
+                  <div role="alert" style={{
+                    padding: '12px 14px', borderRadius: 12, fontSize: 13, fontWeight: 600, lineHeight: 1.5,
+                    background: 'var(--warn-bg)', color: 'var(--warn)', border: '1px solid var(--warn)',
                   }}>
-                    Forgot password?
-                  </a>
+                    Sign-in is through Telegram, and Telegram is not set up on this platform yet, so nobody can
+                    sign in right now. Contact your operations admin.
+                  </div>
+                ) : setupFailed ? (
+                  <div role="alert" style={{
+                    padding: '10px 12px', borderRadius: 10, fontSize: 12.5, fontWeight: 600, lineHeight: 1.5,
+                    background: 'var(--danger-bg)', color: 'var(--danger)',
+                  }}>
+                    Could not reach the platform. Check your connection and try again.
+                  </div>
+                ) : (
+                  <Spinner />
                 )}
                 <p style={{ margin: 0, textAlign: 'center', fontSize: 12.5, color: 'var(--muted)' }}>
                   Trouble signing in? Contact your operations admin.
                 </p>
-              </form>
-            ) : (
-              <form onSubmit={handleApply} style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
-                <div style={{
-                  display: 'flex', gap: 9, alignItems: 'flex-start', padding: '11px 13px',
-                  background: 'var(--warn-bg)', border: '1px solid var(--warn)', borderRadius: 12,
-                }}>
-                  <ShieldCheck size={16} style={{ color: 'var(--warn)', flexShrink: 0, marginTop: 1 }} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--warn)', lineHeight: 1.5 }}>
-                    Applications are reviewed by an admin before you can sign in. You verify your
-                    mobile in Telegram right after applying.
-                  </span>
-                </div>
-                <Field label="Username" htmlFor="apply-username">
-                  <div style={{ position: 'relative' }}>
-                    <UserIcon size={17} style={iconStyle} />
-                    <input
-                      id="apply-username"
-                      value={form.username}
-                      onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
-                      placeholder="Choose a username"
-                      required
-                      style={withIcon}
-                    />
-                  </div>
-                </Field>
-                <Field label="Mobile number" htmlFor="apply-mobile">
-                  <div style={{ position: 'relative' }}>
-                    <Smartphone size={17} style={iconStyle} />
-                    <input
-                      id="apply-mobile"
-                      value={form.mobile}
-                      onChange={(e) => setForm((f) => ({ ...f, mobile: e.target.value }))}
-                      placeholder="10-digit mobile"
-                      inputMode="numeric"
-                      required
-                      style={withIcon}
-                    />
-                  </div>
-                </Field>
-                <Field label="Email (optional)" htmlFor="apply-email">
-                  <div style={{ position: 'relative' }}>
-                    <Mail size={17} style={iconStyle} />
-                    <input
-                      id="apply-email"
-                      type="email"
-                      value={form.email}
-                      onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                      placeholder="you@example.com"
-                      style={withIcon}
-                    />
-                  </div>
-                </Field>
-                <Field label="Password" htmlFor="apply-password" hint={`Minimum ${MIN_PASSWORD_LENGTH} characters.`}>
-                  <div style={{ position: 'relative' }}>
-                    <Lock size={17} style={iconStyle} />
-                    <input
-                      id="apply-password"
-                      type="password"
-                      value={form.password}
-                      onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                      placeholder={`Min. ${MIN_PASSWORD_LENGTH} characters`}
-                      autoComplete="new-password"
-                      required
-                      style={withIcon}
-                    />
-                  </div>
-                </Field>
-                <Field label="Confirm password" htmlFor="apply-confirm">
-                  <div style={{ position: 'relative' }}>
-                    <Lock size={17} style={iconStyle} />
-                    <input
-                      id="apply-confirm"
-                      type="password"
-                      value={form.confirmPassword}
-                      onChange={(e) => setForm((f) => ({ ...f, confirmPassword: e.target.value }))}
-                      placeholder="Re-enter password"
-                      autoComplete="new-password"
-                      required
-                      style={withIcon}
-                    />
-                  </div>
-                </Field>
-                {applyError && (
-                  <div role="alert" style={{
-                    padding: '10px 12px', borderRadius: 10, fontSize: 12.5, fontWeight: 600, lineHeight: 1.5,
-                    background: 'var(--danger-bg)', color: 'var(--danger)',
-                  }}>
-                    {applyError}
-                  </div>
-                )}
-                <Button type="submit" tone="brand" full busy={applying} style={{ padding: 13, fontSize: 14, borderRadius: 12 }}>
-                  Submit application
-                </Button>
-              </form>
+              </div>
             )}
           </div>
         </div>

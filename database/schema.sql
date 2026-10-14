@@ -587,9 +587,9 @@ CREATE TABLE IF NOT EXISTS users (
   user_id            TEXT PRIMARY KEY,     -- the account's stable identity
   username           TEXT NOT NULL,
   mobile             TEXT NOT NULL UNIQUE, -- never mutable, by anyone (§1)
-  -- Every account signs in with a password (Step 3: the signup form sets it,
-  -- an admin sets a staff member's). Telegram verifies the mobile once and is
-  -- the staff and merchant second factor; it never replaces the password.
+  -- A STAFF account's password (an admin sets it). Players and merchants have
+  -- none: "Continue with Telegram" is how they sign in (owner, 2026-10-13;
+  -- `users_password_staff_only` below).
   password_hash      TEXT,
 
   -- ── Referral programme identity ──────────────────────────────────────────
@@ -3168,18 +3168,20 @@ ALTER TABLE users DROP CONSTRAINT IF EXISTS users_phantom_access_needs_player;
 ALTER TABLE users ADD CONSTRAINT users_phantom_access_needs_player
   CHECK (account_type = 'PLAYER' OR phantom_access = 'NONE');
 
--- ── The password reset ────────────────────────────────────────────────────
--- A person who has forgotten their password opens the Mini App, types the new
--- one and shares their contact; if Telegram's phone is the account's mobile
--- for that panel, the password is set there and then, and every session the
--- account had is evicted in the same statement (Step 3, owner 2026-10-07: no
--- admin reset, no prior link needed; 2026-10-08: set in the Mini App for every
--- panel). It signs nobody in. There is no email on this platform, so the
--- number Telegram has verified is the only channel a reset can travel on.
---
--- There is no reset token, so there is no table for one: the reset links the
--- Mini App used to mint opened a page only the player app had. Dropped so a
--- database that had it converges on this file (§32 S31).
+-- ── Only staff have a password (owner, 2026-10-13/14) ─────────────────────
+-- Players and merchants (merchant sub-members included) sign in with
+-- "Continue with Telegram" and nothing else: no password, no form, no reset.
+-- A database that still holds one converges here: the hash is cleared, then
+-- the CHECK refuses another (§32 S31). Staff keep theirs with the
+-- authenticator app (§33.8); `scripts/reset-staff-access.mjs` resets it.
+UPDATE users SET password_hash = NULL
+ WHERE account_type <> 'STAFF' AND password_hash IS NOT NULL;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_password_staff_only;
+ALTER TABLE users ADD CONSTRAINT users_password_staff_only
+  CHECK (account_type = 'STAFF' OR password_hash IS NULL);
+
+-- There is no password reset for a player or merchant, so there is no table
+-- for one. Dropped so a database that had it converges on this file.
 DROP TABLE IF EXISTS password_resets;
 
 -- ── Sessions issued before this instant are dead ────────────────────────────
@@ -3280,9 +3282,6 @@ CREATE TABLE IF NOT EXISTS telegram_links (
   phone             TEXT NOT NULL,
   telegram_username TEXT NOT NULL DEFAULT '',
   first_name        TEXT NOT NULL DEFAULT '',
-  -- Telegram approval of every password sign-in. Always on for merchants (the
-  -- CHECK); a player's own switch.
-  two_factor        BOOLEAN NOT NULL DEFAULT FALSE,
   verified_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   linked_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -3297,13 +3296,13 @@ DELETE FROM telegram_links WHERE audience = 'STAFF';
 ALTER TABLE telegram_links DROP CONSTRAINT IF EXISTS telegram_links_audience_check;
 ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_audience_check
   CHECK (audience IN ('PLAYER', 'MERCHANT'));
--- A merchant approves every sign-in in Telegram; only a player may switch it
--- off. Named for what it holds now that no staff row exists (the old name is
--- dropped so a database that had it converges).
+-- No switch for "approve each sign-in in Telegram": every player and merchant
+-- sign-in IS a Telegram approval (owner, 2026-10-14), so the merchant's second
+-- factor is the sign-in itself (`amr` 'tg'). The column and its CHECKs are
+-- dropped so a database that had them converges.
 ALTER TABLE telegram_links DROP CONSTRAINT IF EXISTS telegram_links_staff_two_factor;
 ALTER TABLE telegram_links DROP CONSTRAINT IF EXISTS telegram_links_merchant_two_factor;
-ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_merchant_two_factor
-  CHECK (audience = 'PLAYER' OR two_factor);
+ALTER TABLE telegram_links DROP COLUMN IF EXISTS two_factor;
 CREATE UNIQUE INDEX IF NOT EXISTS telegram_links_one_per_panel
   ON telegram_links (telegram_user_id, audience);
 
@@ -3334,12 +3333,11 @@ CREATE TRIGGER telegram_link_phone_is_mobile
 -- the signed challenge token the requesting browser holds.
 --
 -- PENDING → APPROVED or DENIED → REDEEMED, each step an UPDATE whose WHERE
--- names the state it expects and the database clock (§32 S6). `user_id` is
--- null only while a "Login with Telegram" does not yet know whose Telegram it
--- is; the approval binds it.
+-- names the state it expects and the database clock (§32 S6). Every challenge
+-- is a "Continue with Telegram" sign-in (owner, 2026-10-14): `user_id` is null
+-- until the approval binds it to the account it signs in (or creates).
 CREATE TABLE IF NOT EXISTS telegram_challenges (
   challenge_id     TEXT PRIMARY KEY,
-  purpose          TEXT NOT NULL,
   audience         TEXT NOT NULL,
   user_id          TEXT,
   status           TEXT NOT NULL DEFAULT 'PENDING',
@@ -3348,14 +3346,29 @@ CREATE TABLE IF NOT EXISTS telegram_challenges (
   decided_at       TIMESTAMPTZ,
   telegram_user_id TEXT,
   redeemed_at      TIMESTAMPTZ,
-  -- Shown in the Mini App ("a sign-in from 203.0.113.7, Chrome on Android"),
-  -- so the person approving knows what they approve.
+  -- Shown in the Mini App ("a sign-in from 203.0.113.7, Mumbai, Chrome on
+  -- Android"), so the person approving knows what they approve. The city is
+  -- the edge's own geolocation header, only where the operator names one
+  -- (GEO_CITY_HEADER); '' is "not known", said so on the screen.
   requested_ip     TEXT NOT NULL DEFAULT '',
-  requested_agent  TEXT NOT NULL DEFAULT ''
+  requested_agent  TEXT NOT NULL DEFAULT '',
+  requested_city   TEXT NOT NULL DEFAULT ''
 );
+ALTER TABLE telegram_challenges ADD COLUMN IF NOT EXISTS requested_city TEXT NOT NULL DEFAULT '';
+-- The other purposes (verify after a form signup, approve a password sign-in,
+-- relink, switch approval off) went with the passwords. A database that still
+-- holds one converges: those rows are deleted, then the column (§32 S31).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'telegram_challenges' AND column_name = 'purpose') THEN
+    EXECUTE $q$DELETE FROM telegram_challenges WHERE purpose <> 'TELEGRAM_LOGIN'$q$;
+  END IF;
+END $$;
 ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_purpose_check;
-ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_purpose_check
-  CHECK (purpose IN ('VERIFY', 'LOGIN', 'TELEGRAM_LOGIN', 'RELINK', 'TWO_FACTOR_OFF'));
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_bound;
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_match_numbered;
+ALTER TABLE telegram_challenges DROP COLUMN IF EXISTS purpose;
 -- Players and merchants only, as `telegram_links` above: a staff challenge left
 -- from before is deleted, then refused.
 DELETE FROM telegram_challenges WHERE audience = 'STAFF';
@@ -3368,10 +3381,10 @@ ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_status_check
 ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_account;
 ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_account
   FOREIGN KEY (user_id, audience) REFERENCES users (user_id, account_type) ON DELETE CASCADE;
--- Only an unanswered (or refused) Telegram login may not yet know its account.
+-- Only an unanswered (or refused) sign-in may not yet know its account.
 ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_bound;
 ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_bound
-  CHECK (user_id IS NOT NULL OR (purpose = 'TELEGRAM_LOGIN' AND status IN ('PENDING', 'DENIED')));
+  CHECK (user_id IS NOT NULL OR status IN ('PENDING', 'DENIED'));
 -- An answer says when it was given and by which Telegram account.
 ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_decided;
 ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_decided
@@ -3382,6 +3395,56 @@ ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_redeemed
 CREATE INDEX IF NOT EXISTS telegram_challenges_expiry_idx ON telegram_challenges (expires_at);
 CREATE INDEX IF NOT EXISTS telegram_challenges_user_idx ON telegram_challenges (user_id)
   WHERE user_id IS NOT NULL;
+
+-- ── The number match and the handoff (owner, 2026-10-13) ──────────────────
+-- How an approved "Continue with Telegram" reaches a browser:
+--   MATCH    the browser that asked polls for it. It shows a two-digit number
+--            and the Mini App offers three; Verify counts only with the right
+--            one (`match_number`), and three wrong picks refuse the sign-in.
+--   HANDOFF  nobody polls it. Verify answers a one-time ticket the Mini App
+--            opens on the site (`telegram_handoff_tickets`), so the session
+--            lands on the device that pressed Verify.
+ALTER TABLE telegram_challenges ADD COLUMN IF NOT EXISTS delivery TEXT NOT NULL DEFAULT 'MATCH';
+ALTER TABLE telegram_challenges ADD COLUMN IF NOT EXISTS match_number SMALLINT;
+ALTER TABLE telegram_challenges ADD COLUMN IF NOT EXISTS match_choices SMALLINT[];
+ALTER TABLE telegram_challenges ADD COLUMN IF NOT EXISTS match_strikes SMALLINT NOT NULL DEFAULT 0;
+-- The invite code a website signup carried; used only if the sign-in creates a player.
+ALTER TABLE telegram_challenges ADD COLUMN IF NOT EXISTS referral_code TEXT;
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_delivery_check;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_delivery_check
+  CHECK (delivery IN ('MATCH', 'HANDOFF'));
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_strikes;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_strikes
+  CHECK (match_strikes BETWEEN 0 AND 3);
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_match_choices;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_match_choices
+  CHECK (match_number IS NULL OR (match_number BETWEEN 10 AND 99
+         AND cardinality(match_choices) = 3 AND match_number = ANY (match_choices)));
+-- An unanswered MATCH sign-in always has its number, so a pick is always
+-- asked of it (the approval's WHERE); only a HANDOFF has none.
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_match_numbered;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_match_numbered
+  CHECK (delivery = 'HANDOFF' OR status <> 'PENDING' OR match_number IS NOT NULL);
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_referral_player;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_referral_player
+  CHECK (referral_code IS NULL OR audience = 'PLAYER');
+
+-- Verify in the Mini App answers a random ticket (32 bytes) and opens
+-- `https://<site>/#/tg/<ticket>`; the site exchanges it for the session. Only
+-- its SHA-256 is kept. One per challenge, single use (`used_at IS NULL` in the
+-- redeeming UPDATE's WHERE, §32 S6), short-lived by the DATABASE clock.
+CREATE TABLE IF NOT EXISTS telegram_handoff_tickets (
+  ticket_hash  TEXT PRIMARY KEY,
+  challenge_id TEXT NOT NULL UNIQUE REFERENCES telegram_challenges (challenge_id) ON DELETE CASCADE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at   TIMESTAMPTZ NOT NULL,
+  used_at      TIMESTAMPTZ
+);
+ALTER TABLE telegram_handoff_tickets DROP CONSTRAINT IF EXISTS telegram_handoff_tickets_hash_shape;
+ALTER TABLE telegram_handoff_tickets ADD CONSTRAINT telegram_handoff_tickets_hash_shape
+  CHECK (ticket_hash ~ '^[0-9a-f]{64}$');
+CREATE INDEX IF NOT EXISTS telegram_handoff_tickets_expiry_idx
+  ON telegram_handoff_tickets (expires_at);
 
 -- ── Each signed Mini App string, used once ────────────────────────────────
 -- `initData` and a shared contact are bearer proofs for the five minutes

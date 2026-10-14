@@ -10,7 +10,7 @@
  *   • the UPI scanner form: the scanned static QR and the bank details go to
  *     the server under the kind UPI_QR; a QR with an amount is refused before
  *     anything is sent; the server's refusal is announced (S44);
- *   • sub-members: the add form sends name, mobile, password and the ticked
+ *   • sub-members: the add form sends name, mobile (no password) and the ticked
  *     roles; ticking an account assigns it for that duty;
  *   • pool and reports: the request and the CSV download reach their calls.
  */
@@ -242,12 +242,13 @@ describe('sub-members', () => {
 
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Meera' } });
     fireEvent.change(screen.getByLabelText(/^Mobile/), { target: { value: '9123456789' } });
-    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'a-long-pass-phrase' } });
+    // No password: a sub-member signs in with Telegram (owner, 2026-10-14).
+    expect(screen.queryByLabelText(/password/i)).toBeNull();
     fireEvent.click(document.getElementById('sm-new-role-WITHDRAWALS')!);
     fireEvent.click(document.getElementById('sm-new-role-AUDIT')!);
     fireEvent.click(screen.getByRole('button', { name: /Add sub-member/ }));
     await waitFor(() => expect(api.addSubMember).toHaveBeenCalledWith({
-      mobile: '9123456789', password: 'a-long-pass-phrase', name: 'Meera', roles: ['WITHDRAWALS', 'AUDIT'],
+      mobile: '9123456789', name: 'Meera', roles: ['WITHDRAWALS', 'AUDIT'],
     }));
 
     fireEvent.click(screen.getByLabelText('Shop HDFC'));

@@ -25,7 +25,7 @@
  *            Required by WinnersPage, FaqPage, SupportPage, and app-init branding fetch.
  */
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import { Backend, SignInStep, PollResult, TelegramSetup, MyTelegram, TelegramBlock } from './backend.interface';
+import { Backend, SignInStep, PollResult, TelegramSetup, TelegramBlock, TelegramDelivery } from './backend.interface';
 import {
   User, Bet, BettingSide,
   PromoContent, PromoLocation, HomePromoCard, PromoDevice,
@@ -314,7 +314,7 @@ export class RealBackend implements Backend {
    * Seat a player, and move the live stream onto their session.
    *
    * ── One place, because it was three ────────────────────────────────────
-   * Every way in (the form, the Telegram poll) seats through here. A second way
+   * Every way in (the Telegram poll, the Telegram ticket) seats through here. A second way
    * of seating a player that forgot to move the stream leaves somebody signed
    * in on the public stream, and that is invisible until a private event — a
    * payout, an order update — does not arrive. So there is one.
@@ -328,104 +328,53 @@ export class RealBackend implements Backend {
   }
 
   /**
-   * The signup form.
-   *
-   * The captcha token is fetched HERE rather than by the form, so no screen can
-   * forget it and the one place it is obtained is the one place that knows
-   * which endpoints require it. `getCaptchaToken` resolves null — never rejects
-   * — when Turnstile is unconfigured or Cloudflare is unreachable; the server
-   * then decides, and its policy is to allow when its own verifier is down.
-   * Throwing on the client would turn somebody else's outage into a signup
-   * outage before the server ever got to apply that.
-   */
-  async register(form: {
-    mobile: string; password: string; confirmPassword: string;
-    referralCode?: string; captchaToken?: string;
-  }): Promise<SignInStep> {
-    const captchaToken = form.captchaToken ?? (await getCaptchaToken()) ?? undefined;
-    const res = await this.request<{
-      success: boolean; verificationAvailable?: boolean; challengeToken?: string | null;
-      telegram?: TelegramBlock | null; message?: string }>(
-      '/v1/auth/register', { method: 'POST', body: JSON.stringify({ ...form, captchaToken }) })
-      .catch(explainCaptcha);
-    if (res.verificationAvailable === false || !res.challengeToken) {
-      return { kind: 'unavailable', message: res.message || 'Your account is created. Sign in later to verify it in Telegram.' };
-    }
-    return { kind: 'telegram', leg: 'challenge', challengeToken: res.challengeToken,
-      telegram: res.telegram ?? null, message: res.message || '' };
-  }
-
-  /**
-   * The login form. Same captcha posture as `register`.
-   *
-   * Two answers are a Telegram step rather than a session: 200
-   * `twoFactorRequired` (Telegram approval on) and 403
-   * TELEGRAM_VERIFICATION_REQUIRED (the mobile was never verified). Neither is
-   * a failure, so neither throws.
-   */
-  async login(mobile: string, password: string, captchaToken?: string): Promise<SignInStep> {
-    const token = captchaToken ?? (await getCaptchaToken()) ?? undefined;
-    let res: { success: boolean; token?: string; user?: User; message?: string;
-      twoFactorRequired?: boolean; challengeToken?: string; telegram?: TelegramBlock | null };
-    try {
-      res = await this.request('/v1/auth/login',
-        { method: 'POST', body: JSON.stringify({ mobile, password, captchaToken: token }) });
-    } catch (err) {
-      const e = err as { code?: string; data?: { challengeToken?: string; telegram?: TelegramBlock; message?: string } };
-      if (e.code === 'TELEGRAM_VERIFICATION_REQUIRED' && e.data?.challengeToken) {
-        return { kind: 'telegram', leg: 'challenge', challengeToken: e.data.challengeToken,
-          telegram: e.data.telegram ?? null, message: e.data.message || '' };
-      }
-      return explainCaptcha(err);
-    }
-    if (res.twoFactorRequired && res.challengeToken) {
-      return { kind: 'telegram', leg: 'challenge', challengeToken: res.challengeToken,
-        telegram: res.telegram ?? null, message: res.message || '' };
-    }
-    if (!res.success || !res.user) throw new Error(res.message || 'Could not sign you in. Please try again.');
-    this.seat(res);
-    return { kind: 'done', user: res.user };
-  }
-
-  /**
    * One poll. 202 is "not yet"; a session is seated here, through the one
    * seater; a 401 (denied, expired) throws with the server's sentence.
    */
-  async pollSignIn(leg: 'challenge' | 'telegramLogin', challengeToken: string): Promise<PollResult> {
-    const path = leg === 'challenge' ? '/v1/auth/login/2fa' : '/v1/auth/login/telegram/complete';
-    const res = await this.request<{ success: boolean; pending?: boolean; token?: string; user?: User }>(
-      path, { method: 'POST', body: JSON.stringify({ challengeToken }) }, 0);
+  async pollSignIn(challengeToken: string): Promise<PollResult> {
+    const res = await this.request<{ success: boolean; pending?: boolean; token?: string; user?: User;
+      handedOff?: boolean; message?: string }>(
+      '/v1/auth/login/telegram/complete', { method: 'POST', body: JSON.stringify({ challengeToken }) }, 0);
     if (res.success && res.token && res.user) { this.seat(res); return { state: 'done', user: res.user }; }
+    if (res.handedOff) return { state: 'handedOff', message: res.message || '' };
     return { state: 'pending' };
   }
 
-  async loginWithTelegram(): Promise<SignInStep> {
-    const res = await this.request<{ challengeToken?: string; telegram?: TelegramBlock; message?: string }>(
-      '/v1/auth/login/telegram', { method: 'POST', body: '{}' });
+  /**
+   * "Continue with Telegram", the player's one way in. The captcha token is
+   * fetched HERE (the player's door carries the captcha, owner 2026-10-08), so
+   * no screen can forget it. `getCaptchaToken` resolves null — never rejects —
+   * when Turnstile is unconfigured or unreachable; the server then decides.
+   */
+  async loginWithTelegram(opts: { delivery?: TelegramDelivery; referralCode?: string } = {}): Promise<SignInStep> {
+    const captchaToken = (await getCaptchaToken()) ?? undefined;
+    const res = await this.request<{ challengeToken?: string; telegram?: TelegramBlock; message?: string;
+      delivery?: TelegramDelivery; matchNumber?: number | null }>(
+      '/v1/auth/login/telegram', { method: 'POST', body: JSON.stringify({ ...opts, captchaToken }) })
+      .catch(explainCaptcha);
     if (!res.challengeToken) {
       return { kind: 'unavailable', message: res.message || 'Telegram sign-in is not available right now.' };
     }
-    return { kind: 'telegram', leg: 'telegramLogin', challengeToken: res.challengeToken,
-      telegram: res.telegram ?? null, message: res.message || '' };
+    return { kind: 'telegram', challengeToken: res.challengeToken,
+      telegram: res.telegram ?? null, message: res.message || '',
+      delivery: res.delivery, matchNumber: res.matchNumber ?? null };
+  }
+
+  /**
+   * The ticket the Mini App opened this site with, exchanged once for the
+   * session, which is seated through the one seater. A used or expired
+   * ticket throws the server's sentence.
+   */
+  async redeemTelegramTicket(ticket: string): Promise<User> {
+    const res = await this.request<{ success: boolean; token?: string; user?: User; message?: string }>(
+      '/v1/auth/login/telegram/ticket', { method: 'POST', body: JSON.stringify({ ticket }) }, 0);
+    if (!res.success || !res.token || !res.user) throw new Error(res.message || 'Could not sign you in. Please try again.');
+    this.seat(res);
+    return res.user;
   }
 
   async getTelegramSetup(): Promise<TelegramSetup> {
     return this.request<TelegramSetup>('/telegram/mini-app?panel=PLAYER');
-  }
-
-  async getMyTelegram(): Promise<MyTelegram> {
-    return this.request<MyTelegram>('/v1/auth/telegram');
-  }
-
-  async relinkTelegram() {
-    return this.request<{ telegram: TelegramBlock; message?: string }>(
-      '/v1/auth/telegram/relink', { method: 'POST', body: '{}' });
-  }
-
-  async setTelegramTwoFactor(enabled: boolean) {
-    return this.request<{ twoFactor?: { enabled: boolean; required: boolean };
-      approvalRequired?: boolean; telegram?: TelegramBlock; message?: string }>(
-      '/v1/auth/telegram/two-factor', { method: 'PUT', body: JSON.stringify({ enabled }) });
   }
 
   /**

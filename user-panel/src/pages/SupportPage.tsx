@@ -311,7 +311,7 @@ const SupportPage: React.FC = () => {
 
   return (
     <ScreenShell icon="🛟" title="Support" sub="We are here to help">
-      <button onClick={() => (isAuthenticated ? setChatOpen(true) : openAuth('login'))} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 13, padding: 16, borderRadius: 16, border: 'none', cursor: 'pointer', textAlign: 'left', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', boxShadow: '0 10px 26px -10px var(--glow)', marginBottom: 14 }}>
+      <button onClick={() => (isAuthenticated ? setChatOpen(true) : openAuth())} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 13, padding: 16, borderRadius: 16, border: 'none', cursor: 'pointer', textAlign: 'left', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', boxShadow: '0 10px 26px -10px var(--glow)', marginBottom: 14 }}>
         <span style={{ fontSize: 24 }}>💬</span>
         <span style={{ flex: 1 }}><span className="font-grotesk" style={{ display: 'block', fontWeight: 700, fontSize: 16 }}>Message Support</span><span style={{ display: 'block', fontSize: 11, fontWeight: 600, opacity: .75 }}>{isAuthenticated ? 'Open a support ticket · we reply here' : 'Sign in to open a support ticket'}</span></span>
         <span style={{ fontSize: 18 }}>›</span>

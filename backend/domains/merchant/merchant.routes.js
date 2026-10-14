@@ -5,15 +5,9 @@
 
 import express   from 'express';
 import { db } from '#db';
-// AQ-8: hash via the password authority (argon2id + bcrypt verify-fallback).
-import { hashPassword } from '../identity/password.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
 // The merchant sign-in door: routes.js's handlers with this door's limits (§33).
 import { doorRoute } from '../identity/loginDoors.js';
-import { openChallenge } from '../identity/telegramChallenge.service.js';
-import { miniAppBot } from '../telegram/telegramClient.js';
-import { telegramStatus, telegramRelink, telegramTwoFactor } from '../identity/accountTelegram.js';
-import { normalisePhone, isValidMobile } from '../identity/signupFields.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import {
@@ -61,10 +55,8 @@ import { listScopeFor, refuseWork, ownerOnly } from './merchantActor.js';
 // What a cash buy's ATM link may be (Step 2d).
 import { checkCashLink } from '../payment/cashLink.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
-import { NAME_IS_A_MOBILE_MESSAGE } from '../identity/mobileInText.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { recordMerchantRefusal, REFUSAL } from './merchantRefusal.service.js';
-import { assertStaffPassword } from '../identity/passwordPolicy.js';
 
 const router     = express.Router();
 
@@ -85,7 +77,7 @@ const NO_LONGER_YOURS = 'This order has been moved to another member, so nothing
 
 
 
-// ─── AUTH: SIGNUP & LOGIN ─────────────────────────────────────────────────────
+// ─── AUTH: SIGN-IN ────────────────────────────────────────────────────────────
 
 
 // ── Auto system message helper ────────────────────────────────────────────────
@@ -100,105 +92,14 @@ async function sendSystemMessage(orderId, message, io) {
     }
 }
 
-router.post('/auth/signup', async (req, res) => {
-    try {
-        const { username, password, email, bankDetails } = req.body;
-        if (!username || !req.body?.mobile || !password) {
-            return res.status(400).json({ success: false, code: 'FIELDS_REQUIRED', message: 'username, mobile and password are required' });
-        }
-        // The mobile Telegram will verify: ten digits, as the player form takes
-        // it, because the link's phone must EQUAL it (telegram_link_phone_is_mobile).
-        if (!isValidMobile(req.body.mobile)) {
-            return res.status(400).json({ success: false, code: 'MOBILE_INVALID',
-                message: 'Enter your 10-digit mobile number — the one on your Telegram account — without +91.' });
-        }
-        const mobile = normalisePhone(req.body.mobile);
-
-        // ONE TRANSACTION for the account, the merchant record and the wallet.
-        //
-        // This used to be two unrelated writes. A failure on the second left an
-        // account flagged as a merchant with no merchant record behind it: an
-        // applicant who could never log in, whose mobile was now taken, and who
-        // could not reapply. The login path had grown a repair for the
-        // neighbouring case — data repair inside an authentication path.
-        //
-        // The mobile's uniqueness is decided by the index, not by a prior
-        // lookup: two applications on the same number arriving together both
-        // pass a check, and only one INSERT can win.
-        // A merchant holds platform float and sees the account a payout pays.
-        // Same floor as a sub-admin: the password is half the credential.
-        try {
-            assertStaffPassword(password, { mobile, username }, 'merchant');
-        } catch (e) {
-            return res.status(e.status || 400).json({ success: false, code: e.code, message: e.message });
-        }
-
-        const created = await db.merchants.createMerchantAccount({
-            userId: db.users.newUserId(),
-            username, mobile,
-            email: email || null,
-            passwordHash: await hashPassword(password),
-            // A bank account, never a UPI handle (§2, §24): one sent is not kept.
-            bankDetails: bankDetails ? {
-                bankName: bankDetails?.bankName || null,
-                accountNo: bankDetails?.accountNo || null,
-                ifsc: bankDetails?.ifsc || null,
-            } : null,
-        });
-
-        if (!created.ok && created.reason === 'ACCOUNT_IS_A_MOBILE') {
-            return res.status(400).json({ success: false, code: 'ACCOUNT_IS_A_MOBILE', message: ACCOUNT_IS_A_MOBILE_MESSAGE });
-        }
-        if (!created.ok && created.reason === 'NAME_IS_A_MOBILE') {
-            return res.status(400).json({ success: false, code: 'NAME_IS_A_MOBILE', message: NAME_IS_A_MOBILE_MESSAGE });
-        }
-        if (!created.ok) {
-            // Named, because "signup failed" tells an applicant nothing they
-            // can act on — and a payment credential already registered to
-            // someone else is a different problem from a taken mobile.
-            const message = created.reason === 'MOBILE_TAKEN'
-                ? 'Mobile number already registered'
-                : 'Those payment details are already registered to another merchant';
-            return res.status(409).json({ success: false,
-                code: created.reason === 'MOBILE_TAKEN' ? 'MOBILE_TAKEN' : 'CREDENTIALS_TAKEN', message });
-        }
-
-        // ── The Telegram step (Step 3) ─────────────────────────────────────
-        // Verification and approval are independent: the applicant verifies
-        // their mobile now, while the application waits, and signing in needs
-        // both. No bot is the platform's state: they verify at their first
-        // sign-in once one exists.
-        const bot = await miniAppBot();
-        const opened = bot
-            ? await openChallenge({ purpose: 'VERIFY', door: 'MERCHANT', userId: created.userId, req })
-            : null;
-        res.json({
-            success: true,
-            verificationRequired: true,
-            verificationAvailable: Boolean(opened),
-            challengeToken: opened?.challengeToken ?? null,
-            telegram: opened?.telegram ?? null,
-            message: 'Application submitted. Verify your mobile number in Telegram now; an admin will review and approve your account.',
-        });
-    } catch (error) {
-        console.error('Merchant signup error:', error);
-        res.status(500).json({ success: false, message: 'Signup failed. Please try again.' });
-    }
-});
-
 // ── The merchant sign-in door (§33): routes.js's handlers, this door's limits.
-// The read is the merchant's LOGIN row (`users`, account_type MERCHANT) by
-// mobile; signing in by merchant username is gone (Step 3: "the same way").
-router.post('/auth/login', ...doorRoute('MERCHANT', 'login'));
-router.post('/auth/login/2fa', ...doorRoute('MERCHANT', 'twoFactor'));
+// "Continue with Telegram" and nothing else (owner, 2026-10-14): no password,
+// no signup form. A merchant's first Verify shares the contact once, which
+// links the login on that mobile (an admin-made merchant, a sub-member) or
+// makes an application an admin approves.
 router.post('/auth/login/telegram', ...doorRoute('MERCHANT', 'telegram'));
 router.post('/auth/login/telegram/complete', ...doorRoute('MERCHANT', 'telegramComplete'));
-
-// ── The merchant's own Telegram link (accountTelegram.js) ──────────────────
-// `merchantAuth` leaves the login row's id on `req.userId`.
-router.get('/telegram', merchantAuth, telegramStatus);
-router.post('/telegram/relink', merchantAuth, telegramRelink);
-router.put('/telegram/two-factor', merchantAuth, telegramTwoFactor);
+router.post('/auth/login/telegram/ticket', ...doorRoute('MERCHANT', 'telegramTicket'));
 
 // ─── PROFILE ─────────────────────────────────────────────────────────────────
 

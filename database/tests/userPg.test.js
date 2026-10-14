@@ -90,15 +90,16 @@ describePg('accounts (PostgreSQL)', () => {
   });
 
   describe('secrets do not leak through an ordinary read', () => {
+    // Only a STAFF account has a password (users_password_staff_only).
     it('omits the password hash from getUser', async () => {
-      await createUser(mk({ passwordHash: 'argon2-hash' }));
+      await createUser(mk({ passwordHash: 'argon2-hash', accountType: 'STAFF' }));
       const user = await getUser('u-1');
       expect(user).not.toHaveProperty('passwordHash');
       expect(JSON.stringify(user)).not.toContain('argon2-hash');
     });
 
     it('returns it only through the function that exists to read it', async () => {
-      await createUser(mk({ passwordHash: 'argon2-hash' }));
+      await createUser(mk({ passwordHash: 'argon2-hash', accountType: 'STAFF' }));
       expect(await getUserCredentials('u-1')).toEqual({ userId: 'u-1', passwordHash: 'argon2-hash' });
     });
 
