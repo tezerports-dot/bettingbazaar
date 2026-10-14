@@ -1892,7 +1892,48 @@ noticed for months that one of the two confirm routes never checked for one.
 
 ---
 
-## 33. Signing up is a FORM. Telegram verifies; it does not authenticate.
+## 33. Players and merchants Continue with Telegram; staff use an authenticator app.
+
+(History below: until 2026-10-14 signing up was a FORM, and Telegram verified the mobile.)
+
+### 33.9 Players and merchants Continue with Telegram (owner, 2026-10-13/14)
+
+Choudhary asked for one button: signing up and signing in are the same action,
+and the contact is shared once, at signup. The password went with it for
+players and merchants (decision card, 2026-10-14: "Delete it"); §0.0 meant there
+was nobody to migrate. The schema now refuses a password on any row that is not
+STAFF, so a later path cannot quietly bring one back.
+
+Why two deliveries. A browser on the phone that runs Telegram cannot be told a
+number to match against itself, and the person should never type a code on a
+phone; so there Verify opens the site with a one-time ticket (HANDOFF). Anywhere
+else the browser that asked shows a two-digit number and Telegram offers three
+(MATCH): approving somebody else's sign-in then needs the number on THEIR
+screen, which a phishing page cannot see. Three wrong picks deny the sign-in.
+A HANDOFF is never spent by a poll: the poll of the page that asked is told
+"handed off", so a page that requested a HANDOFF cannot collect somebody else's
+Verify.
+
+Why the ticket is shaped as it is: 256 random bits (no budget makes it
+guessable), stored only as its SHA-256 (a database read gives nothing to
+replay), 60 s by the database clock, spent once with its challenge in one
+UPDATE whose WHERE holds every guard (S6), and carried in the URL fragment,
+which no browser sends to a server or in a Referer. The residual risk is login
+CSRF: a ticket link opened in another browser signs THAT browser in. It needs
+the victim to press Verify on a screen that names where it sends them, within
+60 s, and it gains the attacker a session in the attacker's own account, not
+the victim's.
+
+Why the merchant second factor is the Telegram sign-in: the password it used to
+protect is gone, and the Telegram approval is bound to the account's own
+Telegram link (or, the first time, to Telegram's signed contact of the
+account's mobile). `amr: ['tg']` is what `secondFactorMissing` asks of a
+MERCHANT session. `telegram_links.two_factor` (a merchant could not turn it off,
+a player could) had nothing left to switch.
+
+Why the account-creation budget counts only creations: the Mini App doors that
+make an account also sign returning people in, and counting every success would
+cap sign-ins per address behind carrier-grade NAT.
 
 ### 33.8 Staff sign in with an authenticator app (owner, 2026-10-13)
 

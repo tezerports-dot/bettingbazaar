@@ -1,11 +1,15 @@
 # Identity, access and referrals
 
-**Status: built, tested, and the only path.** Rewritten 2026-09-23 when signup
-and login moved from the Telegram bot to a FORM (CLAUDE.md §33, the rule file —
-where this document and that one disagree, that one wins and this one is wrong).
-
-This is the authoritative description of how somebody becomes a player, stays
-one, gets their account back, and earns from inviting others.
+**Status: SUPERSEDED on 2026-10-14. Do not build from this document.** Players
+and merchants now have no password: they sign up and sign in only with
+"Continue with Telegram" (a Verify screen in the Mini App, a number match on a
+laptop, a one-time handoff ticket on a phone), and staff sign in with a password
+and an authenticator code. The rules are CLAUDE.md §2 and §33; the decision is
+in `docs/reference/DECISION_LOG.md` (2026-10-13, 2026-10-14). What follows is
+the 2026-09-23 form design, kept as history: its routes (`/register`, `/login`,
+`/login/2fa` for players), its tests (`playerFormAuth.test.js`,
+`signupToLogin.test.js`) and its Aadhaar and bot-fleet sections no longer exist.
+The referral rules (§2 *Referral rewards*) are unchanged.
 
 ---
 

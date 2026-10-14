@@ -1415,6 +1415,40 @@ A staff session's `amr` is `['pwd','otp']`; one without `otp` is refused 403
 forgotten staff password: `scripts/reset-staff-access.mjs`
 (`deploy/VPS_UBUNTU_SETUP.md` §12.1).
 
+## 3.14 Players and merchants: Continue with Telegram, no password (owner, 2026-10-13/14) — **BUILT on `feat/telegram-only-players-merchants`** (stacked on 3.13)
+
+Owner (Choudhary): one "Continue with Telegram" button; signup and sign-in are
+the same action; the contact is shared once, at signup; a Verify/Deny screen
+says where Verify sends the person and the request's time, device and address;
+the password is deleted outright for players and merchants (decision card,
+2026-10-14: "Delete it"). Rules: CLAUDE.md §33.1–§33.4, §33.6, §33.7 and §2
+*A Telegram sign-in*, *A handoff ticket*, *Who has a password*.
+
+**API contract (player `/api/v1/auth`, merchant `/api/merchant/auth`).**
+- `POST /login/telegram` `{ delivery: 'MATCH'|'HANDOFF', referralCode? }`
+  (player: plus the captcha token) → 200 `{ success: false, pending: true,
+  challengeToken, telegram: { url, botUsername, expiresAt }, delivery,
+  matchNumber }`; 503 `TELEGRAM_UNAVAILABLE` with no bot.
+- `POST /login/telegram/complete` `{ challengeToken }` → 202 pending; a
+  session (MATCH); 200 `{ handedOff: true }` (HANDOFF); 401
+  `TWO_FACTOR_DENIED` / `TWO_FACTOR_EXPIRED`; 403 `MERCHANT_NOT_ACTIVE` for an
+  application an admin has not approved.
+- `POST /login/telegram/ticket` `{ ticket }` → a session; 401 `TICKET_INVALID`.
+- Mini App `POST /api/telegram/mini-app/context | approve | continue`
+  (`approve` `{ initData, decision, pick?, contact? }`; a wrong pick is 400
+  `WRONG_NUMBER`, the third 403 `TOO_MANY_WRONG`).
+
+**Deleted:** `/api/v1/auth/register`, `/login`, `/login/2fa`, the player
+`/telegram` status, relink and two-factor routes; `/api/merchant/auth/signup`,
+`/auth/login`, `/auth/login/2fa`, `/api/merchant/telegram*`; the Mini App's
+`/signup` and `/password-reset`; `passwordReset.service.js`,
+`accountTelegram.js`, `password_resets`, `telegram_links.two_factor`,
+`telegram_challenges.purpose`; the player signup and login forms, Profile's
+Telegram card, the merchant password form, application form and Telegram card;
+the password on admin-made merchants and on sub-members. Added: an Install app
+button in the player app (the browser's own prompt; Add to Home Screen on an
+iPhone).
+
 ## 4. How to pick this up
 
 1. Read `CLAUDE.md` end to end. It is the only rules file.
