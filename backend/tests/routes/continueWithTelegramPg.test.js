@@ -170,7 +170,11 @@ describePg('Continue with Telegram (PostgreSQL)', () => {
       expect(rows[0].ticket_hash).toBe(ticketHash(ticket));
       expect(JSON.stringify(rows)).not.toContain(ticket);
 
-      // The browser that asked is told it went elsewhere, and gets no session.
+      // The browser that asked is told it went elsewhere, and gets no session:
+      // not from the route, and not from the repository's own redeem either.
+      expect((await db.telegram.redeemChallenge({
+        challengeId: startParam(opened.telegram), audience: 'PLAYER', purposes: ['TELEGRAM_LOGIN'],
+      })).ok).toBe(false);
       const polled = await complete(opened.challengeToken);
       expect(polled.body).toMatchObject({ handedOff: true });
       expect(polled.body.token).toBeUndefined();

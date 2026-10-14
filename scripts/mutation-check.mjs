@@ -2817,6 +2817,61 @@ const MUTATIONS = [
     to: `ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_audience_check
   CHECK (audience IN ('PLAYER', 'MERCHANT', 'STAFF'));`,
   },
+  // ── Continue with Telegram: number match and handoff (owner, 2026-10-13) ─
+  {
+    id: 'MTG1', file: 'database/repositories/telegram.js', config: PG,
+    test: 'backend/tests/routes/continueWithTelegramPg.test.js',
+    why: 'a HANDOFF sign-in is spent by the poll of the browser that opened it, so whoever started it collects the session of whoever pressed Verify',
+    from: `        AND status = 'APPROVED' AND expires_at > now() AND delivery = 'MATCH'`,
+    to: `        AND status = 'APPROVED' AND expires_at > now()`,
+  },
+  {
+    id: 'MTG2', file: 'backend/routes.js', config: PG,
+    test: 'backend/tests/routes/continueWithTelegramPg.test.js',
+    why: 'the asking browser of a HANDOFF is no longer told the session went elsewhere, and waits for ever',
+    from: `    if (row?.delivery === 'HANDOFF' && row.audience === door.accountType) {`,
+    to: `    if (false && row?.delivery === 'HANDOFF' && row.audience === door.accountType) {`,
+  },
+  {
+    id: 'MTG3', file: 'database/repositories/telegram.js', config: PG,
+    test: 'backend/tests/routes/continueWithTelegramPg.test.js',
+    why: 'a handoff ticket signs in more than once',
+    // The ticket's own guard and its challenge's state each stop a second
+    // spend; the BEHAVIOUR is what this loosens.
+    edits: [
+      [`        WHERE ticket_hash = $1 AND used_at IS NULL AND expires_at > now()`,
+        `        WHERE ticket_hash = $1 AND expires_at > now()`],
+      [`        AND c.delivery = 'HANDOFF' AND c.status = 'APPROVED' AND c.expires_at > now()`,
+        `        AND c.delivery = 'HANDOFF' AND c.status IN ('APPROVED', 'REDEEMED') AND c.expires_at > now()`],
+    ],
+  },
+  {
+    id: 'MTG4', file: 'database/repositories/telegram.js', config: PG,
+    test: 'backend/tests/routes/continueWithTelegramPg.test.js',
+    why: 'a handoff ticket past its minute still signs in',
+    from: `        WHERE ticket_hash = $1 AND used_at IS NULL AND expires_at > now()`,
+    to: `        WHERE ticket_hash = $1 AND used_at IS NULL`,
+  },
+  {
+    id: 'MTG5', file: 'database/repositories/telegram.js', config: PG,
+    test: 'backend/tests/routes/continueWithTelegramPg.test.js',
+    why: 'Verify approves with any number, so a sign-in started on somebody else\'s screen is approved without matching it',
+    // The strike that refuses a wrong pick, and the approving UPDATE that
+    // asks the number again: either alone still refuses.
+    edits: [
+      [`        AND match_number IS NOT NULL AND match_number IS DISTINCT FROM $2::smallint`,
+        `        AND match_number IS NOT NULL AND FALSE AND $2::smallint IS NULL`],
+      [`          AND (match_number IS NULL OR match_number = $5::smallint)\`,`,
+        `          AND ($5::smallint IS NULL OR TRUE)\`,`],
+    ],
+  },
+  {
+    id: 'MTG6', file: 'database/repositories/telegram.js', config: PG,
+    test: 'backend/tests/routes/continueWithTelegramPg.test.js',
+    why: 'wrong picks never refuse the sign-in, so the three numbers can simply be tried in turn',
+    from: `            status = CASE WHEN match_strikes + 1 >= $3 THEN 'DENIED' ELSE status END,`,
+    to: `            status = CASE WHEN match_strikes + 1 > $3 THEN 'DENIED' ELSE status END,`,
+  },
   // ── Forgot password, set in the Mini App for every panel (2026-10-08) ────
   {
     id: 'MS9', file: 'database/repositories/telegram.js', config: PG,
