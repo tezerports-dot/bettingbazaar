@@ -65,8 +65,11 @@ function useCountUp(to: number, ms = 1200): number {
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) { setV(to); return; }
     let raf = 0;
     const t0 = performance.now();
-    const step = (t: number) => {
-      const k = Math.min(1, (t - t0) / ms);
+    // Timed on the same clock as `t0`. The frame's own timestamp can run on a
+    // different origin (jsdom's starts with its window), which held the count
+    // short of its total on a slow machine.
+    const step = () => {
+      const k = Math.min(1, (performance.now() - t0) / ms);
       setV(Math.round(to * (1 - Math.pow(1 - k, 3)) * 100) / 100);
       if (k < 1) raf = requestAnimationFrame(step);
     };
