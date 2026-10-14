@@ -243,3 +243,50 @@ describe('INR orders to merchants: one flat list (owner, 2026-10-11)', () => {
     expect(JSON.stringify(post.mock.calls[0])).toContain('500');
   });
 });
+
+describe('an open order is never hidden behind the size picker', () => {
+  // A buy still waiting for a member is the player's one open buy. The screen
+  // used to ignore it, offer the tiles again, and the server refused the second
+  // order; the only way out was the Cancel under Payment Orders.
+  const waitingBuy = { orderId: 'ORD-Q', _id: 'ORD-Q', type: 'DEPOSIT', status: 'PENDING_QUEUE', currency: 'INR', tokenAmount: 5000, fiatAmount: 5000, canCancel: true, createdAt: new Date().toISOString() };
+
+  it('shows a waiting buy, and its Cancel cancels it on the server', async () => {
+    await open({ orders: [waitingBuy] });
+    const cancel = await screen.findByRole('button', { name: '✕ Cancel order' });
+    expect(screen.queryByRole('button', { name: 'Continue to payment' })).toBeNull();
+    post.mockResolvedValueOnce({ success: true });
+    fireEvent.click(cancel);
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/payment/order/cancel', { orderId: 'ORD-Q' }));
+  });
+
+  it('offers no Cancel on a buy the member has accepted', async () => {
+    await open({ orders: [{ ...waitingBuy, status: 'PROCESSING', canCancel: false }] });
+    await screen.findByText('Complete payment');
+    expect(screen.queryByRole('button', { name: '✕ Cancel order' })).toBeNull();
+  });
+
+  it('says a waiting sell is still looking for a merchant, and lets it be cancelled', async () => {
+    await open({ orders: [{ ...waitingBuy, orderId: 'SELL-Q', _id: 'SELL-Q', type: 'WITHDRAWAL' }] });
+    expect(await screen.findByText(/Finding a merchant for your payout/)).toBeInTheDocument();
+    expect(screen.queryByText(/Payment sent/)).toBeNull();
+    post.mockResolvedValueOnce({ success: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel sell order' }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/payment/order/cancel', { orderId: 'SELL-Q' }));
+  });
+});
+
+describe('the wallet names what a sell holds', () => {
+  it('shows a sell’s locked tokens apart from stakes in play', async () => {
+    get.mockImplementation((url: string) => {
+      if (url === '/api/user/bet-limits') {
+        return Promise.resolve({ success: true, deposit: 0, winnings: 0, locked: 6000, reserve: 0, maxStake: 0, lockedInSells: 5000, lockedInDisputes: 0 });
+      }
+      return serve()(url);
+    });
+    render(<WalletPage />);
+    expect(await screen.findByText('IN SELL ORDERS')).toBeInTheDocument();
+    const inPlay = screen.getByText('IN PLAY').parentElement as HTMLElement;
+    expect(inPlay).toHaveTextContent('1,000');
+    expect(screen.queryByText('IN DISPUTE')).toBeNull();
+  });
+});

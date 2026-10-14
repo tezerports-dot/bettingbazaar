@@ -32,6 +32,7 @@ const team = (teamId: string, name: string, extra = {}) => ({
   teamId, supervisorId: 's-1', supervisorName: 'Sup', supervisorRef: 'MSUP', name, rail: 'UPI_BANK',
   approvedCount: 0, pendingCount: 0, size: 10, strength: 'STOPPED', createdAt: '',
   poolAvailablePaise: 0, poolHeldPaise: 0,
+  poolExposure: { heldOpenPaise: 0, heldDisputedPaise: 0, openBuys: 0, sellsSettlingPaise: 0, sellsDisputedPaise: 0, openSells: 0 },
   commission: { teamId, buysPaise: 0, sellsPaise: 0, matchedPaise: 0, highPaise: 0, paidPaise: 0, owedPaise: 0,
     commissionPercent: 10, supervisorSharePercent: 16 },
   ...extra,

@@ -24,6 +24,7 @@ import { pgQuery, withTransaction } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { teamVolumeSql, teamMarkSql, toSummary, directCommissionPercent } from './teamCommission.js';
 import { getSystemConfig } from './config.js';
+import { poolExposureSql, toPoolExposure } from './teamPools.js';
 import { textHasAMobile } from '../../backend/domains/identity/mobileInText.js';
 
 export const MAX_TEAMS = 4;
@@ -49,11 +50,12 @@ const TEAM_SELECT = `
          c.approved_count, c.pending_count,
          COALESCE(p.available_paise, 0) AS pool_available_paise,
          COALESCE(p.held_paise, 0)      AS pool_held_paise,
-         v.buys_paise, v.sells_paise, k.high_paise, k.paid_paise,
+         v.buys_paise, v.sells_paise, k.high_paise, k.paid_paise, x.*,
          ${STRENGTH_SQL} AS strength
     FROM teams t
     JOIN merchants s ON s.merchant_id = t.supervisor_id
     LEFT JOIN team_pools p ON p.team_id = t.team_id
+    CROSS JOIN LATERAL (${poolExposureSql('team_id = t.team_id')}) x
     CROSS JOIN LATERAL (${teamVolumeSql('t.team_id')}) v
     CROSS JOIN LATERAL (${teamMarkSql('t.team_id')}) k
     CROSS JOIN LATERAL (
@@ -77,6 +79,9 @@ function toTeam(row) {
     // The team's tokens (Step 2b). BIGINT arrives as a string (trap 5).
     poolAvailablePaise: Number(row.pool_available_paise ?? 0),
     poolHeldPaise: Number(row.pool_held_paise ?? 0),
+    // What the held tokens are held for, and the sells on their way in
+    // (`teamPools.poolExposureSql`).
+    poolExposure: toPoolExposure(row),
     // Step 2e: matched volume, the high-water mark, what has been paid, and
     // what is earned but waiting for the commission pool.
     commission: toSummary(row.team_id, row),
@@ -123,11 +128,17 @@ export async function setSupervisorRole(merchantId, { rail }) {
   }
   try {
     return await withTransaction(async (client) => {
+      // By merchant id OR the agent ID the merchant panel shows them (their
+      // public ref), as `addMember` takes it: an admin pasting the ID the agent
+      // read off their own Team page was answered "not found" (owner,
+      // 2026-10-14), so no supervisor could be made from the panel.
+      const ref = String(merchantId ?? '').trim();
       const { rows } = await client.query(
         `SELECT merchant_id, merchant_approval_status, is_supervisor
-           FROM merchants WHERE merchant_id = $1 FOR UPDATE`, [String(merchantId)]);
+           FROM merchants WHERE merchant_id = $1 OR public_ref = upper($1) FOR UPDATE`, [ref]);
       const m = rows[0];
       if (!m) return { ok: false, reason: 'not_found' };
+      merchantId = m.merchant_id;
       if (m.merchant_approval_status !== 'APPROVED') return { ok: false, reason: 'not_approved' };
       const { rows: t } = await client.query(
         'SELECT 1 FROM teams WHERE supervisor_id = $1 LIMIT 1', [String(merchantId)]);
@@ -146,7 +157,7 @@ export async function setSupervisorRole(merchantId, { rail }) {
           WHERE merchant_id = $1`,
         [String(merchantId), rail !== null, rail],
       );
-      return { ok: true };
+      return { ok: true, merchantId };
     });
   } catch (e) {
     if (e?.constraint === 'team_roles_disjoint') return { ok: false, reason: 'is_member' };
@@ -298,11 +309,55 @@ export async function addMember({ teamId, supervisorId, merchantRef, actor }) {
   }
 }
 
+/**
+ * The settlement currency a team's rail needs of its members: USDT for a USDT
+ * team, INR for a cash or UPI/bank team.
+ */
+export const memberCurrencyFor = (rail) => (rail === 'USDT' ? 'USDT' : 'INR');
+
+/**
+ * An approved member settles on their team's rail (owner, 2026-10-14).
+ *
+ * Routing picks a team's members by the SUPERVISOR's rail, but a member's own
+ * `accepted_currencies` decided which credentials their Profile would take. A
+ * member left on INR in a USDT team could never save a wallet address, so no
+ * USDT buy could ever be routed to them and every one waited at "Finding a
+ * merchant" until it expired. Approval now puts the member on the team's rail,
+ * in the approving transaction, and clears the other rail's credentials the
+ * way the admin's rail switch does (they would sit in its unique indexes and
+ * could be snapshotted onto an order). A no-op when the rail already matches.
+ */
+async function alignMemberRailWithin(client, merchantId, supervisorRail) {
+  const currency = memberCurrencyFor(supervisorRail);
+  await client.query(
+    `UPDATE merchants
+        SET accepted_currencies = ARRAY[$2]::text[],
+            bank_account_no          = CASE WHEN $2 = 'USDT' THEN NULL ELSE bank_account_no END,
+            bank_ifsc                = CASE WHEN $2 = 'USDT' THEN NULL ELSE bank_ifsc END,
+            bank_account_holder_name = CASE WHEN $2 = 'USDT' THEN NULL ELSE bank_account_holder_name END,
+            usdt_address_trc20       = CASE WHEN $2 = 'INR' THEN NULL ELSE usdt_address_trc20 END,
+            usdt_address_bep20       = CASE WHEN $2 = 'INR' THEN NULL ELSE usdt_address_bep20 END
+      WHERE merchant_id = $1 AND accepted_currencies[1] IS DISTINCT FROM $2`,
+    [String(merchantId), currency]);
+}
+
+/** The rail of the team a merchant is in (pending or approved), or null. */
+export async function teamRailOf(merchantId) {
+  const { rows } = await pgQuery(
+    `SELECT s.supervisor_rail FROM team_members tm
+       JOIN teams t ON t.team_id = tm.team_id
+       JOIN merchants s ON s.merchant_id = t.supervisor_id
+      WHERE tm.merchant_id = $1`, [String(merchantId)], 'teams_rail_of_member');
+  return rows[0]?.supervisor_rail ?? null;
+}
+
 /** An admin approves a pending member. Refused if the team already has TEAM_SIZE approved. */
 export async function approveMember({ merchantId, actor }) {
   return withTransaction(async (client) => {
     const { rows } = await client.query(
-      `SELECT t.team_id FROM team_members tm JOIN teams t ON t.team_id = tm.team_id
+      `SELECT t.team_id, s.supervisor_rail FROM team_members tm
+         JOIN teams t ON t.team_id = tm.team_id
+         JOIN merchants s ON s.merchant_id = t.supervisor_id
         WHERE tm.merchant_id = $1 AND tm.status = 'PENDING'
         FOR UPDATE OF t`, [String(merchantId)]);
     if (!rows[0]) return { ok: false, reason: 'not_pending' };
@@ -313,6 +368,7 @@ export async function approveMember({ merchantId, actor }) {
     await client.query(
       `UPDATE team_members SET status = 'APPROVED', approved_by = $2, approved_at = now()
         WHERE merchant_id = $1`, [String(merchantId), String(actor)]);
+    await alignMemberRailWithin(client, merchantId, rows[0].supervisor_rail);
     return { ok: true, teamId };
   });
 }
@@ -378,10 +434,11 @@ const DIRECT_SELECT = `
          o.routing_priority AS owner_priority,
          COALESCE(p.available_paise, 0) AS pool_available_paise,
          COALESCE(p.held_paise, 0)      AS pool_held_paise,
-         v.buys_paise, v.sells_paise, k.high_paise, k.paid_paise
+         v.buys_paise, v.sells_paise, k.high_paise, k.paid_paise, x.*
     FROM teams t
     JOIN merchants o ON o.merchant_id = t.owner_merchant_id
     LEFT JOIN team_pools p ON p.team_id = t.team_id
+    CROSS JOIN LATERAL (${poolExposureSql('team_id = t.team_id')}) x
     CROSS JOIN LATERAL (${teamVolumeSql('t.team_id')}) v
     CROSS JOIN LATERAL (${teamMarkSql('t.team_id')}) k
    WHERE t.kind = 'DIRECT'`;
@@ -401,6 +458,7 @@ function toDirectTeam(row, commissionPercent) {
     name: row.name,
     poolAvailablePaise: Number(row.pool_available_paise ?? 0),
     poolHeldPaise: Number(row.pool_held_paise ?? 0),
+    poolExposure: toPoolExposure(row),
     commission: toSummary(row.team_id, row, { percent: commissionPercent, kind: 'DIRECT' }),
     createdAt: row.created_at,
   };

@@ -167,6 +167,19 @@ describe('an order waiting for a merchant', () => {
     expect(screen.queryByText(TRON_ADDRESS)).toBeNull();
   });
 
+  it('offers Cancel while finding a merchant, when the server says it may be cancelled', async () => {
+    // The player was stuck here: the only Cancel was under Payment Orders.
+    const onCancel = vi.fn().mockResolvedValue(true);
+    renderPanel({ onCancel, order: { orderId: 'O1', status: 'ASSIGNED', canCancel: true, tokenAmount: 50000, fiatAmount: 500, usdtChain: 'TRC20', payTo: null } });
+    fireEvent.click(screen.getByRole('button', { name: /Cancel this purchase/i }));
+    await waitFor(() => expect(onCancel).toHaveBeenCalledWith('O1'));
+  });
+
+  it('offers no Cancel when the server says the order is past cancelling', () => {
+    renderPanel({ onCancel: vi.fn(), order: { orderId: 'O1', status: 'PENDING_QUEUE', canCancel: false, tokenAmount: 50000, fiatAmount: 500, usdtChain: 'TRC20', payTo: null } });
+    expect(screen.queryByRole('button', { name: /Cancel this purchase/i })).toBeNull();
+  });
+
   it('shows no address when the payTo names one with no chain', () => {
     // An address without its network is exactly the shape of the mistake: the
     // player cannot know which chain to send on, and half of them will guess.

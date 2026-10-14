@@ -9,7 +9,8 @@
  * the handoff ticket, signup by the first contact share, the bot-opened
  * Verify — is proven in continueWithTelegramPg.test.js; the staff code legs in
  * staffSignInPg.test.js. This file holds what neither does: a merchant's first
- * Verify is an APPLICATION that signs nobody in until an admin approves it, a
+ * Verify links the account an admin made for their mobile (Telegram never
+ * makes a merchant, owner 2026-10-14), a
  * merchant session carries the merchant profile (a supervisor told so), the
  * Mini App's refusals at the merchant door, the two Telegram doors never
  * redeeming each other's approvals, and the staff door's lack of any of it.
@@ -221,67 +222,71 @@ describePg('Continue with Telegram at the merchant door; none at the staff door'
     });
   });
 
-  // ── A merchant's first Verify is an application ────────────────────────
-  describe('a merchant application', () => {
-    it('the first Verify with the contact makes a PENDING application with no password; it signs in only once approved', async () => {
-      const tgId = freshTelegramUserId();
+  // ── A merchant account is made by an admin; Telegram confirms it ───────
+  // Owner, 2026-10-14: an admin creates the merchant, supervisor or agent with
+  // their mobile; their first Verify shares the contact, which finds that
+  // account by its mobile, links it and signs them in. Telegram never makes a
+  // merchant: the panel used to make a PENDING application for anyone who
+  // pressed the button.
+  describe('a merchant account made by an admin', () => {
+    /** What `POST /api/admin/merchants/create` makes: approved, active, nothing linked. */
+    const adminMade = async () => {
       const mobile = freshMobile('7');
+      const created = await createMerchantAccount({
+        userId: newUserId(), username: `adm${Date.now()}${n += 1}`, mobile, currency: 'INR',
+      });
+      expect(created.ok, JSON.stringify(created)).toBe(true);
+      await db.merchants.approveMerchant(created.merchant.merchantId, { actor: 'test-admin' });
+      return { userId: created.userId, merchantId: created.merchant.merchantId, mobile };
+    };
+
+    it('the first Verify with the contact of its mobile links it and signs in, with no password', async () => {
+      const m = await adminMade();
+      const tgId = freshTelegramUserId();
       const opened = await open('MERCHANT');
       expect((await approve(opened, tgId)).body.code).toBe('CONTACT_REQUIRED');
 
-      const ok = await approve(opened, tgId, { phone: `+91${mobile}` });
-      expect(ok.body, JSON.stringify(ok.body)).toMatchObject({ success: true, approved: true, created: true, panel: 'MERCHANT', redirectUrl: null });
-      expect(ok.body.message).toMatch(/application/);
+      const ok = await approve(opened, tgId, { phone: `+91${m.mobile}` });
+      expect(ok.body, JSON.stringify(ok.body)).toMatchObject({ success: true, approved: true, created: false, panel: 'MERCHANT' });
+      expect((await db.telegram.getLinkByUserId(m.userId)).telegramUserId).toBe(tgId);
+      expect((await db.users.getUserCredentials(m.userId)).passwordHash).toBeNull();
 
-      const account = await getUserByMobile(mobile, 'MERCHANT');
-      expect(account).toBeTruthy();
-      expect(await getUserByMobile(mobile, 'PLAYER')).toBeNull();
-      expect((await db.users.getUserCredentials(account.userId)).passwordHash).toBeNull();
-      expect((await db.telegram.getLinkByUserId(account.userId)).telegramUserId).toBe(tgId);
-      const m = await db.merchants.getMerchantByUserId(account.userId);
-      expect(m.merchantApprovalStatus).not.toBe('APPROVED');
-
-      // Waiting: told so, with no session.
-      const waiting = await complete('MERCHANT', opened);
-      expect(waiting.status).toBe(403);
-      expect(waiting.body.code).toBe('MERCHANT_NOT_ACTIVE');
-      expect(waiting.body.token).toBeUndefined();
-
-      // Approved by an admin: the next Continue with Telegram signs in, with no contact.
-      await pgQuery(`UPDATE merchants SET status = 'ACTIVE', merchant_approval_status = 'APPROVED' WHERE merchant_id = $1`, [m._id]);
-      const session = await signIn({ tgId });
+      const session = await complete('MERCHANT', opened);
       expect(session.status, JSON.stringify(session.body)).toBe(200);
-      expect(verifyJwt(session.body.token)).toMatchObject({ userId: account.userId, amr: ['tg'] });
+      expect(verifyJwt(session.body.token)).toMatchObject({ userId: m.userId, amr: ['tg'] });
+      // And later, by Telegram alone.
+      expect((await signIn({ tgId })).status).toBe(200);
     });
 
-    it('two applicants whose mobiles end alike both apply, under usernames that carry no digit of either mobile', async () => {
-      const tail = String(crypto.randomInt(0, 1e4)).padStart(4, '0');
-      const made = [];
-      for (const lead of ['70000', '70001']) {
-        const mobile = `${lead}${String(crypto.randomInt(0, 10)).padStart(1, '0')}${tail}`;
-        const tgId = freshTelegramUserId();
-        const ok = await approve(await open('MERCHANT'), tgId, { phone: mobile });
-        expect(ok.status, JSON.stringify(ok.body)).toBe(200);
-        expect(ok.body).toMatchObject({ approved: true, created: true });
-        made.push((await db.merchants.getMerchantByUserId((await getUserByMobile(mobile, 'MERCHANT')).userId)).username);
-      }
-      expect(made[0]).not.toBe(made[1]);
-      for (const name of made) expect(name).toMatch(/^merchant_[a-p]+$/);
+    it('a mobile no admin made an account for is refused, says to ask an admin, and nothing is made', async () => {
+      const tgId = freshTelegramUserId();
+      const mobile = freshMobile('7');
+      const opened = await open('MERCHANT');
+      const res = await approve(opened, tgId, { phone: `+91${mobile}` });
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe('NO_MERCHANT_ACCOUNT');
+      expect(res.body.message).toMatch(/Ask an admin/);
+      expect(await getUserByMobile(mobile, 'MERCHANT')).toBeNull();
+      expect(await db.telegram.getLinkByTelegramId(tgId, 'MERCHANT')).toBeNull();
+      expect((await complete('MERCHANT', opened)).status).toBe(202);
     });
 
-    it('another Telegram account cannot enter a merchant: with no contact it is asked for one, with its own it applies for itself', async () => {
+    it('a player signing up the same way is still made (the opposite door)', async () => {
+      const tgId = freshTelegramUserId();
+      const mobile = freshMobile('9');
+      const ok = await approve(await open('PLAYER'), tgId, { phone: `+91${mobile}` });
+      expect(ok.body, JSON.stringify(ok.body)).toMatchObject({ approved: true, created: true, panel: 'PLAYER' });
+      expect(await getUserByMobile(mobile, 'PLAYER')).toBeTruthy();
+    });
+
+    it('another Telegram account cannot enter a merchant: asked for a contact, and refused with its own', async () => {
       const m = await merchant();
       const intruderTg = freshTelegramUserId();
       const opened = await open('MERCHANT');
       expect((await approve(opened, intruderTg)).body.code).toBe('CONTACT_REQUIRED');
+      const res = await approve(opened, intruderTg, { phone: freshMobile('7') });
+      expect(res.body.code).toBe('NO_MERCHANT_ACCOUNT');
       expect((await complete('MERCHANT', opened)).status).toBe(202);
-
-      const own = freshMobile('7');
-      const res = await approve(opened, intruderTg, { phone: own });
-      expect(res.body).toMatchObject({ approved: true, created: true });
-      // The approval is the intruder's own application, never the merchant's account.
-      const polled = await complete('MERCHANT', opened);
-      expect(polled.body.code).toBe('MERCHANT_NOT_ACTIVE');
       expect((await db.telegram.getLinkByUserId(m.userId)).telegramUserId).toBe(m.tgId);
     });
 

@@ -3611,10 +3611,10 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 458 |
-| Parameters only (safe by construction) | 300 |
+| `pgQuery` call sites | 461 |
+| Parameters only (safe by construction) | 302 |
 | Interpolating into statement text (each needs a reading) | 152 |
-| Statement text built elsewhere and passed in (each needs a reading) | 6 |
+| Statement text built elsewhere and passed in (each needs a reading) | 7 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
 
@@ -3622,6 +3622,7 @@ new route and decide. Each of the three questions is defined in §2.
 - `database/repositories/identity.js — text`
 - `database/repositories/merchants.js — text`
 - `database/repositories/teamOversight.js — sql`
+- `database/repositories/teamPools.js — poolExposureSql`
 - `database/repositories/users.js — text`
 
 </details>
@@ -3632,7 +3633,7 @@ new route and decide. Each of the three questions is defined in §2.
 |---|---|---|---|
 | `user-panel` | 139 | 0 | 0 |
 | `admin-panel` | 125 | 0 | 0 |
-| `merchant-panel` | 62 | 0 | 0 |
+| `merchant-panel` | 63 | 0 | 0 |
 
 <!-- END GENERATED -->
 

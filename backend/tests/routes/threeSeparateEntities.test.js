@@ -121,7 +121,7 @@ describePg('three separate entities, one mobile', () => {
     await setRoles(staff.user.userId, ['admin']);
     ids.staff = staff.user.userId;
 
-    // The MERCHANT, the writer an application goes through, approved.
+    // The MERCHANT, the writer an admin's create goes through, approved.
     const merchant = await createMerchantAccount({
       userId: newUserId(), username: `merchant${RUN}`, mobile: MOBILE, currency: 'INR',
     });

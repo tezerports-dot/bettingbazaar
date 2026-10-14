@@ -95,8 +95,8 @@ function destinationLabel(audience) {
  * (login-CSRF: a sign-in somebody else started enters the account of the
  * Telegram that presses Verify, and this says which). `isNew` when this
  * Telegram account has none on that panel yet: Verify will ask for the
- * contact, and either find the account of that number or create one (a
- * player, or a merchant application an admin approves).
+ * contact, and either find the account of that number or, for a player,
+ * create one (a merchant's is made by an admin, never here).
  */
 async function accountFor(tgId, audience) {
   const link = await db.telegram.getLinkByTelegramId(tgId, audience);
@@ -115,7 +115,9 @@ async function referrerFor(rawCode) {
 
 /** What a new account would be, should this approval create one. */
 async function signupFor(audience, rawCode = null) {
-  if (audience !== 'PLAYER') return { userId: db.users.newUserId() };
+  // Only a player is made by Telegram. A merchant, supervisor or agent account
+  // is made by an admin with the person's mobile (owner, 2026-10-14).
+  if (audience !== 'PLAYER') return null;
   const { referrer } = await referrerFor(rawCode);
   return { userId: db.users.newUserId(), referralCode: generateReferralCode(), referredBy: referrer?.userId ?? null };
 }
@@ -227,8 +229,8 @@ router.post('/mini-app/context', miniAppLimiter, async (req, res) => {
  * Acts on the sign-in the page was OPENED for (its signed `start_param`),
  * never on one named in the body. What approving needs is
  * `telegram.answerChallenge`'s; this route proves the strings and maps the
- * answer. A first Verify that makes a merchant application says so: it signs
- * nobody in until an admin approves it.
+ * answer. A merchant's first Verify links the account an admin made for
+ * their mobile; Telegram never makes a merchant (owner, 2026-10-14).
  */
 // Both doors that can MAKE an account carry the account-creation budget, which
 // counts only the requests that made one (`res.locals.accountCreated`): a
@@ -274,20 +276,15 @@ router.post('/mini-app/approve', miniAppLimiter, ...creationBudget, async (req, 
     });
     if (!answer.ok) throw refuseWith(answer.code);
     res.locals.accountCreated = Boolean(answer.created);
-    // A merchant application waits for an admin: no site to open, and the
-    // screen that asked is told the same when it next asks.
-    const application = answer.approved && answer.created && answer.panel === 'MERCHANT';
     return res.json({
       success: true,
       panel: answer.panel,
       approved: answer.approved, relinked: answer.relinked, verified: answer.verified,
       created: Boolean(answer.created),
-      redirectUrl: answer.approved && !application ? redirectUrl : null,
+      redirectUrl: answer.approved ? redirectUrl : null,
       message: !answer.approved
         ? 'Refused. Nobody was signed in.'
-        : application
-          ? 'Your merchant application is submitted. An admin will review it; once approved, Continue with Telegram signs you in.'
-          : redirectUrl
+        : redirectUrl
             ? `Opening ${destinationLabel(challenge.audience)}…`
             : 'Done. Go back to the website or app — it will continue on its own.',
     });

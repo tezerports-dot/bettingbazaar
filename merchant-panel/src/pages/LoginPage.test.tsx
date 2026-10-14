@@ -70,9 +70,9 @@ describe('the sign-in screen', () => {
     expect(screen.queryByText(/forgot password/i)).toBeNull();
   });
 
-  it('says the same button submits an application, approved by an admin', async () => {
+  it('says an admin creates the account first, and Telegram confirms it', async () => {
     await mount();
-    expect(screen.getByText(/same button submits your application/i)).toBeTruthy();
+    expect(screen.getByText(/An admin first creates your account with your mobile number/i)).toBeTruthy();
   });
 
   it('says plainly that nobody can sign in when no bot is set up', async () => {
@@ -123,12 +123,12 @@ describe('a MATCH sign-in (a laptop)', () => {
     expect(api.pollTelegramSignIn).toHaveBeenCalledTimes(1);
   });
 
-  it('an application still waiting for an admin is told so, not shown an error', async () => {
+  it('an account not active yet is told so, not shown an error', async () => {
     await mount();
     await press();
     api.pollTelegramSignIn.mockRejectedValueOnce(refusal(403, { code: 'MERCHANT_NOT_ACTIVE', message: 'Your merchant account is waiting for approval.' }));
     await flush(3000);
-    expect(screen.getByText('Application waiting for approval')).toBeTruthy();
+    expect(screen.getByText('Account not active yet')).toBeTruthy();
     expect(screen.getByRole('status').textContent).toMatch(/waiting for approval/);
     expect(screen.queryByRole('alert')).toBeNull();
   });

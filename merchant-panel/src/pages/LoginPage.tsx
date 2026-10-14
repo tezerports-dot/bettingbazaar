@@ -1,9 +1,10 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Operator sign-in — design handoff "BB Merchant Panel.dc.html". One button,
-// "Continue with Telegram" (owner, 2026-10-14): no password, no form. A first
-// Verify shares the contact once and submits a merchant application, which an
-// admin approves (and assigns its settlement rail) before it can sign in. A
+// "Continue with Telegram" (owner, 2026-10-14): no password, no form. An admin
+// creates the account (merchant, supervisor or agent) with the person's mobile;
+// their first Verify shares the contact once, which finds that account by its
+// mobile, links it and signs them in. Telegram never makes a merchant. A
 // sub-member signs in the same way, with the Telegram on the mobile their
 // merchant added.
 //
@@ -33,7 +34,7 @@ export function deliveryHere(): TelegramDelivery {
   return /Android/i.test(ua) ? 'HANDOFF' : 'MATCH';
 }
 
-/** The finished-but-not-signed-in screen: an application waiting for an admin. */
+/** The finished-but-not-signed-in screen: an account an admin has not activated. */
 interface Notice { title: string; body: string; }
 
 /** The body `request()` attaches to a refusal. */
@@ -44,7 +45,7 @@ const refusalText = (err: unknown, fallback: string): string => {
   return (typeof e?.data?.message === 'string' && e.data.message) || e?.message || fallback;
 };
 
-/** An application an admin has not approved yet: a state to explain, not a failure. */
+/** An account an admin has not approved or has suspended: a state to explain, not a failure. */
 const isWaitingApplication = (err: unknown): boolean => {
   const e = err as Refusal;
   return e?.status === 403 && e.data?.code === 'MERCHANT_NOT_ACTIVE';
@@ -61,10 +62,10 @@ const LoginPage: React.FC = () => {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [starting, setStarting] = useState(false);
 
-  /** A refusal that may be an application still waiting: said as such. */
+  /** A refusal that may be an account not active yet: said as such. */
   const refused = useCallback((err: unknown, fallback: string) => {
     if (isWaitingApplication(err)) {
-      setNotice({ title: 'Application waiting for approval', body: refusalText(err, 'Your account is waiting for an admin to approve it.') });
+      setNotice({ title: 'Account not active yet', body: refusalText(err, 'Your account is waiting for an admin to activate it.') });
       return;
     }
     setError(refusalText(err, fallback));
@@ -232,9 +233,9 @@ const LoginPage: React.FC = () => {
                       <Send size={15} /> Continue with Telegram
                     </Button>
                     <p style={{ margin: 0, textAlign: 'center', fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55 }}>
-                      New merchant? The same button submits your application; an admin reviews it and
-                      assigns your settlement rail (INR or USDT) before you can sign in. Sub-members:
-                      use the Telegram on the mobile your merchant added.
+                      New here? An admin first creates your account with your mobile number. Then
+                      Continue with Telegram, on the Telegram of that mobile, confirms it is you and
+                      signs you in. Sub-members: use the Telegram on the mobile your merchant added.
                     </p>
                   </>
                 ) : setup ? (

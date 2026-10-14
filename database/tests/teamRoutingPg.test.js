@@ -55,7 +55,7 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
   /** A full team of ten on `rail`, every member online, with `pool` tokens. */
   const workingTeam = async (rail = 'UPI_BANK', pool = 0) => {
     const sup = await merchant();
-    expect(await setSupervisorRole(sup, { rail })).toEqual({ ok: true });
+    expect(await setSupervisorRole(sup, { rail })).toEqual({ ok: true, merchantId: sup });
     const { teamId } = await createTeam({ supervisorId: sup, name: 'Route' });
     teams.push(teamId);
     const members = [];

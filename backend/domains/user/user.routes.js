@@ -461,10 +461,17 @@ router.get('/user/bet-limits', authenticatePlayer, async (req, res) => {
     const totalMinor = Math.round(deposit * 100) + Math.round(winnings * 100) + Math.round(reserve * 100);
     const reserveLocked = (totalMinor - Math.round(maxStake * 100)) / 100;
 
+    // What part of `locked` the player's own sells hold, apart from stakes on
+    // open bets (owner, 2026-10-14: the wallet showed every locked token as
+    // "in play", so a sell's escrow read as a bet nobody placed).
+    const escrow = await db.orders.playerSellEscrow(String(req.user.userId));
+
     return res.json({
       success: true,
       deposit, winnings, reserve,
       locked: balances.lockedBalance || 0,
+      lockedInSells: escrow.inSellOrders,
+      lockedInDisputes: escrow.inDispute,
       total: totalMinor / 100,
       maxStake,
       reservePercent: betReservePercent,

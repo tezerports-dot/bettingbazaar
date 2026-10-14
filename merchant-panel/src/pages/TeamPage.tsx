@@ -33,6 +33,7 @@ import type {
   Team, TeamCommission, TeamMember, TeamPerformance, TeamPoolEntry, TeamPoolRequest,
 } from '../types';
 import { Banner, Button, Card, CardTitle, CopyRow, ErrorState, Skeleton, inputStyle } from '../components/ui';
+import { PoolBreakdown } from '../components/PoolBreakdown';
 
 const STRENGTH: Record<Team['strength'], { label: string; tone: 'ok' | 'warn' | 'danger'; body: string }> = {
   WORKING: { label: 'Working', tone: 'ok', body: 'The team takes orders. It can have up to 10 agents.' },
@@ -344,6 +345,7 @@ const TeamPoolSection: React.FC<{
           {team.poolHeldPaise > 0 && <span style={{ fontSize: 11, color: 'var(--muted)' }}> · {tokens(team.poolHeldPaise)} held</span>}
         </span>
       </div>
+      <div style={{ marginBottom: 12 }}><PoolBreakdown exposure={team.poolExposure} availablePaise={team.poolAvailablePaise} /></div>
 
       {pending.map((r) => (
         <Banner key={r.requestId} tone="warn" style={{ marginBottom: 8 }}>
@@ -579,6 +581,14 @@ const TeamPage: React.FC = () => {
             <span style={{ fontSize: 13, fontWeight: 800 }}>Your commission so far</span>
             <span className="bb-mono" style={{ fontSize: 14, fontWeight: 800 }}>{tokens(data.myCommissionPaise)} tokens</span>
           </div>
+          {/* The pool every buy routed to this team holds from, once approved:
+              team-level figures only, never a teammate's row (§2). */}
+          {data.status === 'APPROVED' && (
+            <div style={{ margin: '12px 0' }}>
+              <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Team token pool</div>
+              <PoolBreakdown exposure={t.poolExposure} availablePaise={t.poolAvailablePaise} />
+            </div>
+          )}
           <CommissionSection team={t} commissions={data.commissions} />
           {data.status === 'APPROVED' && data.performance && <PerformanceSection performance={data.performance} />}
         </Card>

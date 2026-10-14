@@ -342,6 +342,7 @@ router.get('/order/:orderId/status', authenticatePlayer, orderAccessGuard, async
       status:          view.status,
       expiresAt:       view.expiresAt,
       payTo:           view.payTo ?? null,
+      canCancel:       view.canCancel,
       utrNumber:       view.utrNumber,
       proofScreenshot: proofVisible ? order.proofScreenshot : null,
     });

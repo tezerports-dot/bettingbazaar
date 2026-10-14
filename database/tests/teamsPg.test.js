@@ -39,7 +39,7 @@ describePg('supervisors and teams (PostgreSQL)', () => {
   };
   const supervisor = async (rail = 'UPI_BANK') => {
     const id = await merchant();
-    expect(await setSupervisorRole(id, { rail })).toEqual({ ok: true });
+    expect(await setSupervisorRole(id, { rail })).toEqual({ ok: true, merchantId: id });
     return id;
   };
   /** A team with `n` APPROVED members. */
@@ -78,9 +78,17 @@ describePg('supervisors and teams (PostgreSQL)', () => {
   it('makes an approved merchant a supervisor on one rail, and refuses an unknown rail', async () => {
     const id = await merchant();
     await expect(setSupervisorRole(id, { rail: 'CHEQUE' })).rejects.toThrow(/rail must be/);
-    expect(await setSupervisorRole(id, { rail: 'CASH' })).toEqual({ ok: true });
+    expect(await setSupervisorRole(id, { rail: 'CASH' })).toEqual({ ok: true, merchantId: id });
     const { rows } = await pgQuery('SELECT is_supervisor, supervisor_rail FROM merchants WHERE merchant_id = $1', [id]);
     expect(rows[0]).toEqual({ is_supervisor: true, supervisor_rail: 'CASH' });
+  });
+
+  it('accepts the agent ID (public ref) an admin sees, in any case, and answers with the merchant id', async () => {
+    const id = await merchant();
+    const { rows: [m] } = await pgQuery('SELECT public_ref FROM merchants WHERE merchant_id = $1', [id]);
+    expect(await setSupervisorRole(m.public_ref.toLowerCase(), { rail: 'USDT' })).toEqual({ ok: true, merchantId: id });
+    const { rows } = await pgQuery('SELECT is_supervisor, supervisor_rail FROM merchants WHERE merchant_id = $1', [id]);
+    expect(rows[0]).toEqual({ is_supervisor: true, supervisor_rail: 'USDT' });
   });
 
   it('refuses the role to a merchant the admin has not approved', async () => {

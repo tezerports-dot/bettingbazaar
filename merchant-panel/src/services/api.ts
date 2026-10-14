@@ -497,6 +497,7 @@ export const getStats = async (): Promise<Stats> => {
     
     // Backend returns: { stats: { pending, processing, completedToday } }
     return {
+      money: data.money,
       pending: data.stats?.pending || 0,
       processing: data.stats?.processing || 0,
       completedToday: data.stats?.completedToday || 0,

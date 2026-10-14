@@ -388,19 +388,17 @@ describePg('Telegram, Continue with Telegram (PostgreSQL)', () => {
       expect(rows[0].password_hash).toBeNull();
     });
 
-    it('makes a merchant an application waiting for an admin, linked', async () => {
+    it('never makes a merchant: a number with no merchant account is refused, and nothing is written', async () => {
+      // Owner, 2026-10-14: an admin makes merchant accounts; Telegram only
+      // confirms one. Even a caller that hands the writer a signup gets none.
       const userId = newUserId();
-      // Its own number: a merchants row outlives the TRUNCATE above, so it is removed in the finally.
       const mobile = `96${String(Date.now()).slice(-8)}`;
       try {
-        const r = await approve(await challenge({ audience: 'MERCHANT' }), tgUser('6'), {
+        await expect(approve(await challenge({ audience: 'MERCHANT' }), tgUser('6'), {
           phone: mobile, signup: { userId },
-        });
-        expect(r).toMatchObject({ ok: true, created: true, userId, panel: 'MERCHANT' });
-        expect((await getUser(userId)).accountType).toBe('MERCHANT');
-        const { rows } = await pgQuery('SELECT status FROM merchants WHERE user_id = $1', [userId]);
-        expect(rows[0].status).toBe('PENDING');
-        expect(await getLinkByTelegramId('6', 'MERCHANT')).toMatchObject({ userId });
+        })).resolves.toMatchObject({ ok: false, code: 'NO_MERCHANT_ACCOUNT' });
+        expect(await getUser(userId)).toBeNull();
+        expect(await getLinkByTelegramId('6', 'MERCHANT')).toBeNull();
       } finally {
         await pgQuery('DELETE FROM merchants WHERE user_id = $1', [userId]);
       }

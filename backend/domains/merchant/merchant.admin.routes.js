@@ -201,6 +201,16 @@ router.put('/merchants/:merchantId/capabilities', authenticate, hasPermission('c
         return res.status(400).json({ success: false, message: 'A merchant settles on exactly one rail — send merchantType "INR" or "USDT".' });
       }
       const nextRail = rails[0];
+      // A team member settles on their team's rail (approval sets it,
+      // `teams.approveMember`): switched away, they could hold no credential
+      // routing asks of that team, and its orders would never reach them.
+      const teamRail = await db.teams.teamRailOf(merchantId);
+      if (teamRail && nextRail !== db.teams.memberCurrencyFor(teamRail)) {
+        return res.status(409).json({
+          success: false, code: 'RAIL_SET_BY_TEAM',
+          message: `This merchant is in a ${teamRail === 'USDT' ? 'USDT' : 'INR'} team, so they settle in ${db.teams.memberCurrencyFor(teamRail)}. Remove them from the team first to change it.`,
+        });
+      }
       if (nextRail !== merchant.merchantType) {
         // Switching rails strands the old rail's credentials on the record,
         // where they still occupy a unique index — so the merchant cannot

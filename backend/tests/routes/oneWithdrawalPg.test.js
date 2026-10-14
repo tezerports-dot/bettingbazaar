@@ -168,6 +168,41 @@ describePg('one withdrawal is one order', () => {
     expect(row.escrowStatus).toBe('REFUNDED');
   });
 
+  it('gives the money back when a withdrawal is cancelled before its member accepts', async () => {
+    // A member online for this one case, so the sell is ROUTED (ASSIGNED) rather
+    // than queued; nobody again afterwards, for the cases that need the queue.
+    const team = await teams.workingTeam({ rail: 'CASH' });
+    try {
+      const player = await withdrawer(20_000);
+      const orderId = orderOf(await createWithdrawalOrder(player.userId, 5_000));
+      const assigned = await getOrderRecord(orderId);
+      expect(assigned.status).toBe('ASSIGNED');
+      expect(team.members).toContain(String(assigned.merchantId));
+
+      const before = await getBalances(player.userId);
+      await cancelOrder(player.userId, false, orderId);
+      const after = await getBalances(player.userId);
+      expect(Number(after.lockedBalance)).toBe(Number(before.lockedBalance) - 5_000);
+      expect(Number(after.winningsBalance)).toBe(Number(before.winningsBalance) + 5_000);
+      const row = await getOrderRecord(orderId);
+      expect(row.status).toBe('CANCELLED');
+      expect(row.escrowStatus).toBe('REFUNDED');
+
+      // Once accepted, the member may already be sending the money: refused,
+      // and the stake stays locked.
+      const second = orderOf(await createWithdrawalOrder(player.userId, 5_000));
+      const { startOrder } = await import('../../domains/payment/orderLifecycle.service.js');
+      const taken = await getOrderRecord(second);
+      expect((await startOrder(second, { expectFrom: ['ASSIGNED'], expectMerchant: taken.merchantId })).ok).toBe(true);
+      const locked = await getBalances(player.userId);
+      await expect(cancelOrder(player.userId, false, second)).rejects.toMatchObject({ status: 409 });
+      expect((await getOrderRecord(second)).status).toBe('PROCESSING');
+      expect(Number((await getBalances(player.userId)).lockedBalance)).toBe(Number(locked.lockedBalance));
+    } finally {
+      await teams.onlyOnline([]);
+    }
+  });
+
   it('lists a withdrawal nobody has taken, so somebody is accountable for the lock', async () => {
     const player = await withdrawer(20_000);
     const orderId = orderOf(await createWithdrawalOrder(player.userId, 5_000));
