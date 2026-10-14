@@ -21,7 +21,7 @@
 import React, { useEffect, useState } from 'react';
 import { miniApi, shareContact, MiniAppRefusal, PASSWORD_FLOOR, type MiniAppContext, type Panel, type WebApp } from './miniAppApi';
 
-const PANEL_WORD: Record<Panel, string> = { PLAYER: 'player', STAFF: 'staff', MERCHANT: 'merchant' };
+const PANEL_WORD: Record<Panel, string> = { PLAYER: 'player', MERCHANT: 'merchant' };
 
 const PAGE: React.CSSProperties = {
   minHeight: '100vh', boxSizing: 'border-box', padding: '20px 16px',
@@ -108,9 +108,6 @@ const MiniApp: React.FC<{ app: WebApp | null }> = ({ app }) => {
   const answer = (decision: 'approve' | 'deny') => act(async () => {
     const withContact = decision === 'approve' && ctx?.start.needsContact ? await contact() : null;
     const r = await miniApi.approve(initData, decision, withContact);
-    // Staff security alerts come from the bot, which may write only to people
-    // who allowed it. Asked once, after an approval, when it is wanted.
-    if (r.approved && r.panel === 'STAFF') app?.requestWriteAccess?.(() => { /* either answer is fine */ });
     setDone(r.message);
   });
 

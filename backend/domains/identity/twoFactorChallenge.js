@@ -4,7 +4,8 @@
  * Telegram is asked.
  *
  * Step 3 (owner, 2026-10-07): an account's first sign-in waits for its Telegram
- * verification, a staff or merchant sign-in waits for its Telegram approval,
+ * verification, a merchant sign-in waits for its Telegram approval (a staff
+ * sign-in waits for an authenticator code, owner 2026-10-13: the `step` claim),
  * and "Login with Telegram" waits for the Mini App. Each is a row in
  * `telegram_challenges`; this token is how the browser that ASKED proves, when
  * it polls, that the answer is its own. The challenge id travels to Telegram in

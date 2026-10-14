@@ -63,7 +63,7 @@ export function telegramBlock(bot, challenge) {
  *
  * @param {object} o
  * @param {string} o.purpose   VERIFY | LOGIN | TELEGRAM_LOGIN | RELINK | TWO_FACTOR_OFF
- * @param {'PLAYER'|'STAFF'|'MERCHANT'} o.door
+ * @param {'PLAYER'|'MERCHANT'} o.door  (staff have no Telegram: the CHECK refuses STAFF)
  * @param {string|null} o.userId
  * @param {import('express').Request} [o.req]  for the address and device the
  *   Mini App shows the person approving

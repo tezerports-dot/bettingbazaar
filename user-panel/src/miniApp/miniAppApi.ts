@@ -22,7 +22,6 @@ export interface WebApp {
   expand(): void;
   close(): void;
   requestContact(cb: (shared: boolean, res?: { response?: string }) => void): void;
-  requestWriteAccess?(cb: (allowed: boolean) => void): void;
 }
 
 export function webApp(): WebApp | null {
@@ -41,15 +40,17 @@ export function shareContact(app: WebApp): Promise<string | null> {
   });
 }
 
-export type Panel = 'PLAYER' | 'STAFF' | 'MERCHANT';
+/** The panels Telegram serves (`TELEGRAM_AUDIENCES`, database/repositories/telegram.js). Staff have none (owner, 2026-10-13). */
+export type Panel = 'PLAYER' | 'MERCHANT';
 
 /**
  * The shortest password each panel's account takes. A UI hint only (§11): it
  * keeps Telegram's contact prompt from opening for a password the server will
  * refuse. The server decides (`backend/domains/identity/passwordPolicy.js`,
- * PLAYER_PASSWORD_MIN_LENGTH and STAFF_PASSWORD_MIN_LENGTH).
+ * PLAYER_PASSWORD_MIN_LENGTH and STAFF_PASSWORD_MIN_LENGTH, which a merchant
+ * is held to).
  */
-export const PASSWORD_FLOOR: Record<Panel, number> = { PLAYER: 8, STAFF: 12, MERCHANT: 12 };
+export const PASSWORD_FLOOR: Record<Panel, number> = { PLAYER: 8, MERCHANT: 12 };
 export type StartKind = 'VERIFY' | 'LOGIN' | 'TELEGRAM_LOGIN' | 'RELINK' | 'TWO_FACTOR_OFF'
   | 'RESET' | 'SIGNUP' | 'NONE' | 'UNKNOWN';
 

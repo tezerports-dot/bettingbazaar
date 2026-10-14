@@ -21,7 +21,6 @@ const SIGNED = 'contact=%7B%7D&auth_date=1&hash=abc';
 const app = (shared = true) => ({
   initData: 'query_id=1&hash=x', ready: vi.fn(), expand: vi.fn(), close: vi.fn(),
   requestContact: vi.fn((cb) => cb(shared, shared ? { response: SIGNED, responseUnsafe: { contact: {} } } : undefined)),
-  requestWriteAccess: vi.fn(),
 });
 const ctx = (start: object, accounts: object[] = []) => ({
   telegramUser: { id: '1', username: 'asha', firstName: 'Asha' }, start, accounts,
@@ -64,24 +63,14 @@ describe('the Mini App', () => {
   });
 
   it('lets a sign-in be denied, with no contact', async () => {
-    context.mockResolvedValue(ctx({ kind: 'LOGIN', panel: 'STAFF', needsContact: false, state: 'PENDING',
+    context.mockResolvedValue(ctx({ kind: 'LOGIN', panel: 'MERCHANT', needsContact: false, state: 'PENDING',
       request: { at: '2026-10-08T05:00:00Z', ip: '203.0.113.9', device: 'Chrome' } }));
-    approve.mockResolvedValue({ kind: 'LOGIN', panel: 'STAFF', approved: false, message: 'Refused. Nobody was signed in.' });
+    approve.mockResolvedValue({ kind: 'LOGIN', panel: 'MERCHANT', approved: false, message: 'Refused. Nobody was signed in.' });
     render(<MiniApp app={app()} />);
     expect(await screen.findByText(/203\.0\.113\.9/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /^deny$/i }));
     expect(await screen.findByText(/nobody was signed in/i)).toBeTruthy();
     expect(approve).toHaveBeenCalledWith(expect.any(String), 'deny', null);
-  });
-
-  it('asks a staff member to allow alerts after approving', async () => {
-    context.mockResolvedValue(ctx({ kind: 'LOGIN', panel: 'STAFF', needsContact: false, state: 'PENDING' }));
-    approve.mockResolvedValue({ kind: 'LOGIN', panel: 'STAFF', approved: true, message: 'Done.' });
-    const a = app();
-    render(<MiniApp app={a} />);
-    fireEvent.click(await screen.findByRole('button', { name: /^approve$/i }));
-    await screen.findByText('Done.');
-    expect(a.requestWriteAccess).toHaveBeenCalled();
   });
 
   it('says an expired request is expired, and offers no button', async () => {
@@ -146,7 +135,7 @@ describe('the Mini App', () => {
   });
 
   it("shows the server's refusal of the password as it is worded", async () => {
-    context.mockResolvedValue(ctx({ kind: 'RESET', panel: 'STAFF', needsContact: true }));
+    context.mockResolvedValue(ctx({ kind: 'RESET', panel: 'MERCHANT', needsContact: true }));
     passwordReset.mockRejectedValue(new Error('That password is one repeated or sequential run of characters.'));
     render(<MiniApp app={app()} />);
     fireEvent.change(await screen.findByLabelText(/^new password$/i), { target: { value: 'aaaaaaaaaaaa' } });
