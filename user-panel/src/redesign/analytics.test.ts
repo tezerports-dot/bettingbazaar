@@ -183,3 +183,75 @@ describe('streaks count at every length they reached (owner, 2026-10-10)', () =>
     expect(A.cont(3)).toBe(1);
   });
 });
+
+import { runLengthTable, gapSummary, ladderPlan, ladderBacktest, winReturn, winnersByBoard } from './analytics';
+
+describe('Runs & Gaps', () => {
+  // Newest first: D | B B B B | D D | B
+  const seq: Side[] = ['DELHI', 'BOMBAY', 'BOMBAY', 'BOMBAY', 'BOMBAY', 'DELHI', 'DELHI', 'BOMBAY'];
+
+  it('tables each run at its length, the current one included', () => {
+    const t = runLengthTable(seq, 100);
+    expect(t.rounds).toBe(8);
+    expect(t.DELHI.buckets).toEqual([1, 1, 0, 0, 0, 0]);
+    expect(t.BOMBAY.buckets).toEqual([1, 0, 0, 1, 0, 0]);
+    expect(t.BOMBAY.longest).toBe(4);
+    expect(runLengthTable(seq, 3).BOMBAY.buckets).toEqual([0, 1, 0, 0, 0, 0]);
+  });
+
+  it('puts six and longer in the last bucket', () => {
+    const long: Side[] = Array(9).fill('DELHI');
+    expect(runLengthTable(long, 100).DELHI.buckets).toEqual([0, 0, 0, 0, 0, 1]);
+    expect(runLengthTable(long, 100).DELHI.longest).toBe(9);
+  });
+
+  it('counts only gaps closed by a win on both ends', () => {
+    const d = gapSummary(seq, 'DELHI', 100);
+    expect(d.sinceLast).toBe(0);
+    expect(d.count).toBe(1); // the B×4; the oldest B is cut by the window
+    expect(d.longest).toBe(4);
+    const b = gapSummary(seq, 'BOMBAY', 100);
+    expect(b.sinceLast).toBe(1); // the open gap now is the newest D
+    expect(b.count).toBe(1); // the D×2 between Bombay wins
+    expect(b.buckets).toEqual([0, 1, 0, 0, 0, 0]);
+    expect(gapSummary(['BOMBAY', 'BOMBAY'], 'DELHI', 100).sinceLast).toBeNull();
+  });
+});
+
+describe('the progression calculator', () => {
+  const evenMoney = (stake: number) => winReturn(stake, 2, 0);
+
+  it('matches the worked example: 10 × 3 over five steps', () => {
+    const plan = ladderPlan(10, 3, 5, evenMoney);
+    expect(plan.map((p) => p.stake)).toEqual([10, 30, 90, 270, 810]);
+    expect(plan[4].atRisk).toBe(1210);
+    expect(plan[4].profitIfWins).toBe(410);
+    expect(ladderPlan(10, 3, 5, null)[4].profitIfWins).toBeNull();
+  });
+
+  it('takes the winnings fee off the gross, as the server does', () => {
+    expect(winReturn(810, 2, 1)).toBe(1603.8);
+    expect(winReturn(0.01, 2, 1)).toBe(0.02);
+  });
+
+  it('counts each time every step lost in a row', () => {
+    const stakes = [10, 30];
+    // Oldest first: B B (ran out) D (win at step 1) B D (win at step 2)
+    const newestFirst: Side[] = ['DELHI', 'BOMBAY', 'DELHI', 'BOMBAY', 'BOMBAY'];
+    const t = ladderBacktest(newestFirst, 'DELHI', stakes, 100, evenMoney);
+    expect(t).toEqual({ rounds: 5, ranOut: 1, won: 2, net: -40 + 10 + 20 });
+    expect(ladderBacktest(newestFirst, 'DELHI', stakes, 100, null).net).toBeNull();
+    expect(ladderBacktest(newestFirst, 'DELHI', [], 100, evenMoney).ranOut).toBe(0);
+  });
+});
+
+describe('winners by board', () => {
+  it('keys every board, newest first, and drops undecided rounds', () => {
+    const w = winnersByBoard([
+      { type: 'a', winner: 'DELHI', endTime: 1 },
+      { type: 'a', winner: 'BOMBAY', endTime: 2 },
+      { type: 'a', winner: null, endTime: 3 },
+    ], [{ key: 'a' }, { key: 'b' }]);
+    expect(w).toEqual({ a: ['BOMBAY', 'DELHI'], b: [] });
+  });
+});

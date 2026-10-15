@@ -17,6 +17,7 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
+import { useNavigate } from 'react-router';
 import { useGame } from '../services/GameContext';
 import { BettingSide, GameState } from '../types';
 import { CHIP_SCALE_STEP, chipScales, chipsFor } from '../constants';
@@ -24,8 +25,7 @@ import { useShell } from './RedesignShell';
 import { useViewport } from './useViewport';
 import { useToast } from '../components/ui/Toast';
 import { fmt, timeStr } from './format';
-import { analyticsFor, Side } from './analytics';
-import AnalyticsPanel from './AnalyticsPanel';
+import { analyticsFor, winnersByBoard, Side } from './analytics';
 import { BetCardFigure, BetCardFill, BlindBand, shareModeFor, sharesOf } from './BetCardShare';
 import { getAssetUrl } from '../services/backend.service';
 import { canPlaceBet } from '../GAME_CORE';
@@ -84,7 +84,7 @@ function useFitHeight(stage: React.RefObject<HTMLElement | null>, below: React.R
 const GameScreen: React.FC = () => {
   const {
     currentCycle, gameState, cycleType, setCycleType, placeBet, placePhantomBet, boards, currentBoard,
-    userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, pastCycles, loadCycleHistory, subscribeToVolume, getCurrentVolume, serverTimeOffset,
+    userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, pastCycles, subscribeToVolume, getCurrentVolume, serverTimeOffset,
     sysConfig,
   } = useGame();
   // Admin › Player Screen (SystemConfig.boardExtras).
@@ -104,12 +104,12 @@ const GameScreen: React.FC = () => {
     return access === (cycleType as string);
   })();
   const { openAuth } = useShell();
+  const navigate = useNavigate();
   const { desktop, mobile, vh } = useViewport();
   const { addToast } = useToast();
 
   const [selectedChip, setSelectedChip] = useState<number | null>(null);
   const [manualInput, setManualInput] = useState('');
-  const analyticsRef = useRef<HTMLElement | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const fitH = useFitHeight(stageRef, controlsRef, !desktop);
@@ -175,19 +175,8 @@ const GameScreen: React.FC = () => {
   const returnIfDelhi = myBetDelhi * 2;
   const returnIfBombay = myBetBombay * 2;
 
-  // Winner sequences from real history (newest first), by board. Keyed by
-  // every board, so a tab cannot fall through to another board's history.
-  const winnersByType = useMemo(() => {
-    const out: Record<string, Side[]> = {};
-    for (const c of [...(pastCycles || [])].sort((a, b) => (b.endTime || 0) - (a.endTime || 0))) {
-      if (c.winner !== 'DELHI' && c.winner !== 'BOMBAY') continue;
-      (out[c.type] ??= []).push(c.winner as Side);
-    }
-    for (const b of boards) out[b.key] ??= [];
-    return out;
-  }, [pastCycles, boards]);
-
-  const panelWinners = useMemo(() => winnersByType[cycleType] ?? [], [winnersByType, cycleType]);
+  // Winner sequences from real history (newest first), by board.
+  const winnersByType = useMemo(() => winnersByBoard(pastCycles, boards), [pastCycles, boards]);
 
   // Admin › Page Slides › Home promo cards: beside the game when the side
   // columns show (the right column first, where the roadmap was); on a phone
@@ -543,8 +532,16 @@ const GameScreen: React.FC = () => {
             </div>
           </div>
         </div>
+        {/* The analytics are their own page now (owner, 2026-10-15): a full
+            screen open to everyone, not a card under the board. */}
         <div style={{ flex: 'none', padding: '6px 0 4px' }}>
-          <AnalyticsPanel ref={analyticsRef} board={currentBoard} winners={panelWinners} loadCycleHistory={loadCycleHistory} />
+          <button type="button" onClick={() => navigate(`/analytics?board=${encodeURIComponent(cycleType)}`)} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 16, padding: '13px 16px', boxShadow: 'var(--shadow-sm)', cursor: 'pointer', textAlign: 'left' }}>
+            <span>
+              <span className="font-grotesk" style={{ display: 'block', fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>Results &amp; analytics</span>
+              <span style={{ display: 'block', fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>Runs, gaps, streaks and the progression calculator for {currentBoard?.name ?? 'this board'}</span>
+            </span>
+            <span aria-hidden style={{ fontSize: 16, fontWeight: 800, color: 'var(--gold-ink)' }}>→</span>
+          </button>
         </div>
       </section>
 

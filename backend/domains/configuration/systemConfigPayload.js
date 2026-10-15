@@ -120,6 +120,10 @@ export function systemConfigPayload(cfg) {
 
     // Admin-owned (Business Config Audit 2026-07-11) — was once hardcoded 2.
     payoutMultiplier:    cfg?.payoutMultiplier ?? 2,
+    // The percent kept from a winning payout's gross (computeWinningsPayout).
+    // Already stated in the board rules; sent so the player app's progression
+    // calculator quotes the real return (owner, 2026-10-15).
+    winningsFeePercent:  cfg?.winningsFeePercent ?? 1, // schema default: 1 (config.spec.js)
 
     maintenanceMode:     cfg?.maintenanceMode    ?? false,
     maintenanceMessage:  cfg?.maintenanceMessage ?? '',

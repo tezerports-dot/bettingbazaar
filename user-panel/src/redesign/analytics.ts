@@ -69,20 +69,25 @@ const MAX_LISTED = 15;
  */
 export const MIN_SAMPLE = 30;
 
+/** Consecutive same-side results, index 0 = the newest run (still going). */
+export function runsOf(seq: Side[]): Run[] {
+  const runs: Run[] = [];
+  let i = 0;
+  while (i < seq.length) {
+    let j = i;
+    while (j < seq.length && seq[j] === seq[i]) j++;
+    runs.push({ side: seq[i], len: j - i, start: i });
+    i = j;
+  }
+  return runs;
+}
+
 export function computeAnalytics(seq: Side[]): Analytics {
   const total = seq.length;
   const delhiWins = seq.filter(s => s === 'DELHI').length;
   const bombayWins = total - delhiWins;
 
-  // runs, index 0 = newest
-  const runs: Run[] = [];
-  let i = 0;
-  while (i < total) {
-    let j = i;
-    while (j < total && seq[j] === seq[i]) j++;
-    runs.push({ side: seq[i], len: j - i, start: i });
-    i = j;
-  }
+  const runs = runsOf(seq);
 
   // ── Every streak counts at every length it passed through (owner,
   // 2026-10-10) ──────────────────────────────────────────────────────────
@@ -157,4 +162,166 @@ export function seqFromRuns(runs: Run[], cap = 80): Side[] {
     if (out.length > cap) break;
   }
   return out.slice(0, cap);
+}
+
+/**
+ * Each board's real winners, newest first, keyed by EVERY board the server
+ * lists, so a board with no results yet gets an empty list rather than falling
+ * through to another board's history. The one builder for the game screen,
+ * Results and the Analytics page.
+ */
+export function winnersByBoard(
+  cycles: ReadonlyArray<{ type: string; winner?: string | null; endTime?: number }> | undefined,
+  boards: ReadonlyArray<{ key: string }>,
+): Record<string, Side[]> {
+  const out: Record<string, Side[]> = {};
+  for (const c of [...(cycles || [])].sort((a, b) => (b.endTime || 0) - (a.endTime || 0))) {
+    if (c.winner !== 'DELHI' && c.winner !== 'BOMBAY') continue;
+    (out[c.type] ??= []).push(c.winner);
+  }
+  for (const b of boards) out[b.key] ??= [];
+  return out;
+}
+
+// ── Runs & Gaps (owner, 2026-10-15) ──────────────────────────────────────────
+// Still descriptive only: each round is drawn on its own, so none of these
+// figures says anything about the next one. The page says so beside them.
+
+/** The look-back windows offered, in results. A window is cut to what exists. */
+export const RUN_WINDOWS = Object.freeze([100, 500, 1000] as const);
+
+/** Run lengths tabled one by one; the last bucket holds this length and longer. */
+export const RUN_BUCKETS = Object.freeze([1, 2, 3, 4, 5, 6] as const);
+
+const bucketOf = (len: number) => Math.min(len, RUN_BUCKETS[RUN_BUCKETS.length - 1]) - 1;
+
+export interface SideRuns {
+  /** How many runs had each length in RUN_BUCKETS (the last is "6 or more"). */
+  buckets: number[];
+  /** The longest run seen in the window, the current one included. */
+  longest: number;
+}
+
+/**
+ * How long each side's runs were over the newest `window` results. Every run
+ * in the window counts, the current one at its length so far; a run cut by
+ * the window's oldest edge counts at the part inside it.
+ */
+export function runLengthTable(seq: Side[], window: number): { rounds: number; DELHI: SideRuns; BOMBAY: SideRuns } {
+  const s = seq.slice(0, window);
+  const blank = (): SideRuns => ({ buckets: RUN_BUCKETS.map(() => 0), longest: 0 });
+  const out = { rounds: s.length, DELHI: blank(), BOMBAY: blank() };
+  for (const r of runsOf(s)) {
+    const t = out[r.side];
+    t.buckets[bucketOf(r.len)] += 1;
+    t.longest = Math.max(t.longest, r.len);
+  }
+  return out;
+}
+
+export interface SideGaps {
+  /** Rounds since this side last won: 0 = it won the latest round; null = not in the window. */
+  sinceLast: number | null;
+  /** Finished gaps (rounds in a row without a win) by RUN_BUCKETS. */
+  buckets: number[];
+  /** How many finished gaps there were, their longest and their average. */
+  count: number;
+  longest: number;
+  avg: number | null;
+}
+
+/**
+ * The gaps between one side's wins over the newest `window` results. A gap is
+ * a run of the other side, so it is counted only when a win of this side
+ * closes it on both ends: the one still open now is `sinceLast`, and one cut
+ * by the window's oldest edge is left out rather than counted short.
+ */
+export function gapSummary(seq: Side[], side: Side, window: number): SideGaps {
+  const s = seq.slice(0, window);
+  const first = s.indexOf(side);
+  const gaps = runsOf(s)
+    .filter(r => r.side !== side && r.start !== 0 && r.start + r.len < s.length)
+    .map(r => r.len);
+  const buckets: number[] = RUN_BUCKETS.map(() => 0);
+  for (const g of gaps) buckets[bucketOf(g)] += 1;
+  return {
+    sinceLast: first === -1 ? null : first,
+    buckets,
+    count: gaps.length,
+    longest: gaps.reduce((m, g) => Math.max(m, g), 0),
+    avg: gaps.length ? Math.round((gaps.reduce((a, b) => a + b, 0) / gaps.length) * 10) / 10 : null,
+  };
+}
+
+/** Steps a progression may have; more than this only multiplies the loss. */
+export const LADDER_MAX_STEPS = 12;
+
+/**
+ * What one winning stake returns, in tokens: the stake × the multiplier, less
+ * the winnings fee on that gross, floored to the paisa. A display mirror of
+ * `computeWinningsPayout` (backend/domains/risk/riskValidation.service.js),
+ * fed the server's own `payoutMultiplier` and `winningsFeePercent`; never used
+ * to decide anything (§11).
+ */
+export function winReturn(stake: number, multiplier: number, feePercent: number): number {
+  const grossMinor = Math.round(stake * 100) * multiplier;
+  const feeMinor = Math.floor((grossMinor * Math.round(feePercent * 100)) / 10000);
+  return (grossMinor - feeMinor) / 100;
+}
+
+export interface LadderStep { stake: number; atRisk: number; profitIfWins: number | null; }
+
+/**
+ * A progression: start, then each stake `factor` times the last, rounded to
+ * whole tokens. `atRisk` is everything staked up to and including that step;
+ * `profitIfWins` what is left over if that step wins (null until the payout
+ * rules are known).
+ */
+export function ladderPlan(
+  start: number, factor: number, steps: number,
+  payout: ((stake: number) => number) | null,
+): LadderStep[] {
+  const out: LadderStep[] = [];
+  let atRisk = 0;
+  for (let k = 0; k < steps; k++) {
+    const stake = Math.max(1, Math.round(start * factor ** k));
+    atRisk += stake;
+    out.push({ stake, atRisk, profitIfWins: payout ? Math.round((payout(stake) - atRisk) * 100) / 100 : null });
+  }
+  return out;
+}
+
+export interface LadderBacktest {
+  rounds: number;
+  /** Times every step lost in a row, so the whole ladder was lost. */
+  ranOut: number;
+  /** Times a step won and the ladder started again. */
+  won: number;
+  /** Tokens up or down over these rounds, an unfinished ladder included (null until the payout is known). */
+  net: number | null;
+}
+
+/**
+ * Plays the ladder on one side through the newest `window` results, oldest
+ * first: a win starts it again from the first step, a loss moves one step up,
+ * and losing the last step counts as running out (and starts it again).
+ */
+export function ladderBacktest(
+  seq: Side[], side: Side, stakes: number[], window: number,
+  payout: ((stake: number) => number) | null,
+): LadderBacktest {
+  const chron = seq.slice(0, window).reverse();
+  if (!stakes.length) return { rounds: chron.length, ranOut: 0, won: 0, net: null };
+  let step = 0, ranOut = 0, won = 0, net = 0;
+  for (const r of chron) {
+    const stake = stakes[step];
+    net -= stake;
+    if (r === side) {
+      if (payout) net += payout(stake);
+      won += 1; step = 0;
+    } else if (++step === stakes.length) {
+      ranOut += 1; step = 0;
+    }
+  }
+  return { rounds: chron.length, ranOut, won, net: payout ? Math.round(net * 100) / 100 : null };
 }

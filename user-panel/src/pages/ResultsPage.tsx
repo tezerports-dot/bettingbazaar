@@ -3,31 +3,22 @@
  * ResultsPage.tsx — 2026 "Bazaar" redesign. Latest winner, roadmap, and the
  * per-cycle result feed, driven by GameContext.pastCycles (real cycle history).
  */
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
+import { useNavigate } from 'react-router';
 import { useGame } from '../services/GameContext';
 import { ago } from '../redesign/format';
 import { Side } from '../redesign/analytics';
 import ScreenShell, { card, capLabel } from '../redesign/Screen';
-import AnalyticsPanel from '../redesign/AnalyticsPanel';
-
-const NO_WINNERS: Side[] = [];
 const sideBg = (sd: string) => (sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)');
 
 const ResultsPage: React.FC = () => {
-  const { pastCycles, loadCycleHistory, boards } = useGame();
-  const [picked, setPicked] = useState('');
-  // The board picked here, or the first in the admin's order.
-  const aBoard = boards.find(b => b.key === picked) ?? boards[0];
+  const { pastCycles, boards } = useGame();
+  const navigate = useNavigate();
 
   const cycles = useMemo(() => (pastCycles || [])
     .filter(c => c.winner === 'DELHI' || c.winner === 'BOMBAY')
     .sort((a, b) => (b.endTime || 0) - (a.endTime || 0)), [pastCycles]);
 
-  // An entry for every board, from the server's list — a hand-written set of
-  // boards once omitted one, and its analytics showed an empty board.
-  const winnersByType = useMemo(() => Object.fromEntries(
-    boards.map(b => [b.key, cycles.filter(c => c.type === b.key).map(c => c.winner as Side)]),
-  ) as Record<string, Side[]>, [cycles, boards]);
   const boardName = (key: string) => boards.find(b => b.key === key)?.name ?? '';
 
   const roadmapBeads = cycles.slice(0, 60).map(c => c.winner as Side).reverse().map(sd => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sideBg(sd) }));
@@ -41,18 +32,14 @@ const ResultsPage: React.FC = () => {
         <div style={{ flex: 1 }}><div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--text3)' }}>Latest winner</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 26, color: 'var(--text)' }}>{latest ? `${latest.charAt(0)}${latest.slice(1).toLowerCase()} Bazaar` : 'Awaiting result'}</div></div>
       </div>
 
-      {/* Analytics, per board */}
-      {boards.length > 0 && (
-        <div style={{ marginBottom: 14 }}>
-          <div className="bb-noscroll" style={{ display: 'flex', gap: 6, overflowX: 'auto', marginBottom: 8 }}>
-            {boards.map(b => {
-              const on = aBoard?.key === b.key;
-              return <button key={b.key} onClick={() => setPicked(b.key)} aria-pressed={on} style={{ flex: 'none', padding: '6px 13px', borderRadius: 999, border: `1px solid ${on ? 'var(--gold)' : 'var(--line2)'}`, cursor: 'pointer', fontSize: 10, fontWeight: 800, background: on ? 'var(--gold)' : 'var(--surface2)', color: on ? '#1a1200' : 'var(--text2)' }}>{b.name.toUpperCase()}</button>;
-            })}
-          </div>
-          <AnalyticsPanel board={aBoard} winners={(aBoard && winnersByType[aBoard.key]) || NO_WINNERS} loadCycleHistory={loadCycleHistory} />
-        </div>
-      )}
+      {/* The analytics are their own full page (owner, 2026-10-15). */}
+      <button type="button" onClick={() => navigate('/analytics')} style={{ ...card, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 14, cursor: 'pointer', textAlign: 'left' }}>
+        <span>
+          <span className="font-grotesk" style={{ display: 'block', fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>Open analytics</span>
+          <span style={{ display: 'block', fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>Runs, gaps, streaks and the progression calculator, board by board</span>
+        </span>
+        <span aria-hidden style={{ fontSize: 16, fontWeight: 800, color: 'var(--gold-ink)' }}>→</span>
+      </button>
 
       {/* Roadmap */}
       <div style={{ ...card, marginBottom: 14 }}>
