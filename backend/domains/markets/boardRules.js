@@ -102,7 +102,7 @@ const backingSentence = (bothSides) => (bothSides
  *   `SystemConfig.winningsFeePercent` and `payoutMultiplier`; `bothSides` is
  *   false only while `riskRules.blockOppositeSideBetting` is on.
  */
-export function renderBoardRules(text, { feePercent, multiplier, bothSides = true }) {
+export function renderBoardRules(text, { feePercent, multiplier, bothSides = true, houseBetsLabel }) {
   const fill = (str) => String(str)
     .replaceAll('{winningsFeePercent}', String(feePercent))
     .replaceAll('{payoutMultiplier}', String(multiplier))
@@ -112,6 +112,9 @@ export function renderBoardRules(text, { feePercent, multiplier, bothSides = tru
     heading: fill(text.heading),
     intro: fill(text.intro),
     sections: text.sections.map((sec) => ({ title: fill(sec.title), body: fill(sec.body) })),
+    // The house-bets line, after the admin's text and outside it, so no
+    // version of the rules can leave it out (owner, 2026-10-15).
+    houseBetsNotice: houseBetsLabel,
   };
 }
 

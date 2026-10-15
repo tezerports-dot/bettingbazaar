@@ -4855,3 +4855,89 @@ ALTER TABLE staff_totp ADD CONSTRAINT staff_totp_pending_shape
 ALTER TABLE staff_totp DROP CONSTRAINT IF EXISTS staff_totp_recovery_array;
 ALTER TABLE staff_totp ADD CONSTRAINT staff_totp_recovery_array
   CHECK (jsonb_typeof(recovery_hashes) = 'array');
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 🔒 PAYOUT HOLD AFTER A TAKEOVER SIGN (owner, 2026-10-15)
+--
+-- A recycled SIM lets someone else relink a player's Telegram and repoint the
+-- payout to their own bank. So for PAYOUT_HOLD (24 hours, fixed) after either
+-- of those, no withdrawal of that account may be created:
+--   - the player's bank details change from one account to another (setting
+--     them the first time starts no hold);
+--   - the account is relinked to another Telegram account
+--     (`linkWithin`, database/repositories/telegram.js, sets it with the
+--     sign-out).
+-- The hold only ever moves later (GREATEST). The withdrawal INSERT asks it
+-- under a share lock on the player's row (§32 S6): a bank change committed
+-- before it has already started the hold, and one after it waits for the
+-- order, which carries the account it was read with.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS payout_hold_until TIMESTAMPTZ;
+
+CREATE OR REPLACE FUNCTION bb_payout_hold() RETURNS interval
+  LANGUAGE sql IMMUTABLE AS $$ SELECT interval '24 hours' $$;
+
+CREATE OR REPLACE FUNCTION bb_hold_payout_on_bank_change() RETURNS trigger AS $$
+BEGIN
+  IF OLD.bank_details IS NOT NULL
+     AND (OLD.bank_details->>'accountNumber' IS DISTINCT FROM NEW.bank_details->>'accountNumber'
+          OR OLD.bank_details->>'ifscCode' IS DISTINCT FROM NEW.bank_details->>'ifscCode') THEN
+    NEW.payout_hold_until := GREATEST(COALESCE(OLD.payout_hold_until, now()), now() + bb_payout_hold());
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER users_bank_change_holds_payout
+  BEFORE UPDATE OF bank_details ON users FOR EACH ROW EXECUTE FUNCTION bb_hold_payout_on_bank_change();
+
+CREATE OR REPLACE FUNCTION bb_payout_hold_check() RETURNS trigger AS $$
+DECLARE
+  u RECORD;
+BEGIN
+  IF NEW.order_type <> 'WITHDRAWAL' THEN RETURN NEW; END IF;
+  SELECT payout_hold_until INTO u FROM users WHERE user_id = NEW.user_id FOR SHARE;
+  IF u.payout_hold_until IS NOT NULL AND u.payout_hold_until > now() THEN
+    RAISE EXCEPTION 'withdrawals of % are on hold until %', NEW.user_id, u.payout_hold_until
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'order_states_payout_hold';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER order_states_payout_hold
+  BEFORE INSERT ON order_states FOR EACH ROW EXECUTE FUNCTION bb_payout_hold_check();
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- AUTO HOUSE BETS (owner, 2026-10-15)
+-- A phantom agent's plan for one board and side: a list of 1 to 1,000 bet
+-- sizes, bet one a second in order and looped, from the round's start (or
+-- `starts_at`, when the plan was saved) until the equalizer. The bets are
+-- ordinary phantom bets (never paid); the cycle generator places them through
+-- `markets.placeAutoPhantomBets`. Written only by
+-- database/repositories/phantomAutoPlans.js. A plan does nothing once its
+-- owner loses phantom access to the board: the runner's read asks it.
+-- Limits: backend/domains/markets/houseBets.js (AUTO_BET_*).
+-- ════════════════════════════════════════════════════════════════════════════
+CREATE OR REPLACE FUNCTION bb_auto_bet_amounts_ok(amounts BIGINT[]) RETURNS BOOLEAN AS $$
+  SELECT cardinality(amounts) BETWEEN 1 AND 1000
+     AND NOT EXISTS (
+       SELECT 1 FROM unnest(amounts) a
+        WHERE a IS NULL OR a < 100 OR a > 1000000000 OR a % 100 <> 0)
+$$ LANGUAGE sql IMMUTABLE;
+
+CREATE TABLE IF NOT EXISTS phantom_auto_plans (
+  user_id       TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+  board_key     TEXT NOT NULL REFERENCES boards(board_key),
+  side          TEXT NOT NULL,
+  amounts_paise BIGINT[] NOT NULL,
+  enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+  starts_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, board_key, side)
+);
+ALTER TABLE phantom_auto_plans DROP CONSTRAINT IF EXISTS phantom_auto_plans_side_known;
+ALTER TABLE phantom_auto_plans ADD CONSTRAINT phantom_auto_plans_side_known
+  CHECK (side IN ('DELHI', 'BOMBAY'));
+ALTER TABLE phantom_auto_plans DROP CONSTRAINT IF EXISTS phantom_auto_plans_amounts;
+ALTER TABLE phantom_auto_plans ADD CONSTRAINT phantom_auto_plans_amounts
+  CHECK (bb_auto_bet_amounts_ok(amounts_paise));
+CREATE INDEX IF NOT EXISTS phantom_auto_plans_enabled_idx
+  ON phantom_auto_plans (board_key) WHERE enabled;

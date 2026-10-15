@@ -232,6 +232,12 @@ export interface Cycle {
 
   phantomBalanced: boolean;
   phantomBetsClosed: boolean;
+  /**
+   * True while betting is open and this account is not a full admin: the
+   * real and phantom figures are then withheld (`/api/admin/cycles/phases`,
+   * `maySeeLiveSplit` in backend staffEventAreas.js).
+   */
+  splitHidden?: boolean;
 
   winner?: 'DELHI' | 'BOMBAY';
   winnerDetermined: boolean;

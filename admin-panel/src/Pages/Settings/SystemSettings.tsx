@@ -246,6 +246,9 @@ export const SystemSettings: React.FC = () => {
     directMerchants: directMerchantDefaults(),
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
+    // The line beside the pool totals (owner, 2026-10-15). '' until loaded: the
+    // server always sends one (houseBetsLabelOf), and an empty save is refused.
+    houseBetsLabel: '',
     // How long a sell stays in escrow after the member marks it paid.
     withdrawalHoldMinutes: 60,  // schema default: 60 (also the floor)
     // How long a player has to dispute a buy the member rejected as unpaid.
@@ -356,6 +359,7 @@ export const SystemSettings: React.FC = () => {
           })(),
           directMerchants: { ...directMerchantDefaults(), ...(response.data.directMerchants ?? {}) },
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
+          houseBetsLabel:     response.data.houseBetsLabel     ?? '',
           riskRules: {
             enforceMultiplesOf10:     response.data.riskRules?.enforceMultiplesOf10     ?? true,
             blockOppositeSideBetting: response.data.riskRules?.blockOppositeSideBetting ?? false,
@@ -732,6 +736,21 @@ export const SystemSettings: React.FC = () => {
             <p className="text-xs text-gold-400/80 mt-1">
               Example with {formData.payoutMultiplier}×: a ₹100 winning bet returns gross
               ₹{100 * formData.payoutMultiplier} before the winnings fee.
+            </p>
+          </div>
+
+          <div className="pt-4 border-t border-dark-700">
+            <label className="label" htmlFor="house-bets-label">House Bets Line (shown to players)</label>
+            <input id="house-bets-label"
+              type="text" minLength={10} maxLength={160}
+              value={formData.houseBetsLabel}
+              onChange={(e) => setFormData({ ...formData, houseBetsLabel: e.target.value })}
+              className="input"
+            />
+            <SettingHelp path="houseBetsLabel" />
+            <p className="text-xs text-gold-400/80 mt-1">
+              Players see this beside the pool totals on every board and at the end of the board rules.
+              You can reword it; it cannot be removed.
             </p>
           </div>
 

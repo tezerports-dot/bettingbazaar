@@ -2859,7 +2859,50 @@ const MUTATIONS = [
     id: 'MS12', file: 'backend/domains/identity/loginDoors.js', config: UNIT,
     test: 'backend/tests/unit/loginPacing.test.js',
     why: 'the player\'s Continue with Telegram, the one door that creates accounts, stops asking for a captcha',
-    from: `    ...(door === 'PLAYER' ? [requireCaptcha('telegram-login')] : []),`,
+    from: `    ...(door === 'PLAYER' ? [requireCaptcha('telegram-login', { outageLimiter: telegramLoginNoCaptchaLimiter })] : []),`,
+    to: ``,
+  },
+  // ── Auto house bets (owner, 2026-10-15) ────────────────────────────────
+  {
+    id: 'MHB1', file: 'database/repositories/markets.js', config: PG,
+    test: 'database/tests/autoHouseBetsPg.test.js',
+    why: 'auto house bets keep landing after the equalizer closed phantom betting, so the balanced pools are pushed apart again',
+    from: `    if (!['OPEN', 'MERGED'].includes(cycle[0].status)) return { ok: false, reason: 'CYCLE_CLOSED' };
+    if (cycle[0].phantom_bets_closed) return { ok: false, reason: 'PHANTOM_CLOSED' };
+`,
+    to: `    if (!['OPEN', 'MERGED'].includes(cycle[0].status)) return { ok: false, reason: 'CYCLE_CLOSED' };
+`,
+  },
+  {
+    id: 'MHB2', file: 'database/repositories/markets.js', config: PG,
+    test: 'database/tests/autoHouseBetsPg.test.js',
+    why: 'a second offered twice moves the phantom pool twice: the pools count house bets that do not exist',
+    from: `    for (const r of placed) {
+      if (r.side === 'DELHI') delhi += Number(r.stake_paise); else bombay += Number(r.stake_paise);
+    }`,
+    to: `    for (const b of bets) {
+      if (b.side === 'DELHI') delhi += b.amountPaise; else bombay += b.amountPaise;
+    }`,
+  },
+  {
+    id: 'MHB3', file: 'database/repositories/phantomAutoPlans.js', config: PG,
+    test: 'database/tests/autoHouseBetsPg.test.js',
+    why: 'an agent whose phantom access was revoked keeps betting through a plan saved before',
+    from: `        AND (u.phantom_access = 'BOTH' OR u.phantom_access = p.board_key)`,
+    to: ``,
+  },
+  {
+    id: 'MHB4', file: 'backend/domains/markets/houseBets.js', config: UNIT,
+    test: 'backend/tests/unit/houseBets.test.js',
+    why: 'a plan saved mid-round bets every second it missed since the round began, in one burst',
+    from: `  const from = Math.max(first, to - AUTO_BET_CATCH_UP_SECONDS + 1);`,
+    to: `  const from = Math.max(0, to - AUTO_BET_CATCH_UP_SECONDS + 1);`,
+  },
+  {
+    id: 'MHB5', file: 'backend/domains/markets/boardRules.js', config: PG,
+    test: 'backend/tests/routes/boardRulesAndGeneralPg.test.js',
+    why: 'the board rules stop carrying the house-bets line, so players accept rules that never mention house bets',
+    from: `    houseBetsNotice: houseBetsLabel,`,
     to: ``,
   },
   {

@@ -17,7 +17,7 @@ let accepted = 0;
 beforeEach(() => {
   accepted = 0;
   api.get.mockReset().mockImplementation(async (path: string) => (path === '/api/v1/board-rules'
-    ? { success: true, version: 1, heading: 'How the boards work', intro: 'Please read this before you bet.', sections: [{ title: 'How a round is won', body: 'The side with LESS real player money wins.' }] }
+    ? { success: true, version: 1, heading: 'How the boards work', intro: 'Please read this before you bet.', sections: [{ title: 'How a round is won', body: 'The side with LESS real player money wins.' }], houseBetsNotice: 'Pool totals include house bets.' }
     : { success: true, version: 1, acceptedVersion: accepted }));
   api.post.mockReset().mockImplementation(async (_p: string, body: any) => { accepted = body.version; return { success: true, acceptedVersion: accepted }; });
 });
@@ -27,6 +27,8 @@ describe('the board rules pop-up', () => {
     render(<BoardRulesModal isAuthenticated />);
     const dialog = await screen.findByRole('dialog', { name: 'How the boards work' });
     expect(dialog.textContent).toMatch(/LESS real player money/);
+    // The house-bets line is always there, after the admin's text.
+    expect(dialog.textContent).toMatch(/Pool totals include house bets\./);
     fireEvent.click(screen.getByRole('button', { name: 'I understand and agree' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/api/user/board-rules/accept', { version: 1 }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());

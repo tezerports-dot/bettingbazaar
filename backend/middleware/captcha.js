@@ -95,8 +95,10 @@ export async function verifyCaptchaToken(token, remoteIp) {
  * bodies they would rather not reshape.
  *
  * @param {string} action label used in logs/alerts, e.g. 'login'
+ * @param {{ outageLimiter?: Function }} [options] a tighter limiter run in
+ *   place of the challenge while the verifier cannot be reached
  */
-export function requireCaptcha(action = 'form') {
+export function requireCaptcha(action = 'form', { outageLimiter } = {}) {
   return async function captchaGate(req, res, next) {
     if (!captchaConfigured()) return next();
 
@@ -114,7 +116,7 @@ export function requireCaptcha(action = 'form') {
       sendAlert('captcha-verifier-unreachable',
         'Turnstile could not be reached; captcha is temporarily not enforced', { action })
         .catch(() => {});
-      return next();
+      return outageLimiter ? outageLimiter(req, res, next) : next();
     }
 
     return res.status(403).json({

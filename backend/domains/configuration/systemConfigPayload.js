@@ -48,6 +48,8 @@ export const DEFAULT_FOOTER_PAGES = Object.freeze(['home', 'results', 'wallet', 
  * @param {object|null} cfg the SystemConfig row, or null when it cannot be read
  * @returns {object} the full field set — never a partial one
  */
+// The house-bets line players read beside the pool totals.
+import { houseBetsLabelOf } from '../markets/houseBets.js';
 // The INR peg comes from the one place that owns it.
 import { USDT_CHAINS, USDT_CHAIN_SPEC } from '../merchant/merchantCurrency.js';
 import { tokensPerUsdt } from './tokenRates.js';
@@ -134,6 +136,9 @@ export function systemConfigPayload(cfg) {
     // Already stated in the board rules; sent so the player app's progression
     // calculator quotes the real return (owner, 2026-10-15).
     winningsFeePercent:  cfg?.winningsFeePercent ?? 1, // schema default: 1 (config.spec.js)
+
+    // The line beside the pool totals (owner, 2026-10-15): never blank.
+    houseBetsLabel:      houseBetsLabelOf(cfg),
 
     maintenanceMode:     cfg?.maintenanceMode    ?? false,
     maintenanceMessage:  cfg?.maintenanceMessage ?? '',

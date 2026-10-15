@@ -17,6 +17,7 @@ import { authenticate, express, hasPermission } from './_adminShared.js';
 import { db } from '#db';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { renderBoardRules, BOARD_RULES_TOKENS, BOARD_RULES_LIMITS } from '../../domains/markets/boardRules.js';
+import { houseBetsLabelOf } from '../../domains/markets/houseBets.js';
 import { respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
@@ -27,6 +28,7 @@ const live = (config) => ({
   multiplier: config.payoutMultiplier,
   // schema default: false (database/spec/config.spec.js riskRules)
   bothSides: !(config.riskRules?.blockOppositeSideBetting ?? false),
+  houseBetsLabel: houseBetsLabelOf(config),
 });
 
 router.get('/board-rules', authenticate, ALLOWED, async (req, res) => {

@@ -441,6 +441,10 @@ export interface BoardRulesTextDraft {
   intro: string;
   sections: { title: string; body: string }[];
 }
+/** What players are shown: the text filled in, plus the house-bets line (renderBoardRules). */
+export interface BoardRulesPreview extends BoardRulesTextDraft {
+  houseBetsNotice?: string;
+}
 export const boardRules = {
   get: async () => (await api.get<any>('/api/admin/board-rules')).data,
   publish: async (text: BoardRulesTextDraft) => (await api.put<any>('/api/admin/board-rules', text)).data,

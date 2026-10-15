@@ -36,6 +36,7 @@
  */
 
 import express from 'express';
+import { houseBetsLabelOf } from '../markets/houseBets.js';
 import { db } from '#db';
 import { authenticatePlayer } from '../identity/auth.middleware.js';
 import { paiseToRupees } from '../../shared/money.js';
@@ -282,14 +283,29 @@ router.put('/user/:userId/bank-details', authenticatePlayer, async (req, res) =>
     // The IFSC is uppercased once, here. A code stored in two cases is two
     // different bank accounts as far as any comparison is concerned, and a
     // withdrawal is paid to whichever spelling the panel last wrote.
-    await db.users.updateUser(userId, {
+    const before = await db.users.getUser(userId);
+    const updated = await db.users.updateUser(userId, {
       bankDetails: {
         accountHolderName, accountNumber,
         ifscCode: String(ifscCode).toUpperCase(), bankName,
       },
     });
 
-    res.json({ success: true });
+    // Moving the payout to another account starts a 24-hour withdrawal hold
+    // (the row's trigger, schema.sql "PAYOUT HOLD"); the player is told why.
+    const holdUntil = updated?.payoutHoldUntil ?? null;
+    if (holdUntil && String(holdUntil) !== String(before?.payoutHoldUntil ?? '')) {
+      const { notify } = await import('../communication/communication.service.js');
+      await notify({
+        userId: String(userId),
+        type: 'WARNING',
+        title: 'Your bank account was changed',
+        message: 'For your safety, withdrawals are paused for 24 hours. '
+               + 'If you did not make this change, contact support now.',
+      }).catch(() => {});
+    }
+
+    res.json({ success: true, payoutHoldUntil: holdUntil });
   } catch (error) {
     // The member who pays a sell is shown this account, so one whose number
     // is the player's mobile is refused by the row (§24, Step 2d).
@@ -352,6 +368,7 @@ router.get('/v1/board-rules', async (req, res) => {
       multiplier: config.payoutMultiplier,
       // schema default: false (database/spec/config.spec.js riskRules)
       bothSides: !(config.riskRules?.blockOppositeSideBetting ?? false),
+      houseBetsLabel: houseBetsLabelOf(config),
     }) });
   } catch (error) {
     return respondError(res, error, 'GET /api/v1/board-rules', { message: 'Could not load the board rules' });

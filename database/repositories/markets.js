@@ -156,6 +156,77 @@ export async function placePhantomBet({ betId, userId, cycleId, side, amountRupe
   });
 }
 
+/** The bet id of an auto house bet: one per agent, side and second of the round. */
+export const autoPhantomBetId = (cycleId, userId, side, second) =>
+  `phauto_${cycleId}_${userId}_${side}_${second}`;
+
+/**
+ * Place a tick's auto house bets on one cycle (owner, 2026-10-15): the rows
+ * and the cycle's phantom pools in ONE transaction, as `placePhantomBet` does,
+ * under one lock of the cycle row for the whole batch rather than one per bet.
+ *
+ * Each bet's id names its agent, side and second (`autoPhantomBetId`), so a
+ * second offered twice (two ticks, a retry) is placed once: ON CONFLICT skips
+ * it and only the rows actually inserted move the pools.
+ *
+ * `bets`: [{ userId, side, second, amountPaise }]. Refused as a whole when
+ * the cycle is no longer taking bets or phantom betting has closed.
+ */
+export async function placeAutoPhantomBets({ cycleId, cycleType = null, bets }) {
+  if (!Array.isArray(bets) || bets.length === 0) return { ok: true, placed: 0 };
+  for (const b of bets) {
+    if (!Number.isInteger(b.amountPaise) || b.amountPaise <= 0) {
+      throw new TypeError(`placeAutoPhantomBets: amount must be positive paise, got ${b.amountPaise}`);
+    }
+    if (!['DELHI', 'BOMBAY'].includes(b.side)) throw new TypeError(`placeAutoPhantomBets: unknown side ${b.side}`);
+  }
+  return withTransaction(async (client) => {
+    const { rows: cycle } = await client.query(
+      `SELECT status, phantom_bets_closed FROM cycles WHERE cycle_id = $1 FOR UPDATE`,
+      [String(cycleId)],
+    );
+    if (!cycle.length) return { ok: false, reason: 'CYCLE_NOT_FOUND' };
+    if (!['OPEN', 'MERGED'].includes(cycle[0].status)) return { ok: false, reason: 'CYCLE_CLOSED' };
+    if (cycle[0].phantom_bets_closed) return { ok: false, reason: 'PHANTOM_CLOSED' };
+
+    const { rows: placed } = await client.query(
+      `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status,
+                         is_phantom, phantom_manager_id, cycle_type)
+       SELECT b.bet_id, b.user_id, $1, b.side, b.stake, 'PENDING', TRUE, b.user_id, $2
+         FROM unnest($3::text[], $4::text[], $5::text[], $6::bigint[]) AS b(bet_id, user_id, side, stake)
+       ON CONFLICT (bet_id) DO NOTHING
+       RETURNING side, stake_paise`,
+      [
+        String(cycleId), cycleType,
+        bets.map((b) => autoPhantomBetId(cycleId, b.userId, b.side, b.second)),
+        bets.map((b) => String(b.userId)),
+        bets.map((b) => b.side),
+        bets.map((b) => b.amountPaise),
+      ],
+    );
+    if (!placed.length) return { ok: true, placed: 0 };
+
+    let delhi = 0;
+    let bombay = 0;
+    for (const r of placed) {
+      if (r.side === 'DELHI') delhi += Number(r.stake_paise); else bombay += Number(r.stake_paise);
+    }
+    const { rows: updated } = await client.query(
+      `UPDATE cycles
+          SET phantom_delhi_paise  = phantom_delhi_paise  + $2,
+              phantom_bombay_paise = phantom_bombay_paise + $3,
+              updated_at = now()
+        WHERE cycle_id = $1 RETURNING ${COLUMNS}`,
+      [String(cycleId), delhi, bombay],
+    );
+    return {
+      ok: true, placed: placed.length,
+      delhiRupees: paiseToRupees(delhi), bombayRupees: paiseToRupees(bombay),
+      cycle: toCycle(updated[0]),
+    };
+  });
+}
+
 /**
  * This cycle, but only if it is still taking bets.
  *

@@ -46,8 +46,9 @@ export const STAFF_EVENT_AREAS = Object.freeze({
   admin_cycle_result: CYCLES,
   admin_new_cycle: CYCLES,
   admin_cycle_snapshot: CYCLES,
-  phantom_equalized: CYCLES,
-  admin_bet_placed: CYCLES,
+  // phantom_equalized and admin_bet_placed are NOT listed: they carry the real
+  // (or phantom, from which the real follows) split of an OPEN round, which
+  // tells who is winning, so they reach full admins only (owner, 2026-10-15).
   admin_stats_update: { keys: ['canViewAnalytics'] },
   admin_stats_delta: { keys: ['canViewAnalytics'] },
 });
@@ -60,6 +61,15 @@ export function staffMayReceive(viewer, event) {
   if (!area) return false;
   if (area.queueManager && viewer.isQueueManager === true) return true;
   return area.keys.some((k) => staffCan(viewer, k));
+}
+
+/**
+ * Whether this staff viewer may see the real/phantom split of a round still
+ * taking bets, on any channel (REST or live): the same answer as the live
+ * events that carry it, so the two can never disagree.
+ */
+export function maySeeLiveSplit(viewer) {
+  return staffMayReceive(viewer, 'admin_bet_placed');
 }
 
 /**

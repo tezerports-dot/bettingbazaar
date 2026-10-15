@@ -97,6 +97,31 @@ describe('configured', () => {
     expect(nexted).toBe(true);
   });
 
+  it('in an outage, a door with an outage limiter goes through that limiter instead of the challenge', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNRESET'));
+    const seen = [];
+    const outageLimiter = (req, _res, next) => { seen.push(req.ip); next(); };
+    const { nexted } = await runGate(requireCaptcha('login', { outageLimiter }), { body: { 'cf-turnstile-response': 'x' } });
+    expect(nexted).toBe(true);
+    expect(seen).toEqual(['1.2.3.4']);
+  });
+
+  it('in an outage, the outage limiter can refuse', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: false, status: 503 });
+    const outageLimiter = (_req, res) => res.status(429).json({ code: 'LOGIN_PACED' });
+    const { nexted, res } = await runGate(requireCaptcha('login', { outageLimiter }), { body: { 'cf-turnstile-response': 'x' } });
+    expect(nexted).toBe(false);
+    expect(res.statusCode).toBe(429);
+  });
+
+  it('the outage limiter is never asked while Cloudflare answers', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+    const outageLimiter = vi.fn();
+    const { nexted } = await runGate(requireCaptcha('login', { outageLimiter }), { body: { 'cf-turnstile-response': 'good' } });
+    expect(nexted).toBe(true);
+    expect(outageLimiter).not.toHaveBeenCalled();
+  });
+
   it('does not send a client-supplied IP — only what Express resolved', async () => {
     let sentBody;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u, opts) => {

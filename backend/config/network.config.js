@@ -54,6 +54,10 @@ export const network = {
   // every other configured domain to it. Applies consistently everywhere.
   canonicalHost: (process.env.CANONICAL_HOST || '').trim().toLowerCase(),
 
+  // The one hostname the admin panel and its API answer on ('' = every
+  // domain, as before). See adminHostGate below (owner, 2026-10-15).
+  adminHost: (process.env.ADMIN_HOST || '').trim().toLowerCase(),
+
   // CORS allowlist (unchanged semantics — server.js consumes).
   allowedOrigins: parseList(process.env.ALLOWED_ORIGINS),
 
@@ -92,5 +96,31 @@ export function canonicalRedirect(req, res, next) {
   if (host && host !== canon && network.domains.includes(host)) {
     return res.redirect(301, `https://${canon}${req.originalUrl}`);
   }
+  next();
+}
+
+/** Paths that belong to the admin panel: its pages, its API, its event stream. */
+export const ADMIN_PATH_PREFIXES = ['/admin', '/api/admin', '/api/sse/admin'];
+
+function isAdminPath(path) {
+  return ADMIN_PATH_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`));
+}
+
+/**
+ * adminHostGate — with ADMIN_HOST set, the admin panel exists only on that
+ * name (owner, 2026-10-15): on every other host (player domains, standbys,
+ * the bare IP) its paths answer a plain 404, as if there were none. On the
+ * admin host itself `/` goes to `/admin/`. Unset: no change. Keys on the
+ * requested Host only, which Caddy passes through unchanged.
+ */
+export function adminHostGate(req, res, next) {
+  const adminHost = network.adminHost;
+  if (!adminHost) return next();
+  const host = String(req.headers.host || '').toLowerCase().split(':')[0];
+  if (host === adminHost) {
+    if (req.path === '/' && (req.method === 'GET' || req.method === 'HEAD')) return res.redirect(302, '/admin/');
+    return next();
+  }
+  if (isAdminPath(req.path)) return res.status(404).type('text/plain').send('Not Found');
   next();
 }

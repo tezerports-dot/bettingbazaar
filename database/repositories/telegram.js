@@ -522,7 +522,22 @@ async function linkWithin(client, account, { telegramUser, phone }) {
         WHERE user_id = $1`,
       [account.user_id, tgId, String(telegramUser.username || ''), String(telegramUser.firstName || '')],
     );
-    return { verified: false, relinked: String(prev[0].telegram_user_id) !== tgId };
+    const relinked = String(prev[0].telegram_user_id) !== tgId;
+    if (relinked) {
+      // Another Telegram account now holds this mobile (a recycled SIM looks
+      // exactly like this): every session issued before it is ended, and no
+      // withdrawal may be created for the next 24 hours (schema.sql "PAYOUT
+      // HOLD"; owner, 2026-10-15). The session this sign-in mints comes later.
+      await client.query(
+        `UPDATE users
+            SET sessions_valid_from = now(),
+                payout_hold_until = GREATEST(COALESCE(payout_hold_until, now()), now() + bb_payout_hold()),
+                updated_at = now()
+          WHERE user_id = $1`,
+        [account.user_id],
+      );
+    }
+    return { verified: false, relinked };
   } catch (e) {
     // Two accounts claiming one Telegram account at the same instant: the
     // unique index decides, and the loser is told what the pre-check would

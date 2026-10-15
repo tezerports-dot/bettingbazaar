@@ -38,7 +38,7 @@
  */
 import {
   loginPaceLimiter, adminAuthLimiter,
-  twoFactorLimiter, challengePollLimiter, telegramLoginLimiter,
+  twoFactorLimiter, challengePollLimiter, telegramLoginLimiter, telegramLoginNoCaptchaLimiter,
 } from '../../middleware/security.js';
 import { createSubnetLimiter } from '../../middleware/ipDefense.js';
 import { requireCaptcha } from '../../middleware/captcha.js';
@@ -63,7 +63,7 @@ const LEGS = {
   login: () => [...staffCredentialChain(), loginHandler],
   telegram: (door) => [
     telegramLoginLimiter,
-    ...(door === 'PLAYER' ? [requireCaptcha('telegram-login')] : []),
+    ...(door === 'PLAYER' ? [requireCaptcha('telegram-login', { outageLimiter: telegramLoginNoCaptchaLimiter })] : []),
     telegramLoginHandler,
   ],
   telegramComplete: () => [challengePollLimiter, twoFactorLimiter, telegramLoginCompleteHandler],

@@ -91,7 +91,7 @@ import { startPgBouncerStats } from '#db/pgbouncerStats.js';
 import { CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';
 import { refreshProviderFrameSources, startProviderFrameSourceRefresh } from './domains/casino/providerFrameSources.js';
 import { securityHeaders } from './middleware/cspMiddleware.js';
-import { network, canonicalRedirect } from './config/network.config.js';
+import { network, canonicalRedirect, adminHostGate } from './config/network.config.js';
 import {
   attachProxyProtocolRequestMetadata,
   listenWithOptionalProxyProtocol,
@@ -149,9 +149,18 @@ function corsOriginCheck(origin, callback) {
   // https://<host>, so a standby put live by DNS alone is not refused
   // (config/servedHosts.js, docs/governance/DOMAIN_FAILOVER.md).
   return isServableOrigin(origin).then(
-    (ok) => (ok ? callback(null, true) : callback(new Error(`CORS: origin not allowed — ${origin}`))),
-    () => callback(new Error(`CORS: origin not allowed — ${origin}`)),
+    (ok) => (ok ? callback(null, true) : callback(originRefused())),
+    () => callback(originRefused()),
   );
+}
+
+// A refused origin is the caller's answer, not a server fault: 403 with a code,
+// so errorHandler does not report it as a 500 (outside check, 2026-10-15).
+function originRefused() {
+  return Object.assign(new Error('This website is not allowed to call this API.'), {
+    status: 403,
+    code: 'ORIGIN_NOT_ALLOWED',
+  });
 }
 
 const backendMtlsConfig = ['BACKEND_MTLS_CERT', 'BACKEND_MTLS_KEY', 'BACKEND_MTLS_CA'];
@@ -228,6 +237,8 @@ app.use(securityHeaders);
 // Item 29: optional canonical-host 301 (only when CANONICAL_HOST is set; keys
 // on the requested Host only — see network.config.js).
 app.use(canonicalRedirect);
+// The admin panel answers only on ADMIN_HOST when it is set (network.config.js).
+app.use(adminHostGate);
 
 const corsOptions = { origin: corsOriginCheck, ...CORS_SHAPE };
 // AQ-6 (Express 5 / path-to-regexp 8): bare '*' is no longer a valid route

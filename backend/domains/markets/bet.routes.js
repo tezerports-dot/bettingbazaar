@@ -27,6 +27,8 @@ import { poolsHidden } from './cyclePublicView.js';
 import { sendAlert } from '../../services/alerting.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
+import { respondError } from '../../shared/httpError.js';
+import { AUTO_BET_STEPS_MAX, AUTO_BET_MIN_RUPEES, AUTO_BET_MAX_RUPEES } from './houseBets.js';
 
 const router = express.Router();
 
@@ -597,6 +599,56 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
 //   - Are only visible to admin room via admin_bet_placed event
 //   - Pool totals shown to regular users include phantom (combined) but hide the split
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Auto house bets (owner, 2026-10-15): a phantom agent's plan per board and
+// side, a list of sizes bet one a second until the equalizer (houseBets.js).
+//
+// GET /api/bet/phantom/auto  — { plans, limits }
+// PUT /api/bet/phantom/auto  — { boardKey, side, amounts: [rupees…], enabled }
+// ─────────────────────────────────────────────────────────────────────────────
+const AUTO_LIMITS = { maxSteps: AUTO_BET_STEPS_MAX, minRupees: AUTO_BET_MIN_RUPEES, maxRupees: AUTO_BET_MAX_RUPEES };
+
+async function phantomAgent(req, res) {
+  const agent = await db.users.getUser(req.user.userId);
+  if (!agent || !agent.phantomAccess || agent.phantomAccess === 'NONE') {
+    res.status(403).json({ success: false, code: 'PHANTOM_ACCESS_REQUIRED', message: 'Phantom access not granted' });
+    return null;
+  }
+  return agent;
+}
+
+router.get('/phantom/auto', authenticatePlayer, async (req, res) => {
+  try {
+    if (!(await phantomAgent(req, res))) return;
+    return res.json({ success: true, plans: await db.phantomAutoPlans.listFor(req.user.userId), limits: AUTO_LIMITS });
+  } catch (error) {
+    return respondError(res, error, 'GET /api/bet/phantom/auto', { message: 'Could not load your auto bets' });
+  }
+});
+
+router.put('/phantom/auto', authenticatePlayer, async (req, res) => {
+  try {
+    const agent = await phantomAgent(req, res);
+    if (!agent) return;
+    const { boardKey, side, amounts, enabled } = req.body || {};
+    if (!MARKET_SIDES.includes(side)) {
+      return res.status(400).json({ success: false, code: 'AUTO_BETS_INVALID', message: 'Pick Delhi or Bombay.' });
+    }
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ success: false, code: 'AUTO_BETS_INVALID', message: 'Say whether the plan is on or off.' });
+    }
+    const board = typeof boardKey === 'string' ? await boardOf(boardKey) : null;
+    if (!board) return res.status(400).json({ success: false, code: 'AUTO_BETS_INVALID', message: 'That board does not exist.' });
+    if (agent.phantomAccess !== 'BOTH' && agent.phantomAccess !== board.key) {
+      return res.status(403).json({ success: false, code: 'PHANTOM_ACCESS_REQUIRED', message: `Your phantom access is for ${agent.phantomAccess} cycles only` });
+    }
+    const plan = await db.phantomAutoPlans.savePlan({ userId: req.user.userId, boardKey: board.key, side, amounts, enabled });
+    return res.json({ success: true, plan });
+  } catch (error) {
+    return respondError(res, error, 'PUT /api/bet/phantom/auto', { message: 'Could not save your auto bets' });
+  }
+});
+
 router.post('/phantom', authenticatePlayer, async (req, res) => {
   try {
     const { cycleId, side } = req.body;

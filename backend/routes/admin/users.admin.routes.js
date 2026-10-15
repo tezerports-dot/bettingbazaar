@@ -499,18 +499,15 @@ router.post('/users/:userId/phantom-access', authenticate, hasPermission('canMan
   }
 });
 
-// Get phantom betting statistics
-router.get('/analytics/phantom-stats', authenticate, hasPermission('canManagePhantomAgents'), async (req, res) => {
+// Real against house volume per round whose betting has closed (owner,
+// 2026-10-15). `?limit=` 1–100, default 20 (stats.realVolumeByCycle).
+router.get('/analytics/real-volume', authenticate, hasPermission('canManagePhantomAgents'), async (req, res) => {
   try {
-    // Grouped in the database, ordered by when the cycle RAN. The aggregate
-    // this replaced sorted on the grouped cycle id, so its "most recent 10"
-    // were whichever ids sorted highest as strings.
-    const phantomStats = await db.stats.phantomBetsByCycle({ limit: 10 });
-
-    res.json({ success: true, stats: phantomStats });
+    const rounds = await db.stats.realVolumeByCycle({ limit: req.query.limit });
+    res.json({ success: true, rounds });
   } catch (error) {
-    console.error('Get phantom stats error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch phantom stats' });
+    console.error('Get real volume error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load real volume' });
   }
 });
 

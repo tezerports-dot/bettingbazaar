@@ -38,16 +38,14 @@ export const CycleHistory: React.FC = () => {
   const [endDate, setEndDate] = useState('');
   const [selectedCycle, setSelectedCycle] = useState<Cycle | null>(null);
   /**
-   * Phantom exposure per recent cycle.
-   *
-   * Phantom bets always lose and are not platform revenue, so what matters is
-   * how much of each side's visible pool was not real money. The endpoint has
-   * grouped this by cycle all along with nothing calling it, which meant the
-   * only place phantom scale appeared was one cycle at a time in the detail
-   * modal — never as a series an operator could scan.
+   * Real against house volume per round whose betting has closed (owner,
+   * 2026-10-15): of what players were shown, how much was real money.
+   * `GET /api/admin/analytics/real-volume` (stats.realVolumeByCycle); house
+   * figures include the equalizer's top-up. A round still taking bets is on
+   * Live Cycles, where its split is the main admin's alone.
    */
-  const [phantom, setPhantom] = useState<any[]>([]);
-  // Phantom scale is the phantom-agents area (canManagePhantomAgents), not
+  const [volume, setVolume] = useState<any[]>([]);
+  // House volume is the phantom-agents area (canManagePhantomAgents), not
   // analytics: asked for only by an account that holds it, so an analytics-only
   // sub-admin is not sent a request the server refuses.
   const canSeePhantom = usePermissions().can('canManagePhantomAgents');
@@ -56,8 +54,8 @@ export const CycleHistory: React.FC = () => {
 
   useEffect(() => {
     if (!canSeePhantom) return;
-    api.get<any>('/api/admin/analytics/phantom-stats')
-      .then((r) => { if (r.data?.success) setPhantom(r.data.stats || []); })
+    api.get<any>('/api/admin/analytics/real-volume?limit=30')
+      .then((r) => { if (r.data?.success) setVolume(r.data.rounds || []); })
       .catch(() => { /* the panel simply does not render */ });
   }, [canSeePhantom]);
 
@@ -174,38 +172,58 @@ export const CycleHistory: React.FC = () => {
   const totalNetRevenue = cycles.reduce((sum, c) => sum + getNetRevenue(c), 0);
   const totalPaidOut    = cycles.reduce((sum, c) => sum + (c.totalPaidOut || 0), 0);
 
-  const phantomPanel = phantom.length > 0 && (
+  const volumePanel = volume.length > 0 && (
     <div className="card">
-      <p className="text-sm font-semibold text-gray-300">Phantom exposure — most recent cycles</p>
+      <p className="text-sm font-semibold text-gray-300">Real vs house volume: recent closed rounds</p>
       <p className="text-xs text-gray-500 mt-0.5 mb-3">
-        Phantom bets always lose and are never platform revenue. This is how much of each
-        side's visible pool was not real money.
+        Players are shown real and house stakes together. House bets (manual, auto and the equalizer's top-up)
+        always lose and are never paid out; this is how much of each round was real money.
       </p>
-      <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-        {phantom.map((p: any) => (
-          <div key={p.cycleId} className="flex items-center justify-between gap-4 bg-dark-800 rounded-lg px-4 py-2.5 text-sm">
-            <div className="min-w-0">
-              <p className="font-mono text-xs text-gray-300 truncate">{p.cycleId}</p>
-              <p className="text-[11px] text-gray-500">
-                {p.cycleType}{p.winner ? ` · won ${p.winner}` : ' · undeclared'}
-                {p.startTime ? ` · ${formatters.datetime(p.startTime)}` : ''}
-              </p>
-            </div>
-            <div className="text-right shrink-0">
-              <p className="font-semibold text-gray-200">{formatters.currency(p.totalPhantomAmount)}</p>
-              <p className="text-[11px] text-gray-500">
-                {p.totalPhantomBets} bets · D {formatters.currency(p.delhiPhantom)} / B {formatters.currency(p.bombayPhantom)}
-              </p>
-            </div>
-          </div>
-        ))}
+      <div className="overflow-x-auto max-h-80 overflow-y-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-gray-500 text-left">
+              <th className="py-1.5 pr-3 font-medium">Round</th>
+              <th className="py-1.5 pr-3 font-medium text-right">Real (D / B)</th>
+              <th className="py-1.5 pr-3 font-medium text-right">Players · bets</th>
+              <th className="py-1.5 pr-3 font-medium text-right">House (D / B)</th>
+              <th className="py-1.5 pr-3 font-medium text-right">Shown total</th>
+              <th className="py-1.5 font-medium text-right">Real share</th>
+            </tr>
+          </thead>
+          <tbody>
+            {volume.map((r: any) => (
+              <tr key={r.cycleId} className="border-t border-dark-700">
+                <td className="py-1.5 pr-3">
+                  <p className="font-mono text-gray-300">{r.cycleId}</p>
+                  <p className="text-[11px] text-gray-500">
+                    {boardName(r.cycleType)}{r.audience === 'GENERAL' ? ' · GENERAL' : ''}
+                    {r.winner ? ` · won ${r.winner}` : ` · ${r.status}`}
+                    {r.startTime ? ` · ${formatters.datetime(r.startTime)}` : ''}
+                  </p>
+                </td>
+                <td className="py-1.5 pr-3 text-right text-gray-200">
+                  {formatters.currency(r.realTotal)}
+                  <p className="text-[11px] text-gray-500">{formatters.currency(r.realDelhi)} / {formatters.currency(r.realBombay)}</p>
+                </td>
+                <td className="py-1.5 pr-3 text-right text-gray-300">{r.realBettors} · {r.realBets}</td>
+                <td className="py-1.5 pr-3 text-right text-gray-400">
+                  {formatters.currency(r.houseTotal)}
+                  <p className="text-[11px] text-gray-500">{formatters.currency(r.houseDelhi)} / {formatters.currency(r.houseBombay)} · {r.houseBets} bets</p>
+                </td>
+                <td className="py-1.5 pr-3 text-right text-gray-300">{formatters.currency(r.shownTotal)}</td>
+                <td className="py-1.5 text-right font-semibold text-gold-400">{r.realPercent == null ? '—' : `${r.realPercent}%`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 
   return (
     <div className="om-fade space-y-6">
-      {phantomPanel}
+      {volumePanel}
       <Kpis items={[
         { label: 'Total Cycles', value: total },
         ...boards.map((b) => ({

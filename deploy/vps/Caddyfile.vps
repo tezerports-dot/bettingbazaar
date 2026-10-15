@@ -50,7 +50,10 @@
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin"
+		# The merchant panel scans cash QRs with the camera; nothing uses the rest.
+		Permissions-Policy "camera=(self), microphone=(), geolocation=(), payment=(), usb=()"
 		-Server
+		-Via
 	}
 
 	# ── WebSocket → realtime role ────────────────────────────────────────────
@@ -86,6 +89,13 @@
 		respond 404
 	}
 
+	# ── The certificate question is Caddy's alone ────────────────────────────
+	# on_demand_tls asks api:8080 directly (global options); from outside it
+	# would only tell a stranger which names are standbys.
+	handle /api/v1/client/tls-allowed {
+		respond 404
+	}
+
 	# ── Everything else → api role ───────────────────────────────────────────
 	# The api role serves the REST API *and* the three panel bundles
 	# (/, /admin/, /merchant/), so this single route covers all of them.
@@ -96,6 +106,15 @@
 
 {$SITE_ADDRESS} {
 	import app_routes
+}
+
+# Plain HTTP on any name or the bare IP: only a redirect to HTTPS, without the
+# Server header Caddy's automatic redirect sends. A name with no certificate
+# (the bare IP, a stranger's domain) then gets no HTTPS answer at all. ACME's
+# HTTP challenge is still answered by Caddy before this block.
+http:// {
+	header -Server
+	redir https://{host}{uri} 308
 }
 
 # Any other name: the standby pool. Caddy asks the api role first (above), and
