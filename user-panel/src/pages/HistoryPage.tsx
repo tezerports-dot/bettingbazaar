@@ -52,7 +52,7 @@ const HistoryPage: React.FC = () => {
       <div style={{ display: 'flex', background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 999, padding: 3, gap: 3, width: 'fit-content', marginBottom: 14, boxShadow: 'var(--shadow-sm)' }}>
         {boards.map(b => ({ t: b.key, l: b.name.toUpperCase() })).map(o => {
           const on = viewCycle === o.t;
-          return <button key={o.t} onClick={() => setViewCycle(o.t)} style={{ padding: '7px 18px', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 800, letterSpacing: '.06em', background: on ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: on ? '#1a1200' : 'var(--text3)' }}>{o.l}</button>;
+          return <button key={o.t} onClick={() => setViewCycle(o.t)} style={{ padding: '7px 18px', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 800, letterSpacing: '.06em', background: on ? 'var(--gold-metal)' : 'transparent', color: on ? 'var(--on-gold)' : 'var(--text3)' }}>{o.l}</button>;
         })}
       </div>
 

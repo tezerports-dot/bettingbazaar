@@ -30,6 +30,7 @@
  */
 import { ORDER_SIZES, USDT_BUY_STEP, INR_ROUTING_MODES } from '../../backend/domains/merchant/denominations.js';
 import { approvedApiHosts } from '../../backend/config/apiHosts.js';
+import { BRAND_PALETTES } from '../../backend/domains/branding/palettes.js';
 
 /** A number setting: `n(default, min, max)`. Bounds are inclusive. */
 const n = (def, min = null, max = null) => ({ type: 'number', default: def, min, max });
@@ -424,6 +425,10 @@ export const BRANDING_SPEC = group({
   // one. An operator who wants purple sets it in the admin panel, which is
   // exactly what these being real tokens now makes possible.
   primaryColor: s('#D4AF37'), secondaryColor: s('#B8860B'), accentColor: s('#F5C77A'),
+  // Which palette every panel paints with (owner, 2026-10-15). GOLD uses the
+  // three colours above; STAKE is a full navy-and-blue set declared in each
+  // panel's stylesheet. Names: `BRAND_PALETTES` (domains/branding/palettes.js).
+  palette: { type: 'string', default: 'GOLD', oneOf: () => [...BRAND_PALETTES] },
   // ── Copy ──────────────────────────────────────────────────────────────────
   tagline: s('Your Premier Betting Platform'),
   description: s('Safe, secure, and exciting betting experience'),

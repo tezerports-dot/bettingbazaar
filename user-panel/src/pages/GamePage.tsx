@@ -52,7 +52,7 @@ const GamePage: React.FC = () => {
         <div onClick={() => setPromoPopup(null)} style={{ position: 'absolute', inset: 0, zIndex: 140, background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px 16px' }}>
           <div onClick={e => e.stopPropagation()} className="bb-rise" style={{ width: '100%', maxWidth: 420, background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 20, padding: 22, boxShadow: 'var(--shadow)', textAlign: 'center', position: 'relative' }}>
             <button onClick={() => setPromoPopup(null)} style={{ position: 'absolute', top: 12, right: 12, width: 30, height: 30, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 12 }}>✕</button>
-            <h2 className="font-grotesk" style={{ fontWeight: 700, fontSize: 19, color: 'var(--gold-ink)', margin: '4px 0 12px', textTransform: 'uppercase', letterSpacing: '.06em' }}>{promoPopup.title}</h2>
+            <h2 className="font-grotesk bb-gold-text" style={{ fontWeight: 700, fontSize: 19, color: 'var(--gold-ink)', margin: '4px 0 12px', textTransform: 'uppercase', letterSpacing: '.06em' }}>{promoPopup.title}</h2>
             {!!promoPopup.fileUrl && (
               <div style={{ width: '100%', borderRadius: 14, overflow: 'hidden', border: '1px solid var(--line2)', marginBottom: 14, background: 'var(--bg)' }}>
                 <img src={getAssetUrl(promoPopup.fileUrl, '')} alt="Promo" style={{ width: '100%', height: 'auto', objectFit: 'cover', maxHeight: 300 }} />
@@ -63,7 +63,7 @@ const GamePage: React.FC = () => {
                 <p style={{ color: 'var(--text2)', fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', margin: 0 }}>{promoPopup.description}</p>
               </div>
             )}
-            <button onClick={() => setPromoPopup(null)} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 14, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', textTransform: 'uppercase', letterSpacing: '.06em' }}>Enter Arena</button>
+            <button onClick={() => setPromoPopup(null)} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 14, color: 'var(--on-gold)', background: 'var(--gold-metal)', textTransform: 'uppercase', letterSpacing: '.06em' }}>Enter Arena</button>
           </div>
         </div>
       )}

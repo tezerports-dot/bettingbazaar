@@ -470,6 +470,8 @@ export interface Branding {
   logo: string;
   icon: string;
   primaryColor: string;
+  /** `BRAND_PALETTES` (backend/domains/branding/palettes.js). */
+  palette?: 'GOLD' | 'STAKE';
   secondaryColor: string;
   accentColor: string;
   tagline: string;

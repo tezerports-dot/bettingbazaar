@@ -72,7 +72,11 @@
 
 @utility btn-primary {
   /* Buttons ---------------------------------------------------------------- */
-  background: var(--gold);
+  /* Softly polished gold like the brand artwork (owner, 2026-10-15), built
+     only from the panel's gold tokens so the brand colour still drives it. */
+  background: linear-gradient(160deg,
+    var(--gold-ink) 0%, color-mix(in srgb, var(--gold-ink) 78%, #fff4c8) 28%, var(--gold) 55%, var(--gold-ink) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
   color: var(--gold-on);
   @apply font-bold py-2 px-4 rounded-lg transition-all;
   &:hover {
@@ -282,6 +286,57 @@
     --c-gold-ink: 156 125 26;
     --c-gold-deep: 166 130 28;
   }
+
+  /* STAKE palette (Branding.palette = STAKE; owner, 2026-10-15): navy pages,
+     slate-blue cards, cool grey text, blue for everything that was gold.
+     `services/branding.ts` sets <html data-palette="stake"> and takes the
+     brand colour off the root while it is on. The `--gold*` names stay
+     because every screen reads them; here they hold blue. */
+  :root[data-palette='stake'] {
+    --brand-primary: #1475e1;
+    --brand-primary-rgb: 20, 117, 225;
+    --gold: #1475e1;
+    --gold-rgb: 20, 117, 225;
+    --gold-ink: #7db8ff;
+    --gold-deep: #105eb9;
+    --gold-on: #ffffff;
+    --c-gold: 20 117 225;
+    --c-gold-ink: 125 184 255;
+    --c-gold-deep: 16 94 185;
+  }
+  :root[data-palette='stake']:not([data-theme='light']) {
+    --bg: #0f212e;
+    --surface: #1a2c38;
+    --surface-2: #213743;
+    --sidebar: #0f212e;
+    --header: #1a2c38;
+    --border: #2f4553;
+    --border-2: #3a5466;
+    --hover: #24404f;
+    --active: #2f4553;
+    --text: #ffffff;
+    --text-2: #b1bad3;
+    --muted: #7489a3;
+    --success: #00e701;
+    --danger: #ed4163;
+    --input: #0f212e;
+    --input-border: #2f4553;
+    --grid: #213743;
+    --track: #0f212e;
+    --c-bg: 15 33 46;
+    --c-surface: 26 44 56;
+    --c-surface-2: 33 55 67;
+    --c-border: 47 69 83;
+    --c-border-2: 58 84 102;
+    --c-text: 255 255 255;
+    --c-text-2: 177 186 211;
+    --c-muted: 116 137 163;
+  }
+  :root[data-palette='stake'][data-theme='light'] {
+    --gold-ink: #105eb9;
+    --c-gold-ink: 16 94 185;
+    --focus: 0 0 0 3px rgba(20, 117, 225, 0.3);
+  }
 }
 
 @layer base {
@@ -347,4 +402,11 @@ button:active:not(:disabled), [role='button']:active { transform: scale(.98); }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   button:active:not(:disabled), [role='button']:active { transform: none; }
+}
+
+/* Under the STAKE palette the primary button is flat blue, like the rest of
+   that theme (owner, 2026-10-15). Unlayered, so it outranks the utility. */
+:root[data-palette='stake'] .btn-primary {
+  background: var(--gold);
+  box-shadow: none;
 }

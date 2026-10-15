@@ -131,7 +131,7 @@ const RunsAndGaps: React.FC<Props> = ({ board, winners }) => {
         {windows.map((w) => {
           const on = w === lookBack;
           return (
-            <button key={w} type="button" role="radio" aria-checked={on} onClick={() => setPickedWindow(w)} style={{ padding: '6px 12px', borderRadius: 999, border: `1px solid ${on ? 'var(--gold)' : 'var(--line2)'}`, background: on ? 'var(--gold)' : 'var(--surface2)', color: on ? '#1a1200' : 'var(--text2)', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>
+            <button key={w} type="button" role="radio" aria-checked={on} onClick={() => setPickedWindow(w)} style={{ padding: '6px 12px', borderRadius: 999, border: `1px solid ${on ? 'var(--gold)' : 'var(--line2)'}`, background: on ? 'var(--gold)' : 'var(--surface2)', color: on ? 'var(--on-gold)' : 'var(--text2)', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>
               {w === winners.length && !(RUN_WINDOWS as readonly number[]).includes(w) ? `All ${fmt(w)}` : `Last ${fmt(w)}`}
             </button>
           );

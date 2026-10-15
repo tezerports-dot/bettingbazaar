@@ -316,7 +316,7 @@ const GameScreen: React.FC = () => {
             <div style={{ fontSize: 34, lineHeight: 1 }} aria-hidden="true">🎁</div>
             <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 18, color: 'var(--text)', marginTop: 10 }}>Refer &amp; Earn</div>
             <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.5, marginTop: 4 }}>Invite friends and get a bonus for each one who joins and verifies.</div>
-            <div style={{ display: 'inline-block', marginTop: 12, padding: '8px 14px', borderRadius: 10, fontSize: 12, fontWeight: 800, color: 'var(--bg)', background: 'linear-gradient(180deg,var(--gold2),var(--gold))' }}>Invite now</div>
+            <div style={{ display: 'inline-block', marginTop: 12, padding: '8px 14px', borderRadius: 10, fontSize: 12, fontWeight: 800, color: 'var(--on-gold)', background: 'var(--gold-metal)' }}>Invite now</div>
           </div>
         )}
       </button>
@@ -324,7 +324,7 @@ const GameScreen: React.FC = () => {
         <div style={{ ...labelCap, marginBottom: 12 }}>Payout</div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <span style={{ fontSize: 12, color: 'var(--text2)' }}>Winning bet</span>
-          <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 20, color: 'var(--gold-ink)' }}>2.00×</span>
+          <span className="font-grotesk bb-gold-text" style={{ fontWeight: 700, fontSize: 20, color: 'var(--gold-ink)' }}>2.00×</span>
         </div>
         <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text3)' }}>The side with fewer real bets wins. Winners are paid 2× their stake.</div>
       </div>
@@ -332,7 +332,7 @@ const GameScreen: React.FC = () => {
         <div style={{ ...labelCap, marginBottom: 10 }}>Total pool</div>
         {loadingCycle
           ? <div className="bb-skel" style={{ width: 110, height: 26, borderRadius: 7, background: 'var(--surface3)' }} />
-          : <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 24, color: 'var(--gold-ink)' }}>₹{fmt(total)}</div>}
+          : <div className="font-grotesk bb-gold-text" style={{ fontWeight: 700, fontSize: 24, color: 'var(--gold-ink)' }}>₹{fmt(total)}</div>}
       </div>
       {leftCards.map((c, i) => <PromoCard key={c.promoId ?? c.id ?? i} card={c} />)}
       <CitiesArt />
@@ -381,8 +381,8 @@ const GameScreen: React.FC = () => {
               const on = cycleType === o.t;
               // The gold pill slides between tabs (one shared layoutId) instead
               // of jumping, which read as lag on a tap.
-              return <button key={o.t} onClick={() => setCycleType(o.t)} style={{ position: 'relative', padding: mobile ? '7px 11px' : '7px 15px', whiteSpace: 'nowrap', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 800, letterSpacing: '.06em', background: 'transparent', color: on ? '#1a1200' : 'var(--text3)', transition: 'color .2s' }}>
-                {on && <motion.span layoutId="board-tab-pill" transition={{ type: 'spring', stiffness: 500, damping: 38 }} style={{ position: 'absolute', inset: 0, borderRadius: 999, background: 'linear-gradient(180deg,var(--gold2),var(--gold))', boxShadow: 'var(--shadow-sm)' }} />}
+              return <button key={o.t} onClick={() => setCycleType(o.t)} style={{ position: 'relative', padding: mobile ? '7px 11px' : '7px 15px', whiteSpace: 'nowrap', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 800, letterSpacing: '.06em', background: 'transparent', color: on ? 'var(--on-gold)' : 'var(--text3)', transition: 'color .2s' }}>
+                {on && <motion.span layoutId="board-tab-pill" transition={{ type: 'spring', stiffness: 500, damping: 38 }} style={{ position: 'absolute', inset: 0, borderRadius: 999, background: 'var(--gold-metal)', boxShadow: 'var(--shadow-sm)' }} />}
                 <span style={{ position: 'relative' }}>{o.l}</span>
               </button>;
             })}
@@ -506,9 +506,9 @@ const GameScreen: React.FC = () => {
             })}
             {scales && scales.max > scales.min && (
               <div role="group" aria-label="Chip size" style={{ flex: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, padding: 3, borderRadius: 14, background: 'var(--surface2)', border: '1px solid var(--line2)', boxShadow: 'var(--shadow-sm)' }}>
-                <button onClick={() => rescale(1)} disabled={!canScaleUp} aria-label="Chips 10 times bigger" style={{ width: 34, height: 20, border: 'none', borderRadius: 9, cursor: canScaleUp ? 'pointer' : 'not-allowed', background: canScaleUp ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: canScaleUp ? '#1a1200' : 'var(--text3)', fontSize: 10, fontWeight: 900, lineHeight: 1 }}>▲</button>
+                <button onClick={() => rescale(1)} disabled={!canScaleUp} aria-label="Chips 10 times bigger" style={{ width: 34, height: 20, border: 'none', borderRadius: 9, cursor: canScaleUp ? 'pointer' : 'not-allowed', background: canScaleUp ? 'var(--gold-metal)' : 'transparent', color: canScaleUp ? 'var(--on-gold)' : 'var(--text3)', fontSize: 10, fontWeight: 900, lineHeight: 1 }}>▲</button>
                 <span className="font-grotesk" style={{ fontSize: 11, fontWeight: 800, color: 'var(--gold-ink)', letterSpacing: '.02em' }}>10×</span>
-                <button onClick={() => rescale(-1)} disabled={!canScaleDown} aria-label="Chips 10 times smaller" style={{ width: 34, height: 20, border: 'none', borderRadius: 9, cursor: canScaleDown ? 'pointer' : 'not-allowed', background: canScaleDown ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: canScaleDown ? '#1a1200' : 'var(--text3)', fontSize: 10, fontWeight: 900, lineHeight: 1 }}>▼</button>
+                <button onClick={() => rescale(-1)} disabled={!canScaleDown} aria-label="Chips 10 times smaller" style={{ width: 34, height: 20, border: 'none', borderRadius: 9, cursor: canScaleDown ? 'pointer' : 'not-allowed', background: canScaleDown ? 'var(--gold-metal)' : 'transparent', color: canScaleDown ? 'var(--on-gold)' : 'var(--text3)', fontSize: 10, fontWeight: 900, lineHeight: 1 }}>▼</button>
               </div>
             )}
           </div>

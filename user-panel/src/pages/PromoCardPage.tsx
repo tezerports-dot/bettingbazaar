@@ -20,7 +20,7 @@ import { useViewport } from '../redesign/useViewport';
 
 const goldButton: React.CSSProperties = {
   display: 'inline-block', padding: '12px 20px', borderRadius: 12, border: 'none', cursor: 'pointer',
-  fontSize: 14, fontWeight: 800, color: 'var(--bg)', background: 'var(--gold)', textDecoration: 'none',
+  fontSize: 14, fontWeight: 800, color: 'var(--on-gold)', background: 'var(--gold-metal)', textDecoration: 'none',
 };
 
 const PromoCardPage: React.FC = () => {

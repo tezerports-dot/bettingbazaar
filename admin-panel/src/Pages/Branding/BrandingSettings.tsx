@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Save, Palette, RefreshCw } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
+import { applyBranding } from '../../services/branding';
 
 type Tab = 'identity' | 'panels';
 
@@ -25,6 +26,7 @@ export const BrandingSettings: React.FC = () => {
     primaryColor: '#D4AF37',    // schema default
     secondaryColor: '#B8860B',  // schema default
     accentColor: '#F5C77A',     // schema default
+    palette: 'GOLD' as 'GOLD' | 'STAKE', // schema default (BRAND_PALETTES, backend/domains/branding/palettes.js)
     contactEmail: '',
     contactPhone: '',
 
@@ -58,6 +60,26 @@ export const BrandingSettings: React.FC = () => {
   useEffect(() => { loadBranding(); }, [loadBranding]);
 
   const set = (key: string, value: any) => setFormData(prev => ({ ...prev, [key]: value }));
+
+  // The palette switch saves at once (owner, 2026-10-15: "just with a switch"):
+  // only `palette` is sent, so nothing else on this form is written with it.
+  const [paletteSaving, setPaletteSaving] = useState(false);
+  const switchPalette = async (palette: 'GOLD' | 'STAKE') => {
+    if (palette === formData.palette || paletteSaving) return;
+    const before = formData.palette;
+    set('palette', palette);
+    setPaletteSaving(true);
+    try {
+      await api.branding.update({ palette });
+      let cached: Record<string, unknown> = {};
+      try { cached = JSON.parse(localStorage.getItem('app_branding') || '{}'); } catch { /* none cached */ }
+      applyBranding({ ...cached, palette });
+      toast.success(palette === 'STAKE' ? 'Stake blue theme is on in every panel' : 'Gold theme is on in every panel');
+    } catch (e: any) {
+      set('palette', before);
+      toast.error(e.response?.data?.message || 'Could not switch the theme');
+    } finally { setPaletteSaving(false); }
+  };
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -123,6 +145,26 @@ export const BrandingSettings: React.FC = () => {
             <div>
               <label htmlFor="contact-phone" className="label">Contact Phone</label>
               <input id="contact-phone" name="contactPhone" type="tel" value={formData.contactPhone} onChange={(e) => set('contactPhone', e.target.value)} className="input" />
+            </div>
+          </div>
+
+          <div>
+            <h3 className="font-semibold mb-1 flex items-center"><Palette size={16} className="mr-2"/>Colour Theme</h3>
+            <p className="text-xs text-gray-400 mb-3">Switches every panel (players, merchants and admin) at once. Gold uses the brand colours below; Stake blue is a full navy-and-blue theme.</p>
+            <div role="radiogroup" aria-label="Colour theme" className="inline-flex rounded-lg p-1 bg-dark-800 border border-dark-600">
+              {[
+                { key: 'GOLD' as const, label: 'Gold', swatch: ['#0A0E17', formData.primaryColor] },
+                { key: 'STAKE' as const, label: 'Stake blue', swatch: ['#0F212E', '#1475E1'] },
+              ].map((p) => (
+                <button key={p.key} type="button" role="radio" aria-checked={formData.palette === p.key}
+                  disabled={paletteSaving} onClick={() => switchPalette(p.key)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-semibold transition-colors disabled:opacity-60 ${formData.palette === p.key ? 'bg-dark-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                  <span aria-hidden="true" className="inline-flex w-6 h-4 rounded overflow-hidden border border-dark-600">
+                    <span style={{ flex: 1, background: p.swatch[0] }} /><span style={{ flex: 1, background: p.swatch[1] }} />
+                  </span>
+                  {p.label}
+                </button>
+              ))}
             </div>
           </div>
 

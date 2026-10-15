@@ -49,6 +49,7 @@ Never concatenate `cdnBase + '/' + logo` without normalising both sides (C-07 fi
 | `primaryColor` | `--brand-primary` CSS variable |
 | `secondaryColor` | `--brand-secondary` CSS variable |
 | `accentColor` | `--brand-accent` CSS variable |
+| `palette` | `<html data-palette>` in every panel (`GOLD` applies the three colours above; `STAKE` the navy-and-blue tokens each panel's stylesheet declares); switched on Admin › Branding (owner, 2026-10-15) |
 | `userPanelName` | `document.title` in user panel, App.tsx |
 | `adminPanelName` | `document.title` in admin panel, admin Login.tsx, Layout.tsx |
 | `merchantPanelName` | `document.title` in merchant panel |

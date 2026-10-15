@@ -43,7 +43,7 @@ const ResultsPage: React.FC = () => {
           <div role="radiogroup" aria-label="Board" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
             {boards.map(b => {
               const on = aBoard?.key === b.key;
-              return <button key={b.key} type="button" role="radio" aria-checked={on} onClick={() => setPicked(b.key)} style={{ flex: 'none', padding: '6px 13px', borderRadius: 999, border: `1px solid ${on ? 'var(--gold)' : 'var(--line2)'}`, cursor: 'pointer', fontSize: 10, fontWeight: 800, background: on ? 'var(--gold)' : 'var(--surface2)', color: on ? '#1a1200' : 'var(--text2)' }}>{b.name.toUpperCase()}</button>;
+              return <button key={b.key} type="button" role="radio" aria-checked={on} onClick={() => setPicked(b.key)} style={{ flex: 'none', padding: '6px 13px', borderRadius: 999, border: `1px solid ${on ? 'var(--gold)' : 'var(--line2)'}`, cursor: 'pointer', fontSize: 10, fontWeight: 800, background: on ? 'var(--gold)' : 'var(--surface2)', color: on ? 'var(--on-gold)' : 'var(--text2)' }}>{b.name.toUpperCase()}</button>;
             })}
           </div>
           <AnalyticsView board={aBoard} winners={(aBoard && winnersByType[aBoard.key]) || NO_WINNERS} loadCycleHistory={loadCycleHistory} />

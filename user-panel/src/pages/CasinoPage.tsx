@@ -35,7 +35,7 @@ const GameCard: React.FC<{ game: RegistryGame; providerLabel: string; onPlay: ()
         {game.badge && <span style={{ position: 'absolute', top: 6, left: 6, background: 'rgba(0,0,0,.7)', color: '#fff', fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 999 }}>{game.badge}</span>}
         {game.rtp && <span className="font-grotesk" style={{ position: 'absolute', top: 6, right: 6, background: 'rgba(0,0,0,.5)', color: 'var(--green)', fontSize: 9, padding: '2px 6px', borderRadius: 6 }}>RTP {game.rtp}</span>}
         {loading && <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span className="bb-spin" style={{ width: 26, height: 26, border: '2px solid #fff', borderTopColor: 'transparent', borderRadius: '50%' }} /></div>}
-        {maint && <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ background: '#FB8C00', color: '#1a1200', fontWeight: 800, fontSize: 10, padding: '3px 10px', borderRadius: 999 }}>🔧 MAINTENANCE</span></div>}
+        {maint && <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ background: '#FB8C00', color: 'var(--on-gold)', fontWeight: 800, fontSize: 10, padding: '3px 10px', borderRadius: 999 }}>🔧 MAINTENANCE</span></div>}
       </div>
       <div style={{ padding: '8px 10px' }}>
         <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{game.name}</p>
@@ -107,7 +107,7 @@ const CasinoPage: React.FC = () => {
       <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Search games…" style={{ width: '100%', height: 44, background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 12, padding: '0 15px', color: 'var(--text)', fontSize: 14, outline: 'none', marginBottom: 12 }} />
       <div className="bb-noscroll" style={{ display: 'flex', gap: 8, overflowX: 'auto', marginBottom: 14 }}>
         {chipCats.map(cat => (
-          <button key={cat} onClick={() => setCategory(cat)} style={{ flex: 'none', padding: '7px 14px', borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', border: `1px solid ${category === cat ? 'var(--gold)' : 'var(--line)'}`, background: category === cat ? 'var(--gold)' : 'var(--surface)', color: category === cat ? '#1a1200' : 'var(--text2)' }}>{chipLabel(cat)}</button>
+          <button key={cat} onClick={() => setCategory(cat)} style={{ flex: 'none', padding: '7px 14px', borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', border: `1px solid ${category === cat ? 'var(--gold)' : 'var(--line)'}`, background: category === cat ? 'var(--gold)' : 'var(--surface)', color: category === cat ? 'var(--on-gold)' : 'var(--text2)' }}>{chipLabel(cat)}</button>
         ))}
       </div>
       {visibleGames.length === 0 ? (

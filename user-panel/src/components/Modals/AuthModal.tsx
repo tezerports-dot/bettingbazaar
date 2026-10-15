@@ -82,7 +82,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose }) => {
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 14 }}>
           {!logoFailed
             ? <img src={logoSrc} alt="Betting Bazaar" onError={() => setLogoFailed(true)} style={{ display: 'block', height: 'auto', width: '100%', maxWidth: 240, maxHeight: 52, objectFit: 'contain', filter: 'drop-shadow(0 2px 10px var(--glow))' }} />
-            : <span className="font-grotesk" style={{ color: 'var(--gold-ink)', fontWeight: 700, fontSize: 20, letterSpacing: '.14em' }}>BETTING BAZAAR</span>}
+            : <span className="font-grotesk bb-gold-text" style={{ color: 'var(--gold-ink)', fontWeight: 700, fontSize: 20, letterSpacing: '.14em' }}>BETTING BAZAAR</span>}
         </div>
 
         <h1 style={{ margin: '0 0 6px', textAlign: 'center', fontSize: 18, fontWeight: 800, color: 'var(--text)' }}>Sign in or join</h1>

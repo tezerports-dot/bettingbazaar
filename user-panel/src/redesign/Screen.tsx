@@ -19,8 +19,8 @@ export const capLabel: React.CSSProperties = {
 
 export const goldButton: React.CSSProperties = {
   width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer',
-  fontWeight: 800, fontSize: 15, color: '#1a1200',
-  background: 'linear-gradient(135deg,var(--gold2),var(--gold))', boxShadow: '0 8px 22px -8px var(--glow)',
+  fontWeight: 800, fontSize: 15, color: 'var(--on-gold)',
+  background: 'var(--gold-metal)', boxShadow: '0 8px 22px -8px var(--glow)',
 };
 
 export const inputStyle: React.CSSProperties = {
