@@ -28,7 +28,7 @@
  * A default declared here is the value a fresh install starts from AND the
  * value a reader falls back to when the key is absent — one constant, not two.
  */
-import { ORDER_SIZES, USDT_BUY_STEP, INR_ROUTING_MODES } from '../../backend/domains/merchant/denominations.js';
+import { ORDER_SIZES, USDT_BUY_STEP } from '../../backend/domains/merchant/denominations.js';
 import { approvedApiHosts } from '../../backend/config/apiHosts.js';
 import { BRAND_PALETTES } from '../../backend/domains/branding/palettes.js';
 import { DEFAULT_HOUSE_BETS_LABEL, HOUSE_BETS_LABEL_LIMITS } from '../../backend/domains/markets/houseBets.js';
@@ -238,13 +238,14 @@ export const SYSTEM_CONFIG_SPEC = group({
     }),
     utrSubmitSeconds:      n(60, 15, 3600),
   }),
-  // ── Who serves INR orders (owner, 2026-10-11) ───────────────────────────
-  // AGENTS: supervisors' teams, the small sizes paid as cash at an ATM.
-  // MERCHANTS: merchant accounts (direct merchants), every size paid by UPI
-  // QR or bank transfer. USDT is never affected: always agents' USDT teams.
+  // ── Who serves each INR size (owner, 2026-10-15) ─────────────────────────
+  // Per direction, the sizes listed here go to merchant accounts (paid by UPI
+  // QR or bank transfer); every other size goes to agents (cash at an ATM or
+  // UPI/bank by its size). USDT is never affected: always agents' USDT teams.
   // Stamped on each INR order at creation (`order_states.inr_routing`); a
-  // switch moves only the INR orders still waiting for a first taker.
-  inrRoutingMode: { type: 'string', default: 'AGENTS', oneOf: () => [...INR_ROUTING_MODES] },
+  // change moves only the INR orders still waiting for a first taker.
+  merchantBuySizes:  { type: 'number[]', default: [], allowed: ORDER_SIZES },
+  merchantSellSizes: { type: 'number[]', default: [], allowed: ORDER_SIZES },
   // Routing to merchant accounts. Read through `merchantRoutingSettings` in
   // database/repositories/teamRouting.js — never off this document directly.
   merchantRouting: group({

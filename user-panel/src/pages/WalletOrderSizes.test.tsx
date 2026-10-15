@@ -95,6 +95,19 @@ describe('a buy is one of the sizes on offer', () => {
     await waitFor(() => expect(post).toHaveBeenCalledWith('/api/payment/deposit/create', { tokenAmount: 50000 }));
   });
 
+  it('draws the sizes the admin sends to merchant accounts as their own group, as a merchant purchase', async () => {
+    await open({ config: { ...CONFIG, orderSizes: {
+      buy: { CASH: [500, 1000], UPI_BANK: [], MERCHANT: [50000, 100000] }, sell: ALL_SIZES,
+    }, orderSizeMethods: { ...METHODS, buy: { ...METHODS.buy, MERCHANT: 'UPI or bank transfer' } } } });
+    const merchant = await screen.findByRole('radiogroup', { name: 'Merchant' });
+    expect(within(merchant).getAllByRole('radio').map((r) => r.getAttribute('aria-label'))).toEqual(['50,000 tokens', '1,00,000 tokens']);
+    expect(screen.queryByRole('radiogroup', { name: 'UPI / bank team' })).toBeNull();
+    fireEvent.click(await tile('50,000 tokens'));
+    expect(railNote()).toMatch(/Merchant purchase/);
+    fireEvent.click(continueButton());
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/payment/deposit/create', { tokenAmount: 50000 }));
+  });
+
   it('offers a cash size as a cash purchase, and creates it', async () => {
     await open();
     fireEvent.click(await tile('10,000 tokens'));

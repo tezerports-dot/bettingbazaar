@@ -222,8 +222,8 @@ export async function setCashReady(merchantId, ready) {
 // Merchant accounts (owner, 2026-10-11 — Phase B)
 // ═════════════════════════════════════════════════════════════════════════════
 /**
- * An INR order stamped MERCHANTS (`order_states.inr_routing`, the admin's
- * `inrRoutingMode` at creation) goes to a MERCHANT ACCOUNT — a DIRECT team's
+ * An INR order stamped MERCHANTS (`order_states.inr_routing`, stamped with
+ * the routing the admin chose for its size and direction at creation) goes to a MERCHANT ACCOUNT — a DIRECT team's
  * owner — instead of an agent. Eligible: the owner is online, ACTIVE and
  * approved, an INR merchant, switched on for the direction, under the
  * per-direction cap (`merchantRouting.concurrency`), not barred from this

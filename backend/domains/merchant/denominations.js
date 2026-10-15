@@ -29,10 +29,13 @@
  * account (`PLAYER_PAY_TO_BANK_FIELDS`), and every sell by bank transfer to
  * the player's account. Change it in the same commit as the behaviour.
  *
- * ── Under merchant accounts (owner, 2026-10-11) ─────────────────────────────
- * When the admin sends INR to merchant accounts (`inrRoutingMode` MERCHANTS)
- * every size, 500 to 500,000, is one rail: UPI QR or bank transfer
- * (`railForSize`, `MERCHANTS_PAYMENT_METHOD`). Agents keep the split above.
+ * ── Who serves each size (owner, 2026-10-15) ────────────────────────────────
+ * Per direction and per size, the admin picks agents or merchant accounts:
+ * `SystemConfig.merchantBuySizes` and `merchantSellSizes` list the sizes that
+ * go to merchant accounts; every other size goes to agents (`routingForSize`).
+ * A size served by merchant accounts is paid by UPI QR or bank transfer
+ * (`railForSize`, `MERCHANTS_PAYMENT_METHOD`) and is shown to the player
+ * under the MERCHANT group; agents keep the cash and UPI/bank split above.
  *
  * ── USDT ────────────────────────────────────────────────────────────────────
  * Buy only, priced in USDT: a whole number of `USDT_BUY_STEP` (100) between the
@@ -51,18 +54,28 @@ export const UPI_BANK_SIZES = Object.freeze([50_000, 100_000, 500_000]);
 export const ORDER_SIZES = Object.freeze([...CASH_SIZES, ...UPI_BANK_SIZES]);
 
 /**
- * Who serves INR orders (owner, 2026-10-11): AGENTS (supervisors' teams; the
- * cash sizes at an ATM) or MERCHANTS (merchant accounts; every size by UPI QR
- * or bank transfer). The admin's `SystemConfig.inrRoutingMode`; USDT is never
- * affected.
+ * Who serves an INR order: AGENTS (supervisors' teams; the cash sizes at an
+ * ATM) or MERCHANTS (merchant accounts; by UPI QR or bank transfer). Chosen by
+ * the admin per direction and size (owner, 2026-10-15); USDT is never affected.
  */
 export const INR_ROUTING = Object.freeze({ AGENTS: 'AGENTS', MERCHANTS: 'MERCHANTS' });
 export const INR_ROUTING_MODES = Object.freeze(Object.values(INR_ROUTING));
 
-/** The INR routing mode the config row says, or the schema default. */
-export function inrRoutingOf(cfg) {
-  const mode = cfg?.inrRoutingMode;
-  return INR_ROUTING_MODES.includes(mode) ? mode : INR_ROUTING.AGENTS; // schema default: AGENTS
+/** The config field listing each direction's sizes served by merchant accounts. */
+export const MERCHANT_SIZE_FIELD = Object.freeze({ DEPOSIT: 'merchantBuySizes', WITHDRAWAL: 'merchantSellSizes' });
+
+/** The sizes of one direction served by merchant accounts, ascending (schema default: none). */
+export function merchantSizes(cfg, direction) {
+  const field = MERCHANT_SIZE_FIELD[direction];
+  if (!field) throw new TypeError(`merchantSizes: direction must be DEPOSIT or WITHDRAWAL, got ${direction}`);
+  const stored = cfg?.[field];
+  const list = Array.isArray(stored) ? stored.map(Number) : []; // schema default: [] (all to agents)
+  return ORDER_SIZES.filter((size) => list.includes(size));
+}
+
+/** Who serves an INR order of this size and direction: MERCHANTS if the admin listed it, else AGENTS. */
+export function routingForSize(cfg, tokens, direction) {
+  return merchantSizes(cfg, direction).includes(Number(tokens)) ? INR_ROUTING.MERCHANTS : INR_ROUTING.AGENTS;
 }
 
 /**
@@ -101,9 +114,21 @@ export function offeredSizes(cfg, direction) {
   return ORDER_SIZES.filter((size) => list.includes(size));
 }
 
-/** The sizes on offer for one direction that a given rail serves. */
-export function offeredSizesFor(cfg, rail, direction) {
-  return offeredSizes(cfg, direction).filter((size) => railForSize(size, inrRoutingOf(cfg)) === rail);
+/**
+ * The groups a player is shown the sizes in: agents' CASH and UPI_BANK, and
+ * MERCHANT for the sizes served by merchant accounts.
+ */
+export const SIZE_GROUPS = Object.freeze(['CASH', 'UPI_BANK', 'MERCHANT']);
+
+/** Which group a size on offer is shown in, for one direction. */
+export function sizeGroupFor(cfg, tokens, direction) {
+  if (routingForSize(cfg, tokens, direction) === INR_ROUTING.MERCHANTS) return 'MERCHANT';
+  return railForSize(tokens, INR_ROUTING.AGENTS);
+}
+
+/** The sizes on offer for one direction in one group (`SIZE_GROUPS`). */
+export function offeredSizesFor(cfg, group, direction) {
+  return offeredSizes(cfg, direction).filter((size) => sizeGroupFor(cfg, size, direction) === group);
 }
 
 /** How a player pays (buy) or is paid (sell) on each rail. See the header. */

@@ -136,9 +136,13 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'Extra seconds a player gets to type the payment reference after the order window, so a payment made at the last moment is not lost.',
     example: '60: a reference sent 40 seconds after the window closed is still accepted.',
   },
-  inrRoutingMode: {
-    what: 'Who serves rupee orders. AGENTS: supervisors\' teams, small sizes paid as cash at an ATM. MERCHANTS: merchant accounts, every size paid by UPI QR or bank transfer. USDT always goes to agents. Switching moves only orders still waiting for a first taker.',
-    example: 'MERCHANTS, once your merchant accounts are funded and online.',
+  merchantBuySizes: {
+    what: 'The buy sizes that go to merchant accounts, paid by UPI QR or bank transfer. Every other buy size goes to agents: 500 to 10,000 as cash at an ATM, 50,000 and up by UPI/bank. USDT always goes to agents. A change moves only orders still waiting for a first taker.',
+    example: '[50000, 100000, 500000]: big buys to merchant accounts, small ones to agents at an ATM.',
+  },
+  merchantSellSizes: {
+    what: 'The sell sizes that go to merchant accounts, paid out by bank transfer from a merchant account. Every other sell size goes to agents. A change moves only orders still waiting for a first taker.',
+    example: '[] : every sell to agents.',
   },
   'merchantRouting.concurrency.DEPOSIT': {
     what: 'How many open buy orders one merchant account may hold at the same time.',

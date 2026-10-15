@@ -62,7 +62,7 @@ import { getSystemConfig } from '#db/repositories/config.js';
 import {
   PAYMENT_MODES, railOf, routingSettings, merchantRoutingSettings, routedToMerchants,
 } from '#db/repositories/teamRouting.js';
-import { inrRoutingOf } from '../merchant/denominations.js';
+import { routingForSize } from '../merchant/denominations.js';
 // The only shape of an order a player receives.
 import { toPlayerOrderView, PLAYER_CANCEL_STATES } from './playerOrderView.js';
 // The mirror of it, pointing the other way: the one shape a MERCHANT receives.
@@ -197,13 +197,13 @@ function buildMerchantSnapshot(merchant, expiresAt, order = null, payAccount = n
 async function tryAssignMerchant(order, { alsoBar = [] } = {}) {
   const cfg = await getSystemConfig();
   // ── Agents or merchant accounts (owner, 2026-10-11) ─────────────────────
-  // An INR order still waiting for its first taker follows the admin's switch
-  // (re-railed if its rail differs); the admin's save moves every waiting
-  // order at once, and this keeps the one in hand convergent with it. USDT
-  // carries no `inr_routing` and never moves.
-  const mode = inrRoutingOf(cfg);
+  // An INR order still waiting for its first taker follows who the admin now
+  // has serving its size (re-railed if that differs); the admin's save moves
+  // every waiting order at once, and this keeps the one in hand convergent
+  // with it. USDT carries no `inr_routing` and never moves.
+  const mode = order.inrRouting ? routingForSize(cfg, order.tokenAmount, order.type) : null;
   if (order.inrRouting && order.inrRouting !== mode && order.state === 'PENDING_QUEUE') {
-    if ((await db.orders.rerailWaitingOrders(mode, { orderId: order.orderId })).length) {
+    if ((await db.orders.rerailWaitingOrders(cfg, { orderId: order.orderId })).length) {
       Object.assign(order, await db.orders.getOrderRecord(order.orderId));
     }
   }

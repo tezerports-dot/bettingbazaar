@@ -18,10 +18,11 @@
  * the app ships as an APK containing this bundle, so a list written here is
  * one an attacker can edit and one that drifts from the gate.
  *
- * ── One rail, no heading ─────────────────────────────────────────────────
- * When INR orders go to merchants the server sends every size under UPI_BANK
- * and none under CASH (owner, 2026-10-11): an empty rail draws nothing, and a
- * single rail is a flat list with its method sentence and no rail heading.
+ * ── Agents or merchant accounts, per size (owner, 2026-10-15) ──────────────
+ * The admin sends each size to agents or to merchant accounts; the server
+ * sends the merchant accounts' sizes under MERCHANT and the agents' under
+ * CASH or UPI_BANK by size. An empty group draws nothing, and a single group
+ * is a flat list with its method sentence and no heading.
  *
  * ── `maxAllowed` ───────────────────────────────────────────────────────────
  * A sell can only draw on winnings, so a size above them is shown but disabled,
@@ -32,9 +33,9 @@
 import React from 'react';
 
 /** The rails a size can be on — the keys of each side of the server's `orderSizes`. */
-export type SizeRail = 'CASH' | 'UPI_BANK';
+export type SizeRail = 'CASH' | 'UPI_BANK' | 'MERCHANT';
 
-export interface OrderSizes { CASH: number[]; UPI_BANK: number[] }
+export interface OrderSizes { CASH: number[]; UPI_BANK: number[]; MERCHANT: number[] }
 
 /** How each rail is paid, as the server words it (`orderSizeMethods.buy` / `.sell`). */
 export type OrderSizeMethods = Partial<Record<SizeRail, string>>;
@@ -42,6 +43,7 @@ export type OrderSizeMethods = Partial<Record<SizeRail, string>>;
 const RAIL_LABEL: Record<SizeRail, string> = {
   CASH: 'Cash team',
   UPI_BANK: 'UPI / bank team',
+  MERCHANT: 'Merchant',
 };
 
 interface Props {
@@ -63,7 +65,7 @@ const fmt = (n: number) => n.toLocaleString('en-IN');
 export default function OrderSizePicker({
   idPrefix, sizes, methods = {}, value, onChange, maxAllowed, accent = 'var(--gold)',
 }: Props) {
-  const rails = (['CASH', 'UPI_BANK'] as SizeRail[]).filter((r) => sizes[r].length > 0);
+  const rails = (['CASH', 'UPI_BANK', 'MERCHANT'] as SizeRail[]).filter((r) => (sizes[r] ?? []).length > 0);
   if (rails.length === 0) {
     // The admin has every size off (the save refuses that, so this is a
     // config row nobody could have written through the screen) or the config
@@ -131,5 +133,6 @@ export function railOfSize(sizes: OrderSizes, size: number | null): SizeRail | n
   if (size === null) return null;
   if (sizes.CASH.includes(size)) return 'CASH';
   if (sizes.UPI_BANK.includes(size)) return 'UPI_BANK';
+  if ((sizes.MERCHANT ?? []).includes(size)) return 'MERCHANT';
   return null;
 }

@@ -14,7 +14,7 @@ import { SYSTEM_CONFIG_SPEC } from '#db/spec/config.spec.js';
 import { SYSTEM_CONFIG_HELP } from '#db/spec/configHelp.js';
 import { approvedApiHosts } from '../../config/apiHosts.js';
 import { gatewayDocumentStatus } from '../../domains/configuration/gatewayConfig.js';
-import { ORDER_SIZE_RAILS, INR_ROUTING_MODES, inrRoutingOf } from '../../domains/merchant/denominations.js';
+import { ORDER_SIZE_RAILS, merchantSizes } from '../../domains/merchant/denominations.js';
 import { assignQueuedOrders } from '../../domains/payment/paymentProcessing.service.js';
 import { db } from '#db';
 import { respondError } from '../../shared/httpError.js';
@@ -102,9 +102,6 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         // Read-only, like the choices: the universe is not a setting, and the
         // PUT ignores it (undeclared). The card keeps no copy of it (§5).
         orderSizeRails:        ORDER_SIZE_RAILS,
-        // The two values `inrRoutingMode` takes, for its switch (owner,
-        // 2026-10-11). Read-only, like the choices above.
-        inrRoutingModes:       INR_ROUTING_MODES,
         // The INR peg, from its one owner. It was a literal here and in the
         // response below, a third and fourth declaration of a rule that already
         // had two.
@@ -358,9 +355,10 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     // everything after it — the admin was told the save failed and reloaded
     // into a form half-changed, with nothing saying which half (§21). The spec
     // now validates the whole patch before anything is written.
-    // The INR routing mode BEFORE this save, so a flip can move the orders
-    // still waiting for a first taker (below).
-    const modeBefore = inrRoutingOf(await getSystemConfig());
+    // Which sizes go to merchant accounts BEFORE this save, so a change can
+    // move the orders still waiting for a first taker (below).
+    const routingKey = (c) => JSON.stringify([merchantSizes(c, 'DEPOSIT'), merchantSizes(c, 'WITHDRAWAL')]);
+    const routingBefore = routingKey(await getSystemConfig());
     const byModel = new Map();
     for (const [modelName, path, value] of fieldWrites) {
       if (!byModel.has(modelName)) byModel.set(modelName, []);
@@ -375,17 +373,16 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     let rerailed = 0;
     {
       const updatedConfig = await getSystemConfig();
-      // ── INR switched between agents and merchant accounts (owner, 2026-10-11)
-      // The INR orders still WAITING for a first taker move to the new mode,
-      // re-railed by the one rule; the ones already assigned, accepted or paid
+      // ── A size moved between agents and merchant accounts (owner, 2026-10-15)
+      // The INR orders still WAITING for a first taker move to whoever now
+      // serves their size, re-railed by the one rule; the ones already assigned, accepted or paid
       // finish where they are. Then the queue is offered at once rather than
       // at the next sweep. After the commit, and unable to undo it: a failure
       // here leaves the orders for the assignment path, which re-rails the
       // order in hand the same way (`tryAssignMerchant`).
-      const modeAfter = inrRoutingOf(updatedConfig);
-      if (modeAfter !== modeBefore) {
+      if (routingKey(updatedConfig) !== routingBefore) {
         try {
-          rerailed = (await db.orders.rerailWaitingOrders(modeAfter)).length;
+          rerailed = (await db.orders.rerailWaitingOrders(updatedConfig)).length;
           await assignQueuedOrders();
         } catch (e) {
           console.error('[inr-routing] moving the waiting orders failed; assignment will re-rail them:', e.message);

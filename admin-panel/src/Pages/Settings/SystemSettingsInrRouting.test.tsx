@@ -2,8 +2,9 @@
 /**
  * The INR routing switch and the merchants' numbers (owner, 2026-10-11).
  *
- *   1. The switch draws the served `inrRoutingModes`, shows the served mode,
- *      and a change goes back as `inrRoutingMode` in the PUT.
+ *   1. Each size, per direction, goes to Agents or Merchant accounts: drawn
+ *      from the served `orderSizeRails`, showing `merchantBuySizes` /
+ *      `merchantSellSizes`, and a change goes back in the PUT (owner, 2026-10-15).
  *   2. The server says how many waiting INR orders moved (`rerailedOrders`),
  *      and the toast repeats it.
  *   3. `merchantRouting` and `directMerchants` are shown with the served
@@ -26,8 +27,14 @@ vi.mock('../../components/ConfirmDialog', () => ({ ConfirmDialog: () => null }))
 const { SystemSettings } = await import('./SystemSettings');
 
 const served = {
-  inrRoutingModes: ['AGENTS', 'MERCHANTS'],
-  inrRoutingMode: 'AGENTS',
+  orderSizeRails: [
+    { rail: 'CASH', label: 'Cash', sizes: [500, 1000], methods: { DEPOSIT: 'ATM', WITHDRAWAL: 'Bank' } },
+    { rail: 'UPI_BANK', label: 'UPI / bank', sizes: [50000], methods: { DEPOSIT: 'Bank', WITHDRAWAL: 'Bank' } },
+  ],
+  buyOrderSizes: [500, 1000, 50000],
+  sellOrderSizes: [500, 1000, 50000],
+  merchantBuySizes: [50000],
+  merchantSellSizes: [],
   merchantRouting: {
     concurrency: { DEPOSIT: 12, WITHDRAWAL: 8 },
     assignmentWaitSeconds: 1300,
@@ -41,25 +48,27 @@ const saveButton = () => screen.getAllByRole('button', { name: /save/i }).pop() 
 
 const paint = async () => {
   getConfig.mockResolvedValue({ success: true, data: served, help: {
-    inrRoutingMode: { what: 'Who serves rupee orders. USDT always goes to agents.', example: 'MERCHANTS' },
+    merchantBuySizes: { what: 'The buy sizes that go to merchant accounts, paid by UPI QR.', example: '[50000]' },
   } });
   render(<SystemSettings />);
   await screen.findByText('INR Orders');
-  await waitFor(() => expect(screen.getByRole('radio', { name: 'Agents' })).toBeChecked());
+  await waitFor(() => expect((screen.getByRole('combobox', { name: 'Buy 50,000 goes to' }) as HTMLSelectElement).value).toBe('MERCHANTS'));
 };
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('INR orders go to: Agents / Merchants', () => {
-  it('saves the switch and says how many waiting orders moved', async () => {
+describe('each INR size goes to: Agents / Merchant accounts', () => {
+  it('saves each size\'s choice and says how many waiting orders moved', async () => {
     updateConfig.mockResolvedValue({ success: true, rerailedOrders: 3 });
     await paint();
     // The setting's help is the server's (configHelp.js), rendered under it.
-    expect(screen.getByText(/USDT always goes to agents/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('radio', { name: 'Merchants' }));
+    expect(screen.getByText(/go to merchant accounts, paid by UPI QR/)).toBeInTheDocument();
+    expect((screen.getByRole('combobox', { name: 'Buy 500 goes to' }) as HTMLSelectElement).value).toBe('AGENTS');
+    fireEvent.change(screen.getByRole('combobox', { name: 'Buy 1,000 goes to' }), { target: { value: 'MERCHANTS' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Sell 500 goes to' }), { target: { value: 'MERCHANTS' } });
     fireEvent.click(saveButton());
     await waitFor(() => expect(updateConfig).toHaveBeenCalled());
-    expect(updateConfig.mock.calls[0][0]).toMatchObject({ inrRoutingMode: 'MERCHANTS' });
+    expect(updateConfig.mock.calls[0][0]).toMatchObject({ merchantBuySizes: [1000, 50000], merchantSellSizes: [500] });
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith(expect.stringMatching(/3 waiting INR orders were moved/)));
   });
 
@@ -68,7 +77,7 @@ describe('INR orders go to: Agents / Merchants', () => {
     await paint();
     fireEvent.click(saveButton());
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('System settings updated'));
-    expect(updateConfig.mock.calls[0][0]).toMatchObject({ inrRoutingMode: 'AGENTS' });
+    expect(updateConfig.mock.calls[0][0]).toMatchObject({ merchantBuySizes: [50000], merchantSellSizes: [] });
   });
 
   it('shows and sends the merchants\' numbers whole', async () => {

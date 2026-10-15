@@ -60,36 +60,28 @@ import { INR_TOKEN_RATE } from './tokenRates.js';
 // lists drift, and the drift is silent until a player is refused an amount the
 // screen offered them.
 import {
-  offeredSizesFor, usdtBuyBounds, RAIL_PAYMENT_METHOD, MERCHANTS_PAYMENT_METHOD,
-  INR_ROUTING, inrRoutingOf,
+  offeredSizesFor, SIZE_GROUPS, usdtBuyBounds, RAIL_PAYMENT_METHOD, MERCHANTS_PAYMENT_METHOD,
 } from '../merchant/denominations.js';
 
-/** The sizes one direction offers, per rail. */
-const sizesByRail = (cfg, direction) => ({
-  CASH:     offeredSizesFor(cfg, 'CASH', direction),
-  UPI_BANK: offeredSizesFor(cfg, 'UPI_BANK', direction),
-});
-
 /**
- * How one direction is paid, per rail: the sentence shown under its sizes.
- * Under merchant accounts the UPI/bank rail is paid by UPI or bank transfer
- * into the merchant account's own account (owner, 2026-10-11).
+ * The sizes one direction offers, per group: agents' CASH and UPI_BANK, and
+ * MERCHANT for the sizes the admin sends to merchant accounts (owner,
+ * 2026-10-15; `sizeGroupFor`).
  */
-const methodsByRail = (direction, merchants) => ({
+const sizesByRail = (cfg, direction) => Object.fromEntries(
+  SIZE_GROUPS.map((group) => [group, offeredSizesFor(cfg, group, direction)]),
+);
+
+/** How one direction is paid, per group: the sentence shown under its sizes. */
+const methodsByRail = (direction) => ({
   CASH:     RAIL_PAYMENT_METHOD.CASH[direction],
-  UPI_BANK: merchants ? MERCHANTS_PAYMENT_METHOD[direction] : RAIL_PAYMENT_METHOD.UPI_BANK[direction],
+  UPI_BANK: RAIL_PAYMENT_METHOD.UPI_BANK[direction],
+  MERCHANT: MERCHANTS_PAYMENT_METHOD[direction],
 });
 
 export function systemConfigPayload(cfg) {
   const usdt = usdtBuyBounds(cfg);
-  // ── Who serves INR (owner, 2026-10-11) ────────────────────────────────
-  // Under MERCHANTS every size is on the UPI/bank rail (`railForSize`), so
-  // the same per-rail shape carries an empty CASH list and every size under
-  // UPI_BANK, with the merchant accounts' sentence: one shape for both modes.
-  const inrRoutingMode = inrRoutingOf(cfg);
-  const merchants = inrRoutingMode === INR_ROUTING.MERCHANTS;
   return {
-    inrRoutingMode,
     // ── The sizes a player may buy or sell (Step 2d) ─────────────────────
     // The player app must not decide these. It ships as an APK containing the
     // whole bundle, so a picker built from a client-side list is a list an
@@ -107,8 +99,8 @@ export function systemConfigPayload(cfg) {
     // sentence is the server's (`RAIL_PAYMENT_METHOD`, denominations.js); the
     // panel renders it and keeps no copy (§5).
     orderSizeMethods: {
-      buy:  methodsByRail('DEPOSIT', merchants),
-      sell: methodsByRail('WITHDRAWAL', merchants),
+      buy:  methodsByRail('DEPOSIT'),
+      sell: methodsByRail('WITHDRAWAL'),
     },
     // The USDT rail: buy only, in whole steps of USDT between the admin's
     // bounds, and the rate that turns USDT into tokens. From the SERVER,

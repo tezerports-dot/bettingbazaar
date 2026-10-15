@@ -23,7 +23,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { systemConfigPayload, systemConfigFallback } from '../../domains/configuration/systemConfigPayload.js';
-import { CASH_SIZES, UPI_BANK_SIZES, RAIL_PAYMENT_METHOD } from '../../domains/merchant/denominations.js';
+import { CASH_SIZES, UPI_BANK_SIZES, RAIL_PAYMENT_METHOD, MERCHANTS_PAYMENT_METHOD } from '../../domains/merchant/denominations.js';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const read = (p) => readFileSync(join(repo, p), 'utf8');
@@ -53,7 +53,7 @@ describe('the system-config payload', () => {
   it('still fills an ABSENT value with its declared default', () => {
     // The other half: `??` must not turn into "pass everything through".
     const empty = systemConfigPayload(null);
-    const all = { CASH: [...CASH_SIZES], UPI_BANK: [...UPI_BANK_SIZES] };
+    const all = { CASH: [...CASH_SIZES], UPI_BANK: [...UPI_BANK_SIZES], MERCHANT: [] };
     expect(empty.orderSizes).toEqual({ buy: all, sell: all });
     expect(empty.usdtBuy).toEqual({ minUsdt: 100, maxUsdt: 10_000, stepUsdt: 100 });
     expect(empty.payoutMultiplier).toBe(2);
@@ -136,8 +136,19 @@ describe('the settlement rail, and the amounts it allows', () => {
       buyOrderSizes: [1_000, 10_000, 100_000], sellOrderSizes: [500, 500_000],
     });
     expect(payload.orderSizes).toEqual({
-      buy:  { CASH: [1_000, 10_000], UPI_BANK: [100_000] },
-      sell: { CASH: [500], UPI_BANK: [500_000] },
+      buy:  { CASH: [1_000, 10_000], UPI_BANK: [100_000], MERCHANT: [] },
+      sell: { CASH: [500], UPI_BANK: [500_000], MERCHANT: [] },
+    });
+  });
+
+  it('puts the sizes the admin sends to merchant accounts in their own group, per direction', () => {
+    const payload = systemConfigPayload({
+      buyOrderSizes: [1_000, 50_000, 100_000], sellOrderSizes: [500, 500_000],
+      merchantBuySizes: [50_000, 100_000], merchantSellSizes: [500],
+    });
+    expect(payload.orderSizes).toEqual({
+      buy:  { CASH: [1_000], UPI_BANK: [], MERCHANT: [50_000, 100_000] },
+      sell: { CASH: [], UPI_BANK: [500_000], MERCHANT: [500] },
     });
   });
 
@@ -145,15 +156,15 @@ describe('the settlement rail, and the amounts it allows', () => {
     // A row edited around the spec (a direct UPDATE, an old backup) is not a
     // size a team is organised to serve, so it is not offered.
     expect(systemConfigPayload({ buyOrderSizes: [500, 7_777, 40_000] }).orderSizes.buy)
-      .toEqual({ CASH: [500], UPI_BANK: [] });
+      .toEqual({ CASH: [500], UPI_BANK: [], MERCHANT: [] });
   });
 
   it('says how each rail is paid, per direction, from the one owner', () => {
     // The panels render this sentence under the sizes and keep no copy (§5).
     const { orderSizeMethods } = systemConfigPayload(null);
     expect(orderSizeMethods).toEqual({
-      buy:  { CASH: RAIL_PAYMENT_METHOD.CASH.DEPOSIT, UPI_BANK: RAIL_PAYMENT_METHOD.UPI_BANK.DEPOSIT },
-      sell: { CASH: RAIL_PAYMENT_METHOD.CASH.WITHDRAWAL, UPI_BANK: RAIL_PAYMENT_METHOD.UPI_BANK.WITHDRAWAL },
+      buy:  { CASH: RAIL_PAYMENT_METHOD.CASH.DEPOSIT, UPI_BANK: RAIL_PAYMENT_METHOD.UPI_BANK.DEPOSIT, MERCHANT: MERCHANTS_PAYMENT_METHOD.DEPOSIT },
+      sell: { CASH: RAIL_PAYMENT_METHOD.CASH.WITHDRAWAL, UPI_BANK: RAIL_PAYMENT_METHOD.UPI_BANK.WITHDRAWAL, MERCHANT: MERCHANTS_PAYMENT_METHOD.WITHDRAWAL },
     });
     // Truthful to the code (CLAUDE.md §2 "How each rail is paid"): a cash buy
     // through the ATM QR, a UPI/bank buy and every sell by bank transfer.

@@ -2645,9 +2645,9 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 CREATE OR REPLACE FUNCTION bb_forbid_order_mode_change() RETURNS trigger AS $$
 BEGIN
   -- ── The one re-rail: an INR order nobody has taken yet ──────────────────
-  -- When an admin switches INR routing between agents and merchant accounts
-  -- (owner, 2026-10-11) an INR order still WAITING for its first taker moves
-  -- to the new mode, and its rail with it: its size is paid by cash at an ATM
+  -- When an admin moves an INR size between agents and merchant accounts
+  -- (owner, 2026-10-11; per size since 2026-10-15) an INR order still WAITING
+  -- for its first taker moves to the new routing, and its rail with it: its size is paid by cash at an ATM
   -- under agents and by UPI or bank under merchants. Only while it is queued,
   -- held in no pool, on no team and without a cash QR: from the first
   -- assignment on, the rail and the mode are frozen like everything else here.
@@ -4477,8 +4477,9 @@ CREATE TRIGGER users_phantom_access_known BEFORE INSERT OR UPDATE OF phantom_acc
 -- pool, its holds, its spends, its commission and its admin trades are the
 -- team machinery unchanged (teamPools.js, teamCommission.js). An AGENT team
 -- has a supervisor and members; a DIRECT team has an owner and neither.
--- Whether INR orders go to agents or to merchant accounts is the admin's
--- `inrRoutingMode` switch, stamped on each INR order as `inr_routing`.
+-- Whether an INR order goes to agents or to merchant accounts is the admin's
+-- choice per size and direction (`merchantBuySizes`, `merchantSellSizes`),
+-- stamped on each INR order as `inr_routing`.
 ALTER TABLE teams ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'AGENT';
 ALTER TABLE teams ADD COLUMN IF NOT EXISTS owner_merchant_id TEXT REFERENCES merchants (merchant_id);
 ALTER TABLE teams ALTER COLUMN supervisor_id DROP NOT NULL;
