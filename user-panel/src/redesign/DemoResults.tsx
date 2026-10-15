@@ -12,12 +12,13 @@
  * every player sees the same demo history and demo #n never changes. Display
  * only (§11): never in the Results list, never a cycle, never sent anywhere.
  *
- * Whether they are on and the line shown with them are the server's
- * (`SystemConfig.demoResultsOn`, `demoResultsLabel`, sent never blank by
+ * Whether they are on is the server's (`SystemConfig.demoResultsOn`, sent by
  * systemConfigPayload.js); the panel keeps no copy, and shows no demo result
- * until that has arrived.
+ * until that has arrived. No line is shown with them (owner, 2026-10-15);
+ * they are drawn faded (`DEMO_STYLE`) and counted in the analytics heading.
  */
-import React, { useEffect, useState } from 'react';
+import type React from 'react';
+import { useEffect, useState } from 'react';
 import type { Side } from './analytics';
 import { getBackend } from '../services/backend.service';
 
@@ -51,7 +52,7 @@ export function withDemoResults(realNewestFirst: Side[], boardKey: string, windo
   return { winners: fill ? [...realNewestFirst.slice(0, real), ...demoWinners(boardKey, fill)] : realNewestFirst.slice(0, real), real };
 }
 
-export interface DemoResultsConfig { on: boolean; label: string }
+export interface DemoResultsConfig { on: boolean }
 
 /** The server's demo settings; null until they have arrived (no demo is shown before). */
 export function useDemoResults(): DemoResultsConfig | null {
@@ -60,21 +61,14 @@ export function useDemoResults(): DemoResultsConfig | null {
     let live = true;
     getBackend().getSystemConfig()
       .then((c) => {
-        if (!live || typeof c.demoResultsLabel !== 'string' || !c.demoResultsLabel) return;
-        setCfg({ on: c.demoResultsOn === true, label: c.demoResultsLabel });
+        if (!live || typeof c.demoResultsOn !== 'boolean') return;
+        setCfg({ on: c.demoResultsOn });
       })
       .catch(() => { /* no demo results until the config arrives */ });
     return () => { live = false; };
   }, []);
   return cfg;
 }
-
-/** The line shown wherever demo results are in the window. */
-export const DemoResultsNote: React.FC<{ label: string; demo: number }> = ({ label, demo }) => (
-  <p role="note" data-testid="demo-results-note" style={{ margin: '0 0 10px', padding: '8px 12px', borderRadius: 10, border: '1px dashed var(--line2)', background: 'var(--surface2)', fontSize: 11, lineHeight: 1.5, color: 'var(--text2)' }}>
-    ⓘ {label} <b style={{ color: 'var(--text)' }}>({demo.toLocaleString('en-IN')} demo)</b>
-  </p>
-);
 
 /** How a demo bead or box is drawn: faded, with a dashed edge. */
 export const DEMO_STYLE: React.CSSProperties = { opacity: 0.45, outline: '1px dashed rgba(255,255,255,.55)', outlineOffset: -2 };

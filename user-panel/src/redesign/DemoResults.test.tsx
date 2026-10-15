@@ -1,10 +1,10 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-/** Demo results fill the analytics window behind the real ones, labelled (owner, 2026-10-15). */
+/** Demo results fill the analytics window behind the real ones, counted in the heading (owner, 2026-10-15). */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
-let config: Record<string, unknown> = { demoResultsOn: true, demoResultsLabel: 'Includes demo results.' };
+let config: Record<string, unknown> = { demoResultsOn: true };
 vi.mock('../services/backend.service', () => ({ getBackend: () => ({ getSystemConfig: () => Promise.resolve(config) }) }));
 
 const { demoWinners, withDemoResults } = await import('./DemoResults');
@@ -32,19 +32,18 @@ describe('demo results', () => {
     expect(withDemoResults([...real], 'b1', 1440, false).winners).toHaveLength(3);
   });
 
-  it('the analytics say so with the admin line, and show every result', async () => {
+  it('the analytics count them in the heading, with no separate line, and show every result', async () => {
     render(<AnalyticsView board={board} winners={['DELHI', 'BOMBAY']} />);
-    expect(await screen.findByTestId('demo-results-note')).toHaveTextContent('Includes demo results. (1,438 demo)');
-    expect(screen.getByText(/1,440 One Minute results · 1,438 demo/)).toBeInTheDocument();
+    expect(await screen.findByText(/1,440 One Minute results · 1,438 demo/)).toBeInTheDocument();
+    expect(screen.queryByText(/demo results/i)).toBeNull();
     const strip = screen.getByTestId('run-strip');
     expect(strip.querySelectorAll('span[data-demo]').length).toBe(1438);
   });
 
-  it('switched off, nothing is filled and no line is shown', async () => {
-    config = { demoResultsOn: false, demoResultsLabel: 'Includes demo results.' };
+  it('switched off, nothing is filled', async () => {
+    config = { demoResultsOn: false };
     render(<AnalyticsView board={board} winners={['DELHI', 'BOMBAY']} />);
     await new Promise((r) => setTimeout(r, 0));
-    expect(screen.queryByTestId('demo-results-note')).toBeNull();
     expect(screen.getByText(/^2 One Minute results$/)).toBeInTheDocument();
   });
 });

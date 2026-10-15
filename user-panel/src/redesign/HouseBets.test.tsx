@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
- * House bets on the board screen (owner, 2026-10-15): the line beside the
- * totals is the server's, and a phantom agent's auto plan is saved as typed.
+ * House bets on the board screen (owner, 2026-10-15): a phantom agent's auto
+ * plan is saved as typed.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -9,13 +9,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn() }));
 vi.mock('../services/apiClient', () => ({ default: api, apiClient: api }));
-vi.mock('../services/backend.service', () => ({
-  getBackend: () => ({ getSystemConfig: () => Promise.resolve({ houseBetsLabel: 'Totals include house bets.' }) }),
-}));
 
-const { HouseBetsNote, useHouseBetsLabel, AutoHouseBetsPanel } = await import('./HouseBets');
-
-const Note = () => <HouseBetsNote label={useHouseBetsLabel()} />;
+const { AutoHouseBetsPanel } = await import('./HouseBets');
 
 beforeEach(() => {
   api.get.mockReset().mockResolvedValue({
@@ -30,11 +25,6 @@ beforeEach(() => {
 });
 
 describe('house bets', () => {
-  it('shows the server\'s line beside the totals', async () => {
-    render(<Note />);
-    expect(await screen.findByText(/Totals include house bets\./)).toBeTruthy();
-  });
-
   it('loads a plan, and saves the sizes as typed with the side, board and audience', async () => {
     render(<AutoHouseBetsPanel boardKey="b1" boardName="Board One" audience="VIP" />);
     const delhi = await screen.findByLabelText(/Delhi · ON/);

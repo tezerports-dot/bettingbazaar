@@ -26,7 +26,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { analyticsFor, MIN_SAMPLE, Side } from './analytics';
 import { analyticsWindowFor } from '../constants';
-import { useDemoResults, withDemoResults, DemoResultsNote, DEMO_STYLE } from './DemoResults';
+import { useDemoResults, withDemoResults, DEMO_STYLE } from './DemoResults';
 import { fmt } from './format';
 import RunsAndGaps, { box, heading } from './RunsAndGaps';
 import { Board, CycleType } from '../types';
@@ -293,7 +293,6 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
         <h2 className="font-grotesk" style={{ margin: 0, fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>Results &amp; Streak Analytics</h2>
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>{fmt(A.total)} {board?.name ?? ''} results{demoCount ? ` · ${fmt(demoCount)} demo` : ''}</span>
       </div>
-      {demoCount > 0 && demoCfg && <DemoResultsNote label={demoCfg.label} demo={demoCount} />}
       <div style={{ margin: '0 0 12px' }}>
         {/* One swipeable strip, drawn like the game tabs above (owner,
             2026-10-15: "single slidable strip ... as we are doing for games

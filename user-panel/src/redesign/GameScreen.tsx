@@ -23,7 +23,7 @@ import { CHIP_SCALE_STEP, chipScales, chipsFor } from '../constants';
 import { useShell } from './RedesignShell';
 import { useViewport } from './useViewport';
 import { useToast } from '../components/ui/Toast';
-import { HouseBetsNote, AutoHouseBetsPanel, useHouseBetsLabel } from './HouseBets';
+import { AutoHouseBetsPanel } from './HouseBets';
 import { LiveNumber } from './LiveNumber';
 import { fmt, timeStr } from './format';
 import { analyticsFor, winnersByBoard, Side } from './analytics';
@@ -109,8 +109,6 @@ const GameScreen: React.FC = () => {
   const { openAuth } = useShell();
   const { desktop, mobile, vh } = useViewport();
   const { addToast } = useToast();
-  // The totals include house bets; the line saying so is the server's (owner, 2026-10-15).
-  const houseBetsLabel = useHouseBetsLabel();
 
   const [selectedChip, setSelectedChip] = useState<number | null>(null);
   const [manualInput, setManualInput] = useState('');
@@ -337,7 +335,6 @@ const GameScreen: React.FC = () => {
         {loadingCycle
           ? <div className="bb-skel" style={{ width: 110, height: 26, borderRadius: 7, background: 'var(--surface3)' }} />
           : <div className="font-grotesk bb-gold-text" style={{ fontWeight: 700, fontSize: 24, color: 'var(--gold-ink)' }}>₹<LiveNumber value={total} /></div>}
-        <HouseBetsNote label={houseBetsLabel} style={{ marginTop: 6 }} />
       </div>
       {leftCards.map((c, i) => <PromoCard key={c.promoId ?? c.id ?? i} card={c} />)}
       <CitiesArt />
@@ -421,7 +418,6 @@ const GameScreen: React.FC = () => {
               <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)', fontVariantNumeric: 'tabular-nums' }}>POOL ₹<LiveNumber value={total} /></span>
             )}
           </div>
-          <HouseBetsNote label={houseBetsLabel} style={{ marginTop: 3 }} />
         </div>
 
         {/* Stage */}
