@@ -29,8 +29,9 @@ const { default: CycleGenerator } = await import('../../domains/markets/cycleGen
 const START = Date.UTC(2026, 9, 15, 10, 0, 0);
 const cycle = { cycleId: 'C1', type: 'b1', audience: 'VIP', status: 'OPEN', startTime: new Date(START), phantomDelhi: 0, phantomBombay: 0 };
 const plans = [
-  { userId: 'ag1', boardKey: 'b1', side: 'DELHI', amountsPaise: [100_00, 200_00, 300_00], startsAtMs: 0 },
-  { userId: 'ag1', boardKey: 'other', side: 'BOMBAY', amountsPaise: [5_00], startsAtMs: 0 },
+  { userId: 'ag1', boardKey: 'b1', audience: 'VIP', side: 'DELHI', amountsPaise: [100_00, 200_00, 300_00], startsAtMs: 0 },
+  { userId: 'ag1', boardKey: 'other', audience: 'VIP', side: 'BOMBAY', amountsPaise: [5_00], startsAtMs: 0 },
+  { userId: 'ag1', boardKey: 'b1', audience: 'GENERAL', side: 'BOMBAY', amountsPaise: [7_00], startsAtMs: 0 },
 ];
 
 describe('runAutoHouseBets', () => {
@@ -75,6 +76,11 @@ describe('runAutoHouseBets', () => {
       { userId: 'ag1', side: 'DELHI', second: 0, amountPaise: 100_00 },
       { userId: 'ag1', side: 'DELHI', second: 1, amountPaise: 200_00 },
     ]);
+  });
+
+  it('runs each audience\'s plans on that audience\'s rounds only', async () => {
+    await gen.runAutoHouseBets({ ...cycle, cycleId: 'G1', audience: 'GENERAL' }, plans, START + 500, START + 60_000);
+    expect(place.mock.calls[0][0].bets).toEqual([{ userId: 'ag1', side: 'BOMBAY', second: 0, amountPaise: 7_00 }]);
   });
 
   it('places nothing at or after the equalizer, and nothing for a board with no plan', async () => {

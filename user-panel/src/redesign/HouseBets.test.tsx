@@ -20,7 +20,10 @@ const Note = () => <HouseBetsNote label={useHouseBetsLabel()} />;
 beforeEach(() => {
   api.get.mockReset().mockResolvedValue({
     success: true,
-    plans: [{ boardKey: 'b1', side: 'DELHI', amounts: [100, 200], enabled: true }],
+    plans: [
+      { boardKey: 'b1', audience: 'VIP', side: 'DELHI', amounts: [100, 200], enabled: true },
+      { boardKey: 'b1', audience: 'GENERAL', side: 'BOMBAY', amounts: [9], enabled: true },
+    ],
     limits: { maxSteps: 1000, minRupees: 1, maxRupees: 10000000 },
   });
   api.put.mockReset().mockImplementation(async (_p: string, body: any) => ({ success: true, plan: body }));
@@ -32,8 +35,8 @@ describe('house bets', () => {
     expect(await screen.findByText(/Totals include house bets\./)).toBeTruthy();
   });
 
-  it('loads a plan, and saves the sizes as typed with the side and board', async () => {
-    render(<AutoHouseBetsPanel boardKey="b1" boardName="Board One" />);
+  it('loads a plan, and saves the sizes as typed with the side, board and audience', async () => {
+    render(<AutoHouseBetsPanel boardKey="b1" boardName="Board One" audience="VIP" />);
     const delhi = await screen.findByLabelText(/Delhi · ON/);
     expect((delhi as HTMLTextAreaElement).value).toBe('100, 200');
 
@@ -41,12 +44,19 @@ describe('house bets', () => {
     fireEvent.change(bombay, { target: { value: '50 75,  25' } });
     fireEvent.click(screen.getAllByRole('button', { name: 'Start' })[0]);
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/api/bet/phantom/auto',
-      { boardKey: 'b1', side: 'BOMBAY', amounts: [50, 75, 25], enabled: true }));
+      { boardKey: 'b1', audience: 'VIP', side: 'BOMBAY', amounts: [50, 75, 25], enabled: true }));
     expect(await screen.findByRole('status')).toBeTruthy();
   });
 
+  it('shows only the plans of the profile being played', async () => {
+    render(<AutoHouseBetsPanel boardKey="b1" boardName="Board One" audience="GENERAL" />);
+    expect(await screen.findByText(/General rounds/)).toBeTruthy();
+    expect(((await screen.findByLabelText(/Bombay · ON/)) as HTMLTextAreaElement).value).toBe('9');
+    expect(((screen.getByLabelText(/Delhi · OFF/)) as HTMLTextAreaElement).value).toBe('');
+  });
+
   it('refuses a size that is not whole rupees before asking the server', async () => {
-    render(<AutoHouseBetsPanel boardKey="b1" boardName="Board One" />);
+    render(<AutoHouseBetsPanel boardKey="b1" boardName="Board One" audience="VIP" />);
     const bombay = await screen.findByLabelText(/Bombay · OFF/);
     fireEvent.change(bombay, { target: { value: '50, 2.5' } });
     fireEvent.click(screen.getAllByRole('button', { name: 'Start' })[0]);

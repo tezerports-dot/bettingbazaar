@@ -4907,7 +4907,8 @@ CREATE OR REPLACE TRIGGER order_states_payout_hold
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- AUTO HOUSE BETS (owner, 2026-10-15)
--- A phantom agent's plan for one board and side: a list of 1 to 1,000 bet
+-- A phantom agent's plan for one board, audience (VIP or GENERAL: each has its
+-- own rounds and its own plans; owner, 2026-10-15) and side: a list of 1 to 1,000 bet
 -- sizes, bet one a second in order and looped, from the round's start (or
 -- `starts_at`, when the plan was saved) until the equalizer. The bets are
 -- ordinary phantom bets (never paid); the cycle generator places them through
@@ -4926,13 +4927,25 @@ $$ LANGUAGE sql IMMUTABLE;
 CREATE TABLE IF NOT EXISTS phantom_auto_plans (
   user_id       TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
   board_key     TEXT NOT NULL REFERENCES boards(board_key),
+  audience      TEXT NOT NULL,
   side          TEXT NOT NULL,
   amounts_paise BIGINT[] NOT NULL,
   enabled       BOOLEAN NOT NULL DEFAULT TRUE,
   starts_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_id, board_key, side)
+  PRIMARY KEY (user_id, board_key, audience, side)
 );
+-- Converges a table made before plans were per audience: its plans were run
+-- on both audiences' rounds and are kept as the VIP ones.
+ALTER TABLE phantom_auto_plans ADD COLUMN IF NOT EXISTS audience TEXT;
+UPDATE phantom_auto_plans SET audience = 'VIP' WHERE audience IS NULL;
+ALTER TABLE phantom_auto_plans ALTER COLUMN audience SET NOT NULL;
+ALTER TABLE phantom_auto_plans DROP CONSTRAINT IF EXISTS phantom_auto_plans_audience_known;
+ALTER TABLE phantom_auto_plans ADD CONSTRAINT phantom_auto_plans_audience_known
+  CHECK (audience IN ('VIP', 'GENERAL'));
+ALTER TABLE phantom_auto_plans DROP CONSTRAINT IF EXISTS phantom_auto_plans_pkey;
+ALTER TABLE phantom_auto_plans ADD CONSTRAINT phantom_auto_plans_pkey
+  PRIMARY KEY (user_id, board_key, audience, side);
 ALTER TABLE phantom_auto_plans DROP CONSTRAINT IF EXISTS phantom_auto_plans_side_known;
 ALTER TABLE phantom_auto_plans ADD CONSTRAINT phantom_auto_plans_side_known
   CHECK (side IN ('DELHI', 'BOMBAY'));

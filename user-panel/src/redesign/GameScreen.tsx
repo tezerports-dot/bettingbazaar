@@ -88,7 +88,7 @@ const GameScreen: React.FC = () => {
   const {
     currentCycle, gameState, cycleType, setCycleType, placeBet, placePhantomBet, boards, currentBoard,
     userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, pastCycles, loadCycleHistory, subscribeToVolume, getCurrentVolume, serverTimeOffset,
-    sysConfig,
+    sysConfig, audience,
   } = useGame();
   // Admin › Player Screen (SystemConfig.boardExtras).
   const extras = sysConfig.boardExtras;
@@ -524,7 +524,7 @@ const GameScreen: React.FC = () => {
             {isGhostMode && (
               <div style={{ textAlign: 'center', fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: '#c4b5fd', marginTop: 8 }}>👻 GHOST MODE ACTIVE · phantom bets balance the pool and are never paid out</div>
             )}
-            {isGhostMode && currentBoard && <AutoHouseBetsPanel boardKey={currentBoard.key} boardName={currentBoard.name} />}
+            {isGhostMode && currentBoard && <AutoHouseBetsPanel boardKey={currentBoard.key} boardName={currentBoard.name} audience={audience} />}
           </div>
         </div>
 
