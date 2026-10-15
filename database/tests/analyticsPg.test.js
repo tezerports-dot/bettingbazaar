@@ -246,7 +246,7 @@ describe('admin analytics', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // The player timeline and the phantom report — both merged in the database.
 // ─────────────────────────────────────────────────────────────────────────────
-import { userTimeline, phantomBetsByCycle } from '../repositories/stats.js';
+import { userTimeline, realVolumeByCycle } from '../repositories/stats.js';
 
 describe('a player history', () => {
   beforeAll(async () => { await applySchema(); });
@@ -328,26 +328,37 @@ describe('a player history', () => {
     expect(last.entries).toHaveLength(1);
   });
 
-  it('reports phantom stakes per cycle, newest cycle first', async () => {
-    for (const [id, minutes] of [['c-old', 120], ['c-new', 5]]) {
+  it('reports real against house volume per closed round, newest first, never an open one', async () => {
+    const stamp = Date.now();
+    const ids = { old: `rv-old-${stamp}`, new: `rv-new-${stamp}`, open: `rv-open-${stamp}` };
+    for (const [id, minutes, status] of [[ids.old, 120, 'CANCELLED'], [ids.new, 5, 'CLOSED'], [ids.open, 1, 'OPEN']]) {
+      // The equalizer's top-up lives on the row, not in phantom bet rows.
       await pgQuery(
-        `INSERT INTO cycles (cycle_id, cycle_type, status, start_time, end_time)
-         VALUES ($1, '30_MIN', 'OPEN', now() - ($2 || ' minutes')::interval,
-                 now() - ($2 || ' minutes')::interval + interval '30 minutes')`,
-        [id, String(minutes)],
+        `INSERT INTO cycles (cycle_id, cycle_type, status, start_time, end_time, phantom_delhi_paise, phantom_bombay_paise)
+         VALUES ($1, '30_MIN', $3, now() - ($2 || ' minutes')::interval,
+                 now() - ($2 || ' minutes')::interval + interval '30 minutes', 900_00, 900_00)`,
+        [id, String(minutes), status],
       );
       await pgQuery(
         `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status, is_phantom)
-         VALUES ($1 || '_d','house',$1,'DELHI',400_00,'PENDING',TRUE),
-                ($1 || '_b','house',$1,'BOMBAY',600_00,'PENDING',TRUE)`,
+         VALUES ($1 || '_h','house',$1,'DELHI',400_00,'PENDING',TRUE),
+                ($1 || '_r1','p1',$1,'DELHI',100_00,'PENDING',FALSE),
+                ($1 || '_r2','p2',$1,'BOMBAY',250_00,'PENDING',FALSE),
+                ($1 || '_r3','p2',$1,'BOMBAY',50_00,'PENDING',FALSE),
+                ($1 || '_rf','p3',$1,'BOMBAY',999_00,'REFUNDED',FALSE)`,
         [id],
       );
     }
-    const stats = await phantomBetsByCycle({ limit: 10 });
-    // By start time, not by id sorted as a string.
-    expect(stats.map((s) => s.cycleId)).toEqual(['c-new', 'c-old']);
-    expect(stats[0].delhiPhantom).toBe(400);
-    expect(stats[0].bombayPhantom).toBe(600);
-    expect(stats[0].totalPhantomBets).toBe(2);
+    const mine = (await realVolumeByCycle({ limit: 100 })).filter((r) => Object.values(ids).includes(r.cycleId));
+    // Closed rounds only, by start time.
+    expect(mine.map((r) => r.cycleId)).toEqual([ids.new, ids.old]);
+    const r = mine[0];
+    expect(r).toMatchObject({
+      realDelhi: 100, realBombay: 300, realTotal: 400, realBets: 3, realBettors: 2,
+      // From the row (900 each), not the one 400 phantom bet row.
+      houseDelhi: 900, houseBombay: 900, houseTotal: 1800, houseBets: 1,
+      shownTotal: 2200,
+    });
+    expect(r.realPercent).toBe(18.2);
   });
 });

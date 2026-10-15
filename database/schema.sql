@@ -4904,3 +4904,40 @@ END;
 $$ LANGUAGE plpgsql;
 CREATE OR REPLACE TRIGGER order_states_payout_hold
   BEFORE INSERT ON order_states FOR EACH ROW EXECUTE FUNCTION bb_payout_hold_check();
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- AUTO HOUSE BETS (owner, 2026-10-15)
+-- A phantom agent's plan for one board and side: a list of 1 to 1,000 bet
+-- sizes, bet one a second in order and looped, from the round's start (or
+-- `starts_at`, when the plan was saved) until the equalizer. The bets are
+-- ordinary phantom bets (never paid); the cycle generator places them through
+-- `markets.placeAutoPhantomBets`. Written only by
+-- database/repositories/phantomAutoPlans.js. A plan does nothing once its
+-- owner loses phantom access to the board: the runner's read asks it.
+-- Limits: backend/domains/markets/houseBets.js (AUTO_BET_*).
+-- ════════════════════════════════════════════════════════════════════════════
+CREATE OR REPLACE FUNCTION bb_auto_bet_amounts_ok(amounts BIGINT[]) RETURNS BOOLEAN AS $$
+  SELECT cardinality(amounts) BETWEEN 1 AND 1000
+     AND NOT EXISTS (
+       SELECT 1 FROM unnest(amounts) a
+        WHERE a IS NULL OR a < 100 OR a > 1000000000 OR a % 100 <> 0)
+$$ LANGUAGE sql IMMUTABLE;
+
+CREATE TABLE IF NOT EXISTS phantom_auto_plans (
+  user_id       TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+  board_key     TEXT NOT NULL REFERENCES boards(board_key),
+  side          TEXT NOT NULL,
+  amounts_paise BIGINT[] NOT NULL,
+  enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+  starts_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, board_key, side)
+);
+ALTER TABLE phantom_auto_plans DROP CONSTRAINT IF EXISTS phantom_auto_plans_side_known;
+ALTER TABLE phantom_auto_plans ADD CONSTRAINT phantom_auto_plans_side_known
+  CHECK (side IN ('DELHI', 'BOMBAY'));
+ALTER TABLE phantom_auto_plans DROP CONSTRAINT IF EXISTS phantom_auto_plans_amounts;
+ALTER TABLE phantom_auto_plans ADD CONSTRAINT phantom_auto_plans_amounts
+  CHECK (bb_auto_bet_amounts_ok(amounts_paise));
+CREATE INDEX IF NOT EXISTS phantom_auto_plans_enabled_idx
+  ON phantom_auto_plans (board_key) WHERE enabled;

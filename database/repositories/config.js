@@ -207,7 +207,19 @@ function coerce(field, value, path) {
           throw invalidConfig(`config: '${path}' must be one of ${named}; got ${JSON.stringify(value)}`);
         }
       }
-      return value;
+      // A text with a length the spec bounds (`minLength`, `maxLength`),
+      // counted after trimming when the spec says `trimmed`, which is also
+      // how it is stored: a line of spaces is not text.
+      {
+        const text = field.trimmed ? value.trim() : value;
+        if (field.minLength && text.length < field.minLength) {
+          throw invalidConfig(`config: '${path}' must be at least ${field.minLength} characters`);
+        }
+        if (field.maxLength && text.length > field.maxLength) {
+          throw invalidConfig(`config: '${path}' must be at most ${field.maxLength} characters; got ${text.length}`);
+        }
+        return text;
+      }
     case 'string[]':
       if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
         throw invalidConfig(`config: '${path}' must be an array of strings`);

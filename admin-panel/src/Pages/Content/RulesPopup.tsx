@@ -12,7 +12,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { ArrowDown, ArrowUp, Plus, Save, Trash2 } from 'lucide-react';
-import { boardRules, type BoardRulesTextDraft } from '../../services/api';
+import { boardRules, type BoardRulesTextDraft, type BoardRulesPreview } from '../../services/api';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 
 interface Limits { headingMax: number; introMax: number; sectionsMax: number; titleMax: number; bodyMax: number }
@@ -24,7 +24,7 @@ export const RulesPopup: React.FC = () => {
   const [draft, setDraft] = useState<BoardRulesTextDraft | null>(null);
   const [saved, setSaved] = useState<string>('');
   const [version, setVersion] = useState(0);
-  const [preview, setPreview] = useState<BoardRulesTextDraft | null>(null);
+  const [preview, setPreview] = useState<BoardRulesPreview | null>(null);
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [limits, setLimits] = useState<Limits | null>(null);
   const [history, setHistory] = useState<Published[]>([]);
@@ -160,6 +160,11 @@ export const RulesPopup: React.FC = () => {
               <p className="text-xs text-gray-400 whitespace-pre-line">{s.body}</p>
             </div>
           ))}
+          {preview.houseBetsNotice && (
+            <p className="text-xs text-gray-300 border-t border-dark-700 pt-2">
+              ⓘ {preview.houseBetsNotice} <span className="text-gray-500">(always added; reword it under Settings › House Bets Line)</span>
+            </p>
+          )}
         </div>
       )}
 

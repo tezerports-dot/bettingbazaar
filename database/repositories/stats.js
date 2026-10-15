@@ -1107,38 +1107,56 @@ export async function cycleAndQueueCounts({ timezone = 'Asia/Kolkata' } = {}) {
 }
 
 /**
- * Phantom betting per cycle — what the house staked to shape the displayed pool.
+ * Real against house volume, per round whose betting has closed (owner,
+ * 2026-10-15: the admin sees how much of each pool was real money).
  *
- * Phantom bets live on `bets` with `is_phantom`, so this is the same table the
- * real pools come from and the two cannot disagree about a cycle.
+ * Real stakes are the players' bets (`NOT is_phantom`, not refunded or void),
+ * the same rows `realPools` sums. House stakes are the cycle row's phantom
+ * pools, which include the equalizer's top-up (it overwrites the pools rather
+ * than placing bets), so a sum over phantom bet rows would understate them.
+ * Only rounds past betting (not OPEN or MERGED): the split of a round still
+ * taking bets is the main admin's alone (`maySeeLiveSplit`), on Live Cycles.
  */
-export async function phantomBetsByCycle({ limit = 10 } = {}) {
+export async function realVolumeByCycle({ limit = 20 } = {}) {
   const { rows } = await pgQuery(
-    `SELECT b.cycle_id,
-            COUNT(*)::int AS bets,
-            COALESCE(SUM(b.stake_paise), 0) AS total,
-            COALESCE(SUM(b.stake_paise) FILTER (WHERE b.side = 'DELHI'), 0)  AS delhi,
-            COALESCE(SUM(b.stake_paise) FILTER (WHERE b.side = 'BOMBAY'), 0) AS bombay,
-            MAX(c.start_time) AS start_time, MAX(c.cycle_type) AS cycle_type,
-            MAX(c.winner) AS winner
-       FROM bets b
-       LEFT JOIN cycles c ON c.cycle_id = b.cycle_id
-      WHERE b.is_phantom
-      GROUP BY b.cycle_id
-      -- Ordered by WHEN the cycle ran, not by its id. The aggregate this
-      -- replaced sorted on the grouped id, so the 'most recent 10' were
-      -- whichever cycle ids sorted highest as strings.
-      ORDER BY MAX(c.start_time) DESC NULLS LAST
+    `SELECT c.cycle_id, c.cycle_type, c.audience, c.status, c.start_time, c.end_time, c.winner,
+            c.phantom_delhi_paise AS house_delhi, c.phantom_bombay_paise AS house_bombay,
+            COALESCE(r.delhi, 0) AS real_delhi, COALESCE(r.bombay, 0) AS real_bombay,
+            COALESCE(r.bets, 0)::int AS real_bets, COALESCE(r.bettors, 0)::int AS real_bettors,
+            COALESCE(h.bets, 0)::int AS house_bets
+       FROM cycles c
+       LEFT JOIN LATERAL (
+         SELECT SUM(b.stake_paise) FILTER (WHERE b.side = 'DELHI')  AS delhi,
+                SUM(b.stake_paise) FILTER (WHERE b.side = 'BOMBAY') AS bombay,
+                COUNT(*) AS bets, COUNT(DISTINCT b.user_id) AS bettors
+           FROM bets b
+          WHERE b.cycle_id = c.cycle_id AND NOT b.is_phantom
+            AND b.status NOT IN ('REFUNDED', 'VOID')
+       ) r ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*) AS bets FROM bets b WHERE b.cycle_id = c.cycle_id AND b.is_phantom
+       ) h ON TRUE
+      WHERE c.status NOT IN ('OPEN', 'MERGED')
+      ORDER BY c.start_time DESC
       LIMIT $1`,
-    [Math.min(Math.max(Number(limit) || 10, 1), 100)], 'stats_phantom_by_cycle',
+    [Math.min(Math.max(Number(limit) || 20, 1), 100)], 'stats_real_volume_by_cycle',
   );
-  return rows.map((r) => ({
-    cycleId: r.cycle_id, cycleType: r.cycle_type,
-    startTime: r.start_time, winner: r.winner,
-    totalPhantomBets: int(r.bets),
-    totalPhantomAmount: rupees(r.total),
-    delhiPhantom: rupees(r.delhi), bombayPhantom: rupees(r.bombay),
-  }));
+  return rows.map((r) => {
+    // Summed in paise, then shown in rupees (§19: no float arithmetic on money).
+    const [rd, rb, hd, hb] = [r.real_delhi, r.real_bombay, r.house_delhi, r.house_bombay].map((v) => Number(v ?? 0));
+    const real = rd + rb;
+    const total = real + hd + hb;
+    return {
+      cycleId: r.cycle_id, cycleType: r.cycle_type, audience: r.audience, status: r.status,
+      startTime: r.start_time, endTime: r.end_time, winner: r.winner,
+      realDelhi: rupees(rd), realBombay: rupees(rb), realTotal: rupees(real),
+      realBets: int(r.real_bets), realBettors: int(r.real_bettors),
+      houseDelhi: rupees(hd), houseBombay: rupees(hb), houseTotal: rupees(hd + hb), houseBets: int(r.house_bets),
+      shownTotal: rupees(total),
+      // Of what players were shown, the percent that was real money.
+      realPercent: total > 0 ? Math.round((real / total) * 1000) / 10 : null,
+    };
+  });
 }
 
 /**

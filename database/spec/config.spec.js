@@ -31,6 +31,7 @@
 import { ORDER_SIZES, USDT_BUY_STEP, INR_ROUTING_MODES } from '../../backend/domains/merchant/denominations.js';
 import { approvedApiHosts } from '../../backend/config/apiHosts.js';
 import { BRAND_PALETTES } from '../../backend/domains/branding/palettes.js';
+import { DEFAULT_HOUSE_BETS_LABEL, HOUSE_BETS_LABEL_LIMITS } from '../../backend/domains/markets/houseBets.js';
 
 /** A number setting: `n(default, min, max)`. Bounds are inclusive. */
 const n = (def, min = null, max = null) => ({ type: 'number', default: def, min, max });
@@ -66,6 +67,12 @@ export const SYSTEM_CONFIG_SPEC = group({
   minVersion:    s('1.0.0'),
   maintenanceMode:    b(false),
   maintenanceMessage: s(''),
+
+  // ── The line players read beside the pool totals and in the board rules ──
+  // House (phantom) bets count in the totals and are never paid; this says so
+  // (owner, 2026-10-15). Admin-editable wording, never blank
+  // (HOUSE_BETS_LABEL_LIMITS, backend/domains/markets/houseBets.js).
+  houseBetsLabel: { type: 'string', default: DEFAULT_HOUSE_BETS_LABEL, trimmed: true, ...HOUSE_BETS_LABEL_LIMITS },
   // No androidUrl: the Android app's location is the newest published row of
   // android_releases (uploaded on the admin Android App page), not a typed link.
   iosUrl: s(''), webUrl: s(''),

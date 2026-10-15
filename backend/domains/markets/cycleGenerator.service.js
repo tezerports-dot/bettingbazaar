@@ -7,7 +7,10 @@ import { fetchCycleHistory } from './cycleHistory.service.js';
 import { computeRealPools } from './cyclePool.service.js';
 // Public cycle payloads must never carry real/phantom pools (they reveal the
 // minority-side winner). assertPublicCycleSafe throws if one slips in.
-import { assertPublicCycleSafe, publicCyclePools } from './cyclePublicView.js';
+import { assertPublicCycleSafe, publicCyclePools, poolsHidden } from './cyclePublicView.js';
+import { cycleSnapshotPublisher } from './cycleSnapshotPublisher.js';
+// Auto house bets (owner, 2026-10-15): one bet a second per plan, until the equalizer.
+import { secondsToPlace, firstSecond, sizeAtSecond } from './houseBets.js';
 // The boards (one row each, admin-created): timer, phases, labels. See
 // cycleTypes.js; every board's timing is read from its row.
 import { allBoards, enabledBoards, boardOf, cycleLabel, boardMessages } from './cycleTypes.js';
@@ -159,6 +162,15 @@ class CycleGenerator {
                 statuses: ['OPEN', 'MERGED', 'CLOSED'], includeExpired: true,
             });
 
+            // Auto house-bet plans, read once a tick. A failed read places none
+            // this tick and leaves every phase below untouched.
+            const autoPlans = activeCycles.some((c) => ['OPEN', 'MERGED'].includes(c.status))
+                ? await db.phantomAutoPlans.runnablePlans().catch((e) => {
+                    console.error('❌ Auto house bets: plans unreadable:', e.message);
+                    return [];
+                })
+                : [];
+
             for (const cycle of activeCycles) {
                 const cycleEndMs = new Date(cycle.endTime).getTime();
 
@@ -211,6 +223,11 @@ class CycleGenerator {
                         cycleId: cycle.cycleId, type: cycle.type, audience: cycle.audience, phase: 'MERGED',
                     }, this.transports());
                     console.log(`📊 Cycle ${cycle.cycleId} (${cycle.type}): MERGED`);
+                }
+
+                // ─── AUTO HOUSE BETS, until the equalizer ───────────────────
+                if (now < equalizerTime && ['OPEN', 'MERGED'].includes(cycle.status) && !cycle.phantomBetsClosed) {
+                    await this.runAutoHouseBets(cycle, autoPlans, now, equalizerTime);
                 }
 
                 // ─── PHASE 2: PHANTOM EQUALIZER ─────────────────────────────
@@ -431,6 +448,61 @@ class CycleGenerator {
 
         } catch (error) {
             console.error('❌ Error completing cycle:', error);
+        }
+    }
+
+    /**
+     * Place this tick's auto house bets on one cycle (owner, 2026-10-15).
+     *
+     * Every runnable plan for the cycle's board bets one size a second, in its
+     * list's order and looped, from the round's start (or the plan's save)
+     * until the equalizer. The seconds offered are the last few up to now
+     * (`secondsToPlace`); one already placed is skipped by its bet id, so a
+     * slow or repeated tick never doubles a bet. All of a tick's bets on one
+     * cycle are one transaction (`placeAutoPhantomBets`).
+     *
+     * A failure is logged and costs this tick's bets only: the phases of this
+     * and every other cycle carry on.
+     */
+    async runAutoHouseBets(cycle, plans, now, equalizerTime) {
+        const mine = plans.filter((p) => p.boardKey === cycle.type);
+        if (!mine.length) return;
+        const startMs = new Date(cycle.startTime).getTime();
+        const bets = [];
+        for (const plan of mine) {
+            const first = firstSecond(startMs, plan.startsAtMs);
+            for (const second of secondsToPlace({ startMs, stopMs: equalizerTime, fromMs: plan.startsAtMs, nowMs: now })) {
+                bets.push({
+                    userId: plan.userId, side: plan.side, second,
+                    amountPaise: sizeAtSecond(plan.amountsPaise, first, second),
+                });
+            }
+        }
+        if (!bets.length) return;
+        try {
+            const result = await db.markets.placeAutoPhantomBets({ cycleId: cycle.cycleId, cycleType: cycle.type, bets });
+            if (!result.ok || !result.placed) return;
+            const updated = result.cycle;
+            cycle.phantomDelhi = updated.phantomDelhi;
+            cycle.phantomBombay = updated.phantomBombay;
+            const realNow = await db.markets.realPools(cycle.cycleId).catch(() => ({ realDelhi: 0, realBombay: 0 }));
+            const totalDelhi = realNow.realDelhi + (updated.phantomDelhi || 0);
+            const totalBombay = realNow.realBombay + (updated.phantomBombay || 0);
+            // The public number is the total, coalesced like any bet's.
+            cycleSnapshotPublisher.recordBet(cycle.cycleId, {
+                cycleType: cycle.type, totalDelhi, totalBombay, poolsHidden: poolsHidden(updated),
+            });
+            // The split, to full admins only (staffEventAreas: undeclared).
+            this.emitAdmin('admin_bet_placed', {
+                cycleId: cycle.cycleId, cycleType: cycle.type,
+                isPhantom: true, isAuto: true, bets: result.placed,
+                amountDelhi: result.delhiRupees, amountBombay: result.bombayRupees,
+                newRealDelhi: realNow.realDelhi, newRealBombay: realNow.realBombay,
+                newPhantomDelhi: updated.phantomDelhi, newPhantomBombay: updated.phantomBombay,
+                newTotalDelhi: totalDelhi, newTotalBombay: totalBombay,
+            });
+        } catch (error) {
+            console.error(`❌ Auto house bets on ${cycle.cycleId}:`, error.message);
         }
     }
 
