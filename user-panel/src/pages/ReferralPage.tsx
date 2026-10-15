@@ -17,16 +17,22 @@
  * There was a fourth, "Awaiting KYC". KYC was removed (owner, 2026-10-02), and
  * the server no longer sends it.
  *
+ * ── Layout (owner, 2026-10-15: "redesign it beautifully") ───────────────────
+ * A hero banner with the reward and the link to share (its picture is
+ * Admin › Images › Page banners › `referPageBannerUrl`; with none it draws its
+ * own gold banner), the link's reach, how it works in three steps, earnings
+ * and the per-level split, then every referral. Every figure is the server's.
+ *
  * ── What a referrer sees about the people they invited ──────────────────────
  * Nothing that identifies them: no name, no phone and no joining number
  * (owner, 2026-10-14). Each row is a level, a reward and its state, newest
  * first.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import ScreenShell, { card } from '../redesign/Screen';
+import ScreenShell, { card, capLabel } from '../redesign/Screen';
 import BonusPlayPrompt from '../redesign/BonusPlayPrompt';
 import { player } from '../services/api';
-import { getBackend } from '../services/backend.service';
+import { getAssetUrl, getBackend } from '../services/backend.service';
 
 interface LevelTotals {
   count: number; confirmed: number; disbursed: number; blocked: number;
@@ -135,150 +141,163 @@ const ReferralPage: React.FC = () => {
   }
 
   const t = data.totals;
+  const branding = (() => { try { return JSON.parse(localStorage.getItem('app_branding') || '{}'); } catch { return {}; } })();
+  const banner = getAssetUrl(branding.referPageBannerUrl || '');
+  const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+  const shareText = `Join me on ${branding.appName || 'Bazaar'}: ${link}`;
+  const nativeShare = async () => {
+    try { await navigator.share({ title: 'Refer & Earn', text: shareText, url: link }); } catch { /* dismissed */ }
+  };
+  const conversion = t.clicks > 0 ? Math.round((t.referrals / t.clicks) * 100) : null;
+  const levelMax = Math.max(1, data.level1.confirmed, data.level2.confirmed);
+
+  const shareBtn: React.CSSProperties = { flex: '1 1 0', minWidth: 96, height: 44, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, textDecoration: 'none', fontWeight: 800, fontSize: 12.5, cursor: 'pointer', color: '#fff', background: 'rgba(255,255,255,.14)', border: '1px solid rgba(255,255,255,.28)', backdropFilter: 'blur(6px)' };
 
   return (
     <ScreenShell icon="🎁" title="Refer & Earn" sub="Invite players, earn on two levels">
       <BonusPlayPrompt />
-      {/* ── Your link ─────────────────────────────────────────────────── */}
-      <div style={{ ...card, marginBottom: 14 }}>
-        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--text3)', marginBottom: 8 }}>
-          Your invite link
-        </div>
-        {link ? (
-          <>
-            <div className="font-grotesk" style={{ fontSize: 12, wordBreak: 'break-all', background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 11, padding: '10px 12px', color: 'var(--text2)' }}>
-              {link}
-            </div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-              <button onClick={copy} style={{ flex: 1, height: 42, borderRadius: 11, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>
-                {copied ? 'COPIED' : 'COPY LINK'}
-              </button>
-              <a
-                href={`https://t.me/share/url?url=${encodeURIComponent(link)}`}
-                target="_blank" rel="noopener noreferrer"
-                style={{ flex: 1, height: 42, borderRadius: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', textDecoration: 'none', fontWeight: 800, fontSize: 13, color: 'var(--text)', background: 'var(--surface2)', border: '1px solid var(--line2)' }}
-              >
-                SHARE
-              </a>
-            </div>
-          </>
-        ) : (
-          <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.6 }}>
-            Your link will appear here once sign-in is configured.
-          </div>
-        )}
-        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 12, fontSize: 11, color: 'var(--text3)' }}>
-          <span>Code <strong className="font-grotesk" style={{ color: 'var(--gold-ink)' }}>{data.referralCode || '—'}</strong></span>
-        </div>
-        <p style={{ margin: '10px 0 0', fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>
-          Opening the link starts our bot{bot ? <> (<strong style={{ color: 'var(--text2)' }}>@{bot}</strong>)</> : ''} with
-          your code already attached — the person you invite never has to type it. You earn{' '}
-          {inr(data.rewardPerReferral)} when they join{data.rewardLevel2 > 0 && (
-            <>, and {inr(data.rewardLevel2)} when someone <em>they</em> invite joins</>
-          )}.
-        </p>
-        <p style={{ margin: '8px 0 0', fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>
-          This link is permanent. If we ever switch to a different sign-up bot it keeps working
-          and sends people to the new one, so anything you have already shared stays good.
-        </p>
 
-        {/*
-          Clicks beside signups, because the gap between them is the one number
-          that tells a referrer which half is broken: nobody is opening the link,
-          or everybody opens it and stops at the bot.
-        */}
-        <div style={{ display: 'flex', gap: 18, marginTop: 12, paddingTop: 11, borderTop: '1px solid var(--line2)' }}>
-          <div>
-            <div className="font-grotesk" style={{ fontSize: 17, fontWeight: 800, color: 'var(--text)' }}>
-              {(t.clicks ?? 0).toLocaleString('en-IN')}
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>opened your link</div>
-          </div>
-          <div>
-            <div className="font-grotesk" style={{ fontSize: 17, fontWeight: 800, color: 'var(--gold-ink)' }}>
-              {(t.referrals ?? 0).toLocaleString('en-IN')}
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>signed up</div>
+      {/* ── Hero: the reward and the link ─────────────────────────────── */}
+      <section aria-label="Your invite" style={{ position: 'relative', overflow: 'hidden', borderRadius: 22, marginBottom: 16, boxShadow: 'var(--shadow)', border: '1px solid var(--line2)', background: banner ? 'var(--surface)' : 'radial-gradient(120% 140% at 0% 0%, var(--gold2) 0%, var(--gold) 38%, color-mix(in srgb,var(--gold) 45%,var(--bg)) 100%)' }}>
+        {banner && <img src={banner} alt="" aria-hidden style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />}
+        <div aria-hidden style={{ position: 'absolute', inset: 0, background: banner ? 'linear-gradient(180deg, rgba(0,0,0,.15) 0%, rgba(0,0,0,.72) 70%)' : 'radial-gradient(circle at 88% 18%, rgba(255,255,255,.28) 0 60px, transparent 61px), radial-gradient(circle at 96% 70%, rgba(255,255,255,.14) 0 90px, transparent 91px), linear-gradient(180deg, rgba(0,0,0,0) 30%, rgba(0,0,0,.35) 100%)' }} />
+        <div style={{ position: 'relative', padding: 'clamp(18px, 4vw, 30px)', color: '#fff' }}>
+          <div style={{ display: 'inline-block', padding: '4px 10px', borderRadius: 999, background: 'rgba(0,0,0,.28)', fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase' }}>Two levels of rewards</div>
+          <h2 className="font-grotesk" style={{ margin: '12px 0 6px', fontWeight: 700, fontSize: 'clamp(24px, 5vw, 36px)', lineHeight: 1.1, textShadow: '0 2px 12px rgba(0,0,0,.35)' }}>
+            Earn {inr(data.rewardPerReferral)} for every friend who joins
+          </h2>
+          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6, opacity: 0.92, maxWidth: 560 }}>
+            {data.rewardLevel2 > 0
+              ? <>Plus {inr(data.rewardLevel2)} each time someone <em>they</em> invite joins. Rewards go to your General balance.</>
+              : <>Rewards go to your General balance.</>}
+          </p>
+
+          {link ? (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 18, padding: 6, paddingLeft: 14, borderRadius: 14, background: 'rgba(0,0,0,.38)', border: '1px solid rgba(255,255,255,.22)', maxWidth: 620 }}>
+                <span className="font-grotesk" style={{ flex: 1, minWidth: 0, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={link}>{link}</span>
+                <button type="button" onClick={copy} style={{ flex: 'none', height: 38, padding: '0 16px', borderRadius: 10, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 12.5, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>
+                  {copied ? 'Copied ✓' : 'Copy link'}
+                </button>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, maxWidth: 620 }}>
+                <a href={`https://t.me/share/url?url=${encodeURIComponent(link)}`} target="_blank" rel="noopener noreferrer" style={shareBtn}>✈ Telegram</a>
+                <a href={`https://wa.me/?text=${encodeURIComponent(shareText)}`} target="_blank" rel="noopener noreferrer" style={shareBtn}>💬 WhatsApp</a>
+                {canShare && <button type="button" onClick={nativeShare} style={shareBtn}>↗ More</button>}
+              </div>
+            </>
+          ) : (
+            <p style={{ margin: '16px 0 0', fontSize: 12, opacity: 0.9 }}>Your link will appear here once sign-in is configured.</p>
+          )}
+          <div style={{ marginTop: 12, fontSize: 11, opacity: 0.85 }}>
+            Your code <strong className="font-grotesk" style={{ letterSpacing: '.06em' }}>{data.referralCode || '—'}</strong>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* ── The three numbers ─────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 14 }}>
+      {/* ── Reach and earnings at a glance ────────────────────────────── */}
+      {/*
+        Clicks beside signups, because the gap between them is the one number
+        that tells a referrer which half is broken: nobody is opening the link,
+        or everybody opens it and stops at the bot.
+      */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 16 }}>
         {[
-          { k: 'Paid to General', v: t.disbursed, tone: 'var(--green)', sub: 'Unlocks once its turnover is played' },
-          { k: 'Next disbursal',   v: t.nextDisbursal, tone: 'var(--gold-ink)', sub: 'Confirmed, awaiting payout' },
-          { k: 'Not payable',      v: t.blocked, tone: t.blocked > 0 ? 'var(--red)' : 'var(--text3)', sub: 'Voided or blocked' },
+          { k: 'Opened your link', v: (t.clicks ?? 0).toLocaleString('en-IN'), ic: '👀', tone: 'var(--text)', sub: 'people, once a day each' },
+          { k: 'Signed up', v: (t.referrals ?? 0).toLocaleString('en-IN'), ic: '🙌', tone: 'var(--gold-ink)', sub: conversion === null ? 'from your link' : `${conversion}% of those who opened it` },
+          { k: 'Paid to General', v: inr(t.disbursed), ic: '✅', tone: 'var(--green)', sub: 'unlocks once its turnover is played' },
+          { k: 'Next disbursal', v: inr(t.nextDisbursal), ic: '⏳', tone: 'var(--gold-ink)', sub: 'confirmed, awaiting payout' },
         ].map((c) => (
-          <div key={c.k} style={card}>
-            <div style={{ fontSize: 10.5, color: 'var(--text3)', fontWeight: 700 }}>{c.k}</div>
-            <div className="font-grotesk" style={{ fontSize: 21, fontWeight: 800, marginTop: 5, color: c.tone }}>{inr(c.v)}</div>
-            <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 3 }}>{c.sub}</div>
+          <div key={c.k} style={{ ...card, padding: 14, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span aria-hidden style={{ width: 32, height: 32, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, background: 'color-mix(in srgb,var(--gold) 12%,var(--surface2))', border: '1px solid var(--line2)' }}>{c.ic}</span>
+            <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--text3)', marginTop: 4 }}>{c.k}</span>
+            <span className="font-grotesk" style={{ fontSize: 22, fontWeight: 800, color: c.tone, lineHeight: 1.1 }}>{c.v}</span>
+            <span style={{ fontSize: 10, color: 'var(--text3)' }}>{c.sub}</span>
           </div>
         ))}
       </div>
-
-      {/* ── Level split ───────────────────────────────────────────────── */}
-      <div style={{ ...card, marginBottom: 14 }}>
-        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--text3)', marginBottom: 10 }}>
-          By level
+      {t.blocked > 0 && (
+        <div style={{ ...card, padding: '10px 14px', marginBottom: 16, display: 'flex', justifyContent: 'space-between', gap: 10, borderColor: 'color-mix(in srgb,var(--red) 40%,var(--line))' }}>
+          <span style={{ fontSize: 12, color: 'var(--text2)' }}>Not payable (voided or blocked)</span>
+          <span className="font-grotesk" style={{ fontSize: 14, fontWeight: 800, color: 'var(--red)' }}>{inr(t.blocked)}</span>
         </div>
-        {([['Level 1 — you invited them', data.level1], ['Level 2 — they invited them', data.level2]] as const).map(([label, lv]) => (
-          <div key={label} style={{ padding: '11px 0', borderTop: '1px solid var(--line2)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
-              <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>{label}</span>
-              <span className="font-grotesk" style={{ fontSize: 15, fontWeight: 800, color: 'var(--gold-ink)' }}>{inr(lv.confirmed)}</span>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14, marginBottom: 16 }}>
+        {/* ── How it works ────────────────────────────────────────────── */}
+        <section aria-label="How it works" style={card}>
+          <span style={capLabel}>How it works</span>
+          <ol style={{ listStyle: 'none', margin: '12px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {[
+              { t: 'Share your link', d: 'Send it anywhere. It opens our sign-up bot with your code already attached, so your friend never types it.' },
+              { t: 'They continue with Telegram', d: `When they join you earn ${inr(data.rewardPerReferral)}.` },
+              { t: 'Their friends count too', d: data.rewardLevel2 > 0 ? `Each person they invite earns you ${inr(data.rewardLevel2)} more.` : 'Second-level rewards are switched off right now.' },
+            ].map((step, i) => (
+              <li key={step.t} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                <span className="font-grotesk" style={{ flex: 'none', width: 30, height: 30, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>{i + 1}</span>
+                <span>
+                  <span style={{ display: 'block', fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>{step.t}</span>
+                  <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text3)', lineHeight: 1.55, marginTop: 2 }}>{step.d}</span>
+                </span>
+              </li>
+            ))}
+          </ol>
+          <p style={{ margin: '14px 0 0', paddingTop: 12, borderTop: '1px solid var(--line)', fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>
+            Your link is permanent{bot ? <> and opens <strong style={{ color: 'var(--text2)' }}>@{bot}</strong> today</> : ''}. If we ever switch to a different sign-up bot it keeps working and sends people to the new one, so anything you have already shared stays good.
+          </p>
+        </section>
+
+        {/* ── Level split ─────────────────────────────────────────────── */}
+        <section aria-label="Earnings by level" style={card}>
+          <span style={capLabel}>Earnings by level</span>
+          {([['Level 1', 'people you invited', data.level1], ['Level 2', 'people they invited', data.level2]] as const).map(([label, who, lv]) => (
+            <div key={label} style={{ marginTop: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
+                <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>{label} <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)' }}>· {who}</span></span>
+                <span className="font-grotesk" style={{ fontSize: 16, fontWeight: 800, color: 'var(--gold-ink)' }}>{inr(lv.confirmed)}</span>
+              </div>
+              <div style={{ height: 8, borderRadius: 999, background: 'var(--surface3)', overflow: 'hidden', marginTop: 8, border: '1px solid var(--line)' }}>
+                <div style={{ height: '100%', width: `${Math.round((lv.confirmed / levelMax) * 100)}%`, background: 'linear-gradient(90deg,var(--gold),var(--gold2))', borderRadius: 999 }} />
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 6 }}>
+                {lv.count} referral{lv.count === 1 ? '' : 's'} · {inr(lv.disbursed)} paid
+                {lv.blocked > 0 && <> · {inr(lv.blocked)} not payable</>}
+              </div>
             </div>
-            <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>
-              {lv.count} referral{lv.count === 1 ? '' : 's'} · {inr(lv.disbursed)} paid
-              {lv.blocked > 0 && <> · {inr(lv.blocked)} not payable</>}
-            </div>
-          </div>
-        ))}
+          ))}
+        </section>
       </div>
 
-      {/* ── Every referral, in queue order ────────────────────────────── */}
-      <div style={card}>
-        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--text3)', marginBottom: 4 }}>
-          Your referrals
+      {/* ── Every referral, newest first ──────────────────────────────── */}
+      <section aria-label="Your referrals" style={card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+          <span style={capLabel}>Your referrals</span>
+          <span style={{ fontSize: 11, color: 'var(--text3)' }}>Newest first. We never show who they are.</span>
         </div>
-        <p style={{ margin: '0 0 10px', fontSize: 11, color: 'var(--text3)', lineHeight: 1.55 }}>
-          Newest first. We never show who they are.
-        </p>
-
         {data.rows.length === 0 ? (
-          <div style={{ padding: '26px 0', textAlign: 'center', fontSize: 12.5, color: 'var(--text3)' }}>
-            No referrals yet. Share your link above to get started.
+          <div style={{ padding: '30px 0 18px', textAlign: 'center' }}>
+            <div aria-hidden style={{ fontSize: 30 }}>🎁</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text2)', marginTop: 6 }}>No referrals yet</div>
+            <div style={{ fontSize: 11.5, color: 'var(--text3)', marginTop: 4 }}>Share your link above to get started.</div>
           </div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 300 }}>
-              <thead>
-                <tr>
-                  {['Level', 'Reward', 'Status'].map((h) => (
-                    <th key={h} style={{ textAlign: 'left', fontSize: 9.5, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text3)', padding: '0 10px 8px 0', whiteSpace: 'nowrap' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {data.rows.map((r, i) => {
-                  const st = rowState(r);
-                  return (
-                    <tr key={i} style={{ borderTop: '1px solid var(--line2)' }}>
-                      <td style={{ padding: '10px 10px 10px 0', fontSize: 11.5, color: 'var(--text2)' }}>L{r.level}</td>
-                      <td className="font-grotesk" style={{ padding: '10px 10px 10px 0', fontSize: 12.5, color: 'var(--text2)' }}>{inr(r.amount)}</td>
-                      <td style={{ padding: '10px 0', fontSize: 11, fontWeight: 700, color: st.tone }}>
-                        {st.label}
-                        {r.reason && <div style={{ fontSize: 10, fontWeight: 500, color: 'var(--text3)', marginTop: 2 }}>{r.reason}</div>}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <ul style={{ listStyle: 'none', margin: '10px 0 0', padding: 0 }}>
+            {data.rows.map((r, i) => {
+              const st = rowState(r);
+              return (
+                <li key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 0', borderTop: '1px solid var(--line)' }}>
+                  <span className="font-grotesk" style={{ flex: 'none', width: 34, height: 34, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: 'var(--text2)', background: 'var(--surface2)', border: '1px solid var(--line2)' }}>L{r.level}</span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span className="font-grotesk" style={{ display: 'block', fontSize: 14, fontWeight: 800, color: 'var(--text)' }}>{inr(r.amount)}</span>
+                    {r.reason && <span style={{ display: 'block', fontSize: 10.5, color: 'var(--text3)', marginTop: 1 }}>{r.reason}</span>}
+                  </span>
+                  <span style={{ flex: 'none', padding: '4px 10px', borderRadius: 999, fontSize: 10.5, fontWeight: 800, color: st.tone, background: `color-mix(in srgb,${st.tone} 12%,transparent)`, border: `1px solid color-mix(in srgb,${st.tone} 35%,transparent)` }}>{st.label}</span>
+                </li>
+              );
+            })}
+          </ul>
         )}
-      </div>
+      </section>
     </ScreenShell>
   );
 };

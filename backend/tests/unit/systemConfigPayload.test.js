@@ -85,8 +85,11 @@ describe('the system-config payload', () => {
 
   it('never hands back an empty footer', () => {
     // An admin cannot intend a panel with no navigation, so [] means unset.
-    expect(systemConfigPayload({ footerPages: [] }).footerPages).toHaveLength(5);
+    expect(systemConfigPayload({ footerPages: [] }).footerPages).toEqual(['home', 'results', 'wallet', 'promo']);
     expect(systemConfigPayload({ footerPages: ['home', 'profile'] }).footerPages).toEqual(['home', 'profile']);
+    expect(systemConfigPayload({ footerPages: ['home', 'referrals'] }).footerPages).toEqual(['home', 'referrals']);
+    // A key no player page answers to is dropped; one page left is not a bar.
+    expect(systemConfigPayload({ footerPages: ['home', 'vip', 'gift-code'] }).footerPages).toEqual(['home', 'results', 'wallet', 'promo']);
   });
 
   it('does not hand out the array the caller owns', () => {
@@ -94,7 +97,7 @@ describe('the system-config payload', () => {
     // request's mutation reach every later one.
     const a = systemConfigPayload(null).footerPages;
     a.push('injected');
-    expect(systemConfigPayload(null).footerPages).toHaveLength(5);
+    expect(systemConfigPayload(null).footerPages).toHaveLength(4);
   });
 
   it('is assembled in one place — neither consumer builds its own', () => {

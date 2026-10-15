@@ -57,7 +57,7 @@ export function chipsFor(board?: { minBet: number; maxBet: number } | null, scal
 // four years of a board that produces one result a day.
 //
 // Read through `analyticsWindowFor` by `redesign/analytics.ts`, `GameContext`
-// (the per-board cap when merging history), `AnalyticsPage` and
+// (the per-board cap when merging history), `AnalyticsView` and
 // `HistoryPage`. The server enforces its own ceiling independently
 // (backend/domains/markets/cycleHistory.service.js).
 export const ANALYTICS_WINDOW = Object.freeze({ INTERVAL: 1440, DAILY: 30 });

@@ -15,7 +15,7 @@
  */
 import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import { useGame, spendableBalance, useBoardExtras } from '../services/GameContext';
+import { useGame, spendableBalance, useBoardExtras, useFooterPages } from '../services/GameContext';
 import { useGameProviders } from '../services/GameProviderContext';
 import { useTheme } from './ThemeContext';
 import { useViewport } from './useViewport';
@@ -77,15 +77,33 @@ const CATEGORIES: { title: string; sub: string; icon: string; accent: string; pa
   { title: 'SPORTS', sub: 'Bet anytime', icon: '🏇', accent: '#34d399', path: '/sports', needs: 'sports' },
 ];
 
-const TABS = [
-  { label: 'Game', icon: '🎲', path: '/' },
-  { label: 'Results', icon: '📊', path: '/results' },
-  { label: 'Wallet', icon: '💰', path: '/wallet' },
-  { label: 'Tips', icon: '💡', path: '/promo' },
-  // The last tab opens the menu drawer (owner, 2026-10-10): the header lost
-  // its bell to make room for the profile pill, and Profile lives in the menu.
-  { label: 'Menu', icon: '☰', path: '#menu', action: 'menu' as const },
-];
+/**
+ * What each footer page key draws in the bottom tab bar. Which keys, and in
+ * what order, is the admin's (`SystemConfig.footerPages`, Admin › Settings ›
+ * Footer; the keys are `FOOTER_PAGE_KEYS` in systemConfigPayload.js; owner,
+ * 2026-10-15). A key with no entry here draws nothing. UI-only (§11).
+ */
+const FOOTER_CATALOG: Record<string, { label: string; icon: string; path: string; needs?: 'casino' | 'crash' | 'sports' }> = {
+  home: { label: 'Game', icon: '🎲', path: '/' },
+  results: { label: 'Results', icon: '📊', path: '/results' },
+  winners: { label: 'Winners', icon: '🏆', path: '/winners' },
+  leaderboard: { label: 'Leaders', icon: '📈', path: '/leaderboard' },
+  promo: { label: 'Tips', icon: '💡', path: '/promo' },
+  profile: { label: 'Profile', icon: '👤', path: '/profile' },
+  wallet: { label: 'Wallet', icon: '💰', path: '/wallet' },
+  referrals: { label: 'Refer', icon: '🎁', path: '/referrals' },
+  'my-bets': { label: 'My Bets', icon: '📜', path: '/my-bets' },
+  history: { label: 'History', icon: '🕒', path: '/history' },
+  rules: { label: 'Rules', icon: '📋', path: '/rules' },
+  faq: { label: 'FAQ', icon: '❓', path: '/faq' },
+  support: { label: 'Support', icon: '🛟', path: '/support' },
+  casino: { label: 'Casino', icon: '🃏', path: '/casino', needs: 'casino' },
+  crash: { label: 'Crash', icon: '✈️', path: '/crash', needs: 'crash' },
+  sports: { label: 'Sports', icon: '🏇', path: '/sports', needs: 'sports' },
+};
+// The last tab opens the menu drawer (owner, 2026-10-10): the header lost
+// its bell to make room for the profile pill, and everything else is there.
+const MENU_TAB = { label: 'Menu', icon: '☰', path: '#menu', action: 'menu' as const };
 
 const MENU_SECTIONS = [
   { title: 'Play', items: [
@@ -122,6 +140,7 @@ const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '';
 
 const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { user, isAuthenticated, logout, setAudience } = useGame();
+  const footerPages = useFooterPages();
   const { theme, toggleTheme } = useTheme();
   const { desktop, vw } = useViewport();
   // A phone narrower than this cannot hold the wallet pill, the wordmark and
@@ -189,6 +208,14 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   // pages read, so the row and the page cannot disagree about whether a
   // category exists (§2, §5).
   const { anyCasino, anyCrash, anySports } = useGameProviders();
+  // The bottom bar: the admin's pages in their order, a provider page only
+  // while that provider is on, then Menu.
+  const tabs = [
+    ...footerPages
+      .map((k) => FOOTER_CATALOG[k])
+      .filter((t) => t && (!t.needs || { casino: anyCasino, crash: anyCrash, sports: anySports }[t.needs])),
+    MENU_TAB,
+  ];
   const liveCategories = useMemo(
     () => CATEGORIES.filter((c) => !c.needs
       || (c.needs === 'casino' ? anyCasino : c.needs === 'crash' ? anyCrash : anySports)),
@@ -416,7 +443,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             backdropFilter: 'blur(14px)', borderTop: '1px solid var(--line2)', paddingBottom: 'env(safe-area-inset-bottom)',
             position: 'relative', zIndex: 60,
           }}>
-            {TABS.map(tab => {
+            {tabs.map(tab => {
               const isMenu = 'action' in tab && tab.action === 'menu';
               const active = isMenu ? menuOpen : isActive(tab.path);
               return (

@@ -3,17 +3,22 @@
  * ResultsPage.tsx — 2026 "Bazaar" redesign. Latest winner, roadmap, and the
  * per-cycle result feed, driven by GameContext.pastCycles (real cycle history).
  */
-import React, { useMemo } from 'react';
-import { useNavigate } from 'react-router';
+import React, { useMemo, useState } from 'react';
 import { useGame } from '../services/GameContext';
 import { ago } from '../redesign/format';
-import { Side } from '../redesign/analytics';
+import { Side, winnersByBoard } from '../redesign/analytics';
 import ScreenShell, { card, capLabel } from '../redesign/Screen';
+import AnalyticsView from '../redesign/AnalyticsView';
+
+const NO_WINNERS: Side[] = [];
 const sideBg = (sd: string) => (sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)');
 
 const ResultsPage: React.FC = () => {
-  const { pastCycles, boards } = useGame();
-  const navigate = useNavigate();
+  const { pastCycles, loadCycleHistory, boards } = useGame();
+  const [picked, setPicked] = useState('');
+  // The board picked here, or the first in the admin's order.
+  const aBoard = boards.find(b => b.key === picked) ?? boards[0];
+  const winnersByType = useMemo(() => winnersByBoard(pastCycles, boards), [pastCycles, boards]);
 
   const cycles = useMemo(() => (pastCycles || [])
     .filter(c => c.winner === 'DELHI' || c.winner === 'BOMBAY')
@@ -32,14 +37,18 @@ const ResultsPage: React.FC = () => {
         <div style={{ flex: 1 }}><div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--text3)' }}>Latest winner</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 26, color: 'var(--text)' }}>{latest ? `${latest.charAt(0)}${latest.slice(1).toLowerCase()} Bazaar` : 'Awaiting result'}</div></div>
       </div>
 
-      {/* The analytics are their own full page (owner, 2026-10-15). */}
-      <button type="button" onClick={() => navigate('/analytics')} style={{ ...card, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 14, cursor: 'pointer', textAlign: 'left' }}>
-        <span>
-          <span className="font-grotesk" style={{ display: 'block', fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>Open analytics</span>
-          <span style={{ display: 'block', fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>Runs, gaps, streaks and the progression calculator, board by board</span>
-        </span>
-        <span aria-hidden style={{ fontSize: 16, fontWeight: 800, color: 'var(--gold-ink)' }}>→</span>
-      </button>
+      {/* Analytics, per board, as part of this page (owner, 2026-10-15) */}
+      {boards.length > 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <div role="radiogroup" aria-label="Board" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+            {boards.map(b => {
+              const on = aBoard?.key === b.key;
+              return <button key={b.key} type="button" role="radio" aria-checked={on} onClick={() => setPicked(b.key)} style={{ flex: 'none', padding: '6px 13px', borderRadius: 999, border: `1px solid ${on ? 'var(--gold)' : 'var(--line2)'}`, cursor: 'pointer', fontSize: 10, fontWeight: 800, background: on ? 'var(--gold)' : 'var(--surface2)', color: on ? '#1a1200' : 'var(--text2)' }}>{b.name.toUpperCase()}</button>;
+            })}
+          </div>
+          <AnalyticsView board={aBoard} winners={(aBoard && winnersByType[aBoard.key]) || NO_WINNERS} loadCycleHistory={loadCycleHistory} />
+        </div>
+      )}
 
       {/* Roadmap */}
       <div style={{ ...card, marginBottom: 14 }}>

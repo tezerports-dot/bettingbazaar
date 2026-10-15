@@ -29,8 +29,18 @@
  * another.
  */
 
-/** The historical five tabs — the schema default for an unset footer. */
-const DEFAULT_FOOTER_PAGES = Object.freeze(['home', 'results', 'winners', 'promo', 'profile']);
+/**
+ * The player app's bottom bar: the pages an admin may place in it (Admin ›
+ * Settings › Footer), each a page the player app has, and the bar an unset
+ * footer gets (schema default, config.spec.js `footerPages`): the four tabs
+ * the bar showed before it read this setting (owner, 2026-10-15). The bar's
+ * last tab, Menu, is always there and is not one of these.
+ */
+export const FOOTER_PAGE_KEYS = Object.freeze([
+  'home', 'results', 'winners', 'leaderboard', 'promo', 'profile', 'wallet', 'referrals',
+  'my-bets', 'history', 'rules', 'faq', 'support', 'casino', 'crash', 'sports',
+]);
+export const DEFAULT_FOOTER_PAGES = Object.freeze(['home', 'results', 'wallet', 'promo']);
 
 /**
  * Build the payload every client receives, over any transport.
@@ -130,7 +140,7 @@ export function systemConfigPayload(cfg) {
 
     // Footer navigation (2026-07-13). An empty list means "unset", not "no
     // tabs" — a panel with no navigation is not a state an admin can intend.
-    footerPages:         cfg?.footerPages?.length ? cfg.footerPages : [...DEFAULT_FOOTER_PAGES],
+    footerPages:         footerPagesOf(cfg),
 
     minVersion:          cfg?.minVersion    ?? '1.0.0',
     latestVersion:       cfg?.latestVersion ?? '1.0.0',
@@ -163,6 +173,15 @@ export function systemConfigPayload(cfg) {
  * during a database blip was told the platform had no deposit limits and no
  * footer. Every field is present here, every value is its declared default.
  */
+/**
+ * The footer an admin saved, held to the pages that exist (a key no page
+ * answers to is dropped); fewer than two left, or none saved, is the default.
+ */
+export function footerPagesOf(cfg) {
+  const saved = Array.isArray(cfg?.footerPages) ? cfg.footerPages.filter((k) => FOOTER_PAGE_KEYS.includes(k)) : [];
+  return saved.length >= 2 ? [...new Set(saved)] : [...DEFAULT_FOOTER_PAGES];
+}
+
 export function systemConfigFallback() {
   return systemConfigPayload(null);
 }

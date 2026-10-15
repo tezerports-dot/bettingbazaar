@@ -18,19 +18,11 @@ import { ORDER_SIZE_RAILS, INR_ROUTING_MODES, inrRoutingOf } from '../../domains
 import { assignQueuedOrders } from '../../domains/payment/paymentProcessing.service.js';
 import { db } from '#db';
 import { respondError } from '../../shared/httpError.js';
-import { systemConfigPayload } from '../../domains/configuration/systemConfigPayload.js';
+import { systemConfigPayload, footerPagesOf, FOOTER_PAGE_KEYS, DEFAULT_FOOTER_PAGES } from '../../domains/configuration/systemConfigPayload.js';
 
 const router = express.Router();
 
-// ── Footer navigation validation (2026-07-13) ─────────────────────────────────
-// The complete set of user-panel pages an admin may place in the footer bar.
-// MUST mirror the PAGE_CATALOG in components/Layout/Footer.tsx — the frontend
-// owns route strings/icons (display), this list owns what's selectable.
-const FOOTER_PAGE_KEYS = [
-  'home', 'results', 'winners', 'promo', 'profile', 'wallet', 'invite', 'vip',
-  'gift-code', 'my-bets', 'history', 'rules', 'faq', 'support',
-  'casino', 'crash', 'sports',
-];
+// Footer navigation: the selectable pages and the default are systemConfigPayload.js's.
 
 // Token rates removed 2026-07-08: conversion is fixed 1:1 (Phase 006
 // flattening — see CLAUDE.md). The GET/PUT /token-rates
@@ -135,11 +127,7 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         withdrawalMethods:     config.withdrawalMethods     || ['UPI', 'BANK_TRANSFER'],
         // Footer navigation (2026-07-13) — schema default: the historical five tabs
         // Normalize legacy "chat" entries before sending to frontend
-        footerPages:           (() => {
-          const raw = config.footerPages?.length ? config.footerPages : ['home', 'results', 'winners', 'promo', 'profile'];
-          const normalized = raw.filter(k => FOOTER_PAGE_KEYS.includes(k));
-          return normalized.length >= 2 ? normalized : ['home', 'results', 'winners', 'promo', 'profile'];
-        })(),
+        footerPages:           footerPagesOf(config),
         // Operational alert webhook (2026-07-13) — '' = alerting off
         alertWebhookUrl:       config.alertWebhookUrl || '',
         webUrl:        config.webUrl        || '',
@@ -356,7 +344,7 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     if (footerPages !== undefined) {
       // Normalize legacy "chat" entries before persisting
       const normalized = footerPages.filter(k => FOOTER_PAGE_KEYS.includes(k));
-      fieldWrites.push(['SystemConfig', 'footerPages', normalized.length >= 2 ? normalized : ['home', 'results', 'winners', 'promo', 'profile']]);
+      fieldWrites.push(['SystemConfig', 'footerPages', normalized.length >= 2 ? normalized : [...DEFAULT_FOOTER_PAGES]]);
     }
     // Operational alert webhook (2026-07-13) — consumed by services/alerting.service.js
     if (alertWebhookUrl !== undefined) fieldWrites.push(['SystemConfig', 'alertWebhookUrl', alertWebhookUrl]);

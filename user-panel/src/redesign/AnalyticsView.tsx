@@ -1,9 +1,10 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * AnalyticsView.tsx — the body of the Analytics page (`pages/AnalyticsPage`):
- * one board's results and streak analytics as a full page, not a card under
- * the board (owner, 2026-10-15: "freely visible, using the entire screen, a
- * proper view"). A sticky row of tabs over one section at a time:
+ * AnalyticsView.tsx — one board's results and streak analytics, as part of the
+ * page it sits on: under the game across the board screen's full width, and
+ * on Results (owner, 2026-10-15: "not locked in a card", "part of that page
+ * below the game", no separate page or button). The tabs wrap rather than
+ * scroll sideways and one section fills the width; nothing slides.
  *
  *   Runs & Gaps · Previous results · Continuous streaks · Streak gaps ·
  *   Win share · Probability
@@ -17,17 +18,19 @@
  * which stays withheld below MIN_SAMPLE — a "DELHI next 67%" off four results
  * is noise wearing the costume of a signal.
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { analyticsFor, seqFromRuns, MIN_SAMPLE, Side } from './analytics';
 import { fmt } from './format';
 import RunsAndGaps, { box, heading } from './RunsAndGaps';
-import { Board } from '../types';
+import { Board, CycleType } from '../types';
 
 interface Props {
   /** The board whose history is shown. */
   board?: Board;
   /** That board's real winners, newest first. */
   winners: Side[];
+  /** Requests one board's full analytics window. See GameContext. */
+  loadCycleHistory?: (type: CycleType) => void;
 }
 
 export const SECTIONS = [
@@ -42,8 +45,26 @@ export type SectionKey = typeof SECTIONS[number]['key'];
 
 const bead = (sd: Side) => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)' });
 
-const AnalyticsView: React.FC<Props> = ({ board, winners }) => {
+const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) => {
   const [active, setActive] = useState<SectionKey>('runs');
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const boardKey = board?.key ?? '';
+
+  // The deep window (1,440 results for a repeating board) is asked for once
+  // this is on screen, once per board: the stream's open carries 50 rows
+  // because every visitor pays for it, and most never scroll this far.
+  const loaded = useRef(new Set<string>());
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || !boardKey || !loadCycleHistory || loaded.current.has(boardKey)) return undefined;
+    const load = () => { loaded.current.add(boardKey); loadCycleHistory(boardKey); };
+    if (typeof IntersectionObserver === 'undefined') { load(); return undefined; }
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) { io.disconnect(); load(); }
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [boardKey, loadCycleHistory]);
   const A = useMemo(() => analyticsFor(winners, board), [winners, board]);
 
   // Share of wins. With no results at all, say nothing rather than 0% / 100%.
@@ -243,9 +264,13 @@ const AnalyticsView: React.FC<Props> = ({ board, winners }) => {
   };
 
   return (
-    <div aria-label={`${board?.name ?? ''} results and streak analytics`}>
-      <div style={{ position: 'sticky', top: 0, zIndex: 5, background: 'var(--bg)', padding: '6px 0 10px', margin: '0 0 6px' }}>
-        <div role="tablist" aria-label="Analytics" className="bb-noscroll" style={{ display: 'flex', gap: 6, overflowX: 'auto' }}>
+    <div ref={rootRef} aria-label={`${board?.name ?? ''} results and streak analytics`} style={{ width: '100%', minWidth: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', margin: '4px 0 10px' }}>
+        <h2 className="font-grotesk" style={{ margin: 0, fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>Results &amp; Streak Analytics</h2>
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>{fmt(A.total)} {board?.name ?? ''} results</span>
+      </div>
+      <div style={{ margin: '0 0 12px' }}>
+        <div role="tablist" aria-label="Analytics" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {SECTIONS.map((s) => {
             const on = active === s.key;
             return (
@@ -253,7 +278,6 @@ const AnalyticsView: React.FC<Props> = ({ board, winners }) => {
             );
           })}
         </div>
-        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)', marginTop: 8 }}>{fmt(A.total)} {board?.name ?? ''} results</div>
       </div>
       <div id={`bb-an-${active}`} role="tabpanel" aria-labelledby={`bb-an-tab-${active}`}>
         {slide(active)}

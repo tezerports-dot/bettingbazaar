@@ -56,6 +56,7 @@ Never concatenate `cdnBase + '/' + logo` without normalising both sides (C-07 fi
 | `homePopupEnabled` | Same — gate display on this boolean |
 | `tricksTipsBannerUrl` | PromoPage.tsx banner (C-06 fix) |
 | `rulesPageImageUrl` | RulesPage.tsx banner (C-06 fix) |
+| `referPageBannerUrl` | ReferralPage.tsx hero banner (Admin › Images › Page banners; owner, 2026-10-15) |
 | `depositPageBannerUrl` | WalletModal.tsx buy-tokens section |
 | `withdrawalPageBannerUrl` | WalletModal.tsx sell-tokens section |
 | `loginPageBannerUrl` | AuthModal.tsx or Login page background |

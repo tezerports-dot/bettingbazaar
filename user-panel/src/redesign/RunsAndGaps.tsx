@@ -108,10 +108,10 @@ const RunsAndGaps: React.FC<Props> = ({ board, winners }) => {
       {/* Run strip */}
       <section style={box} aria-label="Run strip">
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-          <span style={heading}>Run strip · newest on the right</span>
+          <span style={heading}>Run strip · newest last</span>
           <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>last {Math.min(40, winners.length)} results</span>
         </div>
-        <div className="bb-noscroll" style={{ display: 'flex', gap: 8, overflowX: 'auto', padding: '12px 0 2px' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '12px 0 2px' }}>
           {strip.map((r, i) => (
             <div key={i} title={`${sideName(r.side)} ×${r.len}`} style={{ flex: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
               <div style={{ display: 'flex', gap: 2 }}>

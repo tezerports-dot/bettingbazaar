@@ -323,7 +323,7 @@ export const SYSTEM_CONFIG_SPEC = group({
   // The payment order windows are per rail, in `teamRouting` below.
   retentionMonths:      n(6, 1, 120),
 
-  footerPages: sa(['home', 'results', 'winners', 'promo', 'profile']),
+  footerPages: sa(['home', 'results', 'wallet', 'promo']), // = DEFAULT_FOOTER_PAGES (systemConfigPayload.js)
   alertWebhookUrl: s(''),
 
   loadShedding: group({
@@ -425,7 +425,7 @@ export const BRANDING_SPEC = group({
   // ── Home popup ────────────────────────────────────────────────────────────
   homePopupImageUrl: s(''), homePopupLinkUrl: s(''), homePopupEnabled: b(false),
   // ── Banners, one per surface that shows one ───────────────────────────────
-  tricksTipsBannerUrl: s(''), rulesPageImageUrl: s(''),
+  tricksTipsBannerUrl: s(''), rulesPageImageUrl: s(''), referPageBannerUrl: s(''),
   depositPageBannerUrl: s(''), withdrawalPageBannerUrl: s(''),
   loginPageBannerUrl: s(''), registerPageBannerUrl: s(''),
   // ── Bet-card backgrounds ──────────────────────────────────────────────────

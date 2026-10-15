@@ -274,7 +274,7 @@ export const SystemSettings: React.FC = () => {
       maxWarnings: 3,                  // schema default: 3 (0 = never mark for review)
     },
     // Footer navigation (2026-07-13) — schema default: the historical five tabs
-    footerPages: ['home', 'results', 'winners', 'promo', 'profile'],
+    footerPages: ['home', 'results', 'wallet', 'promo'], // schema default (config.spec.js footerPages)
     // Operational alert webhook (2026-07-13) — '' = alerting off
     alertWebhookUrl: '',
     tlsFingerprintDefense: {
@@ -394,7 +394,7 @@ export const SystemSettings: React.FC = () => {
               },
             },
           },
-          footerPages: response.data.footerPages?.length ? response.data.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
+          footerPages: response.data.footerPages?.length ? response.data.footerPages : ['home', 'results', 'wallet', 'promo'], // schema default
           alertWebhookUrl: response.data.alertWebhookUrl || '',
           tlsFingerprintDefense: {
             enabled: response.data.tlsFingerprintDefense?.enabled ?? true,
@@ -1333,15 +1333,17 @@ export const SystemSettings: React.FC = () => {
       <div className="card">
         <h3 className="text-lg font-semibold mb-1">Footer Navigation (User Panel)</h3>
         <p className="text-xs text-gray-400 mb-4">
-          Choose which pages appear in the user panel&apos;s bottom bar and in what
-          order (2–5 tabs). Applies live to all connected users — no redeploy.
+          Choose which pages appear in the player app&apos;s bottom bar on phones and
+          tablets, and in what order (2–5 tabs; a Menu tab always comes last).
+          Applies live to all connected players, no redeploy.
         </p>
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
           {[0, 1, 2, 3, 4].map((i) => {
+            // The keys are the server's FOOTER_PAGE_KEYS (systemConfigPayload.js).
             const FOOTER_PAGE_OPTIONS: [string, string][] = [
               ['home', '🎲 Game'], ['results', '📊 Results'], ['winners', '🏆 Winners'],
-              ['promo', '💡 Pro Tips'], ['profile', '👤 Profile'], ['wallet', '💰 Wallet'],
-              ['gift-code', '🎁 Gifts'],
+              ['leaderboard', '📈 Leaderboard'], ['promo', '💡 Pro Tips'], ['profile', '👤 Profile'],
+              ['wallet', '💰 Wallet'], ['referrals', '🎁 Refer & Earn'],
               ['my-bets', '📜 My Bets'], ['history', '🕘 History'], ['rules', '📖 Rules'],
               ['faq', '❓ FAQ'], ['support', '🛟 Support'],
               ['casino', '🎰 Casino'], ['crash', '🚀 Crash'], ['sports', '⚽ Sports'],

@@ -48,7 +48,6 @@ const LAZY_PAGES = {
   leaderboard: () => import('./pages/LeaderboardPage'),
   wallet:      () => import('./pages/WalletPage'),
   referral:    () => import('./pages/ReferralPage'),
-  analytics:   () => import('./pages/AnalyticsPage'),
 };
 const CasinoPage          = React.lazy(LAZY_PAGES.casino);
 const CrashPage           = React.lazy(LAZY_PAGES.crash);
@@ -57,7 +56,6 @@ const WinnersPage         = React.lazy(LAZY_PAGES.winners);
 const LeaderboardPage     = React.lazy(LAZY_PAGES.leaderboard);
 const WalletPage          = React.lazy(LAZY_PAGES.wallet);
 const ReferralPage        = React.lazy(LAZY_PAGES.referral);
-const AnalyticsPage       = React.lazy(LAZY_PAGES.analytics);
 const preloadLazyPages = () => {
   const run = () => { Object.values(LAZY_PAGES).forEach((load) => { void load().catch(() => { /* fetched again on the tap */ }); }); };
   if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 4000 });
@@ -364,7 +362,6 @@ const App: React.FC = () => (
 
                           {/* Info */}
                           <Route path="/results"         element={<ResultsPage />} />
-                          <Route path="/analytics"       element={lazy(<AnalyticsPage />)} />
                           {/* Where Verify in the Mini App sends a player: the one-time ticket, exchanged. */}
                           <Route path="/tg/:ticket"      element={<TelegramTicketPage />} />
                           <Route path="/promo"           element={<PromoPage />} />
