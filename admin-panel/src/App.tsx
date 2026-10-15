@@ -8,10 +8,12 @@ import NoAccess from './components/NoAccess';
 import { Login } from './Pages/Login';
 import { Dashboard } from './Pages/Dashboard';
 import { UsersList } from './Pages/Users/UsersList';
+import { UserProfile } from './Pages/Users/UserProfile';
 import { FlaggedPlayers } from './Pages/Users/FlaggedPlayers';
 import { PhantomAgents } from './Pages/Users/PhantomAgents';
 import { TeamsManager } from './Pages/Teams/TeamsManager';
 import { MerchantsList } from './Pages/Merchants/MerchantsList';
+import { MerchantProfile } from './Pages/Merchants/MerchantProfile';
 import { LiveCycles } from './Pages/Cycles/LiveCycles';
 import { CycleHistory } from './Pages/Cycles/CycleHistory';
 import { DepositPolicy } from './Pages/BusinessPolicy/DepositPolicy';
@@ -210,6 +212,14 @@ const App: React.FC = () => {
           </PermRoute>
         } />
 
+        {/* One player's page: a row of the table opens it (owner, 2026-10-14).
+            The fixed /users/… paths below outrank this pattern. */}
+        <Route path="/users/:userId" element={
+          <PermRoute permission="canManageUsers">
+            <Layout><UserProfile /></Layout>
+          </PermRoute>
+        } />
+
         {/* Flagged players — the review queue a merchant rejection feeds.
             The rejection warns and flags; the block is decided here. */}
         <Route path="/users/flagged" element={
@@ -222,6 +232,12 @@ const App: React.FC = () => {
         <Route path="/merchants" element={
           <PermRoute permission="canManageMerchants">
             <Layout><MerchantsList /></Layout>
+          </PermRoute>
+        } />
+        {/* One merchant's page: a row of the table opens it (owner, 2026-10-14). */}
+        <Route path="/merchants/:merchantId" element={
+          <PermRoute permission="canManageMerchants">
+            <Layout><MerchantProfile /></Layout>
           </PermRoute>
         } />
 

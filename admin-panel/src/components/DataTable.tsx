@@ -1,12 +1,18 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 
-interface Column<T> {
+export interface Column<T> {
   key: string;
   label: string;
   render?: (item: T) => React.ReactNode;
+  /** The server's sort key for this column (one the list route sends back in `sorts`). */
+  sortKey?: string;
+  /** Right-align the header and cells (figures). */
+  numeric?: boolean;
 }
+
+export interface TableSort { key: string; dir: 'asc' | 'desc' }
 
 interface DataTableProps<T> {
   data: T[];
@@ -15,6 +21,11 @@ interface DataTableProps<T> {
   totalPages: number;
   onPageChange: (page: number) => void;
   isLoading?: boolean;
+  /** Sorting is the SERVER's: a header press asks for the next page in that order. */
+  sort?: TableSort;
+  onSort?: (next: TableSort) => void;
+  /** Open the row's own page. The row is then a link-like control: Enter opens it too. */
+  onRowClick?: (item: T) => void;
 }
 
 /**
@@ -59,6 +70,9 @@ export function DataTable<T extends object>({
   totalPages,
   onPageChange,
   isLoading = false,
+  sort,
+  onSort,
+  onRowClick,
 }: DataTableProps<T>) {
   if (isLoading) {
     return (
@@ -82,16 +96,43 @@ export function DataTable<T extends object>({
         <table className="table">
           <thead>
             <tr>
-              {columns.map((column) => (
-                <th key={column.key}>{column.label}</th>
-              ))}
+              {columns.map((column) => {
+                const align = column.numeric ? 'text-right' : undefined;
+                if (!column.sortKey || !onSort) return <th key={column.key} className={align}>{column.label}</th>;
+                const active = sort?.key === column.sortKey;
+                // A first press sorts largest first: "who deposited most" is
+                // the question a figure column is opened to answer.
+                const next: TableSort = { key: column.sortKey, dir: active && sort?.dir === 'desc' ? 'asc' : 'desc' };
+                const Icon = !active ? ArrowUpDown : sort?.dir === 'asc' ? ArrowUp : ArrowDown;
+                return (
+                  <th key={column.key} className={align}
+                    aria-sort={active ? (sort?.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                    <button type="button" onClick={() => onSort(next)}
+                      className={`inline-flex items-center gap-1 hover:text-white ${active ? 'text-white' : ''}`}
+                      title={`Sort by ${column.label}`}>
+                      {column.label}
+                      <Icon size={12} aria-hidden="true" className={active ? '' : 'opacity-40'} />
+                    </button>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
             {data.map((item, i) => (
-              <tr key={rowKey(item, i)} className="hover:bg-hover transition-colors">
+              <tr key={rowKey(item, i)}
+                className={`hover:bg-hover transition-colors ${onRowClick ? 'cursor-pointer' : ''}`}
+                {...(onRowClick ? {
+                  onClick: (e: React.MouseEvent) => {
+                    // A control inside the row keeps its own press.
+                    if ((e.target as HTMLElement).closest('button, a, input, select, label')) return;
+                    onRowClick(item);
+                  },
+                  onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter' && e.target === e.currentTarget) onRowClick(item); },
+                  tabIndex: 0,
+                } : {})}>
                 {columns.map((column) => (
-                  <td key={column.key}>
+                  <td key={column.key} className={column.numeric ? 'text-right' : undefined}>
                     {column.render ? column.render(item) : (item as any)[column.key]}
                   </td>
                 ))}

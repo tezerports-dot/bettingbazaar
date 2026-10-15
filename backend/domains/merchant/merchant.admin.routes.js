@@ -9,6 +9,7 @@ import { assertExternalHttpsUrl } from '../../shared/storedUrl.js';
 import { normalisePhone, isValidMobile } from '../identity/signupFields.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
 import { NAME_IS_A_MOBILE_MESSAGE } from '../identity/mobileInText.js';
+import { respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -23,64 +24,45 @@ const router = express.Router();
  * succeeds or raises, like every other insert here.
  */
 
+/**
+ * GET /api/admin/merchants — the merchants table (owner, 2026-10-14).
+ *
+ * Agents, supervisors and merchant accounts, one row each, with what they
+ * processed, their completed orders, the pool they work from and their
+ * commission today, this month and in all. Every figure from its owner in
+ * `adminDirectory.listMerchants`; `sort` is one of `MERCHANT_SORTS` and `role`
+ * one of `MERCHANT_ROLES`, both sent back so the panel keeps no list (§32 S25).
+ * `status` here is the APPROVAL status (PENDING, APPROVED, REJECTED); the
+ * account status (ACTIVE, SUSPENDED) is `accountStatus`.
+ */
 router.get('/merchants', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
-    const { status, page = 1, limit = 50, search, currency } = req.query;
-
-    // ── The filter is IN the query now ────────────────────────────────────
-    //
-    // It used to paginate first and filter the page afterwards, in JavaScript.
-    // So a page could come back short — or completely empty — while merchants
-    // matching the filter sat on the next page, and `total` counted every
-    // merchant rather than the ones being shown. An admin filtering for
-    // PENDING approvals saw "0 of 312" and concluded there were none.
-    //
-    // There is also no join. Name, mobile and email are columns on the
-    // merchant now; the list used to fetch every linked account separately and
-    // prefer whichever copy was non-empty, which is two sources for one value.
-    const { merchants: rows, total } = await db.merchants.listMerchants({
-      approvalStatus: status && status !== 'ALL' ? status : null,
-      currency: currency || null,
-      search: search || null,
-      limit: parseInt(limit, 10) || 50,
+    const { status, accountStatus, role, sort, dir, page = 1, limit = 50, search } = req.query;
+    const size = Math.min(parseInt(limit, 10) || 50, 200);
+    const { rows, total } = await db.adminDirectory.listMerchants({
+      approval: status && status !== 'ALL' ? String(status) : null,
+      status: accountStatus && accountStatus !== 'ALL' ? String(accountStatus) : null,
+      role: role && role !== 'ALL' ? String(role) : null,
+      search: search ? String(search) : null,
+      sort: sort ? String(sort) : undefined,
+      dir: dir ? String(dir) : undefined,
+      limit: size,
+      page: parseInt(page, 10) || 1,
     });
-
-    const merchants = rows.map((m) => ({
-      _id:                    m.merchantId,
-      merchantId:             m.merchantId,
-      userId:                 m.userId,
-      name:                   m.username || m.name || '',
-      mobile:                 m.mobile || '',
-      email:                  m.email || '',
-      status:                 m.status,
-      merchantApprovalStatus: m.merchantApprovalStatus,
-      isOnline:               m.isOnline,
-      acceptsDeposits:        m.acceptsDeposits,
-      acceptsWithdrawals:     m.acceptsWithdrawals,
-      merchantType:           m.merchantType,
-      panelUrl:               m.panelUrl,
-      merchantStats:          m.merchantStats,
-      // Lost payment disputes; from the third, high-risk review is open and
-      // only a full admin can reinstate (2c+).
-      lostDisputes:           m.lostDisputes,
-      highRiskAt:             m.highRiskAt,
-      suspensionReason:       m.suspensionReason ?? null,
-      createdAt:              m.createdAt,
-    }));
-
     res.json({
       success: true,
-      merchants,
+      merchants: rows,
+      sorts: Object.keys(db.adminDirectory.MERCHANT_SORTS),
+      roles: Object.keys(db.adminDirectory.MERCHANT_ROLES),
       pagination: {
         total,
         page: parseInt(page, 10) || 1,
-        limit: parseInt(limit, 10) || 50,
-        pages: Math.ceil(total / (parseInt(limit, 10) || 50)),
+        limit: size,
+        pages: Math.max(Math.ceil(total / size), 1),
       },
     });
   } catch (error) {
-    console.error('Get merchants error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch merchants' });
+    return respondError(res, error, 'GET /admin/merchants', { message: 'Failed to fetch merchants' });
   }
 });
 
@@ -316,6 +298,16 @@ router.get('/merchants/:merchantId/profile', authenticate, hasPermission('canMan
         // Fixed 1:1 conversion (Phase 006 flattening, 2026-07-08) — no spread.
         prices: { buyPrice: 1, sellPrice: 1, profit: 0 },
         statistics: { totalOrders, completedOrders, failedOrders, successRate: parseFloat(successRate) },
+      },
+      // The merchants-table row: role, team, pool and commission, from the
+      // same query the table reads (display only, §9).
+      summary: await db.adminDirectory.merchantRow(merchant.merchantId),
+      // The choices the profile's controls offer, from their owners, so the
+      // page keeps no copy (§32 S25): routing priority's bounds and the rails a
+      // supervisor can run.
+      choices: {
+        routingPriority: db.merchants.ROUTING_PRIORITY,
+        supervisorRails: db.teams.SUPERVISOR_RAILS,
       },
     });
   } catch (error) {

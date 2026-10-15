@@ -6,6 +6,15 @@ export const formatters = {
     return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
   },
 
+  /** Paise (what the server stores and sends) as rupees; 1 token = ₹1. */
+  paise: (paise: number | undefined | null): string => formatters.currency((Number(paise) || 0) / 100),
+
+  /** A win/loss figure in paise, always with its sign: +₹300 or -₹200. */
+  signedPaise: (paise: number | undefined | null): string => {
+    const n = Number(paise) || 0;
+    return `${n > 0 ? '+' : n < 0 ? '-' : ''}${formatters.currency(Math.abs(n) / 100)}`;
+  },
+
   date: (date: string | Date): string => {
     return new Date(date).toLocaleDateString('en-IN', {
       day: '2-digit',

@@ -208,7 +208,12 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   );
 
   const allItems = NAV_GROUPS.flatMap((g) => g.items);
-  const current = allItems.find((it) => it.path === location.pathname);
+  // A screen's own page (/users/:id, /merchants/:id) belongs to the screen it
+  // opened from: the longest sidebar path it sits under names it.
+  const current = allItems.find((it) => it.path === location.pathname)
+    ?? allItems
+      .filter((it) => it.path !== '/' && location.pathname.startsWith(`${it.path}/`))
+      .sort((a, b) => b.path.length - a.path.length)[0];
   const headTitle = current?.title || 'Admin Panel';
   const headSub = current?.sub || '';
 
@@ -255,7 +260,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                 </div>
               )}
               {group.items.map((item) => {
-                const active = location.pathname === item.path;
+                const active = current?.path === item.path;
                 const Icon = item.icon;
                 const count = badgeCount(item.badge);
                 const tone = badgeTone(item.badge);
