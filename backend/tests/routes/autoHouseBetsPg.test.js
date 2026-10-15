@@ -22,7 +22,7 @@ describePg('auto house-bet routes (PostgreSQL)', () => {
   });
   afterAll(async () => { await closePg(); });
 
-  const plan = { boardKey: BOARD, side: 'DELHI', amounts: [100, 50], enabled: true };
+  const plan = { boardKey: BOARD, audience: 'VIP', side: 'DELHI', amounts: [100, 50], enabled: true };
   const plansOf = async (userId) => (await pgQuery(
     `SELECT side, amounts_paise FROM phantom_auto_plans WHERE user_id = $1`, [userId],
   )).rows;
@@ -49,7 +49,7 @@ describePg('auto house-bet routes (PostgreSQL)', () => {
   it('refuses a bad side, a missing switch and an unknown board by name', async () => {
     const agent = await actor();
     await updateUser(agent.userId, { phantom_access: 'BOTH' });
-    for (const body of [{ ...plan, side: 'PUNE' }, { ...plan, enabled: undefined }, { ...plan, boardKey: 'NO_SUCH_BOARD' }, { ...plan, amounts: [1.5] }]) {
+    for (const body of [{ ...plan, side: 'PUNE' }, { ...plan, audience: undefined }, { ...plan, enabled: undefined }, { ...plan, boardKey: 'NO_SUCH_BOARD' }, { ...plan, amounts: [1.5] }]) {
       const res = await as(app, agent).put('/api/bet/phantom/auto').send(body);
       expect(res.status, JSON.stringify(body)).toBe(400);
       expect(res.body.message).toBeTruthy();

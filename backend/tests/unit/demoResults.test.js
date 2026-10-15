@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import {
   demoResultsLabelOf, demoResultsOnOf, DEFAULT_DEMO_RESULTS_LABEL, DEFAULT_DEMO_RESULTS_ON,
 } from '../../domains/markets/demoResults.js';
-import { SYSTEM_CONFIG_SPEC } from '../../../database/spec/config.spec.js';
+import { SYSTEM_CONFIG_SPEC } from '#db/spec/config.spec.js';
 import { systemConfigPayload } from '../../domains/configuration/systemConfigPayload.js';
 
 describe('demo results settings', () => {
