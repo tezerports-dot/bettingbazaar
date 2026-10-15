@@ -9,7 +9,8 @@
  *
  * `AutoHouseBetsPanel`: a phantom agent's auto plan for this board, one per
  * side: a list of sizes bet one a second, in order and looped, until the
- * equalizer (backend/domains/markets/houseBets.js). Shown in ghost mode only.
+ * equalizer, in every round until it is stopped: set once, never restarted
+ * per round (backend/domains/markets/houseBets.js). Shown in ghost mode only.
  * The limits come with the plans (`GET /api/bet/phantom/auto`).
  */
 import React, { useCallback, useEffect, useState } from 'react';
@@ -64,7 +65,7 @@ const SideEditor: React.FC<{
       if (!res?.success) throw new Error(res?.message);
       setEnabled(res.plan.enabled);
       onSaved(res.plan);
-      setSaved(res.plan.enabled ? 'Running: one bet a second from the next second.' : 'Stopped.');
+      setSaved(res.plan.enabled ? 'Running: one bet a second from the next second, and again in every new round until you press Stop.' : 'Stopped.');
     } catch (e: any) {
       setError(e?.message || 'Could not save this plan.');
     } finally {
@@ -76,14 +77,14 @@ const SideEditor: React.FC<{
   return (
     <div style={{ flex: 1, minWidth: 200, display: 'flex', flexDirection: 'column', gap: 6 }}>
       <label htmlFor={id} style={{ fontSize: 11, fontWeight: 800, color: '#c4b5fd' }}>
-        {name} · {enabled ? 'ON' : 'OFF'}
+        {name} · {enabled ? 'ON · every round' : 'OFF'}
       </label>
       <textarea id={id} rows={2} value={text} onChange={(e) => setText(e.target.value)}
         placeholder="e.g. 100, 250, 50, 500"
         style={{ width: '100%', resize: 'vertical', background: 'var(--surface2)', border: '1px solid rgba(139,111,224,.35)', borderRadius: 10, padding: '8px 10px', color: 'var(--text)', fontSize: 12, fontWeight: 600 }} />
       <div style={{ fontSize: 10, color: 'var(--text3)' }}>
         {sizes.length} {sizes.length === 1 ? 'size' : 'sizes'}
-        {limits ? ` of at most ${limits.maxSteps.toLocaleString('en-IN')}` : ''} · one a second, looped, until the equalizer
+        {limits ? ` of at most ${limits.maxSteps.toLocaleString('en-IN')}` : ''} · one a second, looped, until the equalizer · set once, it runs every new round by itself
       </div>
       <div style={{ display: 'flex', gap: 6 }}>
         <button type="button" disabled={saving} onClick={() => save(true)}

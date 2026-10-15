@@ -24,6 +24,7 @@ import { useShell } from './RedesignShell';
 import { useViewport } from './useViewport';
 import { useToast } from '../components/ui/Toast';
 import { HouseBetsNote, AutoHouseBetsPanel, useHouseBetsLabel } from './HouseBets';
+import { LiveNumber } from './LiveNumber';
 import { fmt, timeStr } from './format';
 import { analyticsFor, winnersByBoard, Side } from './analytics';
 import AnalyticsView from './AnalyticsView';
@@ -335,7 +336,7 @@ const GameScreen: React.FC = () => {
         <div style={{ ...labelCap, marginBottom: 10 }}>Total pool</div>
         {loadingCycle
           ? <div className="bb-skel" style={{ width: 110, height: 26, borderRadius: 7, background: 'var(--surface3)' }} />
-          : <div className="font-grotesk bb-gold-text" style={{ fontWeight: 700, fontSize: 24, color: 'var(--gold-ink)' }}>₹{fmt(total)}</div>}
+          : <div className="font-grotesk bb-gold-text" style={{ fontWeight: 700, fontSize: 24, color: 'var(--gold-ink)' }}>₹<LiveNumber value={total} /></div>}
         <HouseBetsNote label={houseBetsLabel} style={{ marginTop: 6 }} />
       </div>
       {leftCards.map((c, i) => <PromoCard key={c.promoId ?? c.id ?? i} card={c} />)}
@@ -413,11 +414,11 @@ const GameScreen: React.FC = () => {
               </>
             ) : showMerged ? (
               // The blind band on the cards carries the total; it is said once (owner, 2026-10-10).
-              blindBandShown ? null : <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)' }}>POOL ₹{fmt(total)}</span>
+              blindBandShown ? null : <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)' }}>POOL ₹<LiveNumber value={total} /></span>
             ) : isOpen && total === 0 ? (
               <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>No bets yet this round. Be the first.</span>
             ) : (
-              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)', fontVariantNumeric: 'tabular-nums' }}>POOL ₹{fmt(total)}</span>
+              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)', fontVariantNumeric: 'tabular-nums' }}>POOL ₹<LiveNumber value={total} /></span>
             )}
           </div>
           <HouseBetsNote label={houseBetsLabel} style={{ marginTop: 3 }} />
@@ -439,7 +440,7 @@ const GameScreen: React.FC = () => {
                 <span className="font-grotesk" style={{ fontWeight: 700, fontSize: sideFont, letterSpacing: '.08em', textTransform: 'uppercase', color: isResult && winner === BettingSide.DELHI ? '#FFD700' : 'var(--delhi)', textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>{isResult && winner === BettingSide.DELHI ? '🏆 DELHI' : 'Delhi'}</span>
                 </span>
                 <BetCardFigure side="DELHI" mode={shareMode} pct={shares.DELHI} pool={poolDelhi} big={bigShare} />
-                {myBetDelhi > 0 ? <span style={{ position: 'relative', zIndex: 2, background: 'var(--delhi)', color: '#fff', fontSize: 10, fontWeight: 800, padding: '3px 11px', borderRadius: 999, boxShadow: '0 0 16px var(--delhi)' }}>You ₹{fmt(myBetDelhi)}</span> : <span />}
+                {myBetDelhi > 0 ? <span style={{ position: 'relative', zIndex: 2, background: 'var(--delhi)', color: '#fff', fontSize: 10, fontWeight: 800, padding: '3px 11px', borderRadius: 999, boxShadow: '0 0 16px var(--delhi)' }}>You ₹<LiveNumber value={myBetDelhi} /></span> : <span />}
               </button>
               <div style={{ width: 1.5, height: '100%', background: 'linear-gradient(180deg,transparent,var(--gold),transparent)', zIndex: 3 }} />
               {/* Bombay */}
@@ -453,7 +454,7 @@ const GameScreen: React.FC = () => {
                 <span className="font-grotesk" style={{ fontWeight: 700, fontSize: sideFont, letterSpacing: '.08em', textTransform: 'uppercase', color: isResult && winner === BettingSide.BOMBAY ? '#FFD700' : 'var(--bombay)', textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>{isResult && winner === BettingSide.BOMBAY ? '🏆 BOMBAY' : 'Bombay'}</span>
                 </span>
                 <BetCardFigure side="BOMBAY" mode={shareMode} pct={shares.BOMBAY} pool={poolBombay} big={bigShare} />
-                {myBetBombay > 0 ? <span style={{ position: 'relative', zIndex: 2, background: 'var(--bombay)', color: '#fff', fontSize: 10, fontWeight: 800, padding: '3px 11px', borderRadius: 999, boxShadow: '0 0 16px var(--bombay)' }}>You ₹{fmt(myBetBombay)}</span> : <span />}
+                {myBetBombay > 0 ? <span style={{ position: 'relative', zIndex: 2, background: 'var(--bombay)', color: '#fff', fontSize: 10, fontWeight: 800, padding: '3px 11px', borderRadius: 999, boxShadow: '0 0 16px var(--bombay)' }}>You ₹<LiveNumber value={myBetBombay} /></span> : <span />}
               </button>
              </div>
             </div>

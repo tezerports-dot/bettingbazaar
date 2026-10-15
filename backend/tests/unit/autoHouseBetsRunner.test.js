@@ -65,6 +65,18 @@ describe('runAutoHouseBets', () => {
     expect(emitToStaff).toHaveBeenCalledWith(null, 'admin_bet_placed', expect.objectContaining({ isAuto: true, newPhantomDelhi: 600 }));
   });
 
+  it('a plan saved in an earlier round runs every new round from its first second, never restarted', async () => {
+    // Saved halfway through the round before; the next round starts an hour later.
+    const saved = [{ ...plans[0], startsAtMs: START - 3_600_000 + 30_000 }];
+    const next = { ...cycle, cycleId: 'C2', startTime: new Date(START) };
+    await gen.runAutoHouseBets(next, saved, START + 1_200, START + 60_000);
+    expect(place.mock.calls[0][0]).toMatchObject({ cycleId: 'C2' });
+    expect(place.mock.calls[0][0].bets).toEqual([
+      { userId: 'ag1', side: 'DELHI', second: 0, amountPaise: 100_00 },
+      { userId: 'ag1', side: 'DELHI', second: 1, amountPaise: 200_00 },
+    ]);
+  });
+
   it('places nothing at or after the equalizer, and nothing for a board with no plan', async () => {
     await gen.runAutoHouseBets({ ...cycle }, plans, START + 60_000, START + 60_000);
     await gen.runAutoHouseBets({ ...cycle, type: 'b9' }, plans, START + 2_500, START + 60_000);

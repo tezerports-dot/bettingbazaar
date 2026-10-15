@@ -20,6 +20,7 @@
  */
 import React from 'react';
 import { fmt } from './format';
+import { LiveNumber } from './LiveNumber';
 
 export type ShareMode = 'share' | 'blind' | 'empty' | 'none' | 'loading';
 type CardSide = 'DELHI' | 'BOMBAY';
@@ -69,7 +70,7 @@ export const BetCardFigure: React.FC<{ side: CardSide; mode: ShareMode; pct: num
       data-testid={`share-${side}`}
     >
       <span className="bb-share-figure__pct font-grotesk" style={{ fontSize: size }}>{empty ? '—' : `${pct}%`}</span>
-      {!empty && <span className="bb-share-figure__pool font-grotesk" style={{ fontSize: big ? 13 : 11 }}>₹{fmt(pool)}</span>}
+      {!empty && <span className="bb-share-figure__pool font-grotesk" style={{ fontSize: big ? 13 : 11 }}>₹<LiveNumber value={pool} /></span>}
     </span>
   );
 };
@@ -87,6 +88,6 @@ export const BlindBand: React.FC<{ total: number; compact?: boolean }> = ({ tota
     data-testid="blind-band"
   >
     <span className="bb-share-blind__text font-grotesk" style={{ fontSize: compact ? 12 : 15 }}>BLIND BETTING</span>
-    <span className="bb-share-blind__pool font-grotesk" style={{ fontSize: compact ? 11 : 12 }}>POOL ₹{fmt(total)}</span>
+    <span className="bb-share-blind__pool font-grotesk" style={{ fontSize: compact ? 11 : 12 }}>POOL ₹<LiveNumber value={total} /></span>
   </div>
 );
