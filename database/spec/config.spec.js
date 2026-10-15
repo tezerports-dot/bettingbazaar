@@ -28,10 +28,11 @@
  * A default declared here is the value a fresh install starts from AND the
  * value a reader falls back to when the key is absent — one constant, not two.
  */
-import { ORDER_SIZES, USDT_BUY_STEP, INR_ROUTING_MODES } from '../../backend/domains/merchant/denominations.js';
+import { ORDER_SIZES, USDT_BUY_STEP } from '../../backend/domains/merchant/denominations.js';
 import { approvedApiHosts } from '../../backend/config/apiHosts.js';
 import { BRAND_PALETTES } from '../../backend/domains/branding/palettes.js';
 import { DEFAULT_HOUSE_BETS_LABEL, HOUSE_BETS_LABEL_LIMITS } from '../../backend/domains/markets/houseBets.js';
+import { DEFAULT_DEMO_RESULTS_ON, DEFAULT_DEMO_RESULTS_LABEL, DEMO_RESULTS_LABEL_LIMITS } from '../../backend/domains/markets/demoResults.js';
 
 /** A number setting: `n(default, min, max)`. Bounds are inclusive. */
 const n = (def, min = null, max = null) => ({ type: 'number', default: def, min, max });
@@ -73,6 +74,12 @@ export const SYSTEM_CONFIG_SPEC = group({
   // (owner, 2026-10-15). Admin-editable wording, never blank
   // (HOUSE_BETS_LABEL_LIMITS, backend/domains/markets/houseBets.js).
   houseBetsLabel: { type: 'string', default: DEFAULT_HOUSE_BETS_LABEL, trimmed: true, ...HOUSE_BETS_LABEL_LIMITS },
+
+  // ── Demo results filling the analytics window, and the line beside them ──
+  // (owner, 2026-10-15; backend/domains/markets/demoResults.js). The line is
+  // admin-editable wording, never blank (DEMO_RESULTS_LABEL_LIMITS).
+  demoResultsOn: b(DEFAULT_DEMO_RESULTS_ON),
+  demoResultsLabel: { type: 'string', default: DEFAULT_DEMO_RESULTS_LABEL, trimmed: true, ...DEMO_RESULTS_LABEL_LIMITS },
   // No androidUrl: the Android app's location is the newest published row of
   // android_releases (uploaded on the admin Android App page), not a typed link.
   iosUrl: s(''), webUrl: s(''),
@@ -231,13 +238,14 @@ export const SYSTEM_CONFIG_SPEC = group({
     }),
     utrSubmitSeconds:      n(60, 15, 3600),
   }),
-  // ── Who serves INR orders (owner, 2026-10-11) ───────────────────────────
-  // AGENTS: supervisors' teams, the small sizes paid as cash at an ATM.
-  // MERCHANTS: merchant accounts (direct merchants), every size paid by UPI
-  // QR or bank transfer. USDT is never affected: always agents' USDT teams.
+  // ── Who serves each INR size (owner, 2026-10-15) ─────────────────────────
+  // Per direction, the sizes listed here go to merchant accounts (paid by UPI
+  // QR or bank transfer); every other size goes to agents (cash at an ATM or
+  // UPI/bank by its size). USDT is never affected: always agents' USDT teams.
   // Stamped on each INR order at creation (`order_states.inr_routing`); a
-  // switch moves only the INR orders still waiting for a first taker.
-  inrRoutingMode: { type: 'string', default: 'AGENTS', oneOf: () => [...INR_ROUTING_MODES] },
+  // change moves only the INR orders still waiting for a first taker.
+  merchantBuySizes:  { type: 'number[]', default: [], allowed: ORDER_SIZES },
+  merchantSellSizes: { type: 'number[]', default: [], allowed: ORDER_SIZES },
   // Routing to merchant accounts. Read through `merchantRoutingSettings` in
   // database/repositories/teamRouting.js — never off this document directly.
   merchantRouting: group({

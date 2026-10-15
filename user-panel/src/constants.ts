@@ -53,14 +53,15 @@ export function chipsFor(board?: { minBet: number; maxBet: number } | null, scal
 // half-hour ones — enough for the run-length distribution and the streak-gap
 // tables to describe something rather than echo a handful of runs.
 //
-// A DAILY board is 30 because that IS 30 days; asking for 1,440 would ask for
-// four years of a board that produces one result a day.
+// Every board, the full-day one included, shows 1,440 (owner, 2026-10-15:
+// "1440 full day, 1440 30 min and 1440 1 minute"); a board short of 1,440
+// real results is filled with labelled demo ones (redesign/DemoResults.tsx).
 //
 // Read through `analyticsWindowFor` by `redesign/analytics.ts`, `GameContext`
 // (the per-board cap when merging history), `AnalyticsView` and
 // `HistoryPage`. The server enforces its own ceiling independently
 // (backend/domains/markets/cycleHistory.service.js).
-export const ANALYTICS_WINDOW = Object.freeze({ INTERVAL: 1440, DAILY: 30 });
+export const ANALYTICS_WINDOW = Object.freeze({ INTERVAL: 1440, DAILY: 1440 });
 
 /** The analytics window of a board; an unknown board gets the repeating one. */
 export function analyticsWindowFor(board?: { kind: string } | null): number {

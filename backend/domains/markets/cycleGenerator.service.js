@@ -465,7 +465,8 @@ class CycleGenerator {
      * and every other cycle carry on.
      */
     async runAutoHouseBets(cycle, plans, now, equalizerTime) {
-        const mine = plans.filter((p) => p.boardKey === cycle.type);
+        // A plan runs on its own board's rounds of its own audience only.
+        const mine = plans.filter((p) => p.boardKey === cycle.type && p.audience === cycle.audience);
         if (!mine.length) return;
         const startMs = new Date(cycle.startTime).getTime();
         const bets = [];

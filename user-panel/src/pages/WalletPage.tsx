@@ -327,13 +327,13 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
           <div style={{ fontSize: 40, marginBottom: 8 }}>⏳</div>
           <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>
             {atMachine ? 'The member is going to the cash machine…'
-              : awaitingAccept ? 'Waiting for the member to accept…' : 'Waiting for merchant details…'}
+              : awaitingAccept ? 'Waiting for the merchant to accept…' : 'Waiting for merchant details…'}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.5, margin: '6px 0 0' }}>
             {atMachine
               ? <>They will scan the machine's QR for {fmtINR(order.fiatAmount)}. The Pay button appears here the moment they do. There is nothing to pay until then.</>
               : awaitingAccept
-                ? <>A member has your {fmtINR(order.fiatAmount)} purchase. Where to pay appears here the moment they accept it. There is nothing to pay until then.</>
+                ? <>A merchant has your {fmtINR(order.fiatAmount)} purchase. Where to pay appears here the moment they accept it. There is nothing to pay until then.</>
                 : <>A merchant is being assigned to your {fmtINR(order.fiatAmount)} purchase. Where to pay appears here the moment one is. There is nothing to pay until then.</>}
           </div>
           {order.expiresAt && (
@@ -539,8 +539,8 @@ const WalletPage: React.FC = () => {
     usdtTokensPerUnit: number | null;
     usdtChains: { chain: string; label: string }[];
   }>({
-    buySizes: { CASH: [], UPI_BANK: [] },
-    sellSizes: { CASH: [], UPI_BANK: [] },
+    buySizes: { CASH: [], UPI_BANK: [], MERCHANT: [] },
+    sellSizes: { CASH: [], UPI_BANK: [], MERCHANT: [] },
     buyMethods: {}, sellMethods: {},
     usdtBuy: null, usdtTokensPerUnit: null, usdtChains: [],
   });
@@ -570,6 +570,7 @@ const WalletPage: React.FC = () => {
         const sizesOf = (side: 'buy' | 'sell'): OrderSizes => ({
           CASH: sys.config.orderSizes?.[side]?.CASH ?? [],
           UPI_BANK: sys.config.orderSizes?.[side]?.UPI_BANK ?? [],
+          MERCHANT: sys.config.orderSizes?.[side]?.MERCHANT ?? [],
         });
         setRail({
           buySizes: sizesOf('buy'),
@@ -902,6 +903,9 @@ const WalletPage: React.FC = () => {
                     {buyRail === 'UPI_BANK' && (
                       <><b style={{ color: 'var(--text)' }}>UPI / bank purchase.</b> Paid from your UPI or bank app to where the order shows, then you submit the UTR.</>
                     )}
+                    {buyRail === 'MERCHANT' && (
+                      <><b style={{ color: 'var(--text)' }}>Merchant purchase.</b> A merchant serves it: pay by UPI or bank transfer to where the order shows once they accept, then you submit the UTR.</>
+                    )}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>You pay <b style={{ color: 'var(--gold-ink)' }}>{fmtINR(buyAmount)}</b> · 1 token = ₹1</div>
                   {buyError && <p role="alert" style={{ color: 'var(--red)', fontSize: 11, marginBottom: 10 }}>{buyError}</p>}
@@ -951,7 +955,7 @@ const WalletPage: React.FC = () => {
                     maxAllowed={balances.winningsBalance} accent="var(--green)" />
                   <div role="status" style={{ fontSize: 11, lineHeight: 1.5, marginBottom: 8, color: 'var(--text3)' }}>
                     {sellRail && (
-                      <>A {sellRail === 'CASH' ? 'cash-team' : 'UPI / bank-team'} member sends it by bank transfer to the account saved in your Profile.</>
+                      <>{sellRail === 'MERCHANT' ? 'A merchant' : `A ${sellRail === 'CASH' ? 'cash-team' : 'UPI / bank-team'} member`} sends it by bank transfer to the account saved in your Profile.</>
                     )}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>You receive <b style={{ color: 'var(--green)' }}>{fmtINR(sellTokens ?? 0)}</b></div>

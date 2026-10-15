@@ -27,7 +27,7 @@ import { db } from '#db';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { MERCHANT_CURRENCY } from '../merchant/merchantCurrency.js';
 import {
-  offeredSizes, railForSize, inrRoutingOf, usdtBuyBounds, isUsdtBuyAmount, USDT_BUY_STEP,
+  offeredSizes, railForSize, INR_ROUTING, usdtBuyBounds, isUsdtBuyAmount, USDT_BUY_STEP,
 } from '../merchant/denominations.js';
 // The bet-funding rule's arithmetic: one copy, which a casino BET applies too.
 import { reserveBasisPoints, splitStakeMinor, maxStakeMinor } from './stakeFunding.js';
@@ -342,7 +342,7 @@ function assertSizeIsOffered({ tokenAmount, type, cfg }) {
   if (!offered.includes(tokenAmount)) {
     // A size that exists but is switched off is told apart from a number that
     // is not a size at all, so the sentence is true either way.
-    const why = railForSize(tokenAmount, inrRoutingOf(cfg))
+    const why = railForSize(tokenAmount, INR_ROUTING.AGENTS)
       ? `${tokenAmount.toLocaleString('en-IN')} tokens is not on offer to ${verb} right now.`
       : `${tokenAmount.toLocaleString('en-IN')} tokens is not an order size.`;
     throw Object.assign(new Error(`${why} Choose one of ${sizesLabel(offered)} tokens.`),

@@ -40,13 +40,13 @@ describePg('auto house bets (PostgreSQL)', () => {
   });
 
   it('saves a plan of whole-rupee sizes and lists it in rupees', async () => {
-    await savePlan({ userId: 'ag1', boardKey: BOARD, side: 'DELHI', amounts: [100, '250', 50], enabled: true });
+    await savePlan({ userId: 'ag1', boardKey: BOARD, audience: 'VIP', side: 'DELHI', amounts: [100, '250', 50], enabled: true });
     const [plan] = await listFor('ag1');
     expect(plan).toMatchObject({ boardKey: BOARD, side: 'DELHI', amounts: [100, 250, 50], enabled: true });
   });
 
   it('refuses a plan with no sizes, too many, or a size that is not whole rupees, naming it', async () => {
-    const save = (amounts) => savePlan({ userId: 'ag1', boardKey: BOARD, side: 'BOMBAY', amounts, enabled: true });
+    const save = (amounts) => savePlan({ userId: 'ag1', boardKey: BOARD, audience: 'VIP', side: 'BOMBAY', amounts, enabled: true });
     await expect(save([])).rejects.toMatchObject({ status: 400 });
     await expect(save(Array(1001).fill(10))).rejects.toMatchObject({ status: 400, message: expect.stringContaining('1000') });
     await expect(save([10, 2.5])).rejects.toMatchObject({ status: 400, message: expect.stringContaining('Size 2') });
@@ -57,13 +57,27 @@ describePg('auto house bets (PostgreSQL)', () => {
 
   it('the database refuses a list the repository would refuse', async () => {
     await expect(pgQuery(
-      `INSERT INTO phantom_auto_plans (user_id, board_key, side, amounts_paise) VALUES ('ag1', $1, 'DELHI', '{150}')`,
+      `INSERT INTO phantom_auto_plans (user_id, board_key, audience, side, amounts_paise) VALUES ('ag1', $1, 'VIP', 'DELHI', '{150}')`,
       [BOARD],
     )).rejects.toMatchObject({ constraint: 'phantom_auto_plans_amounts' });
   });
 
+  it('keeps a VIP and a General plan for the same board and side apart, and refuses one naming neither', async () => {
+    await savePlan({ userId: 'ag1', boardKey: BOARD, audience: 'VIP', side: 'DELHI', amounts: [10], enabled: true });
+    await savePlan({ userId: 'ag1', boardKey: BOARD, audience: 'GENERAL', side: 'DELHI', amounts: [20, 30], enabled: false });
+    const plans = await listFor('ag1');
+    expect(plans.map((p) => [p.audience, p.amounts, p.enabled])).toEqual([['GENERAL', [20, 30], false], ['VIP', [10], true]]);
+    expect((await runnablePlans()).map((p) => p.audience)).toEqual(['VIP']);
+    await expect(savePlan({ userId: 'ag1', boardKey: BOARD, side: 'DELHI', amounts: [10], enabled: true }))
+      .rejects.toMatchObject({ status: 400 });
+    await expect(pgQuery(
+      `INSERT INTO phantom_auto_plans (user_id, board_key, audience, side, amounts_paise) VALUES ('ag1', $1, 'BOTH', 'BOMBAY', '{1000}')`,
+      [BOARD],
+    )).rejects.toMatchObject({ constraint: 'phantom_auto_plans_audience_known' });
+  });
+
   it('runs only while switched on and its owner holds access to the board', async () => {
-    await savePlan({ userId: 'ag1', boardKey: BOARD, side: 'DELHI', amounts: [10], enabled: true });
+    await savePlan({ userId: 'ag1', boardKey: BOARD, audience: 'VIP', side: 'DELHI', amounts: [10], enabled: true });
     expect((await runnablePlans()).map((p) => p.userId)).toEqual(['ag1']);
 
     await updateUser('ag1', { phantom_access: 'NONE' });
@@ -72,7 +86,7 @@ describePg('auto house bets (PostgreSQL)', () => {
     await updateUser('ag1', { phantom_access: BOARD });
     expect(await runnablePlans()).toHaveLength(1);
 
-    await savePlan({ userId: 'ag1', boardKey: BOARD, side: 'DELHI', amounts: [10], enabled: false });
+    await savePlan({ userId: 'ag1', boardKey: BOARD, audience: 'VIP', side: 'DELHI', amounts: [10], enabled: false });
     expect(await runnablePlans()).toEqual([]);
   });
 

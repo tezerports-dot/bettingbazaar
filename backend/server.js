@@ -658,13 +658,6 @@ if (runtime.acceptsRealtime) {
   app.use('/api/sse', initSSERoutes(sseManager, cycleGenerator));
   attachSocketHandlers(io);
 
-  // Realtime cost/concurrency fix: coalesce per-bet pool broadcasts into ≤1
-  // snapshot/sec/cycle. One publisher per process; on a single-server deploy
-  // that is exactly one, with the true DB-authoritative total. Across instances
-  // the Socket.IO Redis adapter delivers the room emit to every watcher, and
-  // each process publishes valid recent totals (display converges sub-second).
-  cycleSnapshotPublisher.attach({ io, sseManager }).start();
-
   // Expose realtime delivery gauges on /metrics (connected sockets + publisher
   // stats). Event-loop lag is already a default metric. IoC so metrics.service
   // imports neither io nor the publisher.
@@ -677,6 +670,15 @@ if (runtime.acceptsRealtime) {
 } else {
   app.use('/api/sse', (_req, res) => res.status(404).json({ success: false, message: 'Realtime disabled on this API role' }));
 }
+
+// The live pool feed: coalesce per-bet pool totals into ≤1 snapshot/sec/cycle.
+// Started in EVERY role, not only the realtime one: players' bets are placed
+// on the api role and auto house bets by the scheduler, and a publisher that
+// was never started held their totals forever, so players saw the pool move
+// only when a page reload re-read it (fixed 2026-10-15). A role with no
+// streams of its own hands its snapshots to the realtime workers through
+// `sseManager.sharePeer` (the Redis bridge below), and they send them on.
+cycleSnapshotPublisher.attach({ io, sseManager }).start();
 
 // Cross-instance real-time bridge (Phase X): fan out socket.io + SSE events
 // across all instances via Redis. No-op without REDIS_URL. EVERY role joins

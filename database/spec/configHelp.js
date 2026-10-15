@@ -36,6 +36,14 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'The line players read beside the pool totals and at the end of the board rules, saying the totals include house bets that are never paid out. You can change the wording but not remove it (10 to 160 characters).',
     example: '"Pool totals include house bets, which are never paid out."',
   },
+  demoResultsOn: {
+    what: 'Whether the analytics fill each board’s 1,440-result window with demo results placed before its first real results. Each new real result replaces the oldest demo one; once a board has 1,440 real results none are shown. Demo results are never in the Results list and never affect a round.',
+    example: 'On while the platform is new; off to show real results only.',
+  },
+  demoResultsLabel: {
+    what: 'The line players read on the analytics whenever demo results are in the window, saying they are demo results. You can change the wording but not remove it (10 to 160 characters).',
+    example: '"Includes demo results shown before the first real results."',
+  },
   iosUrl: {
     what: 'Where iPhone users are sent to get the app. Leave empty while iPhone users install the web app (PWA) from the browser.',
     example: 'https://apps.apple.com/app/id1234567890, or empty.',
@@ -128,9 +136,13 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'Extra seconds a player gets to type the payment reference after the order window, so a payment made at the last moment is not lost.',
     example: '60: a reference sent 40 seconds after the window closed is still accepted.',
   },
-  inrRoutingMode: {
-    what: 'Who serves rupee orders. AGENTS: supervisors\' teams, small sizes paid as cash at an ATM. MERCHANTS: merchant accounts, every size paid by UPI QR or bank transfer. USDT always goes to agents. Switching moves only orders still waiting for a first taker.',
-    example: 'MERCHANTS, once your merchant accounts are funded and online.',
+  merchantBuySizes: {
+    what: 'The buy sizes that go to merchant accounts, paid by UPI QR or bank transfer. Every other buy size goes to agents: 500 to 10,000 as cash at an ATM, 50,000 and up by UPI/bank. USDT always goes to agents. A change moves only orders still waiting for a first taker.',
+    example: '[50000, 100000, 500000]: big buys to merchant accounts, small ones to agents at an ATM.',
+  },
+  merchantSellSizes: {
+    what: 'The sell sizes that go to merchant accounts, paid out by bank transfer from a merchant account. Every other sell size goes to agents. A change moves only orders still waiting for a first taker.',
+    example: '[] : every sell to agents.',
   },
   'merchantRouting.concurrency.DEPOSIT': {
     what: 'How many open buy orders one merchant account may hold at the same time.',

@@ -7,7 +7,7 @@
  * orders itself through its own payment accounts and its own sub-members. What
  * is pinned here:
  *
- *   · the admin switch `inrRoutingMode` sends INR to merchant accounts; the
+ *   · the admin's per-size lists send INR sizes to merchant accounts; the
  *     orders still WAITING move to the new mode (re-railed), the ones already
  *     assigned finish where they are, and USDT never moves;
  *   · a buy paid by UPI QR (a link built with the order's amount) and one paid
@@ -48,6 +48,11 @@ import { systemConfigPayload } from '../../domains/configuration/systemConfigPay
 import { signToken } from '../../domains/identity/paseto.util.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
+import { ORDER_SIZES } from '../../domains/merchant/denominations.js';
+
+// Every size of both directions to merchant accounts, or every size to agents.
+const TO_MERCHANTS = { merchantBuySizes: [...ORDER_SIZES], merchantSellSizes: [...ORDER_SIZES] };
+const TO_AGENTS = { merchantBuySizes: [], merchantSellSizes: [] };
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -91,7 +96,7 @@ describePg('merchant accounts', () => {
     settingsAdmin = await actor({ isSubAdmin: true, permissions: { canManageSystemSettings: true } });
     const cfg = await getSystemConfig();
     prior = {
-      inrRoutingMode: cfg.inrRoutingMode,
+      merchantBuySizes: [...cfg.merchantBuySizes], merchantSellSizes: [...cfg.merchantSellSizes],
       directMerchants: { ...cfg.directMerchants },
     };
   }, 60_000);
@@ -234,7 +239,7 @@ describePg('merchant accounts', () => {
   // ── The switch ────────────────────────────────────────────────────────────
   describe('the INR routing mode', () => {
     it('moves the waiting INR orders, leaves an assigned one and USDT where they are', async () => {
-      await config({ inrRoutingMode: 'AGENTS' });
+      await config({ ...TO_AGENTS });
       await onlyDirectOnline(null);
       // An agent order already assigned (a working agent team on the cash rail).
       const agent = await merchantActor();
@@ -253,7 +258,7 @@ describePg('merchant accounts', () => {
       });
       expect(usdt.inrRouting ?? null).toBe(null);
 
-      const res = await as(systemApp, settingsAdmin).put('/system/config').send({ inrRoutingMode: 'MERCHANTS' });
+      const res = await as(systemApp, settingsAdmin).put('/system/config').send({ ...TO_MERCHANTS });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(res.body.rerailedOrders).toBeGreaterThanOrEqual(1);
 
@@ -270,26 +275,46 @@ describePg('merchant accounts', () => {
       expect(u.inrRouting ?? null).toBe(null);
       expect(u.currency).toBe('USDT');
 
-      // Every client is told, in the agents' shape: no cash sizes, every size UPI or bank.
+      // Every client is told: every size under the merchant group, no agent sizes.
       const payload = systemConfigPayload(await getSystemConfig());
-      expect(payload.inrRoutingMode).toBe('MERCHANTS');
       expect(payload.orderSizes.buy.CASH).toEqual([]);
-      expect(payload.orderSizes.buy.UPI_BANK).toContain(1_000);
-      expect(payload.orderSizeMethods.buy.UPI_BANK).toBe('UPI or bank transfer');
+      expect(payload.orderSizes.buy.UPI_BANK).toEqual([]);
+      expect(payload.orderSizes.buy.MERCHANT).toContain(1_000);
+      expect(payload.orderSizeMethods.buy.MERCHANT).toBe('UPI or bank transfer');
     });
 
-    it('refuses an unknown mode by the spec, and the database refuses to move an assigned order', async () => {
-      const res = await as(systemApp, settingsAdmin).put('/system/config').send({ inrRoutingMode: 'BOTH' });
+    it('routes each size where the admin put it: small buys to agents, big ones to merchant accounts', async () => {
+      await config({ merchantBuySizes: [50_000, 100_000, 500_000], merchantSellSizes: [] });
+      const small = await queuedBuy(1_000);
+      expect(await getOrderRecord(small.orderId)).toMatchObject({ paymentMode: 'CASH_ATM', inrRouting: 'AGENTS' });
+      const p = await player();
+      const big = await createOrderRecord({
+        orderId: oid(), userId: p.userId, type: 'DEPOSIT', tokenAmountRupees: 50_000, fiatAmountRupees: 50_000,
+      });
+      expect(big).toMatchObject({ paymentMode: 'P2P_UPI', inrRouting: 'MERCHANTS' });
+      const payload = systemConfigPayload(await getSystemConfig());
+      expect(payload.orderSizes.buy.CASH).toContain(1_000);
+      expect(payload.orderSizes.buy.MERCHANT).toEqual([50_000, 100_000, 500_000]);
+      expect(payload.orderSizes.sell.MERCHANT).toEqual([]);
+      // Moving 1,000 to merchant accounts moves the waiting 1,000 buy with it.
+      const res = await as(systemApp, settingsAdmin).put('/system/config').send({ merchantBuySizes: [1_000, 50_000] });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(await getOrderRecord(small.orderId)).toMatchObject({ paymentMode: 'P2P_UPI', inrRouting: 'MERCHANTS' });
+      await config({ ...TO_MERCHANTS });
+    });
+
+    it('refuses a size that is not an order size, and the database refuses to move an assigned order', async () => {
+      const res = await as(systemApp, settingsAdmin).put('/system/config').send({ merchantBuySizes: [777] });
       expect(res.status).toBe(400);
-      expect((await getSystemConfig()).inrRoutingMode).toBe('MERCHANTS');
+      expect((await getSystemConfig()).merchantBuySizes).toEqual([...ORDER_SIZES]);
       const { rows } = await pgQuery(
         `SELECT order_id FROM order_states WHERE state = 'ASSIGNED' AND inr_routing = 'AGENTS' AND user_id = ANY($1) LIMIT 1`,
         [players]);
       await expect(pgQuery(
         `UPDATE order_states SET inr_routing = 'MERCHANTS', payment_mode = 'P2P_UPI' WHERE order_id = $1`, [rows[0].order_id]))
         .rejects.toThrow(/cannot be moved/);
-      // A waiting order moves only with the mode, and under merchant accounts only to UPI or bank.
-      await config({ inrRoutingMode: 'AGENTS' });
+      // A waiting order moves only with its routing, and under merchant accounts only to UPI or bank.
+      await config({ ...TO_AGENTS });
       const waiting = await queuedBuy(1_000);
       await expect(pgQuery(
         `UPDATE order_states SET inr_routing = 'MERCHANTS', payment_mode = 'CASH_ATM' WHERE order_id = $1`, [waiting.orderId]))
@@ -297,7 +322,7 @@ describePg('merchant accounts', () => {
       await expect(pgQuery(
         `UPDATE order_states SET payment_mode = 'P2P_UPI' WHERE order_id = $1`, [waiting.orderId]))
         .rejects.toThrow(/cannot be moved/);
-      await config({ inrRoutingMode: 'MERCHANTS' });
+      await config({ ...TO_MERCHANTS });
     });
   });
 
@@ -305,7 +330,7 @@ describePg('merchant accounts', () => {
   describe('a buy served by a merchant account', () => {
     let m;
     beforeAll(async () => {
-      await config({ inrRoutingMode: 'MERCHANTS' });
+      await config({ ...TO_MERCHANTS });
       m = await merchantAccount();
     });
 
@@ -406,7 +431,7 @@ describePg('merchant accounts', () => {
   describe('a sell served by a merchant account', () => {
     let m;
     beforeAll(async () => {
-      await config({ inrRoutingMode: 'MERCHANTS' });
+      await config({ ...TO_MERCHANTS });
       m = await merchantAccount();
     });
 
@@ -444,7 +469,7 @@ describePg('merchant accounts', () => {
   describe('sub-members and their roles', () => {
     let m;
     beforeAll(async () => {
-      await config({ inrRoutingMode: 'MERCHANTS' });
+      await config({ ...TO_MERCHANTS });
       m = await merchantAccount();
     });
 
@@ -537,7 +562,7 @@ describePg('merchant accounts', () => {
   // ── Problems flag; they do not suspend ────────────────────────────────────
   describe('problems', () => {
     it('flags a merchant account at the admin\'s daily threshold, and never suspends it', async () => {
-      await config({ inrRoutingMode: 'MERCHANTS', directMerchants: { dailyProblemFlagThreshold: 2 } });
+      await config({ ...TO_MERCHANTS, directMerchants: { dailyProblemFlagThreshold: 2 } });
       const m = await merchantAccount();
       const cap = Number((await getSystemConfig()).merchantOrderLimits?.maxConsecutiveRejections ?? 3);
       for (let i = 0; i < Math.max(cap, 2) + 1; i += 1) {
@@ -562,7 +587,7 @@ describePg('merchant accounts', () => {
     });
 
     it('a lost dispute is a problem for a merchant account, not a suspension', async () => {
-      await config({ inrRoutingMode: 'MERCHANTS' });
+      await config({ ...TO_MERCHANTS });
       const { recordDisputeFault } = await import('#db/repositories/disputeFaults.js');
       const m = await merchantAccount();
       const { order, orderId } = await queuedBuy(1_000);
@@ -578,7 +603,7 @@ describePg('merchant accounts', () => {
     });
 
     it('an AGENT\'s refusals still suspend at the cap', async () => {
-      await config({ inrRoutingMode: 'AGENTS' });
+      await config({ ...TO_AGENTS });
       await onlyDirectOnline(null);
       const agent = await merchantActor();
       await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 200_000, include: [agent.merchantId] });
@@ -599,7 +624,7 @@ describePg('merchant accounts', () => {
   // ── Commission ────────────────────────────────────────────────────────────
   describe('commission', () => {
     it('pays the admin\'s percent of the matched rise into the account\'s own pool, all of it the owner\'s', async () => {
-      await config({ inrRoutingMode: 'MERCHANTS', directMerchants: { commissionPercent: 7 } });
+      await config({ ...TO_MERCHANTS, directMerchants: { commissionPercent: 7 } });
       const m = await merchantAccount({ poolTokens: 200_000 });
       // The platform's commission pool, funded from revenue for this case.
       const need = 10_000_000 - await bonusPoolPaise();

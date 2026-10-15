@@ -29,7 +29,7 @@ import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 import { deriveOrderHmac } from '../../backend/middleware/order-crypto-access.js';
 import { paymentModeFor, inrRoutingFor } from './orderRails.js';
 import { getSystemConfig } from './config.js';
-import { inrRoutingOf } from '../../backend/domains/merchant/denominations.js';
+import { routingForSize } from '../../backend/domains/merchant/denominations.js';
 
 const num = (v) => Number(v ?? 0);
 const rupees = (v) => paiseToRupees(num(v));
@@ -348,10 +348,12 @@ async function newOrderStatement({
   // or a fixture could set to a rail the order's size would never get (§32
   // S16). The row is immutable afterwards (order_states_mode_immutable).
   //
-  // An INR order is also born under the admin's routing mode (owner,
-  // 2026-10-11), read here from the config row and stamped with it: the rail
-  // follows from the mode, and routing reads the order's own stamp.
-  const inrRouting = inrRoutingFor({ currency: detail.currency, mode: inrRoutingOf(await getSystemConfig()) });
+  // An INR order is also born under the routing the admin chose for its size
+  // and direction (owner, 2026-10-15), read here from the config row and
+  // stamped with it: the rail follows from it, and routing reads the stamp.
+  const inrRouting = inrRoutingFor({
+    currency: detail.currency, mode: routingForSize(await getSystemConfig(), tokenPaise / 100, type),
+  });
   const paymentMode = paymentModeFor({ currency: detail.currency, tokenAmountPaise: tokenPaise, inrRouting });
   const columns = ['order_id', 'user_id', 'order_type', 'state', 'token_amount_paise', 'fiat_amount_paise',
     'payment_mode', 'inr_routing', 'usdt_chain', 'order_hmac'];
@@ -402,9 +404,9 @@ export async function queuedOrdersForAssignment({ limit = 200 } = {}) {
 }
 
 /**
- * Move the INR orders still WAITING for a first taker to a routing mode
- * (owner, 2026-10-11): the admin switched INR between agents and merchant
- * accounts, and an order nobody has taken goes to whoever serves INR now. Its
+ * Move the INR orders still WAITING for a first taker to the routing the
+ * admin now chooses for their size and direction (owner, 2026-10-15): an
+ * order nobody has taken goes to whoever serves that size now. Its
  * rail moves with it, by the one rule (`paymentModeFor`): a cash size queued
  * under agents becomes a UPI/bank order under merchant accounts, and back.
  *
@@ -418,19 +420,23 @@ export async function queuedOrdersForAssignment({ limit = 200 } = {}) {
  * `orderId` narrows it to one order (the assignment path re-rails the order in
  * hand before it routes it).
  *
+ * `cfg` is the config row (`routingForSize` reads its per-size lists).
+ *
  * @returns {Promise<string[]>} the order ids moved
  */
-export async function rerailWaitingOrders(mode, { orderId = null, limit = 500 } = {}) {
+export async function rerailWaitingOrders(cfg, { orderId = null, limit = 500 } = {}) {
   const { rows } = await pgQuery(
-    `SELECT order_id, token_amount_paise, currency FROM order_states
-      WHERE state = 'PENDING_QUEUE' AND inr_routing IS NOT NULL AND inr_routing <> $1
+    `SELECT order_id, order_type, token_amount_paise, currency, inr_routing FROM order_states
+      WHERE state = 'PENDING_QUEUE' AND inr_routing IS NOT NULL
         AND team_id IS NULL AND pool_held_paise = 0 AND cash_link IS NULL
-        AND ($2::text IS NULL OR order_id = $2)
-      ORDER BY created_at LIMIT $3`,
-    [String(mode), orderId === null ? null : String(orderId), Math.min(Math.max(Number(limit) || 500, 1), 5000)],
+        AND ($1::text IS NULL OR order_id = $1)
+      ORDER BY created_at LIMIT $2`,
+    [orderId === null ? null : String(orderId), Math.min(Math.max(Number(limit) || 500, 1), 5000)],
     'orders_rerail_candidates');
   const moved = [];
   for (const r of rows) {
+    const mode = routingForSize(cfg, Number(r.token_amount_paise) / 100, r.order_type);
+    if (mode === r.inr_routing) continue;
     const paymentMode = paymentModeFor({
       currency: r.currency, tokenAmountPaise: Number(r.token_amount_paise), inrRouting: mode,
     });

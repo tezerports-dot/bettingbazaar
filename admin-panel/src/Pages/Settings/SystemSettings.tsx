@@ -117,8 +117,12 @@ const DIRECT_MERCHANT_FIELDS: Array<{
   { key: 'dailyProblemFlagThreshold', label: 'Problems in a day before a merchant is flagged',
     min: 1, max: 100, fallback: 5 },   // spec default: 5,
 ];
-/** UI names for the served `inrRoutingModes` (INR_ROUTING_MODES); an unknown value shows as itself. §11. */
-const INR_MODE_LABEL: Record<string, string> = { AGENTS: 'Agents', MERCHANTS: 'Merchants' };
+/** Per direction, the field listing the sizes sent to merchant accounts (MERCHANT_SIZE_FIELD, denominations.js). §5 mirror. */
+type MerchantSizeKey = 'merchantBuySizes' | 'merchantSellSizes';
+const MERCHANT_SIZE_LISTS: Array<{ key: MerchantSizeKey; verb: string }> = [
+  { key: 'merchantBuySizes', verb: 'Buy' },
+  { key: 'merchantSellSizes', verb: 'Sell' },
+];
 
 interface MerchantRoutingForm {
   concurrency: Record<OrderDirection, number>;
@@ -210,8 +214,6 @@ export const SystemSettings: React.FC = () => {
   const [gateway, setGateway] = useState<GatewayDocumentStatus | null>(null);
   // The order-size universe by rail, from the server (see ORDER_SIZE_RAILS above).
   const [orderSizeRails, setOrderSizeRails] = useState<OrderSizeRail[]>([]);
-  // The two values `inrRoutingMode` takes (INR_ROUTING_MODES), served with the config.
-  const [inrRoutingModes, setInrRoutingModes] = useState<string[]>([]);
   // What each setting means, served beside the config (configHelp.js).
   const [help, setHelp] = useState<SettingHelpMap>({});
 
@@ -241,7 +243,9 @@ export const SystemSettings: React.FC = () => {
     // ROUTING_TIMERS rather than restated.
     teamRouting: routingDefaults(),
     // Who serves INR orders: agents' teams or merchants (owner, 2026-10-11).
-    inrRoutingMode: 'AGENTS',   // schema default: 'AGENTS'
+    // The sizes sent to merchant accounts, per direction (owner, 2026-10-15).
+    merchantBuySizes: [] as number[],   // schema default: [] (all to agents)
+    merchantSellSizes: [] as number[],  // schema default: []
     merchantRouting: merchantRoutingDefaults(),
     directMerchants: directMerchantDefaults(),
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
@@ -249,6 +253,10 @@ export const SystemSettings: React.FC = () => {
     // The line beside the pool totals (owner, 2026-10-15). '' until loaded: the
     // server always sends one (houseBetsLabelOf), and an empty save is refused.
     houseBetsLabel: '',
+    // Demo results in the analytics and their line (owner, 2026-10-15). The
+    // line is '' until loaded, like houseBetsLabel; the switch's schema default: true.
+    demoResultsOn: true,
+    demoResultsLabel: '',
     // How long a sell stays in escrow after the member marks it paid.
     withdrawalHoldMinutes: 60,  // schema default: 60 (also the floor)
     // How long a player has to dispute a buy the member rejected as unpaid.
@@ -305,7 +313,6 @@ export const SystemSettings: React.FC = () => {
         setApiHostChoices(Array.isArray(response.data.apiHostChoices) ? response.data.apiHostChoices : []);
         setGateway(response.data.gatewayDocument ?? null);
         setOrderSizeRails(Array.isArray(response.data.orderSizeRails) ? response.data.orderSizeRails : []);
-        setInrRoutingModes(Array.isArray(response.data.inrRoutingModes) ? response.data.inrRoutingModes : []);
         setHelp(response.help ?? {});
         setFormData({
           maintenanceMode: response.data.maintenanceMode || false,
@@ -346,7 +353,8 @@ export const SystemSettings: React.FC = () => {
               processingWindowSeconds: { ...d.processingWindowSeconds, ...(served.processingWindowSeconds ?? {}) },
             } as TeamRoutingForm;
           })(),
-          inrRoutingMode: response.data.inrRoutingMode ?? 'AGENTS',   // schema default: 'AGENTS'
+          merchantBuySizes: Array.isArray(response.data.merchantBuySizes) ? response.data.merchantBuySizes : [],   // schema default: []
+          merchantSellSizes: Array.isArray(response.data.merchantSellSizes) ? response.data.merchantSellSizes : [], // schema default: []
           // Taken whole, like teamRouting.
           merchantRouting: (() => {
             const served = response.data.merchantRouting ?? {};
@@ -360,6 +368,8 @@ export const SystemSettings: React.FC = () => {
           directMerchants: { ...directMerchantDefaults(), ...(response.data.directMerchants ?? {}) },
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
           houseBetsLabel:     response.data.houseBetsLabel     ?? '',
+          demoResultsOn:      response.data.demoResultsOn      ?? true,  // schema default: true
+          demoResultsLabel:   response.data.demoResultsLabel   ?? '',
           riskRules: {
             enforceMultiplesOf10:     response.data.riskRules?.enforceMultiplesOf10     ?? true,
             blockOppositeSideBetting: response.data.riskRules?.blockOppositeSideBetting ?? false,
@@ -433,10 +443,13 @@ export const SystemSettings: React.FC = () => {
       // The size lists go back only when the card had the universe to tick
       // them from: an empty list sent from a card that drew nothing would be
       // refused (minItems 1) and take every other setting's save down with it.
-      const { buyOrderSizes, sellOrderSizes, ...rest } = formData;
-      const saved = await api.system.updateConfig(orderSizeRails.length > 0 ? { ...rest, buyOrderSizes, sellOrderSizes } : rest);
-      // A switch of `inrRoutingMode` moves the INR orders still waiting for a
-      // first taker; the server says how many (`rerailedOrders`).
+      // The same for who serves each size: lists drawn from nothing would send
+      // every size back to agents.
+      const { buyOrderSizes, sellOrderSizes, merchantBuySizes, merchantSellSizes, ...rest } = formData;
+      const saved = await api.system.updateConfig(orderSizeRails.length > 0
+        ? { ...rest, buyOrderSizes, sellOrderSizes, merchantBuySizes, merchantSellSizes } : rest);
+      // Moving a size between agents and merchant accounts moves the INR orders
+      // of that size still waiting for a first taker; the server says how many.
       const moved = Number(saved?.rerailedOrders) || 0;
       toast.success(moved > 0
         ? `System settings updated. ${moved} waiting INR ${moved === 1 ? 'order was' : 'orders were'} moved to the new route.`
@@ -755,6 +768,34 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
+            <div className="flex items-center justify-between">
+              <div className="pr-4">
+                <p className="font-medium">Demo Results in Analytics</p>
+                <SettingHelp path="demoResultsOn" />
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" aria-label="Fill the analytics with demo results"
+                  checked={formData.demoResultsOn}
+                  onChange={(e) => setFormData({ ...formData, demoResultsOn: e.target.checked })}
+                  className="sr-only peer" />
+                <div className="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
+              </label>
+            </div>
+            <label className="label mt-3" htmlFor="demo-results-label">Demo Results Line (shown to players)</label>
+            <input id="demo-results-label"
+              type="text" minLength={10} maxLength={160}
+              value={formData.demoResultsLabel}
+              onChange={(e) => setFormData({ ...formData, demoResultsLabel: e.target.value })}
+              className="input"
+            />
+            <SettingHelp path="demoResultsLabel" />
+            <p className="text-xs text-gold-400/80 mt-1">
+              Players see this on the analytics whenever demo results are in a board's 1,440.
+              You can reword it; it cannot be removed.
+            </p>
+          </div>
+
+          <div className="pt-4 border-t border-dark-700">
             <label className="label" htmlFor="winnings-platform-fee">Winnings Platform Fee (%)</label>
             <input id="winnings-platform-fee"
               type="number" min={0} max={100} step={0.01}
@@ -951,27 +992,57 @@ export const SystemSettings: React.FC = () => {
             </div>
           </div>
 
-          {/* ── INR routing mode and merchants (owner, 2026-10-11) ───────────
-              Who serves INR orders, and the numbers merchants work to.
-              Rendered from the served `inrRoutingModes` and the §5 mirrors
-              above; sent back as `inrRoutingMode`, `merchantRouting` and
-              `directMerchants`, which the PUT accepts by declaration. */}
+          {/* ── Who serves each INR size, and the merchants' numbers ─────────
+              Per direction and size, agents or merchant accounts (owner,
+              2026-10-15). The sizes are the served `orderSizeRails`; sent
+              back as `merchantBuySizes` / `merchantSellSizes`, with
+              `merchantRouting` and `directMerchants`, which the PUT accepts
+              by declaration. */}
           <div className="pt-4 border-t border-dark-700">
             <h3 className="font-semibold mb-1">INR Orders</h3>
-            <fieldset>
-              <legend className="label">INR orders go to</legend>
-              <div className="flex flex-wrap gap-4 mt-1">
-                {inrRoutingModes.map((mode) => (
-                  <label key={mode} className="flex items-center space-x-2 text-sm">
-                    <input type="radio" name="inr-routing-mode" value={mode}
-                      checked={formData.inrRoutingMode === mode}
-                      onChange={() => setFormData({ ...formData, inrRoutingMode: mode })} />
-                    <span>{INR_MODE_LABEL[mode] ?? mode}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <SettingHelp path="inrRoutingMode" />
+            <p className="text-xs text-gray-500 mb-3">
+              Pick who serves each size. Agents: 500 to 10,000 as cash at an ATM, 50,000 and up by UPI/bank.
+              Merchant accounts: paid by UPI QR or bank transfer. USDT always goes to agents.
+            </p>
+            <table className="text-sm" aria-label="Who serves each INR size">
+              <thead>
+                <tr>
+                  <th className="text-left pr-6 pb-2">Size (tokens)</th>
+                  {MERCHANT_SIZE_LISTS.map((l) => <th key={l.key} className="text-left pr-6 pb-2">{l.verb} goes to</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {orderSizeRails.flatMap((r) => r.sizes).map((size) => {
+                  const shown = size.toLocaleString('en-IN');
+                  return (
+                    <tr key={size}>
+                      <td className="pr-6 py-1">{shown}</td>
+                      {MERCHANT_SIZE_LISTS.map((l) => {
+                        const list = formData[l.key];
+                        const all = orderSizeRails.flatMap((r) => r.sizes);
+                        return (
+                          <td key={l.key} className="pr-6 py-1">
+                            <select aria-label={`${l.verb} ${shown} goes to`} className="input py-1"
+                              value={list.includes(size) ? 'MERCHANTS' : 'AGENTS'}
+                              onChange={(e) => setFormData({
+                                ...formData,
+                                [l.key]: e.target.value === 'MERCHANTS'
+                                  ? all.filter((x) => x === size || list.includes(x))
+                                  : list.filter((x) => x !== size),
+                              })}>
+                              <option value="AGENTS">Agents</option>
+                              <option value="MERCHANTS">Merchant accounts</option>
+                            </select>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <SettingHelp path="merchantBuySizes" />
+            <SettingHelp path="merchantSellSizes" />
 
             <h3 className="font-semibold mt-6 mb-1">Merchant Routing</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

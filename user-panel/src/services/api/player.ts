@@ -25,5 +25,5 @@ export const referrals = (): Promise<any> =>
 export const autoHouseBets = (): Promise<any> =>
   apiClient.get('/api/bet/phantom/auto');
 
-export const saveAutoHouseBets = (plan: { boardKey: string; side: string; amounts: number[]; enabled: boolean }): Promise<any> =>
+export const saveAutoHouseBets = (plan: { boardKey: string; audience: string; side: string; amounts: number[]; enabled: boolean }): Promise<any> =>
   apiClient.put('/api/bet/phantom/auto', plan);

@@ -268,6 +268,10 @@ export interface SystemConfigData {
   /** The line beside the pool totals: they include house bets, never paid
    *  (SystemConfig.houseBetsLabel, never blank; systemConfigPayload.js). */
   houseBetsLabel?: string;
+  /** Demo results filling the analytics window, and the line shown with them
+   *  (SystemConfig.demoResultsOn / demoResultsLabel, never blank; systemConfigPayload.js). */
+  demoResultsOn?: boolean;
+  demoResultsLabel?: string;
 }
 
 // ── Payment Order (Merchant Payment Processing domain) ───────────────────────

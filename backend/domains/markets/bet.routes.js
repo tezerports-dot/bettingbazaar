@@ -604,7 +604,8 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
 // side, a list of sizes bet one a second until the equalizer (houseBets.js).
 //
 // GET /api/bet/phantom/auto  — { plans, limits }
-// PUT /api/bet/phantom/auto  — { boardKey, side, amounts: [rupees…], enabled }
+// PUT /api/bet/phantom/auto  — { boardKey, audience, side, amounts: [rupees…], enabled }
+// A plan is per board, audience (VIP / GENERAL) and side.
 // ─────────────────────────────────────────────────────────────────────────────
 const AUTO_LIMITS = { maxSteps: AUTO_BET_STEPS_MAX, minRupees: AUTO_BET_MIN_RUPEES, maxRupees: AUTO_BET_MAX_RUPEES };
 
@@ -630,7 +631,7 @@ router.put('/phantom/auto', authenticatePlayer, async (req, res) => {
   try {
     const agent = await phantomAgent(req, res);
     if (!agent) return;
-    const { boardKey, side, amounts, enabled } = req.body || {};
+    const { boardKey, audience, side, amounts, enabled } = req.body || {};
     if (!MARKET_SIDES.includes(side)) {
       return res.status(400).json({ success: false, code: 'AUTO_BETS_INVALID', message: 'Pick Delhi or Bombay.' });
     }
@@ -642,7 +643,7 @@ router.put('/phantom/auto', authenticatePlayer, async (req, res) => {
     if (agent.phantomAccess !== 'BOTH' && agent.phantomAccess !== board.key) {
       return res.status(403).json({ success: false, code: 'PHANTOM_ACCESS_REQUIRED', message: `Your phantom access is for ${agent.phantomAccess} cycles only` });
     }
-    const plan = await db.phantomAutoPlans.savePlan({ userId: req.user.userId, boardKey: board.key, side, amounts, enabled });
+    const plan = await db.phantomAutoPlans.savePlan({ userId: req.user.userId, boardKey: board.key, audience, side, amounts, enabled });
     return res.json({ success: true, plan });
   } catch (error) {
     return respondError(res, error, 'PUT /api/bet/phantom/auto', { message: 'Could not save your auto bets' });

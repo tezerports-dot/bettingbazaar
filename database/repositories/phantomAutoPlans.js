@@ -5,6 +5,7 @@
  * BETS"); the rules are backend/domains/markets/houseBets.js.
  */
 import { pgQuery } from '../client.js';
+import { AUDIENCES } from './markets.js';
 import {
   AUTO_BET_STEPS_MAX, AUTO_BET_MIN_RUPEES, AUTO_BET_MAX_RUPEES,
 } from '../../backend/domains/markets/houseBets.js';
@@ -13,6 +14,7 @@ const bad = (message) => Object.assign(new Error(message), { status: 400, code: 
 
 const toPlan = (r) => ({
   boardKey: r.board_key,
+  audience: r.audience,
   side: r.side,
   amounts: (r.amounts_paise || []).map((p) => Number(p) / 100),
   enabled: r.enabled,
@@ -39,7 +41,7 @@ export function normaliseAmounts(amounts) {
 /** This agent's plans, every board and side. */
 export async function listFor(userId) {
   const { rows } = await pgQuery(
-    `SELECT * FROM phantom_auto_plans WHERE user_id = $1 ORDER BY board_key, side`,
+    `SELECT * FROM phantom_auto_plans WHERE user_id = $1 ORDER BY board_key, audience, side`,
     [String(userId)], 'phantom_auto_list_for',
   );
   return rows.map(toPlan);
@@ -49,16 +51,18 @@ export async function listFor(userId) {
  * Save one plan (insert or replace). Saving restarts it from now: the next
  * bet is the first size of the list, at the next second.
  */
-export async function savePlan({ userId, boardKey, side, amounts, enabled }) {
+export async function savePlan({ userId, boardKey, audience, side, amounts, enabled }) {
+  // Each audience runs its own rounds, so a plan names one; there is no default.
+  if (!AUDIENCES.includes(audience)) throw bad('Pick VIP or General for this plan.');
   const paise = normaliseAmounts(amounts);
   const { rows } = await pgQuery(
-    `INSERT INTO phantom_auto_plans (user_id, board_key, side, amounts_paise, enabled, starts_at, updated_at)
-     VALUES ($1, $2, $3, $4::bigint[], $5, now(), now())
-     ON CONFLICT (user_id, board_key, side) DO UPDATE
+    `INSERT INTO phantom_auto_plans (user_id, board_key, audience, side, amounts_paise, enabled, starts_at, updated_at)
+     VALUES ($1, $2, $6, $3, $4::bigint[], $5, now(), now())
+     ON CONFLICT (user_id, board_key, audience, side) DO UPDATE
         SET amounts_paise = EXCLUDED.amounts_paise, enabled = EXCLUDED.enabled,
             starts_at = now(), updated_at = now()
      RETURNING *`,
-    [String(userId), String(boardKey), String(side), paise, enabled !== false],
+    [String(userId), String(boardKey), String(side), paise, enabled !== false, audience],
     'phantom_auto_save',
   );
   return toPlan(rows[0]);
@@ -71,7 +75,7 @@ export async function savePlan({ userId, boardKey, side, amounts, enabled }) {
  */
 export async function runnablePlans() {
   const { rows } = await pgQuery(
-    `SELECT p.user_id, p.board_key, p.side, p.amounts_paise, p.starts_at
+    `SELECT p.user_id, p.board_key, p.audience, p.side, p.amounts_paise, p.starts_at
        FROM phantom_auto_plans p
        JOIN users u ON u.user_id = p.user_id
       WHERE p.enabled
@@ -82,6 +86,7 @@ export async function runnablePlans() {
   return rows.map((r) => ({
     userId: r.user_id,
     boardKey: r.board_key,
+    audience: r.audience,
     side: r.side,
     amountsPaise: r.amounts_paise.map(Number),
     startsAtMs: new Date(r.starts_at).getTime(),

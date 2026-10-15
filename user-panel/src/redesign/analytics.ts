@@ -154,15 +154,6 @@ export function analyticsFor(realWinnersNewestFirst: Side[], board?: { kind: str
   return computeAnalytics(realWinnersNewestFirst.slice(0, target));
 }
 
-/** Flatten runs back into a capped winner sequence (newest first) for bead rows. */
-export function seqFromRuns(runs: Run[], cap = 80): Side[] {
-  const out: Side[] = [];
-  for (const r of runs) {
-    for (let k = 0; k < r.len; k++) out.push(r.side);
-    if (out.length > cap) break;
-  }
-  return out.slice(0, cap);
-}
 
 /**
  * Each board's real winners, newest first, keyed by EVERY board the server
@@ -188,7 +179,7 @@ export function winnersByBoard(
 // figures says anything about the next one. The page says so beside them.
 
 /** The look-back windows offered, in results. A window is cut to what exists. */
-export const RUN_WINDOWS = Object.freeze([100, 500, 1000] as const);
+export const RUN_WINDOWS = Object.freeze([100, 500, 1000, 1440] as const);
 
 /** Run lengths tabled one by one; the last bucket holds this length and longer. */
 export const RUN_BUCKETS = Object.freeze([1, 2, 3, 4, 5, 6] as const);

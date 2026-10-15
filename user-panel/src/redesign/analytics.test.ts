@@ -47,10 +47,10 @@ describe('analyticsFor', () => {
     expect(analyticsFor(run(MIN_SAMPLE, 'DELHI'), INTERVAL).sufficient).toBe(true);
   });
 
-  it('caps the full-day window without padding a short one', () => {
-    // A daily board looks back 30 results; the cap trims a long history and
-    // does nothing at all to a short one.
-    expect(analyticsFor(run(50, 'DELHI'), DAILY).sample).toBe(30);
+  it('caps the full-day window at 1,440 too, without padding a short one', () => {
+    // Every board looks back 1,440 results (owner, 2026-10-15); demo results
+    // are added by DemoResults.tsx, never by analyticsFor.
+    expect(analyticsFor(run(1500, 'DELHI'), DAILY).sample).toBe(1440);
     expect(analyticsFor(run(4, 'DELHI'), DAILY).sample).toBe(4);
   });
 

@@ -480,8 +480,8 @@ const MUTATIONS = [
     id: 'M106', file: 'backend/domains/merchant/denominations.js', config: PG,
     test: 'backend/tests/routes/orderSizesPg.test.js',
     why: 'a size the admin switched off is still accepted, so the admin cannot stop a rail being offered work its teams cannot take',
-    from: `  return ORDER_SIZES.filter((size) => list.includes(size));`,
-    to: `  return [...ORDER_SIZES];`,
+    from: `  const list = Array.isArray(stored) ? stored.map(Number) : ORDER_SIZES; // schema default: all seven\n  return ORDER_SIZES.filter((size) => list.includes(size));`,
+    to: `  const list = Array.isArray(stored) ? stored.map(Number) : ORDER_SIZES; // schema default: all seven\n  return [...ORDER_SIZES];`,
   },
   {
     id: 'M107', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
@@ -494,8 +494,15 @@ const MUTATIONS = [
     id: 'M109', file: 'backend/domains/configuration/systemConfigPayload.js', config: UNIT,
     test: 'backend/tests/unit/systemConfigPayload.test.js',
     why: 'the client is told a different set of sizes than the gate enforces, so the picker offers what the server refuses',
-    from: `  CASH:     offeredSizesFor(cfg, 'CASH', direction),`,
-    to: `  CASH:     [100, 200, 300],`,
+    from: `  SIZE_GROUPS.map((group) => [group, offeredSizesFor(cfg, group, direction)]),`,
+    to: `  SIZE_GROUPS.map((group) => [group, [100, 200, 300]]),`,
+  },
+  {
+    id: 'M109b', file: 'backend/domains/merchant/denominations.js', config: PG,
+    test: 'backend/tests/routes/merchantAccountPg.test.js',
+    why: 'a size the admin sends to merchant accounts still goes to an agent team, the buy the owner saw waiting for a member',
+    from: `  return merchantSizes(cfg, direction).includes(Number(tokens)) ? INR_ROUTING.MERCHANTS : INR_ROUTING.AGENTS;`,
+    to: `  return INR_ROUTING.AGENTS;`,
   },
   {
     id: 'M457', file: 'backend/domains/risk/riskValidation.service.js', config: PG,

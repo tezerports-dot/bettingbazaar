@@ -242,7 +242,7 @@ describe('the ATM cash rail', () => {
     // Assigned but not accepted: the member may still decline, so the server
     // sends no destination and refuses "I've paid" (NOT_ACCEPTED_YET).
     render(<BuyPaymentUI order={{ ...CASH_ORDER, status: 'ASSIGNED', payTo: { merchantRef: 'Merchant #4411' } }} onPaid={vi.fn()} onExpire={vi.fn()} />);
-    expect(screen.getByRole('status')).toHaveTextContent(/Waiting for the member to accept/);
+    expect(screen.getByRole('status')).toHaveTextContent(/Waiting for the merchant to accept/);
     expect(screen.queryByRole('button', { name: /I've Paid/ })).toBeNull();
     expect(screen.queryByRole('link')).toBeNull();
   });
