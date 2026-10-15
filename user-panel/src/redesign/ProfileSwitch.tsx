@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The header's profile switch: VIP ID (deposited money) or General (referral
- * bonus money), owner 2026-10-08.
+ * The header's profile switch: VIP ID (deposited money) or General (bonus
+ * money: referral and first deposit bonuses), owner 2026-10-08 / 2026-10-15.
  *
  * Everything shown comes from the server (`GET /api/user/general`, owned by
  * `database/repositories/promo.js`): which profile is in use, the General
@@ -20,8 +20,11 @@ export interface GeneralSummary {
   promoBalance: number;
   outstandingTurnover: number;
   turnoverMultiplier: number;
-  /** Each referral grant's requirement and progress (`GET /api/user/general`). */
-  grants?: { requiredTurnover: number; turnover: number; completedAt?: string | null }[];
+  /** Each bonus's requirement and progress, newest first (`GET /api/user/general`). */
+  grants?: {
+    grantId?: string; source?: string; amount?: number; unlocked?: number; createdAt?: string;
+    requiredTurnover: number; turnover: number; completedAt?: string | null;
+  }[];
 }
 
 /**
@@ -120,10 +123,10 @@ export const ProfileSwitch: React.FC<Props> = ({ general, choose, error }) => {
         }}>
           {option('VIP', 'Play with deposited money')}
           {option('GENERAL', general.outstandingTurnover > 0
-            ? `${rupees(general.promoBalance)} bonus · ${rupees(general.outstandingTurnover)} turnover to unlock`
-            : `${rupees(general.promoBalance)} referral bonus balance`)}
+            ? `${rupees(general.promoBalance)} bonus · bet ${rupees(general.outstandingTurnover)} more to unlock`
+            : `${rupees(general.promoBalance)} bonus balance`)}
           <span style={{ fontSize: 10, color: 'var(--text3)', padding: '2px 4px' }}>
-            Each referral bonus unlocks into withdrawable winnings after {general.turnoverMultiplier}× its amount is played.
+            Every bonus unlocks into withdrawable winnings after {general.turnoverMultiplier}× its amount is bet.
             VIP and General players never play in the same pools.
           </span>
         </div>

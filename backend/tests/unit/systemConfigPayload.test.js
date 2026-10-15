@@ -43,9 +43,9 @@ describe('the system-config payload', () => {
     // The whole point of the `??`/`||` distinction. With `||` every one of
     // these silently became the default.
     const zeroed = systemConfigPayload({
-      payoutMultiplier: 0,
+      payoutMultiplier: 0, winningsFeePercent: 0,
     });
-    for (const k of ['payoutMultiplier']) {
+    for (const k of ['payoutMultiplier', 'winningsFeePercent']) {
       expect(zeroed[k], `${k}: a configured 0 must survive, not fall back`).toBe(0);
     }
   });
@@ -57,6 +57,7 @@ describe('the system-config payload', () => {
     expect(empty.orderSizes).toEqual({ buy: all, sell: all });
     expect(empty.usdtBuy).toEqual({ minUsdt: 100, maxUsdt: 10_000, stepUsdt: 100 });
     expect(empty.payoutMultiplier).toBe(2);
+    expect(empty.winningsFeePercent).toBe(1);
   });
 
   it('treats false and empty string as configured, not missing', () => {
@@ -84,8 +85,11 @@ describe('the system-config payload', () => {
 
   it('never hands back an empty footer', () => {
     // An admin cannot intend a panel with no navigation, so [] means unset.
-    expect(systemConfigPayload({ footerPages: [] }).footerPages).toHaveLength(5);
+    expect(systemConfigPayload({ footerPages: [] }).footerPages).toEqual(['home', 'results', 'wallet', 'promo']);
     expect(systemConfigPayload({ footerPages: ['home', 'profile'] }).footerPages).toEqual(['home', 'profile']);
+    expect(systemConfigPayload({ footerPages: ['home', 'referrals'] }).footerPages).toEqual(['home', 'referrals']);
+    // A key no player page answers to is dropped; one page left is not a bar.
+    expect(systemConfigPayload({ footerPages: ['home', 'vip', 'gift-code'] }).footerPages).toEqual(['home', 'results', 'wallet', 'promo']);
   });
 
   it('does not hand out the array the caller owns', () => {
@@ -93,7 +97,7 @@ describe('the system-config payload', () => {
     // request's mutation reach every later one.
     const a = systemConfigPayload(null).footerPages;
     a.push('injected');
-    expect(systemConfigPayload(null).footerPages).toHaveLength(5);
+    expect(systemConfigPayload(null).footerPages).toHaveLength(4);
   });
 
   it('is assembled in one place — neither consumer builds its own', () => {

@@ -24,8 +24,8 @@ import { useShell } from './RedesignShell';
 import { useViewport } from './useViewport';
 import { useToast } from '../components/ui/Toast';
 import { fmt, timeStr } from './format';
-import { analyticsFor, Side } from './analytics';
-import AnalyticsPanel from './AnalyticsPanel';
+import { analyticsFor, winnersByBoard, Side } from './analytics';
+import AnalyticsView from './AnalyticsView';
 import { BetCardFigure, BetCardFill, BlindBand, shareModeFor, sharesOf } from './BetCardShare';
 import { getAssetUrl } from '../services/backend.service';
 import { canPlaceBet } from '../GAME_CORE';
@@ -42,6 +42,7 @@ const CHIP_STYLES = [
   { colorHex: '#212121', gFrom: '#000000', gTo: '#424242', txt: '#F1CE7E' },
 ];
 
+const NO_WINNERS: Side[] = [];
 const bead = (sd: Side) => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)' });
 
 // The betting cards' height on a phone or tablet, bounded.
@@ -109,7 +110,6 @@ const GameScreen: React.FC = () => {
 
   const [selectedChip, setSelectedChip] = useState<number | null>(null);
   const [manualInput, setManualInput] = useState('');
-  const analyticsRef = useRef<HTMLElement | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const fitH = useFitHeight(stageRef, controlsRef, !desktop);
@@ -175,19 +175,8 @@ const GameScreen: React.FC = () => {
   const returnIfDelhi = myBetDelhi * 2;
   const returnIfBombay = myBetBombay * 2;
 
-  // Winner sequences from real history (newest first), by board. Keyed by
-  // every board, so a tab cannot fall through to another board's history.
-  const winnersByType = useMemo(() => {
-    const out: Record<string, Side[]> = {};
-    for (const c of [...(pastCycles || [])].sort((a, b) => (b.endTime || 0) - (a.endTime || 0))) {
-      if (c.winner !== 'DELHI' && c.winner !== 'BOMBAY') continue;
-      (out[c.type] ??= []).push(c.winner as Side);
-    }
-    for (const b of boards) out[b.key] ??= [];
-    return out;
-  }, [pastCycles, boards]);
-
-  const panelWinners = useMemo(() => winnersByType[cycleType] ?? [], [winnersByType, cycleType]);
+  // Winner sequences from real history (newest first), by board.
+  const winnersByType = useMemo(() => winnersByBoard(pastCycles, boards), [pastCycles, boards]);
 
   // Admin › Page Slides › Home promo cards: beside the game when the side
   // columns show (the right column first, where the roadmap was); on a phone
@@ -543,12 +532,15 @@ const GameScreen: React.FC = () => {
             </div>
           </div>
         </div>
-        <div style={{ flex: 'none', padding: '6px 0 4px' }}>
-          <AnalyticsPanel ref={analyticsRef} board={currentBoard} winners={panelWinners} loadCycleHistory={loadCycleHistory} />
-        </div>
       </section>
 
       {desktop && rightPanel}
+
+      {/* The analytics, part of this page under the game across its full
+          width, not a card in the middle column (owner, 2026-10-15). */}
+      <div style={{ gridColumn: desktop ? '1 / -1' : undefined, minWidth: 0, padding: desktop ? '6px 0 0' : '10px 0 0' }}>
+        <AnalyticsView board={currentBoard} winners={winnersByType[cycleType] ?? NO_WINNERS} loadCycleHistory={loadCycleHistory} />
+      </div>
 
       <BoardRulesModal isAuthenticated={!!isAuthenticated} />
     </div>

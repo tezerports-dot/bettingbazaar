@@ -37,6 +37,7 @@ const providers = vi.hoisted(() => ({
   enabledCasino: [], enabledCrash: [], enabledSports: [],
   providers: { casino: [], crash: [], sports: [] }, loading: false, refresh: vi.fn(),
 }));
+const footer = vi.hoisted(() => ({ pages: ['home', 'results', 'wallet', 'promo'] as string[] }));
 vi.mock('../services/GameProviderContext', () => ({
   useGameProviders: () => providers,
   GameProviderProvider: ({ children }: any) => children,
@@ -55,6 +56,7 @@ vi.mock('../services/GameContext', () => ({
     isOnline: true, logout: vi.fn(), setAudience: () => {},
   }),
   spendableBalance: () => 0,
+  useFooterPages: () => footer.pages,
   useBoardExtras: () => ({ urgencyChips: true, closingWarnSeconds: 10, resultCelebration: true, bonusProgress: true, promoCards: false }),
   MY_PAYOUT_EVENT: 'bb:my-payout',
   MY_ROUND_EVENT: 'bb:my-round',
@@ -103,5 +105,28 @@ describe('the home category cards', () => {
     paint();
     expect(card(/DELHI BAZAAR/i)).not.toBeNull();
     expect(card(/CASINO/i)).toBeNull();
+  });
+});
+
+// The bottom bar is the admin's (SystemConfig.footerPages; owner, 2026-10-15),
+// in their order, with Menu always last.
+describe('the bottom tab bar', () => {
+  const tabs = () => {
+    const menu = screen.getByRole('button', { name: 'Open menu' });
+    return [...menu.parentElement!.querySelectorAll('button')].map((b) => b.textContent);
+  };
+  beforeEach(() => { providers.anyCasino = true; providers.anyCrash = true; providers.anySports = true; });
+
+  it('draws the admin\'s pages in order, then Menu', () => {
+    footer.pages = ['referrals', 'home', 'winners'];
+    paint();
+    expect(tabs()).toEqual(['🎁Refer', '🎲Game', '🏆Winners', '☰Menu']);
+  });
+
+  it('leaves out a provider page while that provider is off', () => {
+    footer.pages = ['home', 'sports', 'wallet'];
+    providers.anySports = false;
+    paint();
+    expect(tabs()).toEqual(['🎲Game', '💰Wallet', '☰Menu']);
   });
 });

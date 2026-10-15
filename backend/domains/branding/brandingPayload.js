@@ -48,6 +48,7 @@ export function brandingPayload(b) {
     homePopupEnabled:        b.homePopupEnabled,
     tricksTipsBannerUrl:     b.tricksTipsBannerUrl,
     rulesPageImageUrl:       b.rulesPageImageUrl,
+    referPageBannerUrl:      b.referPageBannerUrl,
     depositPageBannerUrl:    b.depositPageBannerUrl,
     withdrawalPageBannerUrl: b.withdrawalPageBannerUrl,
     loginPageBannerUrl:      b.loginPageBannerUrl,

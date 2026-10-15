@@ -262,13 +262,22 @@ export const SYSTEM_CONFIG_SPEC = group({
   // that player's inviter (level 2), in whole rupees; 0 pays nothing at that
   // level. Stamped on each earning when the joiner verifies, so a change
   // applies to new joiners only. `turnoverMultiplier`: how many times its
-  // amount a bonus must be played before it unlocks into winnings, stamped on
-  // the bonus when it is paid. Read through `referralRewardsFrom`
-  // (backend/domains/referral/referralRewards.js).
+  // amount ANY General bonus (referral or first deposit) must be played before
+  // it unlocks into winnings, stamped on the bonus when it is paid (owner,
+  // 2026-10-15: "all the general wallet bonus are going to have same rule").
+  // Read through `referralRewardsFrom` (backend/domains/referral/referralRewards.js).
   referralRewards: group({
     level1Rupees:       int(25, 0, 10000),
     level2Rupees:       int(25, 0, 10000),
     turnoverMultiplier: int(10, 1, 100),
+  }),
+  // ── First deposit bonus (owner, 2026-10-15) ─────────────────────────────
+  // Whole rupees paid into a player's GENERAL balance with their first
+  // completed buy, once per player; 0 pays nothing. Asks the same play
+  // requirement as every General bonus (`referralRewards.turnoverMultiplier`).
+  // Read through `firstDepositBonusFrom` (backend/domains/referral/referralRewards.js).
+  firstDepositBonus: group({
+    rupees: int(0, 0, 100000),
   }),
   // ── Red flags (redesign Step 2f) ────────────────────────────────────────
   // Computed once a day, shown to people, acted on by nobody's code. Read
@@ -323,7 +332,7 @@ export const SYSTEM_CONFIG_SPEC = group({
   // The payment order windows are per rail, in `teamRouting` below.
   retentionMonths:      n(6, 1, 120),
 
-  footerPages: sa(['home', 'results', 'winners', 'promo', 'profile']),
+  footerPages: sa(['home', 'results', 'wallet', 'promo']), // = DEFAULT_FOOTER_PAGES (systemConfigPayload.js)
   alertWebhookUrl: s(''),
 
   loadShedding: group({
@@ -425,7 +434,7 @@ export const BRANDING_SPEC = group({
   // ── Home popup ────────────────────────────────────────────────────────────
   homePopupImageUrl: s(''), homePopupLinkUrl: s(''), homePopupEnabled: b(false),
   // ── Banners, one per surface that shows one ───────────────────────────────
-  tricksTipsBannerUrl: s(''), rulesPageImageUrl: s(''),
+  tricksTipsBannerUrl: s(''), rulesPageImageUrl: s(''), referPageBannerUrl: s(''),
   depositPageBannerUrl: s(''), withdrawalPageBannerUrl: s(''),
   loginPageBannerUrl: s(''), registerPageBannerUrl: s(''),
   // ── Bet-card backgrounds ──────────────────────────────────────────────────

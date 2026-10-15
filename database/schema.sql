@@ -2034,7 +2034,7 @@ CREATE TABLE IF NOT EXISTS promo_grants (
   completed_at            TIMESTAMPTZ,
   unlocked_paise          BIGINT NOT NULL DEFAULT 0,
   created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT promo_grants_source_known CHECK (source IN ('REFERRAL')),
+  CONSTRAINT promo_grants_source_known CHECK (source IN ('REFERRAL', 'FIRST_DEPOSIT')),
   CONSTRAINT promo_grants_once UNIQUE (source, source_ref),
   CONSTRAINT promo_grants_amount_positive CHECK (amount_paise > 0),
   CONSTRAINT promo_grants_requirement CHECK (required_turnover_paise >= amount_paise),
@@ -2048,6 +2048,15 @@ CREATE TABLE IF NOT EXISTS promo_grants (
 );
 CREATE INDEX IF NOT EXISTS promo_grants_open_idx
   ON promo_grants (user_id, created_at, grant_id) WHERE completed_at IS NULL;
+-- Where a General bonus came from: a referral, or the player's first completed
+-- buy (owner, 2026-10-15). Dropped and re-added so a database made before the
+-- second source converges (S31).
+ALTER TABLE promo_grants DROP CONSTRAINT IF EXISTS promo_grants_source_known;
+ALTER TABLE promo_grants ADD CONSTRAINT promo_grants_source_known
+  CHECK (source IN ('REFERRAL', 'FIRST_DEPOSIT'));
+-- One first deposit bonus per player, ever, whatever order paid it.
+CREATE UNIQUE INDEX IF NOT EXISTS promo_grants_first_deposit_once
+  ON promo_grants (user_id) WHERE source = 'FIRST_DEPOSIT';
 
 CREATE TABLE IF NOT EXISTS promo_turnover (
   stake_ref     TEXT PRIMARY KEY,

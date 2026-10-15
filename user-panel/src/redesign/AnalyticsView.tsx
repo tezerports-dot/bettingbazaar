@@ -1,29 +1,27 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * AnalyticsPanel.tsx — the results & streak analytics, inline under the result
- * strip: a scrollable bar of named buttons over horizontally swipeable slides
- * (owner, 2026-10-10: "instead of clicking the tab to show up"). It replaces
- * the pull-up drawer that hid all of this behind one button.
+ * AnalyticsView.tsx — one board's results and streak analytics, as part of the
+ * page it sits on: under the game across the board screen's full width, and
+ * on Results (owner, 2026-10-15: "not locked in a card", "part of that page
+ * below the game", no separate page or button). The tabs wrap rather than
+ * scroll sideways and one section fills the width; nothing slides.
  *
- * Slides: Previous results · Continuous streaks · Streak gaps · Win share ·
- * Probability. A button scrolls to its slide; a swipe moves the button.
+ *   Runs & Gaps · Previous results · Continuous streaks · Streak gaps ·
+ *   Win share · Probability
  *
  * All figures are DESCRIPTIVE statistics of past results (analytics.ts).
  * Presentation only — never used for server-side validation (§11).
  *
- * A board with too little history says so rather than showing a filled-in
- * chart: `analytics.ts` does not pad a thin window, so `A.sample` is the real
- * count and `A.sufficient` gates the parts that generalise from it. The
- * Probability slide is withheld below the threshold — a "DELHI next 67%" off
- * four results is noise wearing the costume of a signal.
- *
- * The deep window (1,440 results for a repeating board) is requested only once
- * the panel is actually on screen, per board: connect carries 50 rows because
- * every visitor pays for it, and most never scroll this far.
+ * Nothing here is held back for a thin board any more: the streak and gap
+ * figures are shown from the first result with the real count beside them
+ * (`A.sample`), never padded. The one exception is the Probability section,
+ * which stays withheld below MIN_SAMPLE — a "DELHI next 67%" off four results
+ * is noise wearing the costume of a signal.
  */
-import React, { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { analyticsFor, seqFromRuns, MIN_SAMPLE, Side } from './analytics';
 import { fmt } from './format';
+import RunsAndGaps, { box, heading } from './RunsAndGaps';
 import { Board, CycleType } from '../types';
 
 interface Props {
@@ -32,34 +30,33 @@ interface Props {
   /** That board's real winners, newest first. */
   winners: Side[];
   /** Requests one board's full analytics window. See GameContext. */
-  loadCycleHistory: (type: CycleType) => void;
+  loadCycleHistory?: (type: CycleType) => void;
 }
 
-const SLIDES = [
+export const SECTIONS = [
+  { key: 'runs', label: 'Runs & Gaps' },
   { key: 'results', label: 'Previous results' },
   { key: 'streaks', label: 'Continuous streaks' },
   { key: 'gaps', label: 'Streak gaps' },
   { key: 'share', label: 'Win share' },
   { key: 'predict', label: 'Probability' },
 ] as const;
+export type SectionKey = typeof SECTIONS[number]['key'];
 
 const bead = (sd: Side) => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)' });
 
-const box: React.CSSProperties = { background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 14, padding: 14 };
-const heading: React.CSSProperties = { fontSize: 11, fontWeight: 800, color: 'var(--text)' };
-
-const AnalyticsPanel = forwardRef<HTMLElement, Props>(({ board, winners, loadCycleHistory }, ref) => {
-  const rootRef = useRef<HTMLElement | null>(null);
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  const tabsRef = useRef<HTMLDivElement | null>(null);
-  const [active, setActive] = useState(0);
+const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) => {
+  const [active, setActive] = useState<SectionKey>('runs');
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const boardKey = board?.key ?? '';
 
-  // Ask for the deep window once the panel is in view, once per board.
+  // The deep window (1,440 results for a repeating board) is asked for once
+  // this is on screen, once per board: the stream's open carries 50 rows
+  // because every visitor pays for it, and most never scroll this far.
   const loaded = useRef(new Set<string>());
   useEffect(() => {
     const el = rootRef.current;
-    if (!el || !boardKey || loaded.current.has(boardKey)) return undefined;
+    if (!el || !boardKey || !loadCycleHistory || loaded.current.has(boardKey)) return undefined;
     const load = () => { loaded.current.add(boardKey); loadCycleHistory(boardKey); };
     if (typeof IntersectionObserver === 'undefined') { load(); return undefined; }
     const io = new IntersectionObserver((entries) => {
@@ -68,47 +65,7 @@ const AnalyticsPanel = forwardRef<HTMLElement, Props>(({ board, winners, loadCyc
     io.observe(el);
     return () => io.disconnect();
   }, [boardKey, loadCycleHistory]);
-
   const A = useMemo(() => analyticsFor(winners, board), [winners, board]);
-
-  // A tapped button's slide is the one shown, from the tap. The smooth scroll
-  // to it passes over every slide in between, and reading the scroll position
-  // on the way lit each of their buttons in turn (and slid the button bar back
-  // and forth): the flicker on Probability and Continuous streaks. So while a
-  // tapped scroll is travelling the position is not read; a swipe still is.
-  const travelTo = useRef<number | null>(null);
-  const travelEnd = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (travelEnd.current) clearTimeout(travelEnd.current); }, []);
-  const goTo = (i: number) => {
-    const t = trackRef.current;
-    setActive(i);
-    if (!t) return;
-    travelTo.current = i;
-    if (travelEnd.current) clearTimeout(travelEnd.current);
-    // Released when the slide is reached, or after this if a finger stops it.
-    travelEnd.current = setTimeout(() => { travelTo.current = null; }, 900);
-    t.scrollTo({ left: i * t.clientWidth, behavior: 'smooth' });
-  };
-  const onTrackScroll = () => {
-    const t = trackRef.current;
-    if (!t || !t.clientWidth) return;
-    const i = Math.round(t.scrollLeft / t.clientWidth);
-    if (travelTo.current !== null) {
-      if (i === travelTo.current && Math.abs(t.scrollLeft - i * t.clientWidth) < 2) travelTo.current = null;
-      return;
-    }
-    setActive((prev) => (prev === i ? prev : i));
-  };
-  // Keep the active button visible in its own bar without scrolling the page.
-  useEffect(() => {
-    const bar = tabsRef.current;
-    const btn = bar?.children[active] as HTMLElement | undefined;
-    if (!bar || !btn) return;
-    const left = btn.offsetLeft - bar.offsetLeft;
-    if (left < bar.scrollLeft || left + btn.offsetWidth > bar.scrollLeft + bar.clientWidth) {
-      bar.scrollTo({ left: Math.max(0, left - 12), behavior: 'smooth' });
-    }
-  }, [active]);
 
   // Share of wins. With no results at all, say nothing rather than 0% / 100%.
   const aDPct = A.total ? Math.round((A.delhiWins / A.total) * 100) : 0;
@@ -145,13 +102,22 @@ const AnalyticsPanel = forwardRef<HTMLElement, Props>(({ board, winners, loadCyc
 
   const empty = A.sample === 0;
   const thin = !A.sufficient;
-  const sampleNote = empty
-    ? 'No results on this board yet — this fills in as cycles settle.'
-    : `Based on ${A.sample} result${A.sample === 1 ? '' : 's'} so far. Streak statistics need at least ${MIN_SAMPLE} to mean anything; they firm up as this board builds history.`;
-  const shortfall = (
+  const emptyCard = (
     <div style={{ ...box, border: '1px dashed var(--line2)', padding: 18, textAlign: 'center' }}>
-      <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 6 }}>Not enough history yet</div>
-      <div style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>{sampleNote}</div>
+      <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 6 }}>No results on this board yet</div>
+      <div style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>This fills in as rounds settle.</div>
+    </div>
+  );
+  // Shown, never hidden: a thin window says how thin it is beside its figures.
+  const thinNote = thin && !empty ? (
+    <p style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.6, margin: '0 0 10px' }}>
+      Based on {A.sample} result{A.sample === 1 ? '' : 's'} so far. With fewer than {MIN_SAMPLE} these counts move a lot from one round to the next.
+    </p>
+  ) : null;
+  const predictShortfall = (
+    <div style={{ ...box, border: '1px dashed var(--line2)', padding: 18, textAlign: 'center' }}>
+      <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 6 }}>Shown from {MIN_SAMPLE} results</div>
+      <div style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>This board has {A.sample} so far. A split worked out from fewer would read as a signal and be noise.</div>
     </div>
   );
 
@@ -190,9 +156,12 @@ const AnalyticsPanel = forwardRef<HTMLElement, Props>(({ board, winners, loadCyc
             )}
           </>
         );
+      case 'runs':
+        return <RunsAndGaps board={board} winners={winners} />;
       case 'streaks':
-        return thin ? shortfall : (
+        return empty ? emptyCard : (
           <>
+            {thinNote}
             <div style={{ ...box, marginBottom: 10 }}>
               <span style={heading}>Current streak</span>
               <p style={{ fontSize: 11, color: 'var(--text2)', lineHeight: 1.6, margin: '8px 0 0' }}>
@@ -221,8 +190,9 @@ const AnalyticsPanel = forwardRef<HTMLElement, Props>(({ board, winners, loadCyc
           </>
         );
       case 'gaps':
-        return thin ? shortfall : (
+        return empty ? emptyCard : (
           <div style={box}>
+            {thinNote}
             <span style={heading}>Cycles between streaks reaching each length</span>
             <p style={{ fontSize: 10, color: 'var(--text3)', lineHeight: 1.5, margin: '6px 0 10px' }}>Average gap, and the last 5 gaps between one streak reaching that length and the next. A ×3 also counts as reaching ×2.</p>
             {gapRows.length === 0 && <div style={{ fontSize: 11, color: 'var(--text3)', padding: '8px 0' }}>Not enough repeated streaks in this window yet.</div>}
@@ -270,7 +240,7 @@ const AnalyticsPanel = forwardRef<HTMLElement, Props>(({ board, winners, loadCyc
           </>
         );
       default:
-        return thin ? shortfall : (
+        return thin ? predictShortfall : (
           <>
             <div style={{ ...box, padding: 16 }}>
               <span style={heading}>Historical next-winner signal</span>
@@ -294,37 +264,29 @@ const AnalyticsPanel = forwardRef<HTMLElement, Props>(({ board, winners, loadCyc
   };
 
   return (
-    <section
-      ref={(el) => { rootRef.current = el; if (typeof ref === 'function') ref(el); else if (ref) ref.current = el; }}
-      aria-label="Results and streak analytics"
-      style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 16, padding: '12px 0 14px', boxShadow: 'var(--shadow-sm)', scrollMarginTop: 12 }}
-    >
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, padding: '0 14px 10px' }}>
-        <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>Results &amp; Streak Analytics</span>
-        <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)', whiteSpace: 'nowrap' }}>{fmt(A.total)} {board?.name ?? ''} cycles</span>
+    <div ref={rootRef} aria-label={`${board?.name ?? ''} results and streak analytics`} style={{ width: '100%', minWidth: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', margin: '4px 0 10px' }}>
+        <h2 className="font-grotesk" style={{ margin: 0, fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>Results &amp; Streak Analytics</h2>
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>{fmt(A.total)} {board?.name ?? ''} results</span>
       </div>
-      <div ref={tabsRef} role="tablist" aria-label="Analytics" className="bb-noscroll" style={{ display: 'flex', gap: 6, overflowX: 'auto', padding: '0 14px 12px' }}>
-        {SLIDES.map((s, i) => {
-          const on = active === i;
-          return (
-            <button key={s.key} role="tab" aria-selected={on} aria-controls={`bb-an-${s.key}`} onClick={() => goTo(i)} style={{ flex: 'none', padding: '8px 14px', borderRadius: 999, border: `1px solid ${on ? 'var(--gold)' : 'var(--line2)'}`, background: on ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'var(--surface2)', color: on ? '#1a1200' : 'var(--text2)', fontSize: 11, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap', boxShadow: on ? '0 0 14px -4px var(--glow)' : 'none' }}>{s.label}</button>
-          );
-        })}
+      <div style={{ margin: '0 0 12px' }}>
+        <div role="tablist" aria-label="Analytics" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {SECTIONS.map((s) => {
+            const on = active === s.key;
+            return (
+              <button key={s.key} type="button" role="tab" id={`bb-an-tab-${s.key}`} aria-selected={on} aria-controls={`bb-an-${s.key}`} onClick={() => setActive(s.key)} style={{ flex: 'none', padding: '9px 15px', borderRadius: 999, border: `1px solid ${on ? 'var(--gold)' : 'var(--line2)'}`, background: on ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'var(--surface2)', color: on ? '#1a1200' : 'var(--text2)', fontSize: 12, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap', boxShadow: on ? '0 0 14px -4px var(--glow)' : 'none' }}>{s.label}</button>
+            );
+          })}
+        </div>
       </div>
-      <div ref={trackRef} onScroll={onTrackScroll} className="bb-noscroll" style={{ display: 'flex', alignItems: 'flex-start', overflowX: 'auto', scrollSnapType: 'x mandatory', overscrollBehaviorX: 'contain' }}>
-        {SLIDES.map((s, i) => (
-          <div key={s.key} id={`bb-an-${s.key}`} role="tabpanel" aria-label={s.label} aria-hidden={active !== i} style={{ flex: '0 0 100%', minWidth: 0, boxSizing: 'border-box', padding: '0 14px', scrollSnapAlign: 'start' }}>
-            {slide(s.key)}
-          </div>
-        ))}
+      <div id={`bb-an-${active}`} role="tabpanel" aria-labelledby={`bb-an-tab-${active}`}>
+        {slide(active)}
       </div>
-    </section>
+    </div>
   );
-});
+};
 
-AnalyticsPanel.displayName = 'AnalyticsPanel';
 
-// The board screen re-renders every second for its countdown; this panel's
-// props do not change with it, so it is not rebuilt (and its five slides
-// repainted) once a second.
-export default React.memo(AnalyticsPanel);
+// GameContext re-renders its consumers every second for the countdown; this
+// view's props do not change with it, so it is not rebuilt once a second.
+export default React.memo(AnalyticsView);

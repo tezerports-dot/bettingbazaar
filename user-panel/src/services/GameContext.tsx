@@ -57,7 +57,7 @@ export interface BoardExtras {
 }
 const DEFAULT_SYS_CONFIG: SysConfig = {
   tokenBuyRate: 1, tokenSellRate: 1,
-  footerPages: ['home', 'results', 'winners', 'promo', 'profile'], // schema default
+  footerPages: ['home', 'results', 'wallet', 'promo'], // schema default (config.spec.js footerPages)
   // schema defaults: true / 10 / true / true / true
   boardExtras: { urgencyChips: true, closingWarnSeconds: 10, resultCelebration: true, bonusProgress: true, promoCards: true },
 };
@@ -985,6 +985,10 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
  */
 export const useBoardExtras = (): BoardExtras =>
   useContext(GameContext)?.sysConfig.boardExtras ?? DEFAULT_SYS_CONFIG.boardExtras; // schema defaults
+
+/** The admin's footer tabs, page keys in order (SystemConfig.footerPages). */
+export const useFooterPages = (): string[] =>
+  useContext(GameContext)?.sysConfig.footerPages ?? DEFAULT_SYS_CONFIG.footerPages; // schema default
 
 export const useGame = () => {
   const context = useContext(GameContext);

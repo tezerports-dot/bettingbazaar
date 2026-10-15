@@ -30,7 +30,7 @@ describe('the profile switch', () => {
   it('shows the General balance and the turnover still needed', async () => {
     render(<Harness />);
     fireEvent.click(await screen.findByRole('button', { name: /Profile: VIP ID/ }));
-    expect(screen.getByRole('menuitemradio', { name: /General/ }).textContent).toMatch(/₹1,000 bonus · ₹9,000 turnover to unlock/);
+    expect(screen.getByRole('menuitemradio', { name: /General/ }).textContent).toMatch(/₹1,000 bonus · bet ₹9,000 more to unlock/);
   });
 
   it('switches to General through the server and shows it', async () => {

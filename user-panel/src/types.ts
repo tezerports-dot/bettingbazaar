@@ -260,6 +260,11 @@ export interface SystemConfigData {
   maintenanceMessage?: string;
   iosUrl?: string;
   webUrl?: string;
+  /** What a winning stake is multiplied by, and the percent kept from that
+   *  gross (systemConfigPayload.js). Read by the Analytics page's progression
+   *  calculator for "profit if it wins"; the settlement is the server's. */
+  payoutMultiplier?: number;
+  winningsFeePercent?: number;
 }
 
 // ── Payment Order (Merchant Payment Processing domain) ───────────────────────

@@ -42,6 +42,8 @@ export const PAGE_IMAGES: BrandingImageField[] = [
     ratio: null, upload: { w: 1200, h: 400 }, previewWidth: 420 },
   { key: 'rulesPageImageUrl', label: 'Rules page banner', where: 'Top of the Rules & How to Play page. Shown whole, full width.',
     ratio: null, upload: { w: 1200, h: 400 }, previewWidth: 420 },
+  { key: 'referPageBannerUrl', label: 'Refer & Earn page banner', where: 'Top of the Refer & Earn page, behind the reward headline. Drawn to fill the banner and darkened at the bottom so the text stays readable; with none, the page draws its own gold banner.',
+    examples: 'Laptop banner about 1040 × 280, phone about 360 × 260', ratio: null, upload: { w: 1600, h: 600 }, previewWidth: 420 },
 ];
 
 export const BrandingImages: React.FC<{ fields: BrandingImageField[]; title: string; intro: string }> = ({ fields, title, intro }) => {
