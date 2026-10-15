@@ -231,7 +231,7 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 {/* An assistant reply is labelled as one. A player deciding what
                     to do about their money must never mistake it for a person. */}
                 {!m.me && <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: m.assistant ? 'var(--gold)' : 'var(--text3)', margin: '0 0 3px 4px' }}>{m.assistant ? 'ASSISTANT · AUTOMATED' : m.who}</div>}
-                <div style={{ padding: '10px 13px', borderRadius: 14, background: m.me ? 'linear-gradient(135deg,var(--gold2),var(--gold))' : 'var(--surface3)', color: m.me ? '#1a1200' : 'var(--text)', fontSize: 13, lineHeight: 1.45, boxShadow: 'var(--shadow-sm)' }}>{m.t}</div>
+                <div style={{ padding: '10px 13px', borderRadius: 14, background: m.me ? 'var(--gold-metal)' : 'var(--surface3)', color: m.me ? '#1a1200' : 'var(--text)', fontSize: 13, lineHeight: 1.45, boxShadow: 'var(--shadow-sm)' }}>{m.t}</div>
               </div>
             </div>
           ))}
@@ -248,7 +248,7 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         </div>
         <div style={{ flex: 'none', padding: '12px 14px', borderTop: '1px solid var(--line)', display: 'flex', gap: 9, alignItems: 'center', paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
           <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') send(); }} disabled={busy} placeholder={busy ? 'Sending…' : 'Describe your problem…'} style={{ flex: 1, height: 44, background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 999, padding: '0 16px', color: 'var(--text)', fontSize: 13, outline: 'none', opacity: busy ? .6 : 1 }} />
-          <button onClick={send} disabled={busy || !text.trim()} style={{ width: 44, height: 44, flex: 'none', borderRadius: '50%', border: 'none', cursor: 'pointer', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', fontSize: 17, opacity: (busy || !text.trim()) ? .5 : 1 }}>➤</button>
+          <button onClick={send} disabled={busy || !text.trim()} style={{ width: 44, height: 44, flex: 'none', borderRadius: '50%', border: 'none', cursor: 'pointer', background: 'var(--gold-metal)', color: '#1a1200', fontSize: 17, opacity: (busy || !text.trim()) ? .5 : 1 }}>➤</button>
         </div>
       </div>
     </>
@@ -311,7 +311,7 @@ const SupportPage: React.FC = () => {
 
   return (
     <ScreenShell icon="🛟" title="Support" sub="We are here to help">
-      <button onClick={() => (isAuthenticated ? setChatOpen(true) : openAuth())} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 13, padding: 16, borderRadius: 16, border: 'none', cursor: 'pointer', textAlign: 'left', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', boxShadow: '0 10px 26px -10px var(--glow)', marginBottom: 14 }}>
+      <button onClick={() => (isAuthenticated ? setChatOpen(true) : openAuth())} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 13, padding: 16, borderRadius: 16, border: 'none', cursor: 'pointer', textAlign: 'left', background: 'var(--gold-metal)', color: '#1a1200', boxShadow: '0 10px 26px -10px var(--glow)', marginBottom: 14 }}>
         <span style={{ fontSize: 24 }}>💬</span>
         <span style={{ flex: 1 }}><span className="font-grotesk" style={{ display: 'block', fontWeight: 700, fontSize: 16 }}>Message Support</span><span style={{ display: 'block', fontSize: 11, fontWeight: 600, opacity: .75 }}>{isAuthenticated ? 'Open a support ticket · we reply here' : 'Sign in to open a support ticket'}</span></span>
         <span style={{ fontSize: 18 }}>›</span>

@@ -47,7 +47,7 @@ const BUTTON: React.CSSProperties = {
   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9,
   width: '100%', height: 50, borderRadius: 13, border: 'none', fontWeight: 800,
   fontSize: 14, letterSpacing: '.04em', color: 'var(--on-gold, #1a1200)',
-  background: 'linear-gradient(135deg,var(--gold2),var(--gold))',
+  background: 'var(--gold-metal)',
   boxShadow: '0 8px 22px -8px var(--glow)', textDecoration: 'none', cursor: 'pointer',
 };
 const NOTE: React.CSSProperties = { margin: 0, fontSize: 12, color: 'var(--text2)', lineHeight: 1.6, textAlign: 'center' };
@@ -128,7 +128,7 @@ const ContinueWithTelegram: React.FC<Props> = ({ onDone }) => {
           {match && typeof waiting.matchNumber === 'number' && (
             <div style={{ textAlign: 'center' }}>
               <p style={NOTE}>In Telegram, choose this number and press Verify:</p>
-              <p data-testid="match-number" style={{ margin: '6px 0 0', fontSize: 44, fontWeight: 900, letterSpacing: '.08em', color: 'var(--gold-ink)' }}>
+              <p data-testid="match-number" className="bb-gold-text" style={{ margin: '6px 0 0', fontSize: 44, fontWeight: 900, letterSpacing: '.08em', color: 'var(--gold-ink)' }}>
                 {waiting.matchNumber}
               </p>
             </div>

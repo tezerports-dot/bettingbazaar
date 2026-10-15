@@ -383,13 +383,13 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
           // reaching zero here would close a screen that is still owed a UTR.
           <>
             <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700 }}>You reported paying</div>
-            <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 26, color: 'var(--gold-ink)' }}>{fmtINR(order.fiatAmount)}</div>
+            <div className="font-grotesk bb-gold-text" style={{ fontWeight: 700, fontSize: 26, color: 'var(--gold-ink)' }}>{fmtINR(order.fiatAmount)}</div>
             <div style={{ fontSize: 10, color: 'var(--text3)' }}>add the UTR below to receive {fmtT(order.tokenAmount)}</div>
           </>
         ) : (
           <>
             <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700 }}>Pay exactly</div>
-            <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 26, color: 'var(--gold-ink)' }}>{fmtINR(order.fiatAmount)}</div>
+            <div className="font-grotesk bb-gold-text" style={{ fontWeight: 700, fontSize: 26, color: 'var(--gold-ink)' }}>{fmtINR(order.fiatAmount)}</div>
             <div style={{ fontSize: 10, color: 'var(--text3)' }}>to receive {fmtT(order.tokenAmount)} · <CountdownTimer expiresAt={order.expiresAt} onExpire={onExpire} /></div>
           </>
         )}
@@ -400,7 +400,7 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
           not offered again. */}
       {!awaitingReference && onCashRail && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <a href={cashLink} style={{ width: '100%', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', fontWeight: 800, padding: '15px 12px', borderRadius: 13, fontSize: 15, textAlign: 'center', display: 'block', textDecoration: 'none' }}>
+          <a href={cashLink} style={{ width: '100%', background: 'var(--gold-metal)', color: '#1a1200', fontWeight: 800, padding: '15px 12px', borderRadius: 13, fontSize: 15, textAlign: 'center', display: 'block', textDecoration: 'none' }}>
             Pay {fmtINR(order.fiatAmount)} in your UPI app
           </a>
           <p style={{ fontSize: 11, color: 'var(--text3)', textAlign: 'center', margin: 0, lineHeight: 1.5 }}>
@@ -413,7 +413,7 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
       )}
       {!awaitingReference && !onCashRail && upiLink && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <a href={upiLink} style={{ width: '100%', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', fontWeight: 800, padding: '15px 12px', borderRadius: 13, fontSize: 15, textAlign: 'center', display: 'block', textDecoration: 'none' }}>
+          <a href={upiLink} style={{ width: '100%', background: 'var(--gold-metal)', color: '#1a1200', fontWeight: 800, padding: '15px 12px', borderRadius: 13, fontSize: 15, textAlign: 'center', display: 'block', textDecoration: 'none' }}>
             PAY NOW · {fmtINR(order.fiatAmount)}
           </a>
           <p style={{ fontSize: 11, color: 'var(--text3)', textAlign: 'center', margin: 0, lineHeight: 1.5 }}>
@@ -485,7 +485,7 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
 
       <button onClick={tapToPay ? handleTapPaid : handleSubmitPayment}
         disabled={submitting || (!tapToPay && utr.trim().length < 12)}
-        style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: (tapToPay || utr.trim().length >= 12) ? '#1a1200' : 'var(--text3)', background: (tapToPay || utr.trim().length >= 12) ? 'linear-gradient(135deg,var(--gold2),var(--gold))' : 'var(--surface3)' }}>
+        style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: (tapToPay || utr.trim().length >= 12) ? '#1a1200' : 'var(--text3)', background: (tapToPay || utr.trim().length >= 12) ? 'var(--gold-metal)' : 'var(--surface3)' }}>
         {submitting ? '⏳ Submitting…'
           : tapToPay ? "✅ I've Paid — tell the merchant"
           : awaitingReference ? '✅ Submit reference'
@@ -875,7 +875,7 @@ const WalletPage: React.FC = () => {
         <>
           <div style={card}>
             <div style={{ display: 'flex', background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 12, padding: 4, gap: 4, marginBottom: 16 }}>
-              <button onClick={() => { setSide('buy'); }} aria-pressed={side === 'buy'} style={{ flex: 1, padding: 11, borderRadius: 9, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: side === 'buy' ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: side === 'buy' ? '#1a1200' : 'var(--text2)' }}>⬇️ BUY TOKENS</button>
+              <button onClick={() => { setSide('buy'); }} aria-pressed={side === 'buy'} style={{ flex: 1, padding: 11, borderRadius: 9, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: side === 'buy' ? 'var(--gold-metal)' : 'transparent', color: side === 'buy' ? '#1a1200' : 'var(--text2)' }}>⬇️ BUY TOKENS</button>
               <button onClick={() => { setSide('sell'); }} aria-pressed={side === 'sell'} style={{ flex: 1, padding: 11, borderRadius: 9, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: side === 'sell' ? 'linear-gradient(180deg,#8ff0b6,var(--green))' : 'transparent', color: side === 'sell' ? '#052018' : 'var(--text2)' }}>⬆️ SELL TOKENS</button>
             </div>
 
@@ -905,7 +905,7 @@ const WalletPage: React.FC = () => {
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>You pay <b style={{ color: 'var(--gold-ink)' }}>{fmtINR(buyAmount)}</b> · 1 token = ₹1</div>
                   {buyError && <p role="alert" style={{ color: 'var(--red)', fontSize: 11, marginBottom: 10 }}>{buyError}</p>}
-                  <button onClick={handleBuySubmit} disabled={!buyRail || buyLoading} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', boxShadow: '0 8px 22px -8px var(--glow)', opacity: (!buyRail || buyLoading) ? .5 : 1 }}>{buyLoading ? '⏳ Creating order…' : 'Continue to payment'}</button>
+                  <button onClick={handleBuySubmit} disabled={!buyRail || buyLoading} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: '#1a1200', background: 'var(--gold-metal)', boxShadow: '0 8px 22px -8px var(--glow)', opacity: (!buyRail || buyLoading) ? .5 : 1 }}>{buyLoading ? '⏳ Creating order…' : 'Continue to payment'}</button>
 
                   {/* The USDT rail, as its own block rather than a mode this
                       screen switches into. The two rails serve DIFFERENT

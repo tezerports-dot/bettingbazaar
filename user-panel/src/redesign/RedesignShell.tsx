@@ -282,7 +282,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
       )}
       {!isAuthenticated && railOpen && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
-          <button type="button" onClick={() => openAuth()} style={{ padding: 10, borderRadius: 11, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>Sign in or join</button>
+          <button type="button" onClick={() => openAuth()} style={{ padding: 10, borderRadius: 11, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'var(--gold-metal)' }}>Sign in or join</button>
         </div>
       )}
     </nav>
@@ -336,7 +336,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             {!compact && (
               <span style={{
                 flex: 'none', width: 26, height: 26, borderRadius: '50%',
-                background: 'linear-gradient(to bottom right,var(--gold2),var(--gold))', display: 'flex', alignItems: 'center',
+                background: 'var(--gold-metal)', display: 'flex', alignItems: 'center',
                 justifyContent: 'center', color: '#1a1200', fontWeight: 900, fontSize: 13, border: '1px solid rgba(255,255,255,.2)',
               }}>₹</span>
             )}
@@ -360,7 +360,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
                 objectFit: 'contain',
               }} />
             ) : (
-              <span className="font-grotesk" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--gold-ink)', fontWeight: 700, fontSize: compact ? 15 : 20, letterSpacing: '.14em' }}>
+              <span className="font-grotesk bb-gold-text" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--gold-ink)', fontWeight: 700, fontSize: compact ? 15 : 20, letterSpacing: '.14em' }}>
                 BETTING&nbsp;BAZAAR
               </span>
             )}
@@ -452,7 +452,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
                   gap: 3, border: 'none', background: 'none', cursor: 'pointer', color: active ? 'var(--gold-ink)' : 'var(--text3)',
                   position: 'relative',
                 }}>
-                  {active && <span style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: 26, height: 3, borderRadius: '0 0 4px 4px', background: 'linear-gradient(90deg,var(--gold3),var(--gold2))' }} />}
+                  {active && <span style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: 26, height: 3, borderRadius: '0 0 4px 4px', background: 'var(--gold-metal)' }} />}
                   <span style={{ fontSize: 18, transform: active ? 'scale(1.14)' : 'scale(1)', transition: 'transform .15s' }}>{tab.icon}</span>
                   <span style={{ fontSize: 8, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase' }}>{tab.label}</span>
                 </button>
@@ -471,7 +471,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
               boxShadow: '-20px 0 50px -12px rgba(0,0,0,.6)',
             }}>
               <div style={{ flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 20px 16px', borderBottom: '1px solid var(--line)' }}>
-                <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, letterSpacing: '.14em', color: 'var(--gold-ink)', textTransform: 'uppercase' }}>Menu</span>
+                <span className="font-grotesk bb-gold-text" style={{ fontWeight: 700, fontSize: 15, letterSpacing: '.14em', color: 'var(--gold-ink)', textTransform: 'uppercase' }}>Menu</span>
                 <button onClick={() => setMenuOpen(false)} style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 13 }}>✕</button>
               </div>
               <nav className="bb-noscroll" style={{ flex: 1, overflowY: 'auto', padding: '12px 10px' }}>
@@ -502,7 +502,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
                 </button>
                 {!isAuthenticated ? (
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button onClick={() => openAuth()} style={{ flex: 1, padding: 11, borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>Sign in or join</button>
+                    <button onClick={() => openAuth()} style={{ flex: 1, padding: 11, borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'var(--gold-metal)' }}>Sign in or join</button>
                   </div>
                 ) : (
                   <button onClick={() => { logout(); setMenuOpen(false); navigate('/'); }} style={{ width: '100%', padding: 11, borderRadius: 12, border: '1px solid color-mix(in srgb,var(--red) 35%,transparent)', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: 'var(--red)', background: 'color-mix(in srgb,var(--red) 8%,transparent)' }}>🚪 Sign Out</button>
