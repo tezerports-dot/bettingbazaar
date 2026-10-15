@@ -121,9 +121,11 @@ describe('a web build whose own address may be blocked', () => {
     let adopted: string | null | undefined;
     void m.bootstrapApiEndpoint().then((o) => { adopted = o; });
     const tick = () => new Promise((r) => setImmediate(r));
-    for (let i = 0; i < 200 && calls.filter((u) => u.endsWith('/health/live')).length < 7; i += 1) await tick();
-    // Every probe is out before any has answered: they run at once.
-    expect(calls.filter((u) => u.endsWith('/health/live'))).toHaveLength(7);
+    // Every probe is out before any has answered: they run at once. Waited
+    // for by the clock (vi.waitFor keeps real timers), not a fixed count of
+    // ticks, which a slow CI runner ran out of before the signed document
+    // was verified.
+    await vi.waitFor(() => expect(calls.filter((u) => u.endsWith('/health/live'))).toHaveLength(7), { timeout: 5000, interval: 5 });
     await vi.advanceTimersByTimeAsync(4100);   // one PROBE_TIMEOUT_MS, not five of them
     for (let i = 0; i < 20 && adopted === undefined; i += 1) await tick();
     expect(adopted).toBe(`https://${pool[4]}`);

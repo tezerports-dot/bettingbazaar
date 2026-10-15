@@ -111,6 +111,12 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .bb-lift { transition: border-color .15s ease, background .15s ease, color .15s ease; }
 .bb-lift:hover { border-color: var(--brand); }
 
+/* Every control answers the finger at once (owner, 2026-10-14: "buttons felt
+   lagging"): no double-tap-zoom wait, no grey tap flash, a short press-in. */
+button, [role='button'], a { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+button:active:not(:disabled), [role='button']:active { transform: scale(.98); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+  button:active:not(:disabled), [role='button']:active { transform: none; }
 }

@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * HistoryPage.tsx — 2026 "Bazaar" redesign. Global cycle history (winners &
- * pools) with a cycle-type toggle. Fetches 100 of the selected type from the
+ * HistoryPage.tsx — 2026 "Bazaar" redesign. Global cycle history (who won;
+ * no pool sizes, owner 2026-10-14) with a cycle-type toggle. Fetches 100 of the selected type from the
  * cycle-history API (Markets Platform), falling back to the context cache.
  */
 import React, { useCallback, useEffect, useState } from 'react';
@@ -9,7 +9,7 @@ import { useGame } from '../services/GameContext';
 import { CycleType, GameCycle } from '../types';
 import { analyticsWindowFor } from '../constants';
 import { getBackend } from '../services/backend.service';
-import { fmt, ago } from '../redesign/format';
+import { ago } from '../redesign/format';
 import ScreenShell, { card } from '../redesign/Screen';
 
 const backend = getBackend();
@@ -57,21 +57,19 @@ const HistoryPage: React.FC = () => {
       </div>
 
       <div style={{ ...card, overflow: 'hidden', padding: 0 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 10, padding: '11px 15px', background: 'var(--surface3)', fontSize: 9, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text3)' }}>
-          <span>Cycle · Result</span><span style={{ textAlign: 'right' }}>Delhi pool</span><span style={{ textAlign: 'right' }}>Bombay pool</span>
+        <div style={{ padding: '11px 15px', background: 'var(--surface3)', fontSize: 9, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text3)' }}>
+          <span>Cycle · Result</span>
         </div>
         {loading && <div style={{ padding: 20, textAlign: 'center', color: 'var(--text3)', fontSize: 12 }}>Loading…</div>}
         {!loading && rows.length === 0 && <div style={{ padding: 28, textAlign: 'center', color: 'var(--text3)', fontSize: 12 }}>No cycles yet.</div>}
         {!loading && rows.slice(0, 100).map(c => {
           const sd = c.winner as string;
           return (
-            <div key={c.id} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 10, alignItems: 'center', padding: '12px 15px', borderTop: '1px solid var(--line)' }}>
+            <div key={c.id} style={{ display: 'flex', alignItems: 'center', padding: '12px 15px', borderTop: '1px solid var(--line)' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
                 <span className="font-grotesk" style={{ width: 28, height: 28, flex: 'none', borderRadius: '50%', background: sideBg(sd), color: '#fff', fontSize: 11, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{sd === 'DELHI' ? 'D' : 'B'}</span>
                 <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}><span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{sd.charAt(0)}{sd.slice(1).toLowerCase()} won</span><span style={{ fontSize: 10, color: 'var(--text3)' }}>{ago(c.endTime)}</span></span>
               </span>
-              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 12, color: sd === 'DELHI' ? 'var(--delhi)' : 'var(--text2)', textAlign: 'right' }}>₹{fmt(c.totalDelhi || 0)}</span>
-              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 12, color: sd === 'BOMBAY' ? 'var(--bombay)' : 'var(--text2)', textAlign: 'right' }}>₹{fmt(c.totalBombay || 0)}</span>
             </div>
           );
         })}

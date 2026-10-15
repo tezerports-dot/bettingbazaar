@@ -369,9 +369,9 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
       bucket.confirmedPaise += r.amountPaise;
     }
 
+    // No joining number, theirs or anyone's (owner, 2026-10-14: "remove
+    // them"). Nothing here identifies the person invited.
     return {
-      // The invited player's joining number — the ONLY thing identifying them.
-      joiningNumber: r.queuePosition,
       level: r.level,
       amount: paiseToRupees(r.amountPaise),
       status: r.status,
@@ -390,7 +390,6 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
 
   return {
     referralCode: me?.referralCode || '',
-    joiningNumber: me?.joiningNumber ?? null,
     rewardPerReferral: paiseToRupees(REFERRAL_REWARD_PAISE),
     level1: level(1),
     level2: level(2),

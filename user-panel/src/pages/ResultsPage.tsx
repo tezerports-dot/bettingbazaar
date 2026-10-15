@@ -5,7 +5,7 @@
  */
 import React, { useMemo, useState } from 'react';
 import { useGame } from '../services/GameContext';
-import { fmt, ago } from '../redesign/format';
+import { ago } from '../redesign/format';
 import { Side } from '../redesign/analytics';
 import ScreenShell, { card, capLabel } from '../redesign/Screen';
 import AnalyticsPanel from '../redesign/AnalyticsPanel';
@@ -71,27 +71,13 @@ const ResultsPage: React.FC = () => {
         {cycles.length === 0 && <div style={{ textAlign: 'center', padding: '28px 0', color: 'var(--text3)', fontSize: 12 }}>Results will appear here as cycles settle.</div>}
         {cycles.slice(0, 24).map(c => {
           const sd = c.winner as string;
-          const dPool = c.totalDelhi || 0, bPool = c.totalBombay || 0, tot = dPool + bPool;
-          const dW = tot ? Math.round((dPool / tot) * 100) : 50;
-          const paidOut = Math.min(dPool, bPool) * 2;
           return (
             <div key={c.id} style={{ borderTop: '1px solid var(--line)', padding: '13px 0' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 10 }}>
+              {/* Who won, never how much was on each side (owner, 2026-10-14). */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
                 <span className="font-grotesk" style={{ width: 32, height: 32, flex: 'none', borderRadius: '50%', background: sideBg(sd), color: '#fff', fontSize: 13, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{sd === 'DELHI' ? 'D' : 'B'}</span>
-                <span style={{ flex: 1, minWidth: 0 }}><span style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{sd.charAt(0)}{sd.slice(1).toLowerCase()} won · {boardName(c.type)}</span><span style={{ display: 'block', fontSize: 10, color: 'var(--text3)' }}>{ago(c.endTime)} · pool ₹{fmt(tot)}</span></span>
-                <span style={{ flex: 'none', textAlign: 'right' }}><span className="font-grotesk" style={{ display: 'block', fontWeight: 700, fontSize: 13, color: 'var(--green)' }}>₹{fmt(paidOut)}</span><span style={{ display: 'block', fontSize: 8, fontWeight: 800, letterSpacing: '.08em', color: 'var(--text3)' }}>PAID OUT</span></span>
+                <span style={{ flex: 1, minWidth: 0 }}><span style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{sd.charAt(0)}{sd.slice(1).toLowerCase()} won · {boardName(c.type)}</span><span style={{ display: 'block', fontSize: 10, color: 'var(--text3)' }}>{ago(c.endTime)}</span></span>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <div style={{ background: 'color-mix(in srgb,var(--delhi) 9%,var(--surface3))', border: '1px solid color-mix(in srgb,var(--delhi) 26%,transparent)', borderRadius: 11, padding: '9px 11px' }}>
-                  <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: 'var(--delhi)' }}>DELHI</div>
-                  <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>₹{fmt(dPool)}</div>
-                </div>
-                <div style={{ background: 'color-mix(in srgb,var(--bombay) 9%,var(--surface3))', border: '1px solid color-mix(in srgb,var(--bombay) 26%,transparent)', borderRadius: 11, padding: '9px 11px' }}>
-                  <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: 'var(--bombay)' }}>BOMBAY</div>
-                  <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>₹{fmt(bPool)}</div>
-                </div>
-              </div>
-              <div style={{ height: 6, borderRadius: 4, overflow: 'hidden', display: 'flex', marginTop: 8 }}><span style={{ height: '100%', background: 'var(--delhi)', width: dW + '%' }} /><span style={{ height: '100%', flex: 1, background: 'var(--bombay)' }} /></div>
             </div>
           );
         })}
