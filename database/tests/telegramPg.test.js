@@ -363,6 +363,23 @@ describePg('Telegram, Continue with Telegram (PostgreSQL)', () => {
       expect(await getLinkByTelegramId('1', 'PLAYER')).toBeNull();
     });
 
+    it('a relink to another Telegram account ends old sessions and holds withdrawals; signing in again does neither', async () => {
+      const id = await account();
+      await verify(tgUser('1'), '9876543210');
+      const read = async () => (await pgQuery(
+        `SELECT sessions_valid_from, payout_hold_until FROM users WHERE user_id = $1`, [id])).rows[0];
+      await approve(await challenge(), tgUser('1'));
+      const same = await read();
+      expect(same.payout_hold_until).toBeNull();
+
+      const ch2 = await challenge();
+      await approve(ch2, tgUser('2'), { phone: '9876543210' });
+      const moved = await read();
+      expect(new Date(moved.sessions_valid_from).getTime())
+        .toBeGreaterThan(new Date(same.sessions_valid_from ?? 0).getTime());
+      expect(new Date(moved.payout_hold_until).getTime() - Date.now()).toBeGreaterThan(23.9 * 3600_000);
+    });
+
     it('a Telegram account linked on one panel is a stranger on the other', async () => {
       await account();
       await verify(tgUser('1'), '9876543210');

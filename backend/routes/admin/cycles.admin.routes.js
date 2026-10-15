@@ -9,6 +9,7 @@ import { voidCancelledCycle } from '#db/repositories/settlements.js';
 import { sendAlert } from '../../services/alerting.service.js';
 import { emitCyclePhase, emitCycleResult } from '../../domains/notification/realtimeEmitters.js';
 import { announceRoundResults } from '../../domains/markets/roundResult.service.js';
+import { emitToStaff, maySeeLiveSplit } from '../../domains/notification/staffEventAreas.js';
 
 const router = express.Router();
 
@@ -51,12 +52,18 @@ router.get('/cycles/phases', authenticate, hasPermission('canViewAnalytics'), as
       else if (now >= equalizerTime) currentPhase = 'PHANTOM_EQUALIZING';
       else if (now >= mergeTime) currentPhase = 'MERGED';
       
+      // The real split (and the phantom one, from which it follows) of a round
+      // still taking bets tells who is winning: full admins only until betting
+      // closes (owner, 2026-10-15).
+      const splitHidden = !maySeeLiveSplit(req.user) && currentPhase !== 'CLOSED';
+
       return {
         cycleId: cycle.cycleId,
         type: cycle.type,
         audience: cycle.audience,
         status: cycle.status,
         currentPhase,
+        splitHidden,
         startTime: startMs,
         endTime: endMs,
         phases: {
@@ -68,10 +75,10 @@ router.get('/cycles/phases', authenticate, hasPermission('canViewAnalytics'), as
         pools: {
           totalDelhi: cycle.totalDelhi,
           totalBombay: cycle.totalBombay,
-          realDelhi: cycle.realDelhi,
-          realBombay: cycle.realBombay,
-          phantomDelhi: cycle.phantomDelhi,
-          phantomBombay: cycle.phantomBombay
+          realDelhi: splitHidden ? null : cycle.realDelhi,
+          realBombay: splitHidden ? null : cycle.realBombay,
+          phantomDelhi: splitHidden ? null : cycle.phantomDelhi,
+          phantomBombay: splitHidden ? null : cycle.phantomBombay
         },
         phantomBalanced: cycle.phantomBalanced
       };
@@ -155,7 +162,8 @@ router.post('/cycles/:cycleId/equalize', authenticate, hasPermission('canManageC
     }
 
     const { cycle } = result;
-    global.io?.emit('phantom_equalized', {
+    // Full admins only (staffEventAreas.js): this went to every socket.
+    emitToStaff(global.io, 'phantom_equalized', {
       cycleId: cycle.cycleId,
       totalDelhi: cycle.totalDelhi,
       totalBombay: cycle.totalBombay,

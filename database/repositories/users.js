@@ -52,7 +52,7 @@ const COLUMNS = `
   sub_admin_role, sub_admin_permissions, phantom_access,
   is_blocked, block_reason, blocked_at, blocked_by,
   bank_details, last_login, roles, deleted_at, deleted_by, joined_at, updated_at,
-  account_type, sessions_valid_from`;
+  account_type, sessions_valid_from, payout_hold_until`;
 
 /**
  * The columns a caller may set through `updateUser`.
@@ -165,6 +165,8 @@ function toUser(row) {
     blockedAt: row.blocked_at,
     blockedBy: row.blocked_by,
     bankDetails: row.bank_details ?? null,
+    // Withdrawals refused until then (schema.sql "PAYOUT HOLD"); null = none.
+    payoutHoldUntil: row.payout_hold_until ?? null,
     lastLogin: row.last_login,
     roles: row.roles ?? [],
     // Present so an admin reading a deleted account can see who removed it and

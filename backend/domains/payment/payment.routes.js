@@ -121,7 +121,7 @@ router.post('/withdrawal/create', authenticatePlayer, withdrawalLimiter, createS
     // cutoffPassed and balance are read by the withdrawal screen, so they ride
     // the REFUSAL branch — an unclassified fault has no business setting them.
     return respondError(res, err, 'POST /payment/withdrawal/create', {
-      passthrough: ['cutoffPassed', 'balance'],
+      passthrough: ['cutoffPassed', 'balance', 'payoutHoldUntil'],
     });
   }
 });

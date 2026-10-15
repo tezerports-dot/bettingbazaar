@@ -189,6 +189,9 @@ exported constants. `SystemConfig.x` lives in `config_documents`, declared in
 | Games | `games` + `game_categories`; no hardcoded game arrays. Trading vocabulary: `domains/trading/tradingModels.js`. |
 | Staff areas | `backend/domains/identity/staffPermissions.js`; every staff route asks `hasPermission(<area>)` and nothing weaker. A grant stores every key; an unknown, non-boolean or absent `permissions` is refused. |
 | Which staff get an admin event | `backend/domains/notification/staffEventAreas.js`; undeclared events reach full admins only; a permission change closes that account's streams. |
+| Who sees the real split of a round still taking bets | Full admins only (owner, 2026-10-15): `maySeeLiveSplit` (`staffEventAreas.js`), the same answer as the events that carry it (`admin_bet_placed`, `phantom_equalized`, undeclared so full admins only). `GET /api/admin/cycles/phases` withholds real and phantom figures (`splitHidden`) from anyone else until betting closes. |
+| Where the admin panel answers | `ADMIN_HOST` (`network.adminHost`, `config/network.config.js`): when set, `adminHostGate` answers 404 for `ADMIN_PATH_PREFIXES` (`/admin`, `/api/admin`, `/api/sse/admin`) on every other host and sends `/` to `/admin/` on that one; the host is in `servableHosts()` so it gets its certificate on first use. Unset: every domain, as before (owner, 2026-10-15). |
+| Whether a withdrawal may be created now | `users.payout_hold_until` (schema.sql "PAYOUT HOLD"), set to now + `bb_payout_hold()` (24 hours, fixed) by the row's trigger when bank details move to another account (not the first time they are set) and by `linkWithin` on a Telegram relink, never earlier (GREATEST). The `order_states_payout_hold` trigger refuses a WITHDRAWAL INSERT under a share lock on the player's row; `createWithdrawalOrder` phrases it as 409 `PAYOUT_ON_HOLD` with `payoutHoldUntil` (owner, 2026-10-15). |
 | Chat rules; branding; support links | Chat config (`/api/chat/config`); `Branding` (§13); `SupportLinks` (not Branding). |
 | Auth token storage | One key per app: `auth_token`, `merchantToken`, `admin-auth`. |
 | App version | `package.json` via `VITE_APP_VERSION`; Android `versionName` must match it. |
@@ -693,7 +696,9 @@ Ask each question of the change in front of you.
   argument. Players and merchants have nothing to reset.
 - **33.7 Relink, never unlink:** a player or merchant moves to another
   Telegram account only by that account pressing Continue with Telegram and
-  sharing a contact with the same mobile.
+  sharing a contact with the same mobile. A relink moves `sessions_valid_from`
+  (every older session ends) and starts the 24-hour payout hold, in the
+  linking transaction (§2 *Whether a withdrawal may be created now*).
 - **33.8 The staff authenticator** (`staff_totp`, written only by
   `database/repositories/totp.js`; the arithmetic in
   `domains/identity/totp.service.js`): RFC 6238 on `node:crypto`, SHA-1, 6

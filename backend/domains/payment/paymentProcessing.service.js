@@ -506,6 +506,26 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
  *
  * @param attempt `{ priority, retryOf }` — see `createDepositOrder`.
  */
+/** The trigger's refusal (`order_states_payout_hold`, schema.sql). */
+function isPayoutHoldRefusal(err) {
+  return err?.code === '23514' && err.constraint === 'order_states_payout_hold';
+}
+
+/** What a player is told while a payout hold runs; they can act on the time. */
+function payoutOnHold(until) {
+  const at = until ? new Date(until) : null;
+  const when = at && Number.isFinite(at.getTime())
+    ? at.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' })
+    : null;
+  return Object.assign(
+    new Error(
+      'For your safety, withdrawals are paused for 24 hours after your bank account or Telegram account changes'
+      + (when ? `. You can withdraw again after ${when} IST.` : '. Please try again later.'),
+    ),
+    { status: 409, code: 'PAYOUT_ON_HOLD', payoutHoldUntil: until ?? null },
+  );
+}
+
 export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
   // The same cool-off. A player locked out of buying who could still sell has
   // simply found the way around it.
@@ -524,6 +544,12 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
   }
   if (!user.bankDetails?.accountNumber || !user.bankDetails?.ifscCode) {
     throw Object.assign(new Error('Please add your bank account details before withdrawing'), { status: 400 });
+  }
+  // A new bank account or a Telegram relink holds payouts for 24 hours
+  // (schema.sql "PAYOUT HOLD"). Asked here to phrase it; the INSERT's trigger
+  // is the guarantee, and its refusal is phrased the same way below.
+  if (user.payoutHoldUntil && new Date(user.payoutHoldUntil).getTime() > Date.now()) {
+    throw payoutOnHold(user.payoutHoldUntil);
   }
 
   // Phase 010: a configurable payout fee (SystemConfig.payoutFeePercent —
@@ -581,6 +607,10 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
   try {
     debited = await debitWinningsForWithdrawal(String(user.userId), tokenAmount, orderId, { within: insertOrder });
   } catch (err) {
+    if (isPayoutHoldRefusal(err)) {
+      const fresh = await db.users.getUser(userId);
+      throw payoutOnHold(fresh?.payoutHoldUntil);
+    }
     if (err.code === 'INSUFFICIENT_WITHDRAWABLE') {
       // The figures come off the refusal, from the rows the debit locked —
       // never from a record read separately, which is how a player was once

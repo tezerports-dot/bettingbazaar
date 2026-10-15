@@ -114,8 +114,19 @@ describe('the socket admin room', () => {
     expect(roomsForEvent('undeclared_event')).toEqual([FULL_ADMIN_ROOM]);
     const sent = [];
     const io = { to: (rooms) => ({ emit: (event, data) => sent.push({ rooms, event, data }) }) };
-    emitToStaff(io, 'admin_bet_placed', { x: 1 });
+    emitToStaff(io, 'admin_cycle_result', { x: 1 });
     expect(sent[0].rooms).toEqual([FULL_ADMIN_ROOM, staffRoom('canViewAnalytics'), staffRoom('canManageCycles')]);
+  });
+
+  it('the live split of an open round reaches full admins only', () => {
+    for (const event of ['admin_bet_placed', 'phantom_equalized']) {
+      expect(roomsForEvent(event), event).toEqual([FULL_ADMIN_ROOM]);
+      expect(staffMayReceive(admin, event), event).toBe(true);
+      for (const viewer of [merchants, contentOnly, disputes, queueManager]) {
+        expect(staffMayReceive(viewer, event), `${viewer.userId} / ${event}`).toBe(false);
+      }
+      expect(staffMayReceive({ userId: 'c1', isSubAdmin: true, permissions: { canViewAnalytics: true, canManageCycles: true } }, event)).toBe(false);
+    }
   });
 
   it('the rooms a viewer joins and the rooms an event reaches agree with staffMayReceive', () => {

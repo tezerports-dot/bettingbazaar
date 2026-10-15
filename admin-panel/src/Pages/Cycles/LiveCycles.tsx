@@ -57,6 +57,7 @@ export const LiveCycles: React.FC = () => {
           phantomDelhi: c.pools?.phantomDelhi || 0,
           phantomBombay: c.pools?.phantomBombay || 0,
           phantomBalanced: c.phantomBalanced || false,
+          splitHidden: c.splitHidden === true,
         })) as Cycle[]);
       }
     } catch {
@@ -131,7 +132,7 @@ export const LiveCycles: React.FC = () => {
   const kpis = [
     { label: 'Active Cycles', value: String(cycles.length), color: 'var(--text)' },
     { label: 'Total Book', value: inr(totalBook), color: 'var(--text)' },
-    { label: 'Phantom Exposure', value: inr(totalPhantom), color: 'var(--risk)' },
+    { label: 'Phantom Exposure', value: cycles.some((c) => c.splitHidden) ? '—' : inr(totalPhantom), color: 'var(--risk)' },
     { label: 'Next Settlement', value: nextClose ? timer(nextClose.endTime) : '—', color: 'var(--gold-ink)' },
   ];
 
@@ -197,12 +198,12 @@ export const LiveCycles: React.FC = () => {
                   <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 11, padding: 12 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}><span style={{ width: 8, height: 8, borderRadius: 2, background: 'var(--info)' }} /><span style={{ fontSize: 11, fontWeight: 800, color: 'var(--info)' }}>DELHI</span></div>
                     <div className="font-mono" style={{ fontSize: 17, fontWeight: 800 }}>{inr(c.totalDelhi)}</div>
-                    <div className="font-mono" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 4 }}>real {inr(c.realDelhi)} · ph {inr(c.phantomDelhi)}</div>
+                    <div className="font-mono" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 4 }}>{c.splitHidden ? 'real split: main admin only until betting closes' : <>real {inr(c.realDelhi)} · ph {inr(c.phantomDelhi)}</>}</div>
                   </div>
                   <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 11, padding: 12 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}><span style={{ width: 8, height: 8, borderRadius: 2, background: 'var(--warning)' }} /><span style={{ fontSize: 11, fontWeight: 800, color: 'var(--warning)' }}>BOMBAY</span></div>
                     <div className="font-mono" style={{ fontSize: 17, fontWeight: 800 }}>{inr(c.totalBombay)}</div>
-                    <div className="font-mono" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 4 }}>real {inr(c.realBombay)} · ph {inr(c.phantomBombay)}</div>
+                    <div className="font-mono" style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 4 }}>{c.splitHidden ? 'real split: main admin only until betting closes' : <>real {inr(c.realBombay)} · ph {inr(c.phantomBombay)}</>}</div>
                   </div>
                 </div>
 
