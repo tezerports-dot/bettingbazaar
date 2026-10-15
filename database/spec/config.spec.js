@@ -262,13 +262,22 @@ export const SYSTEM_CONFIG_SPEC = group({
   // that player's inviter (level 2), in whole rupees; 0 pays nothing at that
   // level. Stamped on each earning when the joiner verifies, so a change
   // applies to new joiners only. `turnoverMultiplier`: how many times its
-  // amount a bonus must be played before it unlocks into winnings, stamped on
-  // the bonus when it is paid. Read through `referralRewardsFrom`
-  // (backend/domains/referral/referralRewards.js).
+  // amount ANY General bonus (referral or first deposit) must be played before
+  // it unlocks into winnings, stamped on the bonus when it is paid (owner,
+  // 2026-10-15: "all the general wallet bonus are going to have same rule").
+  // Read through `referralRewardsFrom` (backend/domains/referral/referralRewards.js).
   referralRewards: group({
     level1Rupees:       int(25, 0, 10000),
     level2Rupees:       int(25, 0, 10000),
     turnoverMultiplier: int(10, 1, 100),
+  }),
+  // ── First deposit bonus (owner, 2026-10-15) ─────────────────────────────
+  // Whole rupees paid into a player's GENERAL balance with their first
+  // completed buy, once per player; 0 pays nothing. Asks the same play
+  // requirement as every General bonus (`referralRewards.turnoverMultiplier`).
+  // Read through `firstDepositBonusFrom` (backend/domains/referral/referralRewards.js).
+  firstDepositBonus: group({
+    rupees: int(0, 0, 100000),
   }),
   // ── Red flags (redesign Step 2f) ────────────────────────────────────────
   // Computed once a day, shown to people, acted on by nobody's code. Read

@@ -1,6 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * domains/referral/referralRewards.js — what a referral pays, read from the
+ * domains/referral/referralRewards.js — what a referral and a first deposit
+ * pay into the GENERAL balance, and the one play rule for both, read from the
  * admin's settings (`SystemConfig.referralRewards`, Admin › System Settings ›
  * Referral Rewards; owner, 2026-10-14: "I want those admin editable").
  *
@@ -24,4 +25,16 @@ export function referralRewardsFrom(cfg) {
     // schema default: 10 (a bonus is played 10× before it unlocks)
     turnoverMultiplier: Number(r.turnoverMultiplier ?? 10),
   };
+}
+
+/**
+ * The first deposit bonus, in paise (`SystemConfig.firstDepositBonus`, Admin ›
+ * System Settings › First Deposit Bonus; owner, 2026-10-15). 0 = off. Its play
+ * requirement is `referralRewardsFrom(cfg).turnoverMultiplier`, the one rule
+ * for every General bonus.
+ * @param {object|null} cfg  the SystemConfig document (`getSystemConfig()`)
+ */
+export function firstDepositBonusFrom(cfg) {
+  // schema default: 0 (off; database/spec/config.spec.js firstDepositBonus)
+  return { amountPaise: Math.round(Number(cfg?.firstDepositBonus?.rupees ?? 0) * 100) };
 }

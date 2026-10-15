@@ -254,6 +254,8 @@ export const SystemSettings: React.FC = () => {
     redFlags: { lowActivityPercent: 25 },  // schema default: 25
     // What a referral pays (owner, 2026-10-14: admin-editable).
     referralRewards: { level1Rupees: 25, level2Rupees: 25, turnoverMultiplier: 10 },  // schema defaults: 25 / 25 / 10
+    // What a player's first completed deposit pays into GENERAL (owner, 2026-10-15).
+    firstDepositBonus: { rupees: 0 },  // schema default: 0 (off)
     // Overload ceilings — past either one the server answers 503 fast rather
     // than admitting work into a queue that will never drain.
     loadShedding: { enabled: true, maxInFlight: 300, maxEventLoopLagMs: 0 },  // schema defaults: true / 300 / 0
@@ -370,6 +372,9 @@ export const SystemSettings: React.FC = () => {
             level1Rupees:       response.data.referralRewards?.level1Rupees       ?? 25, // schema default: 25
             level2Rupees:       response.data.referralRewards?.level2Rupees       ?? 25, // schema default: 25
             turnoverMultiplier: response.data.referralRewards?.turnoverMultiplier ?? 10, // schema default: 10
+          },
+          firstDepositBonus: {
+            rupees: response.data.firstDepositBonus?.rupees ?? 0, // schema default: 0
           },
           loadShedding: {
             enabled:           response.data.loadShedding?.enabled           ?? true, // schema default: true
@@ -1286,13 +1291,15 @@ export const SystemSettings: React.FC = () => {
         </div>
       </div>
 
-      {/* ── REFERRAL REWARDS (owner, 2026-10-14: admin-editable) ── */}
+      {/* ── GENERAL BONUSES (owner, 2026-10-14/15: referral + first deposit, one play rule) ── */}
       <div className="card">
-        <h3 className="text-lg font-semibold mb-1">Referral Rewards</h3>
+        <h3 className="text-lg font-semibold mb-1">Bonuses (General balance)</h3>
         <p className="text-xs text-gray-400 mb-4">
-          What inviting a friend pays. Paid from the queue you fund on the Referrals page.
+          Every bonus here goes into the player&apos;s General balance, never VIP. Referral rewards are paid
+          from the queue you fund on the Referrals page; the first deposit bonus is paid once, with the
+          player&apos;s first completed buy. One play requirement applies to every bonus.
         </p>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
           <div>
             <label className="label" htmlFor="referral-level1Rupees">Level 1 reward (₹ per joiner)</label>
             <input id="referral-level1Rupees"
@@ -1316,7 +1323,18 @@ export const SystemSettings: React.FC = () => {
             <SettingHelp path="referralRewards.level2Rupees" />
           </div>
           <div>
-            <label className="label" htmlFor="referral-turnoverMultiplier">Bonus play requirement (× the bonus)</label>
+            <label className="label" htmlFor="firstDepositBonus-rupees">First deposit bonus (₹, 0 = off)</label>
+            <input id="firstDepositBonus-rupees"
+              type="number" min={0} max={100000} step={1}
+              value={formData.firstDepositBonus.rupees}
+              onChange={(e) => setFormData({ ...formData, firstDepositBonus: {
+                rupees: Math.min(100000, Math.max(0, Math.floor(Number(e.target.value) || 0))) } })}
+              className="input"
+            />
+            <SettingHelp path="firstDepositBonus.rupees" />
+          </div>
+          <div>
+            <label className="label" htmlFor="referral-turnoverMultiplier">Play requirement for every bonus (× the bonus)</label>
             <input id="referral-turnoverMultiplier"
               type="number" min={1} max={100} step={1}
               value={formData.referralRewards.turnoverMultiplier}
