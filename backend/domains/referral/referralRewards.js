@@ -1,13 +1,27 @@
-// GOVERNANCE: Read CLAUDE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * domains/referral/referralRewards.js — the programme's fixed numbers.
+ * domains/referral/referralRewards.js — what a referral pays, read from the
+ * admin's settings (`SystemConfig.referralRewards`, Admin › System Settings ›
+ * Referral Rewards; owner, 2026-10-14: "I want those admin editable").
  *
- * A constant, not a configuration value: the reward is what the programme
- * PROMISED the people already in the queue, and a queue whose reward can be
- * edited while people wait in it is not a queue they can rely on. Changing it
- * is a new programme, with its own budget and its own announcement.
+ * A change applies to NEW joiners only. Each earning is stamped with its
+ * amount when the joiner verifies (`referral_earnings.amount_paise`), so the
+ * people already waiting in the payout queue are paid exactly what they were
+ * promised; the turnover a bonus asks is stamped on its grant when it is paid
+ * (`promo_grants.required_turnover_paise`).
  */
 
-/** ₹25, in paise. Integer, because money is integer paise everywhere. */
-export const REFERRAL_REWARD_PAISE = 2500;
-
+/**
+ * The live numbers, in paise and whole multiples.
+ * @param {object|null} cfg  the SystemConfig document (`getSystemConfig()`)
+ */
+export function referralRewardsFrom(cfg) {
+  const r = cfg?.referralRewards ?? {};
+  return {
+    // schema default: 25 (₹25 a level; database/spec/config.spec.js referralRewards)
+    level1Paise: Math.round(Number(r.level1Rupees ?? 25) * 100),
+    level2Paise: Math.round(Number(r.level2Rupees ?? 25) * 100),
+    // schema default: 10 (a bonus is played 10× before it unlocks)
+    turnoverMultiplier: Number(r.turnoverMultiplier ?? 10),
+  };
+}

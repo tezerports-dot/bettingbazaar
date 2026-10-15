@@ -18,6 +18,7 @@ import crypto from 'crypto';
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { createUser, getUser, newUserId } from '../repositories/users.js';
+import { getSystemConfig, setConfigPath } from '../repositories/config.js';
 import {
   getBot, getBots, getBotSecrets, saveBot, removeBot, setBotSuspended,
   getLinkByUserId, getLinkByTelegramId, listLinksForTelegramUser,
@@ -232,6 +233,27 @@ describePg('Telegram, Continue with Telegram (PostgreSQL)', () => {
       await verify(tgUser('3'), '9000000003');
       const { rows } = await pgQuery(`SELECT earner_id, level FROM referral_earnings WHERE source_user_id = $1 ORDER BY level`, [joiner]);
       expect(rows).toEqual([{ earner_id: mid, level: 1 }, { earner_id: top, level: 2 }]);
+    });
+
+    it('books what the admin set per level when the joiner verifies, and nothing at a level set to 0', async () => {
+      const saved = (await getSystemConfig()).referralRewards;
+      try {
+        await setConfigPath('system', 'referralRewards.level1Rupees', 50);
+        await setConfigPath('system', 'referralRewards.level2Rupees', 0);
+        const top = await account({ mobile: '9000000001' });
+        const mid = await account({ mobile: '9000000002', referredBy: top });
+        await verify(tgUser('1'), '9000000001');
+        await verify(tgUser('2'), '9000000002');
+        const joiner = await account({ mobile: '9000000003', referredBy: mid });
+        await verify(tgUser('3'), '9000000003');
+        const { rows } = await pgQuery(
+          `SELECT earner_id, level, amount_paise::int AS paise FROM referral_earnings WHERE source_user_id = $1 ORDER BY level`, [joiner]);
+        expect(rows).toEqual([{ earner_id: mid, level: 1, paise: 5_000 }]);
+      } finally {
+        await setConfigPath('system', 'referralRewards.level1Rupees', saved.level1Rupees);
+        await setConfigPath('system', 'referralRewards.level2Rupees', saved.level2Rupees);
+      }
+      expect((await getSystemConfig()).referralRewards).toEqual(saved);
     });
 
     it('a later Verify from the same Telegram account books nothing twice', async () => {

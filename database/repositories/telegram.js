@@ -39,7 +39,8 @@ import { pgQuery, withTransaction } from '../client.js';
 import { claimJoiningNumber } from './users.js';
 import { createAccountFromSignup } from './identity.js';
 import { recordJoinerEarnings } from './referrals.js';
-import { REFERRAL_REWARD_PAISE } from '../../backend/domains/referral/referralRewards.js';
+import { referralRewardsFrom } from '../../backend/domains/referral/referralRewards.js';
+import { getSystemConfig } from './config.js';
 
 /**
  * The account types Telegram serves: players and merchants. A STAFF account has
@@ -507,8 +508,9 @@ async function linkWithin(client, account, { telegramUser, phone }) {
       let referralLevels = [];
       if (account.account_type === 'PLAYER') {
         joiningNumber = await claimJoiningNumber(account.user_id, { client });
+        const rewards = referralRewardsFrom(await getSystemConfig());
         referralLevels = await recordJoinerEarnings(account.user_id, {
-          client, amountPaise: REFERRAL_REWARD_PAISE,
+          client, amountsPaise: { 1: rewards.level1Paise, 2: rewards.level2Paise },
         });
       }
       return { verified: true, relinked: false, joiningNumber, referralLevels };

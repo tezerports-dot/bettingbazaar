@@ -24,22 +24,26 @@ describe('PromoCard', () => {
     render(<PromoCard card={{ promoId: 'p0', title: 'Frame', image: 'https://cdn.example/f.png', ratio: { w: 18, h: 5 } }} />);
     expect(screen.getByRole('img', { name: 'Frame' }).style.aspectRatio).toBe('18 / 5');
   });
-  it('is a link to its own page, named by its label', () => {
+  it('opens its own page, named by its label (owner, 2026-10-14)', () => {
     render(<PromoCard card={{ promoId: 'p1', title: 'Refer & Earn', image: 'https://cdn.example/r.png', ratio: R, linkUrl: '/referrals' }} />);
     const a = screen.getByRole('link', { name: 'Refer & Earn' });
-    expect(a).toHaveAttribute('href', '#/referrals');
+    expect(a).toHaveAttribute('href', '#/card/p1');
     expect(a).not.toHaveAttribute('target');
   });
-  it('opens an https link in a new tab, without handing it this window', () => {
+  it('opens its own page even when its link is external; the link is a button there', () => {
     render(<PromoCard card={{ promoId: 'p2', title: 'Channel', image: 'https://cdn.example/c.png', ratio: R, linkUrl: 'https://t.me/x' }} />);
     const a = screen.getByRole('link', { name: 'Channel' });
-    expect(a).toHaveAttribute('target', '_blank');
-    expect(a).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(a).toHaveAttribute('href', '#/card/p2');
+    expect(a).not.toHaveAttribute('target');
   });
-  it('is not a link when it has none', () => {
+  it('opens its page with no link at all, since the link is optional', () => {
     render(<PromoCard card={{ promoId: 'p3', title: 'News', image: 'https://cdn.example/n.png', ratio: R }} />);
+    expect(screen.getByRole('link', { name: 'News' })).toHaveAttribute('href', '#/card/p3');
+  });
+  it('is not a link without an id to open', () => {
+    render(<PromoCard card={{ title: 'Loose', image: 'https://cdn.example/l.png', ratio: R }} />);
     expect(screen.queryByRole('link')).toBeNull();
-    expect(screen.getByRole('img', { name: 'News' })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Loose' })).toBeInTheDocument();
   });
 });
 

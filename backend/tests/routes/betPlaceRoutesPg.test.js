@@ -36,9 +36,8 @@ import { getBalances } from '../../domains/wallet/walletAuthority.service.js';
 import { fundWallet } from '#db/tests/_funding.js';
 import { actor, mountRouter, as } from './_harness.js';
 import { linkTelegram } from '../miniAppFixture.js';
-import { accept as acceptBoardRules } from '#db/repositories/boardRules.js';
+import { accept as acceptBoardRules, currentVersion as currentBoardRulesVersion } from '#db/repositories/boardRules.js';
 import * as promo from '#db/repositories/promo.js';
-import { BOARD_RULES_VERSION } from '../../domains/markets/boardRules.js';
 import { getSystemConfig, setConfigPath } from '#db/repositories/config.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -216,7 +215,7 @@ describePg('POST /api/bet/place', () => {
       expect(after.depositBalance).toBe(before.depositBalance);
       expect(after.lockedBalance).toBe(before.lockedBalance);
 
-      await acceptBoardRules(p.userId, BOARD_RULES_VERSION);
+      await acceptBoardRules(p.userId, await currentBoardRulesVersion());
       const taken = await place(p, body);
       expect(taken.status, JSON.stringify(taken.body)).toBe(200);
     });
@@ -225,7 +224,7 @@ describePg('POST /api/bet/place', () => {
       const cycle = await openCycle('FULL_DAY', { startedAgoMs: HOUR, lengthMs: 20 * HOUR });
       made.push(cycle.cycleId);
       const p = await fundedPlayer(1_000, { boardRules: false });
-      await pgQuery('UPDATE users SET board_rules_version = $2 WHERE user_id = $1', [p.userId, BOARD_RULES_VERSION - 1]);
+      await pgQuery('UPDATE users SET board_rules_version = $2 WHERE user_id = $1', [p.userId, (await currentBoardRulesVersion()) - 1]);
       const res = await place(p, { cycleId: cycle.cycleId, side: 'BOMBAY', amount: limits.fullDay.min, type: 'FULL_DAY' });
       expect(res.status).toBe(409);
       expect(res.body.code).toBe('BOARD_RULES_NOT_ACCEPTED');

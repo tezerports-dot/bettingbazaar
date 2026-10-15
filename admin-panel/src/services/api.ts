@@ -432,6 +432,20 @@ export const boards = {
   setOrder: async (keys: string[]) => (await api.put<any>('/api/admin/boards/order', { keys })).data,
 };
 
+// --- RULES POP-UP (owner, 2026-10-14) -------------------------------------------
+// The board rules players accept before betting, edited and published here.
+// backend/routes/admin/boardRules.admin.routes.js; shapes mirror
+// database/repositories/boardRules.js (`currentText`, `history`).
+export interface BoardRulesTextDraft {
+  heading: string;
+  intro: string;
+  sections: { title: string; body: string }[];
+}
+export const boardRules = {
+  get: async () => (await api.get<any>('/api/admin/board-rules')).data,
+  publish: async (text: BoardRulesTextDraft) => (await api.put<any>('/api/admin/board-rules', text)).data,
+};
+
 // --- TOKEN RATES ---------------------------------------------------------------
 // Removed 2026-07-08: token conversion is fixed 1:1 (Phase 006 flattening) —
 // rates are no longer admin-editable and the backend endpoints are gone.
@@ -878,7 +892,8 @@ export const system = {
   getConfig: async () => {
     const res = await api.get<any>('/api/admin/system/config');
     if (res.data?.success && res.data?.config) {
-      return { success: true, data: res.data.config };
+      // `help`: what each setting means, by dotted path (configHelp.js).
+      return { success: true, data: res.data.config, help: res.data.help ?? {} };
     }
     return res.data;
   },
@@ -1153,6 +1168,7 @@ export default {
   merchants,
   cycles,
   boards,
+  boardRules,
   depositPolicy,
   queueManager,
   teams,

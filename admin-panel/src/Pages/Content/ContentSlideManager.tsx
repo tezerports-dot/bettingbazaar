@@ -33,6 +33,7 @@ import {
 import { Modal } from '../../components/Modal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import api from '../../services/api';
+import { errorMessage, uploadImage } from '../../services/imageUpload';
 import toast from 'react-hot-toast';
 import { Toolbar } from '../../components/design';
 
@@ -88,28 +89,13 @@ export const ContentSlideManager: React.FC = () => {
     if (file.size > 5 * 1024 * 1024) { toast.error('Max file size is 5 MB'); return; }
     setUploading(true);
     try {
-      // Step 1: Get presigned URL from backend
-      const urlRes = await api.post<any>('/api/admin/promo/upload-url', {
-        fileName:    file.name,
-        contentType: file.type,
-        fileSize:    file.size,
-        location:    activeTab.toLowerCase(),
-      });
-      if (!urlRes.data?.success) throw new Error(urlRes.data?.message || 'Upload URL failed');
-      const { uploadUrl, cdnUrl } = urlRes.data;
-
-      // Step 2: PUT directly to S3
-      const putRes = await fetch(uploadUrl, {
-        method:  'PUT',
-        body:    file,
-        headers: { 'Content-Type': file.type },
-      });
-      if (!putRes.ok) throw new Error('S3 upload failed');
-
+      // The one upload every admin image uses: it says why a failure happened
+      // (the file refused, storage settings missing, or storage refusing it).
+      const cdnUrl = await uploadImage(file, 'promo');
       setForm(f => ({ ...f, fileUrl: cdnUrl, urlMode: false }));
       toast.success('Image uploaded — click Save to publish');
-    } catch (e: any) {
-      toast.error(e.message || 'Upload failed');
+    } catch (e) {
+      toast.error(errorMessage(e, 'Upload failed'));
     } finally { setUploading(false); }
   };
 

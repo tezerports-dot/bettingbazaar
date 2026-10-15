@@ -6,6 +6,10 @@
  *                                           required | unsupported | available | current
  *                                           and the release, chosen FOR this phone's Android
  *   GET /download/android                   302 to the newest published APK
+ *   GET /app/android/available              { available }: whether there is one to
+ *                                           offer, so the player app shows no APK
+ *                                           link until an admin publishes a release
+ *                                           (owner, 2026-10-14: "we will use PWA until then")
  *
  * Public on purpose: the app asks before anyone signs in, and a player who is
  * blocked by a mandatory update must still be able to fetch it.
@@ -33,6 +37,16 @@ router.get('/app/android/update', async (req, res) => {
     });
   } catch (err) {
     return serverError(res, err, 'GET /app/android/update', 'Could not check for updates');
+  }
+});
+
+router.get('/app/android/available', async (req, res) => {
+  try {
+    const { latest } = await db.androidReleases.getUpdatePolicy(expectedPackage());
+    res.set('Cache-Control', 'no-store');
+    return res.json({ success: true, available: !!latest });
+  } catch (err) {
+    return serverError(res, err, 'GET /app/android/available', 'Server error');
   }
 });
 

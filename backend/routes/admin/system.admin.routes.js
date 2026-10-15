@@ -11,6 +11,7 @@ import { getSystemConfig } from '#db/repositories/config.js';
 // The declaration of what a setting IS — its default and its bounds. Read here
 // so this route neither restates a default nor keeps its own list of fields.
 import { SYSTEM_CONFIG_SPEC } from '#db/spec/config.spec.js';
+import { SYSTEM_CONFIG_HELP } from '#db/spec/configHelp.js';
 import { approvedApiHosts } from '../../config/apiHosts.js';
 import { gatewayDocumentStatus } from '../../domains/configuration/gatewayConfig.js';
 import { ORDER_SIZE_RAILS, INR_ROUTING_MODES, inrRoutingOf } from '../../domains/merchant/denominations.js';
@@ -145,7 +146,11 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         iosUrl:        config.iosUrl        || '',
         minVersion:    config.minVersion    || '1.0.0',
         latestVersion: config.latestVersion || '1.0.0',
-      }
+      },
+      // What each setting means and an example, keyed by its dotted path
+      // (`configHelp.js`, one entry per spec leaf). The Settings screens render
+      // it under each field and keep no copy (owner, 2026-10-14).
+      help: SYSTEM_CONFIG_HELP,
     });
   } catch (error) {
     console.error('Get system config error:', error);

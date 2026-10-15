@@ -257,7 +257,7 @@ point of the change.
 
 | Parameter | Value |
 |---|---|
-| Reward | **₹25** (`REFERRAL_REWARD_PAISE = 2500`) |
+| Reward | Per level, default **₹25** each (`SystemConfig.referralRewards`, Admin › System Settings › Referral Rewards) |
 | Depth | 2 tiers — the direct referrer and *their* referrer |
 | Budget | **₹400 crore** (`PROGRAMME_BUDGET_PAISE`) |
 | Member cap | **8 crore** verified members (`PROGRAMME_MEMBER_CAP`) |

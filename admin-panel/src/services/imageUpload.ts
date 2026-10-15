@@ -26,8 +26,7 @@ export async function uploadImage(file: File, kind: UploadKind, category = 'imag
   const { data: presign } = await api.post<any>(presignPath, body);
   if (!presign?.uploadUrl) throw new Error(presign?.message || 'Could not get an upload URL');
 
-  const put = await fetch(presign.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
-  if (!put.ok) throw new Error(`Storage refused the upload (HTTP ${put.status})`);
+  await putToStorage(presign.uploadUrl, file);
 
   if (kind === 'branding') {
     await api.post('/api/admin/branding/confirm-upload', {
@@ -35,6 +34,41 @@ export async function uploadImage(file: File, kind: UploadKind, category = 'imag
     });
   }
   return presign.cdnUrl as string;
+}
+
+/**
+ * What an S3 error code means for the person who has to fix it. The storage
+ * answers in XML (`<Code>`, `<Message>`); these are the codes a wrong setting
+ * produces, named by the server setting to check.
+ */
+const STORAGE_CODES: Record<string, string> = {
+  SignatureDoesNotMatch: 'the storage keys are wrong: check S3_SECRET_KEY on the server',
+  InvalidAccessKeyId: 'the storage key is wrong: check S3_ACCESS_KEY on the server',
+  AccessDenied: 'the storage keys are not allowed to write to this bucket',
+  NoSuchBucket: 'the bucket does not exist: check S3_BUCKET_NAME on the server',
+  RequestTimeTooSkewed: "the server's clock is wrong, so the upload link it signed was refused",
+  AccessDeniedExpired: 'the upload link expired; try again',
+  EntityTooLarge: 'the file is larger than the storage allows',
+};
+
+/** PUT the bytes to a presigned URL, or throw a reason someone can act on. */
+export async function putToStorage(uploadUrl: string, file: File): Promise<void> {
+  let put: Response;
+  try {
+    put = await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
+  } catch {
+    // The browser hides the storage's answer when its CORS rules do not allow
+    // this site, and a wrong storage address fails the same way.
+    throw new Error(
+      `The file storage could not be reached from this page. Usually its CORS rules do not allow uploads (PUT) from ${window.location.origin}; otherwise S3_ENDPOINT on the server is wrong.`,
+    );
+  }
+  if (put.ok) return;
+  const xml = await put.text().catch(() => '');
+  const code = /<Code>([^<]+)<\/Code>/.exec(xml)?.[1] ?? '';
+  const said = /<Message>([^<]+)<\/Message>/.exec(xml)?.[1] ?? '';
+  const meaning = STORAGE_CODES[code] ?? (said || 'no reason given');
+  throw new Error(`The file storage refused the upload (HTTP ${put.status}${code ? `, ${code}` : ''}): ${meaning}.`);
 }
 
 /** The most specific message a failed request or upload carries. */

@@ -2,6 +2,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Save, Power, AlertTriangle } from 'lucide-react';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
+import { SettingHelp, SettingHelpProvider, type SettingHelpMap } from '../../components/SettingHelp';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 
@@ -19,26 +20,20 @@ import toast from 'react-hot-toast';
 // placeholder only (§4) and equals the spec default cited beside it — the GET
 // fills every key from the spec, so after load nothing here is read.
 const MERCHANT_ORDER_RULES: Array<{
-  key: string; label: string; min: number; max: number; fallback: number; help: string;
+  key: string; label: string; min: number; max: number; fallback: number;
 }> = [
   { key: 'maxConsecutiveRejections', label: 'Consecutive Refusals Before Suspension',
-    min: 1, max: 20, fallback: 3,   // spec default: 3
-    help: 'Declines and unanswered PAID buys in a row before the merchant is suspended. Any completed order resets the streak. Lifted by an admin, never by a timer.' },
+    min: 1, max: 20, fallback: 3 },   // spec default: 3,
   { key: 'paidResponseMinutes', label: 'Merchant Response Window on a PAID Buy (minutes)',
-    min: 5, max: 1440, fallback: 30,   // spec default: 30
-    help: 'The player has already paid. After this long with no answer the order goes to the dispute queue for a human, and the silence counts as a refusal.' },
+    min: 5, max: 1440, fallback: 30 },   // spec default: 30,
   { key: 'utrAfterPaidMinutes', label: 'Cash Buy: Reference Due After Paid (minutes)',
-    min: 2, max: 60, fallback: 15,   // spec default: 15
-    help: 'On the cash rail the player taps Paid at the machine and the bank reference follows. Missing this window sends the order to the admin queue, never to cancelled — the cash may have been dispensed.' },
+    min: 2, max: 60, fallback: 15 },   // spec default: 15,
   { key: 'maxConsecutivePlayerPaymentFailures', label: 'Player Unpaid Buys Before Cool-off',
-    min: 1, max: 50, fallback: 3,   // spec default: 3
-    help: 'Buy orders a player lets expire without paying, in a row, before they are flagged and cannot open a new order. Cleared when a payment actually arrives.' },
+    min: 1, max: 50, fallback: 3 },   // spec default: 3,
   { key: 'playerOrderLockMinutes', label: 'Player Cool-off Length (minutes)',
-    min: 1, max: 1440, fallback: 60,   // spec default: 60
-    help: 'How long that player cannot open a new order, on BOTH rails. It lifts itself; no admin action is needed.' },
+    min: 1, max: 1440, fallback: 60 },   // spec default: 60,
   { key: 'maxConsecutiveMerchantExpiries', label: 'Expiries Before Assignment is Paused',
-    min: 1, max: 20, fallback: 3,   // spec default: 3
-    help: 'Buy orders sent to one merchant that expired unpaid, in a row. Most often it means that merchant cannot BE paid (dead QR, closed handle). NOT a suspension: they keep their orders and standing, and an admin resumes them from the merchant\'s profile.' },
+    min: 1, max: 20, fallback: 3 },   // spec default: 3,
 ];
 
 // §5 MIRROR — `SYSTEM_CONFIG_SPEC.fields.teamRouting` in
@@ -71,14 +66,12 @@ const ROUTING_RAILS: Array<{
 ];
 const ROUTING_TIMERS: Array<{
   key: 'assignmentWaitSeconds' | 'utrSubmitSeconds'; label: string;
-  min: number; max: number; fallback: number; help: string;
+  min: number; max: number; fallback: number;
 }> = [
   { key: 'assignmentWaitSeconds', label: 'Queue Wait Before Expiry (seconds)',
-    min: 60, max: 86400, fallback: 1500,   // spec default: 1500
-    help: 'How long a queued order nobody could take waits for an agent before it expires.' },
+    min: 60, max: 86400, fallback: 1500 },   // spec default: 1500,
   { key: 'utrSubmitSeconds', label: 'Extra Time to Submit a Reference (seconds)',
-    min: 15, max: 3600, fallback: 60,   // spec default: 60
-    help: 'The one-off grace a player can claim to fetch their payment reference.' },
+    min: 15, max: 3600, fallback: 60 },   // spec default: 60,
 ];
 
 interface TeamRoutingForm {
@@ -117,14 +110,12 @@ const MERCHANT_ROUTING_DIRECTIONS: Array<{
 const MERCHANT_ASSIGNMENT_WAIT = { min: 60, max: 86400, fallback: 1500 };   // spec default: 1500
 const DIRECT_MERCHANT_FIELDS: Array<{
   key: 'commissionPercent' | 'dailyProblemFlagThreshold'; label: string;
-  min: number; max: number; fallback: number; help: string;
+  min: number; max: number; fallback: number;
 }> = [
   { key: 'commissionPercent', label: 'Merchant commission (%)',
-    min: 1, max: 50, fallback: 10,   // spec default: 10
-    help: 'Percent of each rise in a merchant\'s matched volume, paid into its own pool. There is no supervisor share. Agents\' teams are not affected.' },
+    min: 1, max: 50, fallback: 10 },   // spec default: 10,
   { key: 'dailyProblemFlagThreshold', label: 'Problems in a day before a merchant is flagged',
-    min: 1, max: 100, fallback: 5,   // spec default: 5
-    help: 'Refusals, unpaid buys counted against it and lost disputes in one IST day. A flag is shown here and to the merchant; it suspends nothing.' },
+    min: 1, max: 100, fallback: 5 },   // spec default: 5,
 ];
 /** UI names for the served `inrRoutingModes` (INR_ROUTING_MODES); an unknown value shows as itself. §11. */
 const INR_MODE_LABEL: Record<string, string> = { AGENTS: 'Agents', MERCHANTS: 'Merchants' };
@@ -221,6 +212,8 @@ export const SystemSettings: React.FC = () => {
   const [orderSizeRails, setOrderSizeRails] = useState<OrderSizeRail[]>([]);
   // The two values `inrRoutingMode` takes (INR_ROUTING_MODES), served with the config.
   const [inrRoutingModes, setInrRoutingModes] = useState<string[]>([]);
+  // What each setting means, served beside the config (configHelp.js).
+  const [help, setHelp] = useState<SettingHelpMap>({});
 
   const [formData, setFormData] = useState({
     maintenanceMode: false,
@@ -259,6 +252,8 @@ export const SystemSettings: React.FC = () => {
     rejectedBuyDisputeMinutes: 15,  // schema default: 15
     // The daily red flag on team members (Step 2f): low activity.
     redFlags: { lowActivityPercent: 25 },  // schema default: 25
+    // What a referral pays (owner, 2026-10-14: admin-editable).
+    referralRewards: { level1Rupees: 25, level2Rupees: 25, turnoverMultiplier: 10 },  // schema defaults: 25 / 25 / 10
     // Overload ceilings — past either one the server answers 503 fast rather
     // than admitting work into a queue that will never drain.
     loadShedding: { enabled: true, maxInFlight: 300, maxEventLoopLagMs: 0 },  // schema defaults: true / 300 / 0
@@ -306,6 +301,7 @@ export const SystemSettings: React.FC = () => {
         setGateway(response.data.gatewayDocument ?? null);
         setOrderSizeRails(Array.isArray(response.data.orderSizeRails) ? response.data.orderSizeRails : []);
         setInrRoutingModes(Array.isArray(response.data.inrRoutingModes) ? response.data.inrRoutingModes : []);
+        setHelp(response.help ?? {});
         setFormData({
           maintenanceMode: response.data.maintenanceMode || false,
           maintenanceMessage: response.data.maintenanceMessage || '',
@@ -369,6 +365,11 @@ export const SystemSettings: React.FC = () => {
           rejectedBuyDisputeMinutes: response.data.rejectedBuyDisputeMinutes ?? 15, // schema default: 15
           redFlags: {
             lowActivityPercent: response.data.redFlags?.lowActivityPercent ?? 25, // schema default: 25
+          },
+          referralRewards: {
+            level1Rupees:       response.data.referralRewards?.level1Rupees       ?? 25, // schema default: 25
+            level2Rupees:       response.data.referralRewards?.level2Rupees       ?? 25, // schema default: 25
+            turnoverMultiplier: response.data.referralRewards?.turnoverMultiplier ?? 10, // schema default: 10
           },
           loadShedding: {
             enabled:           response.data.loadShedding?.enabled           ?? true, // schema default: true
@@ -460,6 +461,7 @@ export const SystemSettings: React.FC = () => {
   }
 
   return (
+    <SettingHelpProvider help={help}>
     <div className="space-y-6">
       {/* Header */}
       <div>
@@ -497,11 +499,12 @@ export const SystemSettings: React.FC = () => {
               <Power className="mr-2 text-orange-500" size={20} />
               Maintenance Mode
             </h3>
-            <p className="text-sm text-gray-400 mb-4">
+            <p className="text-sm text-gray-400">
               {formData.maintenanceMode
                 ? '[!] Platform is currently in maintenance mode'
-                : '? Platform is operational'}
+                : 'Platform is operational'}
             </p>
+            <SettingHelp path="maintenanceMode" className="mb-4" />
             {formData.maintenanceMode && (
               <div className="mb-4">
                 <label className="label" htmlFor="maintenance-message">Maintenance Message</label>
@@ -513,6 +516,7 @@ export const SystemSettings: React.FC = () => {
                   className="input min-h-[80px]"
                   placeholder="We are performing scheduled maintenance..."
                 />
+                <SettingHelp path="maintenanceMessage" />
               </div>
             )}
           </div>
@@ -535,7 +539,7 @@ export const SystemSettings: React.FC = () => {
         <div className="flex items-center justify-between">
           <div>
             <p className="font-medium">Allow New Registrations</p>
-            <p className="text-sm text-gray-400">Users can create new accounts</p>
+            <SettingHelp path="registrationEnabled" />
           </div>
           <label className="relative inline-flex items-center cursor-pointer">
             <input
@@ -597,6 +601,7 @@ export const SystemSettings: React.FC = () => {
             </p>
           </div>
         )}
+        <SettingHelp path="apiHost" />
         <GatewayStatusLine status={gateway} />
       </div>
 
@@ -614,7 +619,8 @@ export const SystemSettings: React.FC = () => {
             const all = orderSizeRails.flatMap((r) => r.sizes);
             return (
               <div key={list.key}>
-                <h4 className="text-sm font-semibold mb-2">{list.title}</h4>
+                <h4 className="text-sm font-semibold">{list.title}</h4>
+                <SettingHelp path={list.key} className="mb-2" />
                 <div className="space-y-3">
                   {orderSizeRails.map((group) => (
                     <fieldset key={group.rail}>
@@ -668,10 +674,7 @@ export const SystemSettings: React.FC = () => {
             onChange={(e) => setFormData({ ...formData, maxBalanceAdjustment: (Number(e.target.value) || 0) })}
             className="input"
           />
-          <p className="text-xs text-gray-500 mt-1">
-            The most one admin may credit or debit in a single adjustment. A debit is
-            capped by the player's balance regardless.
-          </p>
+          <SettingHelp path="maxBalanceAdjustment" />
         </div>
 
       </div>
@@ -703,11 +706,7 @@ export const SystemSettings: React.FC = () => {
               onChange={(e) => setFormData({ ...formData, betReservePercent: Number(e.target.value) })}
               className="input"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              What share of every bet stake is taken from the user's <strong>reserve wallet</strong>;
-              the rest comes from the deposit wallet first, then winnings. If the reserve runs short,
-              the shortfall shifts to the other wallets automatically.
-            </p>
+            <SettingHelp path="betReservePercent" />
             <p className="text-xs text-gold-400/80 mt-1">
               Example with {formData.betReservePercent}%: a ₹100 bet takes
               ₹{(Math.floor(10000 * Math.round(formData.betReservePercent * 100) / 10000) / 100).toFixed(2)} from
@@ -724,10 +723,7 @@ export const SystemSettings: React.FC = () => {
               onChange={(e) => setFormData({ ...formData, payoutMultiplier: Math.max(1, Math.min(10, Math.floor(Number(e.target.value) || 1))) })}
               className="input"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              Gross payout on a winning bet = stake × this multiplier (before the winnings
-              fee below). The default 2 pays winners double their stake. Whole number, 1–10.
-            </p>
+            <SettingHelp path="payoutMultiplier" />
             <p className="text-xs text-gold-400/80 mt-1">
               Example with {formData.payoutMultiplier}×: a ₹100 winning bet returns gross
               ₹{100 * formData.payoutMultiplier} before the winnings fee.
@@ -742,11 +738,7 @@ export const SystemSettings: React.FC = () => {
               onChange={(e) => setFormData({ ...formData, winningsFeePercent: Number(e.target.value) })}
               className="input"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              The platform's cut of gross winnings at settlement. Winners are paid
-              {' '}{formData.payoutMultiplier}× their stake minus this fee; the fee goes to platform revenue in the ledger
-              (and becomes distributable — e.g. for merchant bonuses). Set 0 for a flat {formData.payoutMultiplier}× payout.
-            </p>
+            <SettingHelp path="winningsFeePercent" />
             <p className="text-xs text-gold-400/80 mt-1">
               Example with {formData.winningsFeePercent}%: bet ₹100 → win gross ₹{100 * formData.payoutMultiplier} → fee
               ₹{(Math.floor(100 * formData.payoutMultiplier * 100 * Math.round(formData.winningsFeePercent * 100) / 10000) / 100).toFixed(2)} → user
@@ -763,11 +755,7 @@ export const SystemSettings: React.FC = () => {
               onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, userMerchantBuyInr: Math.max(0, Number(e.target.value) || 0) } })}
               className="input"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              What a player pays in USDT when buying tokens: one USDT buys this many tokens (1 token = ₹1).
-              Frozen on each order when it is placed. Must be ₹10–₹1,000, or 0 to stop USDT buys.
-              There is no USDT sell option.
-            </p>
+            <SettingHelp path="usdtPricing.userMerchantBuyInr" />
           </div>
 
           <div className="pt-4 border-t border-dark-700">
@@ -778,11 +766,7 @@ export const SystemSettings: React.FC = () => {
               onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, merchantAdminBuyInr: Math.max(0, Number(e.target.value) || 0) } })}
               className="input"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              Admin-owned INR price for one USDT when a supervisor pays for team pool tokens in USDT.
-              Read when a pool request is fulfilled and frozen on that record, so a later change cannot
-              restate a trade that has settled. Must be ₹10–₹1,000, or 0 to refuse USDT pool payments.
-            </p>
+            <SettingHelp path="usdtPricing.merchantAdminBuyInr" />
           </div>
 
 
@@ -795,7 +779,7 @@ export const SystemSettings: React.FC = () => {
                 onChange={(e) => setFormData({ ...formData, usdtBuy: { ...formData.usdtBuy, minUsdt: Number(e.target.value) || 0 } })}
                 className="input"
               />
-              <p className="text-xs text-gray-500 mt-1">The smallest USDT purchase. A multiple of {USDT_BUY_STEP}.</p>
+              <SettingHelp path="usdtBuy.minUsdt" />
             </div>
             <div>
               <label className="label" htmlFor="usdt-buy-max">USDT Buy Maximum (USDT)</label>
@@ -805,9 +789,7 @@ export const SystemSettings: React.FC = () => {
                 onChange={(e) => setFormData({ ...formData, usdtBuy: { ...formData.usdtBuy, maxUsdt: Number(e.target.value) || 0 } })}
                 className="input"
               />
-              <p className="text-xs text-gray-500 mt-1">
-                The largest USDT purchase. Players buy in steps of {USDT_BUY_STEP} USDT between the two; there is no USDT sell.
-              </p>
+              <SettingHelp path="usdtBuy.maxUsdt" />
             </div>
           </div>
           {(!usdtStepOk(formData.usdtBuy.minUsdt) || !usdtStepOk(formData.usdtBuy.maxUsdt)
@@ -858,7 +840,7 @@ export const SystemSettings: React.FC = () => {
                     })}
                     className="input"
                   />
-                  <p className="text-xs text-gray-500 mt-1">{rule.help}</p>
+                  <SettingHelp path={`merchantOrderLimits.${rule.key}`} />
                 </div>
               ))}
             </div>
@@ -900,6 +882,7 @@ export const SystemSettings: React.FC = () => {
                       {outOfRange(conc, r.concurrency) && (
                         <p role="alert" className="text-xs text-red-400 mt-1">Must be {r.concurrency.min}–{r.concurrency.max}.</p>
                       )}
+                      <SettingHelp path={`teamRouting.concurrency.${r.rail}`} />
                     </div>
                     <div>
                       <label className="label" htmlFor={`tr-proc-${r.rail}`}>Window to serve an assigned order (seconds)</label>
@@ -917,6 +900,7 @@ export const SystemSettings: React.FC = () => {
                       {outOfRange(proc, r.processing)
                         ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {r.processing.min}–{r.processing.max} seconds.</p>
                         : <p className="text-xs text-gray-500 mt-1">{Math.round(proc / 60)} min</p>}
+                      <SettingHelp path={`teamRouting.processingWindowSeconds.${r.rail}`} />
                     </div>
                   </div>
                 );
@@ -935,9 +919,8 @@ export const SystemSettings: React.FC = () => {
                         teamRouting: { ...formData.teamRouting, [t.key]: Math.floor(Number(e.target.value)) },
                       })}
                       className="input" />
-                    {outOfRange(v, t)
-                      ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {t.min}–{t.max} seconds.</p>
-                      : <p className="text-xs text-gray-500 mt-1">{t.help}</p>}
+                    {outOfRange(v, t) && <p role="alert" className="text-xs text-red-400 mt-1">Must be {t.min}–{t.max} seconds.</p>}
+                    <SettingHelp path={`teamRouting.${t.key}`} />
                   </div>
                 );
               })}
@@ -964,11 +947,7 @@ export const SystemSettings: React.FC = () => {
                 ))}
               </div>
             </fieldset>
-            <p className="text-xs text-gray-500 mt-2">
-              USDT orders always go to agent teams. When you switch, INR orders still waiting for someone to take
-              them move to the new route; orders already taken finish where they are. With Merchants, every INR
-              size is paid by UPI or bank transfer.
-            </p>
+            <SettingHelp path="inrRoutingMode" />
 
             <h3 className="font-semibold mt-6 mb-1">Merchant Routing</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -994,6 +973,7 @@ export const SystemSettings: React.FC = () => {
                       {outOfRange(conc, d.concurrency) && (
                         <p role="alert" className="text-xs text-red-400 mt-1">Must be {d.concurrency.min}–{d.concurrency.max}.</p>
                       )}
+                      <SettingHelp path={`merchantRouting.concurrency.${d.direction}`} />
                     </div>
                     <div>
                       <label className="label" htmlFor={`mr-proc-${d.direction}`}>Window to serve an assigned order (seconds)</label>
@@ -1011,6 +991,7 @@ export const SystemSettings: React.FC = () => {
                       {outOfRange(proc, d.processing)
                         ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {d.processing.min}–{d.processing.max} seconds.</p>
                         : <p className="text-xs text-gray-500 mt-1">{Math.round(proc / 60)} min</p>}
+                      <SettingHelp path={`merchantRouting.processingWindowSeconds.${d.direction}`} />
                     </div>
                   </div>
                 );
@@ -1029,7 +1010,8 @@ export const SystemSettings: React.FC = () => {
                   className="input" />
                 {outOfRange(formData.merchantRouting.assignmentWaitSeconds, MERCHANT_ASSIGNMENT_WAIT)
                   ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {MERCHANT_ASSIGNMENT_WAIT.min}–{MERCHANT_ASSIGNMENT_WAIT.max} seconds.</p>
-                  : <p className="text-xs text-gray-500 mt-1">How long a queued INR order no merchant could take waits before it expires.</p>}
+                  : null}
+                <SettingHelp path="merchantRouting.assignmentWaitSeconds" />
               </div>
               {DIRECT_MERCHANT_FIELDS.map((f) => {
                 const v = formData.directMerchants[f.key];
@@ -1043,9 +1025,8 @@ export const SystemSettings: React.FC = () => {
                         directMerchants: { ...formData.directMerchants, [f.key]: Math.floor(Number(e.target.value)) },
                       })}
                       className="input" />
-                    {outOfRange(v, f)
-                      ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {f.min}–{f.max}.</p>
-                      : <p className="text-xs text-gray-500 mt-1">{f.help}</p>}
+                    {outOfRange(v, f) && <p role="alert" className="text-xs text-red-400 mt-1">Must be {f.min}–{f.max}.</p>}
+                    <SettingHelp path={`directMerchants.${f.key}`} />
                   </div>
                 );
               })}
@@ -1060,10 +1041,7 @@ export const SystemSettings: React.FC = () => {
               onChange={(e) => setFormData({ ...formData, payoutFeePercent: Number(e.target.value) })}
               className="input"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              Fee charged when a user sells tokens back (withdrawal). The user receives
-              tokens − fee in INR; the fee posts to the PAYOUT_FEES ledger account. 0 = no fee.
-            </p>
+            <SettingHelp path="payoutFeePercent" />
             <p className="text-xs text-gold-400/80 mt-1">
               Example with {formData.payoutFeePercent}%: withdrawing 1000 tokens pays out
               ₹{(1000 - Math.floor(100000 * Math.round(formData.payoutFeePercent * 100) / 10000) / 100).toFixed(2)}.
@@ -1074,10 +1052,7 @@ export const SystemSettings: React.FC = () => {
             <div className="flex items-center justify-between">
               <div className="pr-4">
                 <p className="font-medium">Enforce Multiples of 10</p>
-                <p className="text-xs text-gray-500">
-                  Buy, sell and bet amounts must be multiples of 10 tokens (e.g. 10, 50, 200 — not 15).
-                  Keeps amounts clean for P2P cash handling.
-                </p>
+                <SettingHelp path="riskRules.enforceMultiplesOf10" />
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input type="checkbox" aria-label="Enforce bet amounts in multiples of 10"
@@ -1091,10 +1066,7 @@ export const SystemSettings: React.FC = () => {
             <div className="flex items-center justify-between">
               <div className="pr-4">
                 <p className="font-medium">Block Opposite-Side Betting</p>
-                <p className="text-xs text-gray-500">
-                  Stops a user betting both DELHI and BOMBAY in the same cycle
-                  (wash-bet / guaranteed-arbitrage prevention).
-                </p>
+                <SettingHelp path="riskRules.blockOppositeSideBetting" />
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input type="checkbox" aria-label="Block opposite-side betting in one cycle"
@@ -1113,10 +1085,7 @@ export const SystemSettings: React.FC = () => {
                 onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, maxFundingOrdersPerHour: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
                 className="input"
               />
-              <p className="text-xs text-gray-500 mt-1">
-                Maximum deposit/withdrawal requests a single user may create per hour.
-                0 = unlimited (off). Cancelled orders count — churn is velocity too.
-              </p>
+              <SettingHelp path="riskRules.maxFundingOrdersPerHour" />
             </div>
 
             <div>
@@ -1127,11 +1096,7 @@ export const SystemSettings: React.FC = () => {
                 onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, maxDepositOrdersPerMinute: Math.min(60, Math.max(0, Math.floor(Number(e.target.value) || 0))) } })}
                 className="input"
               />
-              <p className="text-xs text-gray-500 mt-1">
-                How often one player may START a purchase. A player holds one open buy at a
-                time anyway, so a second attempt inside the same minute is a retry storm or a
-                script, not somebody buying twice. 0 = off. Takes effect immediately — no redeploy.
-              </p>
+              <SettingHelp path="riskRules.maxDepositOrdersPerMinute" />
             </div>
 
             <div>
@@ -1142,13 +1107,7 @@ export const SystemSettings: React.FC = () => {
                 onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, maxWarnings: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
                 className="input"
               />
-              <p className="text-xs text-gray-500 mt-1">
-                Each merchant rejection adds one warning. A player who reaches this many is
-                marked for review at the top of <strong>Flagged Players</strong>. It does
-                <strong> not</strong> block anyone — this box used to say it did, and the
-                block is now yours to make with the merchant's reason and proof in front of
-                you. 0 = never mark for review (off).
-              </p>
+              <SettingHelp path="riskRules.maxWarnings" />
             </div>
 
           </div>
@@ -1185,10 +1144,7 @@ export const SystemSettings: React.FC = () => {
               })}
               className="input"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              After an agent or merchant marks a sell paid, the player's tokens stay in escrow this long so the
-              player can raise a dispute. At least 60 minutes.
-            </p>
+            <SettingHelp path="withdrawalHoldMinutes" />
           </div>
           <div>
             <label className="label" htmlFor="rejected-buy-dispute-minutes">Dispute window after a rejected buy (minutes)</label>
@@ -1201,11 +1157,7 @@ export const SystemSettings: React.FC = () => {
               })}
               className="input"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              When an agent or merchant rejects a paid buy as unpaid, the pool's tokens stay in escrow this long.
-              If the player disputes in time they stay until the dispute is decided; if not, they go back
-              to the pool.
-            </p>
+            <SettingHelp path="rejectedBuyDisputeMinutes" />
           </div>
         </div>
 
@@ -1222,10 +1174,7 @@ export const SystemSettings: React.FC = () => {
                 lowActivityPercent: Math.min(90, Math.max(1, Math.floor(Number(e.target.value) || 25))) } })}
               className="input"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              An agent is flagged to their supervisor and here when their completed orders and their online
-              time on a day were both this far below their team's average.
-            </p>
+            <SettingHelp path="redFlags.lowActivityPercent" />
           </div>
         </div>
 
@@ -1239,11 +1188,7 @@ export const SystemSettings: React.FC = () => {
             />
             <span className="label mb-0">Load shedding</span>
           </label>
-          <p className="text-xs text-gray-500 mb-3">
-            Past either ceiling the server answers 503 straight away rather than admitting work into a
-            queue that will never drain. Both default to values only genuine overload reaches — ordinary
-            traffic and settlement bursts never see one.
-          </p>
+          <SettingHelp path="loadShedding.enabled" className="mb-3" />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="label" htmlFor="max-requests-in-flight">Max Requests In Flight</label>
@@ -1253,7 +1198,7 @@ export const SystemSettings: React.FC = () => {
                 onChange={(e) => setFormData({ ...formData, loadShedding: { ...formData.loadShedding, maxInFlight: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
                 className="input"
               />
-              <p className="text-xs text-gray-500 mt-1">0 turns this ceiling off.</p>
+              <SettingHelp path="loadShedding.maxInFlight" />
             </div>
             <div>
               <label className="label" htmlFor="max-event-loop-lag-ms">Max Event-Loop Lag (ms)</label>
@@ -1263,7 +1208,7 @@ export const SystemSettings: React.FC = () => {
                 onChange={(e) => setFormData({ ...formData, loadShedding: { ...formData.loadShedding, maxEventLoopLagMs: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
                 className="input"
               />
-              <p className="text-xs text-gray-500 mt-1">0 turns this ceiling off.</p>
+              <SettingHelp path="loadShedding.maxEventLoopLagMs" />
             </div>
           </div>
         </div>
@@ -1278,10 +1223,7 @@ export const SystemSettings: React.FC = () => {
             />
             <span className="label mb-0">IP-rotation defence</span>
           </label>
-          <p className="text-xs text-gray-500 mb-3">
-            Sits on top of the per-IP limiters. Origin and traffic shape only — no geo or ISP lookups
-            and no third-party reputation. A surge <strong>Max of 0 means that layer is off</strong>.
-          </p>
+          <SettingHelp path="ipDefense.enabled" className="mb-3" />
           <div className="mb-3">
             <label className="label" htmlFor="subnet-multiplier">Subnet Multiplier</label>
             <input id="subnet-multiplier"
@@ -1290,9 +1232,7 @@ export const SystemSettings: React.FC = () => {
               onChange={(e) => setFormData({ ...formData, ipDefense: { ...formData.ipDefense, subnetMultiplier: Math.max(1, Math.floor(Number(e.target.value) || 1)) } })}
               className="input"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              How much more a whole /24 (or /64) may do than one address, before the subnet itself is limited.
-            </p>
+            <SettingHelp path="ipDefense.subnetMultiplier" />
           </div>
           {([
             ['auth', 'Login & OTP'],
@@ -1303,8 +1243,8 @@ export const SystemSettings: React.FC = () => {
               <p className="text-sm font-medium mb-1">{label}</p>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-xs text-gray-400" htmlFor="window-sec">Window (sec)</label>
-                  <input id="window-sec"
+                  <label className="text-xs text-gray-400" htmlFor={`surge-${key}-window`}>Window (sec)</label>
+                  <input id={`surge-${key}-window`}
                     type="number" min={1} step={1}
                     value={formData.ipDefense.surge[key].windowSec}
                     onChange={(e) => setFormData({
@@ -1319,10 +1259,11 @@ export const SystemSettings: React.FC = () => {
                     })}
                     className="input"
                   />
+                  <SettingHelp path={`ipDefense.surge.${key}.windowSec`} />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-400" htmlFor="max-in-window-0-off">Max in window (0 = off)</label>
-                  <input id="max-in-window-0-off"
+                  <label className="text-xs text-gray-400" htmlFor={`surge-${key}-max`}>Max in window (0 = off)</label>
+                  <input id={`surge-${key}-max`}
                     type="number" min={0} step={1}
                     value={formData.ipDefense.surge[key].max}
                     onChange={(e) => setFormData({
@@ -1337,10 +1278,54 @@ export const SystemSettings: React.FC = () => {
                     })}
                     className="input"
                   />
+                  <SettingHelp path={`ipDefense.surge.${key}.max`} />
                 </div>
               </div>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* ── REFERRAL REWARDS (owner, 2026-10-14: admin-editable) ── */}
+      <div className="card">
+        <h3 className="text-lg font-semibold mb-1">Referral Rewards</h3>
+        <p className="text-xs text-gray-400 mb-4">
+          What inviting a friend pays. Paid from the queue you fund on the Referrals page.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <label className="label" htmlFor="referral-level1Rupees">Level 1 reward (₹ per joiner)</label>
+            <input id="referral-level1Rupees"
+              type="number" min={0} max={10000} step={1}
+              value={formData.referralRewards.level1Rupees}
+              onChange={(e) => setFormData({ ...formData, referralRewards: { ...formData.referralRewards,
+                level1Rupees: Math.min(10000, Math.max(0, Math.floor(Number(e.target.value) || 0))) } })}
+              className="input"
+            />
+            <SettingHelp path="referralRewards.level1Rupees" />
+          </div>
+          <div>
+            <label className="label" htmlFor="referral-level2Rupees">Level 2 reward (₹ per joiner)</label>
+            <input id="referral-level2Rupees"
+              type="number" min={0} max={10000} step={1}
+              value={formData.referralRewards.level2Rupees}
+              onChange={(e) => setFormData({ ...formData, referralRewards: { ...formData.referralRewards,
+                level2Rupees: Math.min(10000, Math.max(0, Math.floor(Number(e.target.value) || 0))) } })}
+              className="input"
+            />
+            <SettingHelp path="referralRewards.level2Rupees" />
+          </div>
+          <div>
+            <label className="label" htmlFor="referral-turnoverMultiplier">Bonus play requirement (× the bonus)</label>
+            <input id="referral-turnoverMultiplier"
+              type="number" min={1} max={100} step={1}
+              value={formData.referralRewards.turnoverMultiplier}
+              onChange={(e) => setFormData({ ...formData, referralRewards: { ...formData.referralRewards,
+                turnoverMultiplier: Math.min(100, Math.max(1, Math.floor(Number(e.target.value) || 1))) } })}
+              className="input"
+            />
+            <SettingHelp path="referralRewards.turnoverMultiplier" />
+          </div>
         </div>
       </div>
 
@@ -1389,9 +1374,9 @@ export const SystemSettings: React.FC = () => {
             );
           })}
         </div>
-        <p className="text-xs text-gray-500 mt-2">
-          At least 2 tabs required; duplicates are disabled. Provider pages
-          (Casino/Crash/Sports) still only show when that provider is enabled.
+        <SettingHelp path="footerPages" className="mt-2" />
+        <p className="text-xs text-gray-500 mt-1">
+          Duplicates are disabled. Provider pages (Casino/Crash/Sports) still only show when that provider is enabled.
         </p>
       </div>
 
@@ -1412,9 +1397,7 @@ export const SystemSettings: React.FC = () => {
           placeholder="https://hooks.slack.com/services/…"
           className="input"
         />
-        <p className="text-xs text-gray-500 mt-1">
-          Must be https. Same alert fires at most once per 10 minutes (anti-flood).
-        </p>
+        <SettingHelp path="alertWebhookUrl" />
       </div>
 
 
@@ -1429,14 +1412,14 @@ export const SystemSettings: React.FC = () => {
         </p>
         <div className="space-y-4">
           {([
-            ['enabled', 'Enable JA3 Policy', 'Reads JA3 headers on every request and applies the rules below.'],
-            ['logOnly', 'Log Only Mode', 'When on, violations are logged but not blocked. Turn off only after your TLS edge forwards JA3 reliably.'],
-            ['requireJa3Hash', 'Require JA3 Hash', 'Blocks requests missing a JA3 hash when Log Only Mode is off.'],
-          ] as const).map(([field, label, help]) => (
+            ['enabled', 'Enable JA3 Policy'],
+            ['logOnly', 'Log Only Mode'],
+            ['requireJa3Hash', 'Require JA3 Hash'],
+          ] as const).map(([field, label]) => (
             <div key={field} className="flex items-center justify-between">
               <div className="pr-4">
                 <p className="font-medium">{label}</p>
-                <p className="text-xs text-gray-500">{help}</p>
+                <SettingHelp path={`tlsFingerprintDefense.${field}`} />
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input
@@ -1468,9 +1451,7 @@ export const SystemSettings: React.FC = () => {
               className="input min-h-[96px] font-mono text-xs"
               placeholder="32-char JA3 MD5 hash, one per line"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              Known-bad JA3 hashes are denied when Log Only Mode is off. Keep Log Only on until you verify your edge forwards JA3 for all traffic.
-            </p>
+            <SettingHelp path="tlsFingerprintDefense.blockJa3Hashes" />
           </div>
         </div>
       </div>
@@ -1494,7 +1475,7 @@ export const SystemSettings: React.FC = () => {
               className="input"
               placeholder="https://your-domain.example"
             />
-            <p className="text-xs text-gray-500 mt-1">The link users share via the "Share Link" button. Update here when your public domain changes.</p>
+            <SettingHelp path="webUrl" />
           </div>
 
           <div className="text-xs text-gray-400 rounded-lg border border-dark-700 p-3">
@@ -1503,14 +1484,15 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div>
-            <label className="label">iOS URL <span className="text-gray-500 font-normal">(optional)</span></label>
-            <input
+            <label className="label" htmlFor="ios-url">iOS URL <span className="text-gray-500 font-normal">(optional)</span></label>
+            <input id="ios-url"
               type="url"
               value={formData.iosUrl}
               onChange={(e) => setFormData({ ...formData, iosUrl: e.target.value })}
               className="input"
               placeholder="https://apps.apple.com/... (leave blank for Add to Home Screen)"
             />
+            <SettingHelp path="iosUrl" />
           </div>
 
           <div className="grid grid-cols-2 gap-4 pt-2 border-t border-dark-700">
@@ -1523,7 +1505,7 @@ export const SystemSettings: React.FC = () => {
                 className="input font-mono"
                 placeholder="1.0.0"
               />
-              <p className="text-xs text-gray-500 mt-1">Browser users on an older web bundle see a forced update screen until they refresh. Does not apply to the Android app.</p>
+              <SettingHelp path="minVersion" />
             </div>
             <div>
               <label className="label" htmlFor="latest-version">Latest Web Version</label>
@@ -1534,7 +1516,7 @@ export const SystemSettings: React.FC = () => {
                 className="input font-mono"
                 placeholder="1.0.0"
               />
-              <p className="text-xs text-gray-500 mt-1">Shown to browser users on the web update screen.</p>
+              <SettingHelp path="latestVersion" />
             </div>
           </div>
 
@@ -1586,5 +1568,6 @@ export const SystemSettings: React.FC = () => {
         type="warning"
       />
     </div>
+    </SettingHelpProvider>
   );
 };

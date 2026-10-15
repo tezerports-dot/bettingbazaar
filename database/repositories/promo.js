@@ -17,11 +17,10 @@
  * applied one after the other (§32 S6).
  */
 import { pgQuery } from '../client.js';
+import { getSystemConfig } from './config.js';
+import { referralRewardsFrom } from '../../backend/domains/referral/referralRewards.js';
 import { withWalletLock, applyMovementWithin } from './wallets.core.js';
 import { ACCOUNTS } from './treasury.js';
-
-/** Turnover each promotional rupee asks for (owner, 2026-10-08: "Referral Bonus × 10"). */
-export const PROMO_TURNOVER_MULTIPLIER = 10;
 
 /** The two profiles; `users_play_profile_known` holds the same list. */
 export const PLAY_PROFILES = Object.freeze(['VIP', 'GENERAL']);
@@ -41,6 +40,8 @@ export async function creditReferralBonus({ userId, amountPaise, earningId, reas
     throw Object.assign(new Error(`Invalid referral bonus: ${amountPaise}`), { status: 400 });
   }
   const txId = `ref_${earningId}`;
+  // The admin's multiplier at the moment of paying, stamped on the grant.
+  const { turnoverMultiplier } = referralRewardsFrom(await getSystemConfig());
   return withWalletLock(userId, async (ctx) => {
     const moved = await applyMovementWithin(ctx, {
       legs: [{ field: 'promoBalance', deltaPaise: amountPaise }],
@@ -56,7 +57,7 @@ export async function creditReferralBonus({ userId, amountPaise, earningId, reas
       `INSERT INTO promo_grants
          (grant_id, user_id, source, source_ref, amount_paise, required_turnover_paise)
        VALUES ($1, $2, 'REFERRAL', $3, $4, $5)`,
-      [`ref_${earningId}`, ctx.uid, String(earningId), amountPaise, amountPaise * PROMO_TURNOVER_MULTIPLIER],
+      [`ref_${earningId}`, ctx.uid, String(earningId), amountPaise, amountPaise * turnoverMultiplier],
     );
     return { commit: true, value: { ok: true, idempotent: false, txId } };
   });
@@ -238,7 +239,7 @@ export async function promoSummary(userId) {
     profile: user?.play_profile ?? 'VIP', // schema default: 'VIP'
     promoBalancePaise: n(wallet?.promo_paise),
     outstandingTurnoverPaise: n(open?.outstanding),
-    turnoverMultiplier: PROMO_TURNOVER_MULTIPLIER,
+    turnoverMultiplier: referralRewardsFrom(await getSystemConfig()).turnoverMultiplier,
     grants: shaped,
   };
 }

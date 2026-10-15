@@ -3,8 +3,9 @@
  * The board's side-column artwork and promo cards (owner, 2026-10-10: "fill
  * them up with proper illustration or graphic designs as the stake do").
  *
- *   • `PromoCard`   — one published HOME card (Admin › Page Slides), opening
- *                      its own link: an app page in place, https in a new tab
+ *   • `PromoCard`   — one published HOME card (Admin › Images), opening its
+ *                      own page (`/card/:promoId`: image, title, details, and
+ *                      its optional link as a button; owner, 2026-10-14)
  *   • `CitiesArt`   — Delhi's India Gate against Bombay's Gateway of India
  *   • `HowToPlayArt`— chip, tap, trophy: the three moves of a round
  *
@@ -33,7 +34,7 @@ export interface HomeCard {
   linkUrl?: string | null;
 }
 
-/** Where a tap goes: `#/page` in place, https in a new tab, or nowhere. */
+/** Where a card's link goes: `#/page` in place, https in a new tab, or nowhere. */
 export function cardHref(linkUrl?: string | null): { href: string; external: boolean } | null {
   const raw = String(linkUrl ?? '').trim();
   if (/^\/[A-Za-z0-9/_-]*$/.test(raw)) return { href: `#${raw}`, external: false };
@@ -47,7 +48,8 @@ export function cardHref(linkUrl?: string | null): { href: string; external: boo
  * it edge to edge.
  */
 export const PromoCard: React.FC<{ card: HomeCard; rounded?: boolean }> = ({ card, rounded = true }) => {
-  const link = cardHref(card.linkUrl);
+  // A tap opens the card's own page; its link, if any, is a button there.
+  const link = card.promoId ? { href: `#/card/${encodeURIComponent(card.promoId)}`, external: false } : null;
   const label = card.title || 'Promotion';
   const body = (
     <img src={getAssetUrl(card.image)} alt={label} loading="lazy"

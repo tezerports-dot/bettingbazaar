@@ -83,10 +83,12 @@ export async function recordEarning({
  * @param {{client: import('pg').PoolClient, amountPaise: number}} opts
  * @returns {Promise<number[]>} the levels booked by this call
  */
-export async function recordJoinerEarnings(joinerId, { client, amountPaise }) {
+export async function recordJoinerEarnings(joinerId, { client, amountsPaise }) {
   if (!client) throw new Error('recordJoinerEarnings runs inside the verifying transaction; pass its client');
-  if (!(Number.isInteger(amountPaise) && amountPaise > 0)) {
-    throw new Error('recordJoinerEarnings requires a positive integer amount in paise');
+  const l1 = amountsPaise?.[1];
+  const l2 = amountsPaise?.[2];
+  if (![l1, l2].every((a) => Number.isInteger(a) && a >= 0)) {
+    throw new Error('recordJoinerEarnings requires a whole, non-negative amount in paise for each level');
   }
   const { rows } = await client.query(
     `WITH joiner AS (
@@ -97,22 +99,23 @@ export async function recordJoinerEarnings(joinerId, { client, amountPaise }) {
      ), l2 AS (
        SELECT u.user_id FROM users u JOIN l1 ON u.user_id = l1.referred_by
      ), earners AS (
-       SELECT 1 AS level, user_id AS earner_id FROM l1
+       SELECT 1 AS level, user_id AS earner_id, $2::bigint AS amount FROM l1
        UNION ALL
-       SELECT 2, user_id FROM l2
+       SELECT 2, user_id, $3::bigint FROM l2
      )
      INSERT INTO referral_earnings
        (earning_id, earner_id, source_user_id, level, amount_paise, queue_position)
      SELECT 'ref_' || e.earner_id || '_' || $1 || '_L' || e.level,
-            e.earner_id, $1, e.level, $2, nextval('referral_queue_position_seq')
+            e.earner_id, $1, e.level, e.amount, nextval('referral_queue_position_seq')
        FROM earners e
       -- A loop in the tree would pay somebody for their own signup; the row
       -- refuses that too (referral_earnings_not_self), and this keeps the
       -- refusal from aborting the verification it rides in.
-      WHERE e.earner_id <> $1
+      -- A level an admin set to ₹0 pays nothing, so it earns no row.
+      WHERE e.earner_id <> $1 AND e.amount > 0
      ON CONFLICT (earning_id) DO NOTHING
      RETURNING level`,
-    [String(joinerId), amountPaise],
+    [String(joinerId), l1, l2],
   );
   return rows.map((r) => Number(r.level)).sort();
 }
