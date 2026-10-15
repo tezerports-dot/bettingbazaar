@@ -28,6 +28,7 @@ import ShareModal from '../components/Modals/ShareModal';
 import AnnouncementBanner from '../components/AnnouncementBanner';
 import { useHeaderLogo } from '../services/brandAssets';
 import { ProfileSwitch, usePlayProfile } from './ProfileSwitch';
+import { usePullToRefresh, PullIndicator } from './PullToRefresh';
 
 interface ShellContextValue {
   isAuthenticated: boolean;
@@ -168,6 +169,9 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   // scrolled to, mid-way down, before jumping.
   const mainRef = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => { if (mainRef.current) mainRef.current.scrollTop = 0; }, [location.pathname]);
+  // Pull down from the top of <main> to reload, as a phone's browser does
+  // (owner, 2026-10-15); the installed app has no such gesture of its own.
+  const { pull, refreshing } = usePullToRefresh(mainRef);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
@@ -383,6 +387,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
         <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
         {rail}
         <main ref={mainRef} style={{ minWidth: 0, flex: 1, minHeight: 0, position: 'relative', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+          <PullIndicator pull={pull} refreshing={refreshing} />
           {/*
             What the platform is telling everyone. `announcements` had an admin
             page that writes them and a route that serves them, and no screen

@@ -250,13 +250,11 @@ export const SystemSettings: React.FC = () => {
     directMerchants: directMerchantDefaults(),
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
-    // The line beside the pool totals (owner, 2026-10-15). '' until loaded: the
+    // The line under the board rules (owner, 2026-10-15). '' until loaded: the
     // server always sends one (houseBetsLabelOf), and an empty save is refused.
     houseBetsLabel: '',
-    // Demo results in the analytics and their line (owner, 2026-10-15). The
-    // line is '' until loaded, like houseBetsLabel; the switch's schema default: true.
+    // Demo results in the analytics (owner, 2026-10-15); schema default: true.
     demoResultsOn: true,
-    demoResultsLabel: '',
     // How long a sell stays in escrow after the member marks it paid.
     withdrawalHoldMinutes: 60,  // schema default: 60 (also the floor)
     // How long a player has to dispute a buy the member rejected as unpaid.
@@ -369,7 +367,6 @@ export const SystemSettings: React.FC = () => {
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
           houseBetsLabel:     response.data.houseBetsLabel     ?? '',
           demoResultsOn:      response.data.demoResultsOn      ?? true,  // schema default: true
-          demoResultsLabel:   response.data.demoResultsLabel   ?? '',
           riskRules: {
             enforceMultiplesOf10:     response.data.riskRules?.enforceMultiplesOf10     ?? true,
             blockOppositeSideBetting: response.data.riskRules?.blockOppositeSideBetting ?? false,
@@ -762,7 +759,7 @@ export const SystemSettings: React.FC = () => {
             />
             <SettingHelp path="houseBetsLabel" />
             <p className="text-xs text-gold-400/80 mt-1">
-              Players see this beside the pool totals on every board and at the end of the board rules.
+              Players see this at the end of the board rules.
               You can reword it; it cannot be removed.
             </p>
           </div>
@@ -781,18 +778,6 @@ export const SystemSettings: React.FC = () => {
                 <div className="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
               </label>
             </div>
-            <label className="label mt-3" htmlFor="demo-results-label">Demo Results Line (shown to players)</label>
-            <input id="demo-results-label"
-              type="text" minLength={10} maxLength={160}
-              value={formData.demoResultsLabel}
-              onChange={(e) => setFormData({ ...formData, demoResultsLabel: e.target.value })}
-              className="input"
-            />
-            <SettingHelp path="demoResultsLabel" />
-            <p className="text-xs text-gold-400/80 mt-1">
-              Players see this on the analytics whenever demo results are in a board's 1,440.
-              You can reword it; it cannot be removed.
-            </p>
           </div>
 
           <div className="pt-4 border-t border-dark-700">

@@ -1,11 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * House bets on the board screen (owner, 2026-10-15).
- *
- * `HouseBetsNote`: the line beside the pool totals saying they include house
- * bets that are never paid out. The wording is the server's
- * (`SystemConfig.houseBetsLabel`, sent never blank by systemConfigPayload.js);
- * the panel keeps no copy.
+ * House bets on the board screen (owner, 2026-10-15). The line saying the
+ * pool totals include house bets is shown under the board rules only
+ * (`houseBetsNotice`, BoardRules.tsx), not beside the totals.
  *
  * `AutoHouseBetsPanel`: a phantom agent's auto plan for this board and the
  * profile being played (VIP and General rounds each have their own plans;
@@ -16,24 +13,6 @@
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { player } from '../services/api';
-import { getBackend } from '../services/backend.service';
-
-/** The house-bets line, as the server says it; nothing until it has arrived. */
-export function useHouseBetsLabel(): string {
-  const [label, setLabel] = useState('');
-  useEffect(() => {
-    let live = true;
-    getBackend().getSystemConfig()
-      .then((c) => { if (live && typeof c.houseBetsLabel === 'string') setLabel(c.houseBetsLabel); })
-      .catch(() => { /* the line appears once the config arrives */ });
-    return () => { live = false; };
-  }, []);
-  return label;
-}
-
-export const HouseBetsNote: React.FC<{ label: string; style?: React.CSSProperties }> = ({ label, style }) => (
-  label ? <div style={{ fontSize: 10, lineHeight: 1.4, color: 'var(--text3)', ...style }}>ⓘ {label}</div> : null
-);
 
 type Side = 'DELHI' | 'BOMBAY';
 const SIDES: { side: Side; name: string }[] = [{ side: 'DELHI', name: 'Delhi' }, { side: 'BOMBAY', name: 'Bombay' }];

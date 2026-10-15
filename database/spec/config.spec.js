@@ -32,7 +32,7 @@ import { ORDER_SIZES, USDT_BUY_STEP } from '../../backend/domains/merchant/denom
 import { approvedApiHosts } from '../../backend/config/apiHosts.js';
 import { BRAND_PALETTES } from '../../backend/domains/branding/palettes.js';
 import { DEFAULT_HOUSE_BETS_LABEL, HOUSE_BETS_LABEL_LIMITS } from '../../backend/domains/markets/houseBets.js';
-import { DEFAULT_DEMO_RESULTS_ON, DEFAULT_DEMO_RESULTS_LABEL, DEMO_RESULTS_LABEL_LIMITS } from '../../backend/domains/markets/demoResults.js';
+import { DEFAULT_DEMO_RESULTS_ON } from '../../backend/domains/markets/demoResults.js';
 
 /** A number setting: `n(default, min, max)`. Bounds are inclusive. */
 const n = (def, min = null, max = null) => ({ type: 'number', default: def, min, max });
@@ -69,17 +69,15 @@ export const SYSTEM_CONFIG_SPEC = group({
   maintenanceMode:    b(false),
   maintenanceMessage: s(''),
 
-  // ── The line players read beside the pool totals and in the board rules ──
+  // ── The line players read at the end of the board rules ──────────────────
   // House (phantom) bets count in the totals and are never paid; this says so
   // (owner, 2026-10-15). Admin-editable wording, never blank
   // (HOUSE_BETS_LABEL_LIMITS, backend/domains/markets/houseBets.js).
   houseBetsLabel: { type: 'string', default: DEFAULT_HOUSE_BETS_LABEL, trimmed: true, ...HOUSE_BETS_LABEL_LIMITS },
 
-  // ── Demo results filling the analytics window, and the line beside them ──
-  // (owner, 2026-10-15; backend/domains/markets/demoResults.js). The line is
-  // admin-editable wording, never blank (DEMO_RESULTS_LABEL_LIMITS).
+  // ── Demo results filling the analytics window ──────────────────────────────
+  // (owner, 2026-10-15; backend/domains/markets/demoResults.js).
   demoResultsOn: b(DEFAULT_DEMO_RESULTS_ON),
-  demoResultsLabel: { type: 'string', default: DEFAULT_DEMO_RESULTS_LABEL, trimmed: true, ...DEMO_RESULTS_LABEL_LIMITS },
   // No androidUrl: the Android app's location is the newest published row of
   // android_releases (uploaded on the admin Android App page), not a typed link.
   iosUrl: s(''), webUrl: s(''),

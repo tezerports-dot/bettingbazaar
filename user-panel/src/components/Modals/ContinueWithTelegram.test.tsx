@@ -18,7 +18,7 @@ vi.mock('../../services/referralCapture', () => ({ storedReferralCode: () => sto
 let native = false;
 vi.mock('../../services/nativeLifecycle', () => ({ isNativeShell: () => native }));
 
-const { default: ContinueWithTelegram, deliveryHere } = await import('./ContinueWithTelegram');
+const { default: ContinueWithTelegram, deliveryHere, openTelegram, APP_LINK_FALLBACK_MS } = await import('./ContinueWithTelegram');
 
 const STEP = (delivery: 'MATCH' | 'HANDOFF', matchNumber: number | null) => ({
   kind: 'telegram', challengeToken: 'chal-1', delivery, matchNumber,
@@ -82,5 +82,43 @@ describe('Continue with Telegram', () => {
     render(<ContinueWithTelegram onDone={vi.fn()} />);
     await act(async () => { await userEvent.click(screen.getByRole('button', { name: /continue with telegram/i })); });
     expect((await screen.findByRole('alert')).textContent).toMatch(/not available right now/);
+  });
+});
+
+describe('opening the Telegram app', () => {
+  const APP = 'tg://resolve?domain=bb_bot&startapp=cabc';
+  const WEB = 'https://t.me/bb_bot?startapp=cabc';
+  let href: string;
+  let visibility: DocumentVisibilityState;
+  const realLocation = window.location;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    href = '';
+    visibility = 'visible';
+    Object.defineProperty(window, 'location', { configurable: true, value: { set href(v: string) { href = v; }, get href() { return href; } } });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });
+    vi.spyOn(window, 'open').mockImplementation(() => null);
+  });
+  afterEach(() => {
+    Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+    vi.restoreAllMocks();
+  });
+
+  it('goes to the app address, and opens nothing else once Telegram has taken over', () => {
+    openTelegram(APP, WEB);
+    expect(href).toBe(APP);
+    visibility = 'hidden';
+    document.dispatchEvent(new Event('visibilitychange'));
+    vi.advanceTimersByTime(APP_LINK_FALLBACK_MS);
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the https link when the page is still in front (no Telegram on the phone)', () => {
+    openTelegram(APP, WEB);
+    vi.advanceTimersByTime(APP_LINK_FALLBACK_MS - 1);
+    expect(window.open).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(window.open).toHaveBeenCalledWith(WEB, '_blank', 'noopener,noreferrer');
   });
 });

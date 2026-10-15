@@ -135,7 +135,10 @@ describe('staff profile', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Remove sub-admin' }));
     fireEvent.click(screen.getByRole('button', { name: 'Yes, remove' }));
     await waitFor(() => expect(subAdmins.delete).toHaveBeenCalledWith('stf-1'));
-    expect(await screen.findByText('Meera')).toBeInTheDocument(); // the table
+    // The profile's own heading also reads "Meera", so wait for the page to go
+    // and the table's row to come, not for the name alone.
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Meera' })).toBeNull());
+    expect(await screen.findByRole('row', { name: /Meera/ })).toBeInTheDocument();
   });
 
   it('shows the server\'s refusal where it was pressed', async () => {
