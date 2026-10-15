@@ -25,6 +25,13 @@
  * otherwise: an APK or installed web app left on a retired address after a
  * domain was blocked gets the number, which reaches it wherever it runs.
  * This screen renders whichever the server answered (`waiting.delivery`).
+ *
+ * ── Opening Telegram ───────────────────────────────────────────────────────
+ * On a touch screen "Open Telegram" goes to the Telegram app's own address
+ * (`telegram.appUrl`, `tg://resolve`), so Telegram opens at once instead of a
+ * browser tab at t.me's "Open in Telegram" page first. If this page is still
+ * in front a moment later (no Telegram on the phone), the https link opens
+ * instead (`openTelegram`). A laptop keeps the https link and the QR.
  */
 import React, { useMemo, useState } from 'react';
 import { useGame } from '../../services/GameContext';
@@ -50,6 +57,32 @@ const BUTTON: React.CSSProperties = {
   background: 'var(--gold-metal)',
   boxShadow: '0 8px 22px -8px var(--glow)', textDecoration: 'none', cursor: 'pointer',
 };
+/** How long Telegram gets to take over before the https link is tried instead. */
+export const APP_LINK_FALLBACK_MS = 1500;
+
+/** Whether this is a touch screen, where a `tg://` link reaches the Telegram app on the device. */
+function touchScreen(): boolean {
+  try { return window.matchMedia('(pointer: coarse)').matches; } catch { return false; }
+}
+
+/**
+ * Open Telegram at `appUrl`, falling back to `url` when nothing took over:
+ * the page is still visible after APP_LINK_FALLBACK_MS. Leaving for Telegram
+ * hides the page, which cancels the fallback.
+ */
+export function openTelegram(appUrl: string, url: string): void {
+  let left = false;
+  const onHide = () => { if (document.visibilityState === 'hidden') left = true; };
+  document.addEventListener('visibilitychange', onHide);
+  window.addEventListener('pagehide', onHide);
+  window.setTimeout(() => {
+    document.removeEventListener('visibilitychange', onHide);
+    window.removeEventListener('pagehide', onHide);
+    if (!left && document.visibilityState === 'visible') window.open(url, '_blank', 'noopener,noreferrer');
+  }, APP_LINK_FALLBACK_MS);
+  window.location.href = appUrl;
+}
+
 const NOTE: React.CSSProperties = { margin: 0, fontSize: 12, color: 'var(--text2)', lineHeight: 1.6, textAlign: 'center' };
 
 /** The Telegram link as a QR, for a phone to scan from a laptop. Black on white (§11: a scanner's contrast). */
@@ -135,7 +168,13 @@ const ContinueWithTelegram: React.FC<Props> = ({ onDone }) => {
           )}
           {!match && <p style={NOTE}>Open Telegram and press Verify. It brings you back here, signed in.</p>}
           {waiting.telegram?.url && (
-            <a href={waiting.telegram.url} target="_blank" rel="noopener noreferrer" style={BUTTON}>
+            <a href={waiting.telegram.url} target="_blank" rel="noopener noreferrer" style={BUTTON}
+              onClick={(e) => {
+                const appUrl = waiting.telegram?.appUrl;
+                if (!appUrl || !touchScreen()) return; // a laptop: the https link as it is
+                e.preventDefault();
+                openTelegram(appUrl, waiting.telegram!.url);
+              }}>
               Open Telegram{waiting.telegram.botUsername ? ` (@${waiting.telegram.botUsername.replace(/^@/, '')})` : ''}
             </a>
           )}

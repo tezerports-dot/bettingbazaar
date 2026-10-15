@@ -10,7 +10,9 @@ import {
  * every panel renders this one block: `telegramBlock` in
  * `backend/domains/identity/telegramChallenge.service.js` is its owner.
  */
-export interface TelegramBlock { url: string; botUsername: string; expiresAt: string }
+/** `telegramBlock` (telegramChallenge.service.js): the https link, and `appUrl`, the
+ *  same link addressed to the Telegram app (`tg://resolve`), null with no bot. */
+export interface TelegramBlock { url: string; appUrl?: string | null; botUsername: string; expiresAt: string }
 
 /**
  * What "Continue with Telegram" leaves the screen to do next.

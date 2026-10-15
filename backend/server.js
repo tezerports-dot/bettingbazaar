@@ -454,6 +454,14 @@ app.use('/', referralRedirect);
 // far as App Link verification is concerned — it just fails.
 app.use('/.well-known', wellKnownRoutes);
 
+// The player app's hashed bundles, cached for good like the other panels'
+// below: a changed file gets a new name. Without it every open (the Telegram
+// Mini App most of all, which no service worker serves) asked the server again
+// for each file before it could render.
+app.use('/assets', express.static(path.join(__dirname, '../dist/assets'), {
+  maxAge: '1y', immutable: true, fallthrough: false,
+}));
+
 app.use('/', (req, res, next) => {
   if (req.path.startsWith('/admin') || req.path.startsWith('/merchant') || req.path.startsWith('/api')) {
     return next(); // never serve user panel assets to other panels
