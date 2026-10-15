@@ -72,13 +72,11 @@
 
 @utility btn-primary {
   /* Buttons ---------------------------------------------------------------- */
-  /* Polished metallic gold like the brand artwork (owner, 2026-10-15), built
+  /* Softly polished gold like the brand artwork (owner, 2026-10-15), built
      only from the panel's gold tokens so the brand colour still drives it. */
-  background: linear-gradient(180deg,
-    color-mix(in srgb, var(--gold-ink) 50%, #fff9e0) 0%, var(--gold-ink) 20%, var(--gold) 44%,
-    color-mix(in srgb, var(--gold-deep) 72%, #3a2300) 52%, var(--gold-deep) 58%, var(--gold) 76%,
-    var(--gold-ink) 90%, color-mix(in srgb, var(--gold-ink) 50%, #fff9e0) 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), inset 0 -1px 0 rgba(0, 0, 0, 0.25);
+  background: linear-gradient(160deg,
+    var(--gold-ink) 0%, color-mix(in srgb, var(--gold-ink) 78%, #fff4c8) 28%, var(--gold) 55%, var(--gold-ink) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
   color: var(--gold-on);
   @apply font-bold py-2 px-4 rounded-lg transition-all;
   &:hover {
