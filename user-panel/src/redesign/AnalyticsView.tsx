@@ -291,9 +291,11 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
     <div ref={rootRef} aria-label={`${board?.name ?? ''} results and streak analytics`} style={{ width: '100%', minWidth: 0 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', margin: '4px 0 10px' }}>
         <h2 className="font-grotesk" style={{ margin: 0, fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>Results &amp; Streak Analytics</h2>
-        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>{fmt(A.total)} {board?.name ?? ''} results{demoCount ? ` · ${fmt(demoCount)} demo` : ''}</span>
+        <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: 6, fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>
+          {fmt(A.total)} {board?.name ?? ''} results
+          {demoCount > 0 && demoCfg && <DemoResultsNote label={demoCfg.label} demo={demoCount} />}
+        </span>
       </div>
-      {demoCount > 0 && demoCfg && <DemoResultsNote label={demoCfg.label} demo={demoCount} />}
       <div style={{ margin: '0 0 12px' }}>
         {/* One swipeable strip, drawn like the game tabs above (owner,
             2026-10-15: "single slidable strip ... as we are doing for games

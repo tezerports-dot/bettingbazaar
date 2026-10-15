@@ -20,6 +20,7 @@
 import React, { useEffect, useState } from 'react';
 import type { Side } from './analytics';
 import { getBackend } from '../services/backend.service';
+import { DisclosureChip } from './DisclosureChip';
 
 /** 32-bit FNV-1a, then a final mix, so neighbouring numbers are unrelated. */
 function hash(text: string): number {
@@ -69,11 +70,9 @@ export function useDemoResults(): DemoResultsConfig | null {
   return cfg;
 }
 
-/** The line shown wherever demo results are in the window. */
+/** The chip shown wherever demo results are in the window, with their count; a tap shows the full line. */
 export const DemoResultsNote: React.FC<{ label: string; demo: number }> = ({ label, demo }) => (
-  <p role="note" data-testid="demo-results-note" style={{ margin: '0 0 10px', padding: '8px 12px', borderRadius: 10, border: '1px dashed var(--line2)', background: 'var(--surface2)', fontSize: 11, lineHeight: 1.5, color: 'var(--text2)' }}>
-    ⓘ {label} <b style={{ color: 'var(--text)' }}>({demo.toLocaleString('en-IN')} demo)</b>
-  </p>
+  <DisclosureChip short={`incl. ${demo.toLocaleString('en-IN')} demo`} label={label} testId="demo-results-note" />
 );
 
 /** How a demo bead or box is drawn: faded, with a dashed edge. */

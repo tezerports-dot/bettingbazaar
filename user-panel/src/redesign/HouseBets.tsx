@@ -2,8 +2,8 @@
 /**
  * House bets on the board screen (owner, 2026-10-15).
  *
- * `HouseBetsNote`: the line beside the pool totals saying they include house
- * bets that are never paid out. The wording is the server's
+ * `HouseBetsNote`: the chip beside the pool totals saying they include house
+ * bets that are never paid out; a tap shows the full line. The wording is the server's
  * (`SystemConfig.houseBetsLabel`, sent never blank by systemConfigPayload.js);
  * the panel keeps no copy.
  *
@@ -17,6 +17,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { player } from '../services/api';
 import { getBackend } from '../services/backend.service';
+import { DisclosureChip } from './DisclosureChip';
 
 /** The house-bets line, as the server says it; nothing until it has arrived. */
 export function useHouseBetsLabel(): string {
@@ -31,8 +32,9 @@ export function useHouseBetsLabel(): string {
   return label;
 }
 
+/** A chip by the pool total, always shown; a tap shows the server's full line (`DisclosureChip`). */
 export const HouseBetsNote: React.FC<{ label: string; style?: React.CSSProperties }> = ({ label, style }) => (
-  label ? <div style={{ fontSize: 10, lineHeight: 1.4, color: 'var(--text3)', ...style }}>ⓘ {label}</div> : null
+  <DisclosureChip short="incl. house" label={label} testId="house-bets-note" style={style} />
 );
 
 type Side = 'DELHI' | 'BOMBAY';

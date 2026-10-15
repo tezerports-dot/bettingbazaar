@@ -2,7 +2,7 @@
 /** Demo results fill the analytics window behind the real ones, labelled (owner, 2026-10-15). */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 
 let config: Record<string, unknown> = { demoResultsOn: true, demoResultsLabel: 'Includes demo results.' };
 vi.mock('../services/backend.service', () => ({ getBackend: () => ({ getSystemConfig: () => Promise.resolve(config) }) }));
@@ -34,8 +34,12 @@ describe('demo results', () => {
 
   it('the analytics say so with the admin line, and show every result', async () => {
     render(<AnalyticsView board={board} winners={['DELHI', 'BOMBAY']} />);
-    expect(await screen.findByTestId('demo-results-note')).toHaveTextContent('Includes demo results. (1,438 demo)');
-    expect(screen.getByText(/1,440 One Minute results · 1,438 demo/)).toBeInTheDocument();
+    const chip = await screen.findByTestId('demo-results-note');
+    expect(chip).toHaveTextContent('incl. 1,438 demo');
+    expect(chip).not.toHaveTextContent('Includes demo results.');
+    fireEvent.click(within(chip).getByRole('button'));
+    expect(within(chip).getByRole('note')).toHaveTextContent('Includes demo results.');
+    expect(screen.getByText(/1,440 One Minute results/)).toBeInTheDocument();
     const strip = screen.getByTestId('run-strip');
     expect(strip.querySelectorAll('span[data-demo]').length).toBe(1438);
   });

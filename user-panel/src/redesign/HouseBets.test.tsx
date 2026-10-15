@@ -5,7 +5,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn() }));
 vi.mock('../services/apiClient', () => ({ default: api, apiClient: api }));
@@ -32,7 +32,11 @@ beforeEach(() => {
 describe('house bets', () => {
   it('shows the server\'s line beside the totals', async () => {
     render(<Note />);
-    expect(await screen.findByText(/Totals include house bets\./)).toBeTruthy();
+    const chip = await screen.findByTestId('house-bets-note');
+    expect(chip).toHaveTextContent('incl. house');
+    expect(within(chip).getByRole('button')).toHaveAttribute('title', 'Totals include house bets.');
+    fireEvent.click(within(chip).getByRole('button'));
+    expect(within(chip).getByRole('note')).toHaveTextContent('Totals include house bets.');
   });
 
   it('loads a plan, and saves the sizes as typed with the side, board and audience', async () => {
