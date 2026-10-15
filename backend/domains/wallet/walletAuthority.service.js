@@ -22,6 +22,8 @@
 import { sseBalancePush } from '../notification/realtimeEmitters.js';
 import { db } from '#db';
 import { paiseToRupees } from '../../shared/money.js';
+import { notify } from '../communication/communication.service.js';
+import { sendAlert } from '../../services/alerting.service.js';
 import * as pg from '#db/repositories/wallets.js';
 import { applyAdjustment, listAdjustments, ADJUSTABLE_FIELDS } from '#db/repositories/balanceAdjustments.js';
 
@@ -149,6 +151,18 @@ export async function refundWithdrawal(userId, amount, withdrawalId) {
 export async function completeBuy(orderId, { actor = 'deposit-credit', requireState } = {}) {
   const done = await db.teamPools.spendForBuy(orderId, { actor, requireState });
   if (done.ok && done.balances) pushBalances(done.userId, { balances: rupeeBalances(done.balances) });
+  const bonus = done.ok ? done.firstDepositBonus : null;
+  if (bonus?.paid) {
+    // After commit, and never able to undo it: a notice that fails is logged.
+    notify({
+      userId: done.userId, type: 'SUCCESS', title: 'First deposit bonus',
+      message: `₹${paiseToRupees(bonus.amountPaise)} is in your General balance. Play it and it unlocks into withdrawable winnings; see Wallet › General for how.`,
+    }).catch((e) => console.warn('[completeBuy] first deposit bonus notice failed:', e?.message));
+  } else if (bonus?.refused) {
+    // The buy completed; the bonus did not. Somebody must look.
+    sendAlert(`first-deposit-bonus-refused:${orderId}`, 'First deposit bonus refused; the buy completed without it',
+      { orderId: String(orderId), reason: bonus.refused }).catch(() => {});
+  }
   return done;
 }
 

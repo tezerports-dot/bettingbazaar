@@ -21,6 +21,7 @@ import WalletProfileToggle from '../redesign/WalletProfileToggle';
 import { usePlayProfile } from '../redesign/ProfileSwitch';
 import { fmt } from '../redesign/format';
 import { UnlockBar } from '../redesign/BoardExtras';
+import { GeneralWithdrawable, GeneralBonusList, GeneralHowItWorks } from '../redesign/GeneralWalletDetails';
 import { useBoardExtras } from '../services/GameContext';
 // The INR sizes, as tiles grouped by the rail each size is on (Step 2d).
 import OrderSizePicker, { railOfSize, type OrderSizes, type OrderSizeMethods } from '../components/OrderSizePicker';
@@ -790,17 +791,21 @@ const WalletPage: React.FC = () => {
     <ScreenShell icon="💳" title="Wallet" sub="Buy & sell tokens · P2P exchange">
       <WalletProfileToggle general={general} choose={chooseProfile} error={profileError} vipTotal={total} />
       {onGeneral && general ? (
-        /* The General wallet: the referral bonus, what it still needs, and the
-           way to the board that plays it. Figures are `promo.js`'s. */
+        /* The General wallet: the bonuses, what they still need, what can be
+           withdrawn and when, and the way to the board that plays it.
+           Figures are `promo.js`'s. */
         <div style={{ ...card, border: '1px solid color-mix(in srgb,var(--green) 40%,transparent)', background: 'color-mix(in srgb,var(--green) 8%,var(--surface))' }}>
           <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--green)' }}>General balance</div>
           <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 38, color: 'var(--text)', margin: '2px 0 6px' }}>₹{fmt(general.promoBalance)}</div>
           <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.55 }}>
             {general.outstandingTurnover > 0
-              ? <>Play <strong style={{ color: 'var(--text)' }}>₹{fmt(general.outstandingTurnover)}</strong> more and it unlocks into withdrawable winnings ({general.turnoverMultiplier}× the bonus is played first).</>
-              : 'Played with, it unlocks into withdrawable winnings.'}
+              ? <>Bet <strong style={{ color: 'var(--text)' }}>₹{fmt(general.outstandingTurnover)}</strong> more from General and it unlocks into withdrawable winnings. Every bonus is bet {general.turnoverMultiplier}× its amount first.</>
+              : 'Bonus money. Bet with it and it unlocks into withdrawable winnings.'}
           </div>
+          <GeneralWithdrawable general={general} />
           {bonusProgress && <UnlockBar grants={general.grants} />}
+          <GeneralBonusList general={general} />
+          <GeneralHowItWorks multiplier={general.turnoverMultiplier} />
           <button type="button" onClick={() => { window.location.hash = '#/'; }} disabled={!(general.promoBalance > 0)} style={{ marginTop: 14, width: '100%', padding: 12, borderRadius: 12, border: 'none', cursor: general.promoBalance > 0 ? 'pointer' : 'not-allowed', fontSize: 13, fontWeight: 800, color: 'var(--bg)', background: 'var(--green)', opacity: general.promoBalance > 0 ? 1 : 0.5 }}>
             Play with your bonus
           </button>

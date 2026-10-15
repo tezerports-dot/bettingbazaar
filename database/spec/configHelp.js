@@ -165,8 +165,12 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     example: '10: A invites B, B invites C; when C joins, B earns level 1 and A earns ₹10.',
   },
   'referralRewards.turnoverMultiplier': {
-    what: 'How many times its amount a referral bonus must be played (bet) before it unlocks into withdrawable winnings. Set on each bonus when it is paid, so bonuses already paid keep theirs.',
+    what: 'How many times its amount every General bonus (referral and first deposit) must be played (bet) before it unlocks into withdrawable winnings. Set on each bonus when it is paid, so bonuses already paid keep theirs.',
     example: '10: a ₹25 bonus unlocks after ₹250 of bets.',
+  },
+  'firstDepositBonus.rupees': {
+    what: 'What a player receives, in rupees, in their General (bonus) balance when their first buy completes. Paid once per player, never into VIP. It unlocks into withdrawable winnings after the same play requirement as every General bonus. 0 turns it off.',
+    example: '100: a new player\'s first buy completes and ₹100 lands in General; it unlocks after ₹1,000 of bets at 10×.',
   },
   'redFlags.lowActivityPercent': {
     what: 'An agent is flagged once a day when both their completed orders and their online time are this many percent below their team\'s average. A flag only warns the supervisor and admins.',

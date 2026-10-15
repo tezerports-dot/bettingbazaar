@@ -7,7 +7,8 @@
  * `promo_turnover` and `users.play_profile` (schema.sql, "THE GENERAL
  * (PROMOTIONAL) BALANCE").
  *
- *   Referral → bonus into GENERAL → 10× its amount in turnover required →
+ *   Referral or first completed buy → bonus into GENERAL → 10× its amount
+ *   in turnover required (the one admin rule for every General bonus) →
  *   play (wins stay in GENERAL and can be bet again) → requirement met →
  *   the bonus unlocks into withdrawable winnings → once nothing is
  *   outstanding, the promotional winnings unlock too.
@@ -18,7 +19,7 @@
  */
 import { pgQuery } from '../client.js';
 import { getSystemConfig } from './config.js';
-import { referralRewardsFrom } from '../../backend/domains/referral/referralRewards.js';
+import { referralRewardsFrom, firstDepositBonusFrom } from '../../backend/domains/referral/referralRewards.js';
 import { withWalletLock, applyMovementWithin } from './wallets.core.js';
 import { ACCOUNTS } from './treasury.js';
 
@@ -61,6 +62,73 @@ export async function creditReferralBonus({ userId, amountPaise, earningId, reas
     );
     return { commit: true, value: { ok: true, idempotent: false, txId } };
   });
+}
+
+/**
+ * The first deposit bonus (owner, 2026-10-15): with a player's FIRST completed
+ * buy, `SystemConfig.firstDepositBonus.rupees` into their GENERAL balance and
+ * its requirement opened, never into VIP. Called inside the buy's own
+ * transaction (`teamPools.spendForBuy`), on the player's locked wallet, so the
+ * question "is this their first?" and the payment are serialised with every
+ * other buy of theirs (S6); `promo_grants_first_deposit_once` holds it to one
+ * per player whatever path asks.
+ *
+ * A bonus never costs the buy: it runs under a SAVEPOINT, so a refusal (the
+ * platform's holding short, a second grant) unwinds the bonus alone and the
+ * tokens the player paid for still arrive. The refusal comes back by name for
+ * the caller to alert on.
+ *
+ * Tokens come out of the platform's holding (TOKEN_SUPPLY → USER_FLOAT), like
+ * every General bonus.
+ *
+ * @returns {Promise<{paid: boolean, amountPaise?: number, skipped?: string,
+ *                    refused?: string, balancesAfterPaise?: object}>}
+ */
+export async function creditFirstDepositBonusWithin(ctx, { orderId }) {
+  const oid = String(orderId);
+  const cfg = await getSystemConfig();
+  const { amountPaise } = firstDepositBonusFrom(cfg);
+  if (!(amountPaise > 0)) return { paid: false, skipped: 'off' };
+  // First means no OTHER buy of theirs was ever paid out. Read under the
+  // wallet lock every buy completion takes, so a concurrent buy has either
+  // committed its `pool_paid_at` already or waits behind this one.
+  const { rows: earlier } = await ctx.client.query(
+    `SELECT 1 FROM order_states
+      WHERE user_id = $1 AND order_type = 'DEPOSIT' AND pool_paid_at IS NOT NULL AND order_id <> $2
+      LIMIT 1`, [ctx.uid, oid]);
+  if (earlier[0]) return { paid: false, skipped: 'not_first' };
+  const { turnoverMultiplier } = referralRewardsFrom(cfg);
+  const txId = `fdb_${oid}`;
+  const reason = 'First deposit bonus';
+  await ctx.client.query('SAVEPOINT first_deposit_bonus');
+  try {
+    const moved = await applyMovementWithin(ctx, {
+      legs: [{ field: 'promoBalance', deltaPaise: amountPaise }],
+      ledger: [{ txId, field: 'promoBalance', amountPaise, type: 'CREDIT', reason, refId: oid }],
+      counterparty: {
+        account: ACCOUNTS.TOKEN_SUPPLY, operation: 'PROMO_CREDITED',
+        reason, refModel: 'PaymentOrder', refId: oid,
+      },
+    });
+    if (moved.idempotent || !moved.ok) {
+      await ctx.client.query('ROLLBACK TO SAVEPOINT first_deposit_bonus');
+      return { paid: false, ...(moved.idempotent ? { skipped: 'already_paid' } : { refused: moved.refused ?? 'refused' }) };
+    }
+    await ctx.client.query(
+      `INSERT INTO promo_grants
+         (grant_id, user_id, source, source_ref, amount_paise, required_turnover_paise)
+       VALUES ($1, $2, 'FIRST_DEPOSIT', $3, $4, $5)`,
+      [txId, ctx.uid, oid, amountPaise, amountPaise * turnoverMultiplier],
+    );
+    await ctx.client.query('RELEASE SAVEPOINT first_deposit_bonus');
+    return { paid: true, amountPaise, balancesAfterPaise: moved.balancesAfterPaise };
+  } catch (e) {
+    await ctx.client.query('ROLLBACK TO SAVEPOINT first_deposit_bonus');
+    // A second grant for this player (`promo_grants_first_deposit_once`) is a
+    // "not first", whichever path got there; anything else is a refusal.
+    if (e?.code === '23505') return { paid: false, skipped: 'not_first' };
+    return { paid: false, refused: e?.message ?? 'error' };
+  }
 }
 
 /**
@@ -151,7 +219,7 @@ export async function recordTurnoverWithin(ctx, { stakeRef, amountPaise }) {
     );
     if (done) {
       completedGrants.push(g.grant_id);
-      unlocked += await unlockWithin(ctx, release, `promo_unlock_${g.grant_id}`, 'Referral bonus unlocked');
+      unlocked += await unlockWithin(ctx, release, `promo_unlock_${g.grant_id}`, 'Bonus unlocked');
       promoHeld -= release;
     }
   }

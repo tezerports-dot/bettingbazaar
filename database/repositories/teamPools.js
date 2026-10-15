@@ -28,6 +28,7 @@ import { ACCOUNTS, postMovement } from './treasury.js';
 import { lockWalletWithin } from './wallets.core.js';
 import { creditBuyWithin, consumeWithdrawalStakeWithin, returnSettledStakeWithin } from './wallets.js';
 import { recordConsideration, assertRecordable, DIRECTIONS } from './adminTokenConsiderations.js';
+import { creditFirstDepositBonusWithin } from './promo.js';
 
 export const POOL_DIRECTIONS = Object.freeze({ BUY: 'BUY', SELL: 'SELL' });
 
@@ -541,10 +542,15 @@ export async function spendForBuy(orderId, { actor = 'system', requireState = nu
       });
       if (!moved.ok) throw new Refused(moved.reason);
       if (moved.idempotent) throw new Refused('already_credited');
+      // The player's first completed buy also pays the first deposit bonus
+      // into GENERAL (owner, 2026-10-15), in this transaction and on this
+      // wallet lock; it unwinds alone if refused, never the buy.
+      const bonus = await creditFirstDepositBonusWithin(wallet, { orderId: oid });
       return {
         ok: true, taken, teamId, userId: String(o[0].user_id), amountPaise: amount,
         depositPaise: credited.split.depositPaise, reservePaise: credited.split.reservePaise,
-        balances: credited.balancesAfterPaise,
+        balances: bonus.balancesAfterPaise ?? credited.balancesAfterPaise,
+        firstDepositBonus: bonus,
       };
     });
   } catch (e) {
