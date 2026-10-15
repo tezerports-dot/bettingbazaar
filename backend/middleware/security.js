@@ -335,6 +335,24 @@ export const telegramLoginLimiter = rateLimit({
     },
 });
 
+/**
+ * The same door while the captcha verifier is unreachable (captcha.js runs it
+ * only then), per address (RATE_LIMIT_TIERS.telegramLoginNoCaptcha).
+ */
+export const telegramLoginNoCaptchaLimiter = rateLimit({
+    store: createRateLimitStore('rl:tglogin-nocaptcha:'),
+    ...RATE_LIMIT_TIERS.telegramLoginNoCaptcha,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip),
+    message: {
+        success: false,
+        code: 'LOGIN_PACED',
+        message: 'Too many Telegram sign-ins from this connection. Wait a few minutes and try again.',
+        retryAfter: 600,
+    },
+});
+
 /** The Mini App's own calls, per address (RATE_LIMIT_TIERS.miniApp). */
 export const miniAppLimiter = rateLimit({
     store: createRateLimitStore('rl:miniapp:'),

@@ -260,6 +260,10 @@ export const RATE_LIMIT_TIERS = {
   // anybody has proved anything, so its rate is bounded per address, every
   // request counted: ten a ten minutes is a person retrying, not a script.
   telegramLogin: tier(10 * 60 * 1000, 10),
+  // The same door while Cloudflare's captcha cannot be reached and sign-in
+  // goes on without it (middleware/captcha.js): a quarter of the above, so a
+  // bot burst during an outage is four times slower (owner, 2026-10-15).
+  telegramLoginNoCaptcha: tier(10 * 60 * 1000, 3),
   // The Mini App's own calls, per address. `initData` is the credential and is
   // single-use, so this bounds load and the cost of a forged string's HMAC.
   miniApp: tier(10 * 60 * 1000, 120),

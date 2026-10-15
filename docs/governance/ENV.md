@@ -142,7 +142,7 @@ after the overlap (token TTL / order lifetime). Verification accepts current **o
 |---|---|
 | `PORT` | `8080` — the platform usually injects this. |
 | `NODE_ENV` | Set `production` on deploy (activates the boot gate + secure cookies + HSTS). |
-| `JWT_EXPIRES_IN` | `24h` access-token lifetime (revocation via `TokenBlacklist`). |
+| `JWT_EXPIRES_IN` | `6h` access-token lifetime (revocation via `TokenBlacklist`). |
 | `JWT_ISSUER` / `JWT_AUDIENCE` | `bettingbazaar`; set `JWT_ENFORCE_CLAIMS=true` only after all pre-claims tokens have expired. |
 | `APP_BASE_URL` / `CANONICAL_HOST` | Public URL; optional canonical-host 301. |
 | `ALERT_WEBHOOK_URL` | Fallback money-path alert sink (or set `SystemConfig.alertWebhookUrl` in-app). |

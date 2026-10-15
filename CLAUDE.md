@@ -654,7 +654,10 @@ Ask each question of the change in front of you.
   account.
 - **33.2 Sign-in.** Players and merchants: 33.1, plus an invisible captcha on
   the player's Continue with Telegram only (staff and merchants "only need
-  2FA", owner 2026-10-08). The Telegram sign-in IS the merchant's second factor
+  2FA", owner 2026-10-08). While Cloudflare cannot be reached the door goes on
+  without it but through `telegramLoginNoCaptchaLimiter`, a quarter of its
+  usual rate (owner, 2026-10-15). A session lasts 6 hours unless
+  `PASETO_EXPIRES_IN` says otherwise (`paseto.util.js`; owner, 2026-10-15). The Telegram sign-in IS the merchant's second factor
   (`amr: ['tg']`). How the approval reaches a browser is `delivery`: HANDOFF
   where Telegram runs on the same device (the Android app, an Android browser)
   and opens it again at the site's own address (`deliveryFor`), MATCH

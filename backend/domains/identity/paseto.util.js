@@ -16,7 +16,8 @@ import util from 'tweetnacl-util';
 const { decodeUTF8, encodeUTF8, encodeBase64, decodeBase64 } = util;
 
 const HEADER = 'v2.public.';
-const DEFAULT_EXP = process.env.PASETO_EXPIRES_IN || process.env.JWT_EXPIRES_IN || '24h';
+// A sign-in lasts 6 hours unless the environment says otherwise (owner, 2026-10-15).
+const DEFAULT_EXP = process.env.PASETO_EXPIRES_IN || process.env.JWT_EXPIRES_IN || '6h';
 export const PASETO_ISSUER = process.env.PASETO_ISSUER || process.env.JWT_ISSUER || 'bettingbazaar';
 export const PASETO_AUDIENCE = process.env.PASETO_AUDIENCE || process.env.JWT_AUDIENCE || 'bettingbazaar';
 export const PASETO_EXPIRES_IN = DEFAULT_EXP;
