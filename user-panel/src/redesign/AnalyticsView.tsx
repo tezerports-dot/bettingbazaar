@@ -274,7 +274,7 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
           {SECTIONS.map((s) => {
             const on = active === s.key;
             return (
-              <button key={s.key} type="button" role="tab" id={`bb-an-tab-${s.key}`} aria-selected={on} aria-controls={`bb-an-${s.key}`} onClick={() => setActive(s.key)} style={{ flex: 'none', padding: '9px 15px', borderRadius: 999, border: `1px solid ${on ? 'var(--gold)' : 'var(--line2)'}`, background: on ? 'var(--gold-metal)' : 'var(--surface2)', color: on ? '#1a1200' : 'var(--text2)', fontSize: 12, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap', boxShadow: on ? '0 0 14px -4px var(--glow)' : 'none' }}>{s.label}</button>
+              <button key={s.key} type="button" role="tab" id={`bb-an-tab-${s.key}`} aria-selected={on} aria-controls={`bb-an-${s.key}`} onClick={() => setActive(s.key)} style={{ flex: 'none', padding: '9px 15px', borderRadius: 999, border: `1px solid ${on ? 'var(--gold)' : 'var(--line2)'}`, background: on ? 'var(--gold-metal)' : 'var(--surface2)', color: on ? 'var(--on-gold)' : 'var(--text2)', fontSize: 12, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap', boxShadow: on ? '0 0 14px -4px var(--glow)' : 'none' }}>{s.label}</button>
             );
           })}
         </div>

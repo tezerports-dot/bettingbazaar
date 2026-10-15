@@ -33,7 +33,7 @@ const FaqPage: React.FC = () => {
       {faqs.length > 0 && (
         <div className="bb-noscroll" style={{ display: 'flex', gap: 8, overflowX: 'auto', marginBottom: 12 }}>
           {categories.map(c => (
-            <button key={c} onClick={() => setCat(c)} aria-pressed={cat === c} style={{ flex: 'none', padding: '7px 14px', borderRadius: 999, fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', cursor: 'pointer', border: `1px solid ${cat === c ? 'var(--gold)' : 'var(--line)'}`, background: cat === c ? 'var(--gold)' : 'var(--surface)', color: cat === c ? '#1a1200' : 'var(--text2)' }}>{c}</button>
+            <button key={c} onClick={() => setCat(c)} aria-pressed={cat === c} style={{ flex: 'none', padding: '7px 14px', borderRadius: 999, fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', cursor: 'pointer', border: `1px solid ${cat === c ? 'var(--gold)' : 'var(--line)'}`, background: cat === c ? 'var(--gold)' : 'var(--surface)', color: cat === c ? 'var(--on-gold)' : 'var(--text2)' }}>{c}</button>
           ))}
         </div>
       )}

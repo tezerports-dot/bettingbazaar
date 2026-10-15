@@ -285,7 +285,12 @@ const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) =
       try {
         try {
           const branding = await (backend as any).getBranding?.();
-          if (branding?.cdnBaseUrl) localStorage.setItem('app_branding', JSON.stringify(branding));
+          // The stream's opening `branding` payload, through the ONE applier
+          // (§13), which also caches it. It used to be written to the cache
+          // here and never applied, so colours and palette waited for a save.
+          // The 8 s placeholder `getBranding` falls back to carries no
+          // `palette`; the server's payload always does (brandingPayload.js).
+          if (typeof branding?.palette === 'string') applyBranding(branding);
         } catch { /* non-critical */ }
         const config = await backend.getSystemConfig();
         applyConfig(config);

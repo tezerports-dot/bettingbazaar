@@ -280,7 +280,7 @@ export const UsdtBuyPanel: React.FC<{
               disabled={busy || !txId.trim() || Boolean(txError)}
               style={{
                 width: '100%', padding: 13, borderRadius: 12, border: 'none', cursor: 'pointer',
-                fontWeight: 800, fontSize: 14, color: '#1a1200',
+                fontWeight: 800, fontSize: 14, color: 'var(--on-gold)',
                 background: 'var(--gold-metal)',
                 opacity: (busy || !txId.trim() || txError) ? 0.5 : 1,
               }}
@@ -369,7 +369,7 @@ export const UsdtBuyPanel: React.FC<{
         disabled={busy || !amountOk || !chain}
         style={{
           width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer',
-          fontWeight: 800, fontSize: 15, color: '#1a1200',
+          fontWeight: 800, fontSize: 15, color: 'var(--on-gold)',
           background: 'var(--gold-metal)',
           opacity: (busy || !amountOk || !chain) ? 0.5 : 1,
         }}

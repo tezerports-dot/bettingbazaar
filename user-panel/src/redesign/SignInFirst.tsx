@@ -24,7 +24,7 @@ const SignInFirst: React.FC<{ what: string; children: React.ReactNode }> = ({ wh
         <div aria-hidden="true" style={{ fontSize: 34, marginBottom: 8 }}>🔒</div>
         <h1 style={{ fontSize: 18, fontWeight: 800, margin: '0 0 6px', color: 'var(--text)' }}>Sign in to see your {what}</h1>
         <p style={{ fontSize: 13, color: 'var(--text2)', margin: '0 0 18px' }}>This page belongs to your account.</p>
-        <button type="button" onClick={() => openAuth()} style={{ width: '100%', padding: 12, borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 800, color: 'var(--bg)', background: 'var(--gold-metal)' }}>
+        <button type="button" onClick={() => openAuth()} style={{ width: '100%', padding: 12, borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 800, color: 'var(--on-gold)', background: 'var(--gold-metal)' }}>
           Sign in or join
         </button>
       </div>

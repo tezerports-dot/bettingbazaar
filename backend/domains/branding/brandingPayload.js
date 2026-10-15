@@ -31,6 +31,7 @@ export function brandingPayload(b) {
     primaryColor:            b.primaryColor,
     secondaryColor:          b.secondaryColor,
     accentColor:             b.accentColor,
+    palette:                 b.palette,
     logo:                    b.logo,
     icon:                    b.icon,
     favicon:                 b.favicon,

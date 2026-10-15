@@ -123,7 +123,7 @@ export const BoardRulesModal: React.FC<{ isAuthenticated: boolean }> = ({ isAuth
           }}>Not now</button>
           <button onClick={accept} disabled={!rules || saving} style={{
             flex: 2, height: 42, borderRadius: 12, cursor: 'pointer', fontWeight: 800, fontSize: 13, border: 'none',
-            background: 'var(--gold-metal)', color: '#1a1200',
+            background: 'var(--gold-metal)', color: 'var(--on-gold)',
             opacity: !rules || saving ? 0.6 : 1,
           }}>{saving ? 'Saving…' : 'I understand and agree'}</button>
         </div>

@@ -57,6 +57,22 @@
   --input-bg:#0E1521; --input-border:#2A3546;
 }
 
+/* STAKE palette (Branding.palette = STAKE; owner, 2026-10-15): navy pages,
+   slate-blue cards, cool grey text and Stake blue as the brand. App.tsx sets
+   <html data-palette="stake"> and takes the brand colours off the root while
+   it is on, so --brand falls through to --brand-fallback here. */
+:root[data-palette='stake'] {
+  --brand-fallback:#1475E1; --brand-ink:#105EB9; --brand-bg:#E3EEFC; --ring:#1475E1; --info:#1475E1;
+}
+:root[data-palette='stake'][data-theme='dark'] {
+  --bg:#0F212E; --surface:#1A2C38; --surface-2:#213743; --elev:#213743; --sidebar:#0F212E;
+  --border:#2F4553; --border-2:#24404F;
+  --text:#FFFFFF; --text-2:#B1BAD3; --muted:#7489A3;
+  --brand-fallback:#1475E1; --brand-ink:#7DB8FF; --brand-bg:#15324A;
+  --ok:#00E701; --online:#00E701; --danger:#ED4163; --info:#3D8DF5; --ring:#3D8DF5;
+  --row-hover:#213743; --input-bg:#0F212E; --input-border:#2F4553;
+}
+
 :root {
   /* GOVERNANCE §3/§12 — operator branding wins; design palette is the default. */
   --brand: var(--brand-primary, var(--brand-fallback));

@@ -84,6 +84,76 @@
   --skel2: rgba(24, 26, 42, .11);
 }
 
+/* ── STAKE palette (Branding.palette = STAKE; owner, 2026-10-15) ─────────────────
+   A complete navy-and-blue palette in the style the owner pointed at: deep
+   navy page, slate-blue cards, cool grey text, bright blue buttons and a vivid
+   green for wins. `services/branding.ts` sets `<html data-palette="stake">` and
+   stops writing the three brand colours inline while it is on, so these
+   declarations are the colours. The `--gold*` names stay (every component
+   reads them); under this palette they simply hold blue. */
+:root[data-palette='stake'] {
+  --brand-primary:   #1475E1;
+  --brand-secondary: #105EB9;
+  --brand-accent:    #3D8DF5;
+  --brand-primary-rgb:   20, 117, 225;
+  --brand-secondary-rgb: 16, 94, 185;
+  --brand-accent-rgb:    61, 141, 245;
+  --on-gold: #FFFFFF;
+  --gold-metal: linear-gradient(180deg, #2A86F0 0%, #1475E1 100%);
+  --gold-metal-text: linear-gradient(180deg, #FFFFFF 0%, #B9D8FF 100%);
+}
+:root[data-palette='stake']:not([data-theme='light']) {
+  --app-bg: radial-gradient(1100px 620px at 50% -10%, rgba(20, 117, 225, .10), transparent 60%),
+            linear-gradient(180deg, #0F212E 0%, #0F212E 100%);
+  --bg: #0F212E;
+  --surface: #1A2C38;
+  --surface2: #213743;
+  --surface3: #2F4553;
+  --line: rgba(255, 255, 255, .06);
+  --line2: rgba(47, 69, 83, 1);
+  --text: #FFFFFF;
+  --text2: #B1BAD3;
+  --text3: #7489A3;
+  --gold: #1475E1;
+  --gold2: #3D8DF5;
+  --gold3: #105EB9;
+  --gold-ink: #7DB8FF;
+  --green: #00E701;
+  --red: #ED4163;
+  --chip-bg: rgba(255, 255, 255, .03);
+  --shadow: 0 18px 44px -14px rgba(0, 0, 0, .55);
+  --shadow-sm: 0 6px 18px -8px rgba(0, 0, 0, .5);
+  --glow: rgba(20, 117, 225, .45);
+  --pill: #213743;
+  --pill-line: rgba(255, 255, 255, .08);
+  --skel: rgba(255, 255, 255, .06);
+  --skel2: rgba(255, 255, 255, .11);
+}
+:root[data-palette='stake']:not([data-theme='light']) body { background-color: #0F212E; }
+:root[data-palette='stake'][data-theme='light'] {
+  --app-bg: radial-gradient(1000px 580px at 50% -12%, rgba(20, 117, 225, .12), transparent 60%),
+            linear-gradient(180deg, #EEF2F7 0%, #E6ECF3 100%);
+  --bg: #EEF2F7;
+  --surface: #FFFFFF;
+  --surface2: #FFFFFF;
+  --surface3: #F3F6FA;
+  --line: rgba(15, 33, 46, .10);
+  --line2: rgba(20, 117, 225, .30);
+  --text: #0F212E;
+  --text2: #4A5D73;
+  --text3: #8A9AAE;
+  --gold: #1475E1;
+  --gold2: #3D8DF5;
+  --gold3: #105EB9;
+  --gold-ink: #105EB9;
+  --green: #00A803;
+  --glow: rgba(20, 117, 225, .30);
+  --pill-line: rgba(20, 117, 225, .28);
+}
+:root[data-palette='stake'][data-theme='light'] body { background-color: #EEF2F7; }
+/* Stake's buttons are flat: no sweeping glint under this palette. */
+:root[data-palette='stake'] .bb-app [style*='var(--gold-metal)']::after { display: none; }
+
 /* ── Metallic gold (owner, 2026-10-15: "golden colour should have the shining") ─
    Softly polished gold like the brand artwork: the brand gold with one gentle
    light sheen across it (owner, 2026-10-15: the first, mirror-like version was
@@ -93,6 +163,8 @@
    (`background: var(--gold-metal)`) and, through `.bb-gold-text`, for large
    gold figures and titles. */
 :root {
+  /* Text on a gold fill; white under the STAKE palette. */
+  --on-gold: #1A1200;
   --gold-hi: color-mix(in srgb, var(--gold2) 78%, #FFF4C8);
   --gold-metal: linear-gradient(160deg,
     var(--gold2) 0%, var(--gold-hi) 28%, var(--gold) 55%, var(--gold2) 100%);

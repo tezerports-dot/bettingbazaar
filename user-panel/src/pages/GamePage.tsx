@@ -63,7 +63,7 @@ const GamePage: React.FC = () => {
                 <p style={{ color: 'var(--text2)', fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', margin: 0 }}>{promoPopup.description}</p>
               </div>
             )}
-            <button onClick={() => setPromoPopup(null)} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 14, color: '#1a1200', background: 'var(--gold-metal)', textTransform: 'uppercase', letterSpacing: '.06em' }}>Enter Arena</button>
+            <button onClick={() => setPromoPopup(null)} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 14, color: 'var(--on-gold)', background: 'var(--gold-metal)', textTransform: 'uppercase', letterSpacing: '.06em' }}>Enter Arena</button>
           </div>
         </div>
       )}

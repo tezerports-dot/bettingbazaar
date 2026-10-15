@@ -282,7 +282,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
       )}
       {!isAuthenticated && railOpen && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
-          <button type="button" onClick={() => openAuth()} style={{ padding: 10, borderRadius: 11, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'var(--gold-metal)' }}>Sign in or join</button>
+          <button type="button" onClick={() => openAuth()} style={{ padding: 10, borderRadius: 11, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: 'var(--on-gold)', background: 'var(--gold-metal)' }}>Sign in or join</button>
         </div>
       )}
     </nav>
@@ -337,7 +337,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
               <span style={{
                 flex: 'none', width: 26, height: 26, borderRadius: '50%',
                 background: 'var(--gold-metal)', display: 'flex', alignItems: 'center',
-                justifyContent: 'center', color: '#1a1200', fontWeight: 900, fontSize: 13, border: '1px solid rgba(255,255,255,.2)',
+                justifyContent: 'center', color: 'var(--on-gold)', fontWeight: 900, fontSize: 13, border: '1px solid rgba(255,255,255,.2)',
               }}>₹</span>
             )}
             <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.05, textAlign: 'left' }}>
@@ -502,7 +502,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
                 </button>
                 {!isAuthenticated ? (
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button onClick={() => openAuth()} style={{ flex: 1, padding: 11, borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'var(--gold-metal)' }}>Sign in or join</button>
+                    <button onClick={() => openAuth()} style={{ flex: 1, padding: 11, borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: 'var(--on-gold)', background: 'var(--gold-metal)' }}>Sign in or join</button>
                   </div>
                 ) : (
                   <button onClick={() => { logout(); setMenuOpen(false); navigate('/'); }} style={{ width: '100%', padding: 11, borderRadius: 12, border: '1px solid color-mix(in srgb,var(--red) 35%,transparent)', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: 'var(--red)', background: 'color-mix(in srgb,var(--red) 8%,transparent)' }}>🚪 Sign Out</button>

@@ -176,7 +176,7 @@ const ReferralPage: React.FC = () => {
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 18, padding: 6, paddingLeft: 14, borderRadius: 14, background: 'rgba(0,0,0,.38)', border: '1px solid rgba(255,255,255,.22)', maxWidth: 620 }}>
                 <span className="font-grotesk" style={{ flex: 1, minWidth: 0, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={link}>{link}</span>
-                <button type="button" onClick={copy} style={{ flex: 'none', height: 38, padding: '0 16px', borderRadius: 10, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 12.5, color: '#1a1200', background: 'var(--gold-metal)' }}>
+                <button type="button" onClick={copy} style={{ flex: 'none', height: 38, padding: '0 16px', borderRadius: 10, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 12.5, color: 'var(--on-gold)', background: 'var(--gold-metal)' }}>
                   {copied ? 'Copied ✓' : 'Copy link'}
                 </button>
               </div>
@@ -234,7 +234,7 @@ const ReferralPage: React.FC = () => {
               { t: 'Their friends count too', d: data.rewardLevel2 > 0 ? `Each person they invite earns you ${inr(data.rewardLevel2)} more.` : 'Second-level rewards are switched off right now.' },
             ].map((step, i) => (
               <li key={step.t} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                <span className="font-grotesk" style={{ flex: 'none', width: 30, height: 30, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13, color: '#1a1200', background: 'var(--gold-metal)' }}>{i + 1}</span>
+                <span className="font-grotesk" style={{ flex: 'none', width: 30, height: 30, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13, color: 'var(--on-gold)', background: 'var(--gold-metal)' }}>{i + 1}</span>
                 <span>
                   <span style={{ display: 'block', fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>{step.t}</span>
                   <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text3)', lineHeight: 1.55, marginTop: 2 }}>{step.d}</span>

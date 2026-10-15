@@ -70,11 +70,24 @@ const RealtimeManager: React.FC = () => {
   useEffect(() => {
     function applyBranding(b: any) {
       if (!b || typeof b !== 'object') return;
-      if (b.primaryColor) document.documentElement.style.setProperty('--brand-primary', b.primaryColor);
-      if (b.secondaryColor) document.documentElement.style.setProperty('--brand-secondary', b.secondaryColor);
-      if (b.accentColor) document.documentElement.style.setProperty('--brand-accent', b.accentColor);
+      const root = document.documentElement;
+      // The palette (owner, 2026-10-15). Under STAKE index.css declares the
+      // colours, so the brand colours come OFF the root: inline would win.
+      // A document without `palette` (the stream's 8 s placeholder, an old cache)
+      // keeps the palette already on the page rather than flipping it to gold.
+      const palette = typeof b.palette === 'string' && b.palette
+        ? b.palette.toLowerCase()
+        : (root.getAttribute('data-palette') || 'gold'); // schema default: GOLD
+      root.setAttribute('data-palette', palette);
+      if (palette !== 'gold') {
+        for (const v of ['--brand-primary', '--brand-secondary', '--brand-accent']) root.style.removeProperty(v);
+      } else {
+        if (b.primaryColor) root.style.setProperty('--brand-primary', b.primaryColor);
+        if (b.secondaryColor) root.style.setProperty('--brand-secondary', b.secondaryColor);
+        if (b.accentColor) root.style.setProperty('--brand-accent', b.accentColor);
+      }
       if (b.merchantPanelName) document.title = b.merchantPanelName;
-      try { localStorage.setItem('app_branding', JSON.stringify(b)); } catch { /* ignore */ }
+      try { localStorage.setItem('app_branding', JSON.stringify({ ...b, palette: palette.toUpperCase() })); } catch { /* ignore */ }
     }
     try {
       const cached = localStorage.getItem('app_branding');

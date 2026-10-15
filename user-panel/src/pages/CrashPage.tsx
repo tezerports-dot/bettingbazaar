@@ -76,7 +76,7 @@ const CrashPage: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}><span style={{ fontSize: 28 }}>{heroBadge.emoji}</span><span className="font-grotesk" style={{ fontSize: 20, fontWeight: 700, color: '#fff' }}>{featured.name}</span></div>
               {featured.rtp && <p style={{ color: 'rgba(255,255,255,.6)', fontSize: 11, margin: 0 }}>RTP {featured.rtp}</p>}
             </div>
-            <button onClick={() => launch(featured)} disabled={!!launching} style={{ background: '#F0783C', color: '#1a1200', fontWeight: 800, padding: '12px 20px', borderRadius: 12, fontSize: 14, border: 'none', cursor: 'pointer', opacity: launching ? .6 : 1 }}>{launching === featured.slug ? '…' : '▶ Play'}</button>
+            <button onClick={() => launch(featured)} disabled={!!launching} style={{ background: '#F0783C', color: 'var(--on-gold)', fontWeight: 800, padding: '12px 20px', borderRadius: 12, fontSize: 14, border: 'none', cursor: 'pointer', opacity: launching ? .6 : 1 }}>{launching === featured.slug ? '…' : '▶ Play'}</button>
           </div>
         </div>
       )}

@@ -5,6 +5,7 @@ import App from './App';
 import './index.css';
 import { captureReferralCode } from './services/referralCapture';
 import { listenForInstallPrompt } from './services/installPrompt';
+import { applyCachedBranding } from './services/branding';
 
 // Grab ?ref=CODE before anything else touches the URL. A visitor who arrives on
 // an invite link rarely signs up in that first second — they look around first —
@@ -12,6 +13,9 @@ import { listenForInstallPrompt } from './services/installPrompt';
 // boot is what makes the referrer's ₹25 actually land.
 captureReferralCode();
 listenForInstallPrompt();
+// Paint the last-known branding (colours, palette) before the first frame, so
+// a STAKE deployment does not open gold and then flip (owner, 2026-10-15).
+applyCachedBranding();
 
 // --- INTELLIGENT SERVICE WORKER HANDLER ---
 // The native Android shell (Capacitor) serves this bundle from the app package

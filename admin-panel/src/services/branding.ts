@@ -24,6 +24,8 @@ export function hexToRgbTriplet(hex: string | null | undefined): string | null {
 
 export interface BrandingDoc {
   primaryColor?: string;
+  /** `BRAND_PALETTES` (backend/domains/branding/palettes.js): GOLD | STAKE. */
+  palette?: string;
   adminPanelName?: string;
   [k: string]: unknown;
 }
@@ -32,7 +34,19 @@ export function applyBranding(b: BrandingDoc | null | undefined): void {
   if (!b || typeof b !== 'object') return;
   const root = document.documentElement;
 
-  if (typeof b.primaryColor === 'string' && b.primaryColor) {
+  // The palette (owner, 2026-10-15). Under STAKE `styles/globals.css` declares
+  // every colour, so the brand colour is taken OFF the root: an inline style
+  // would beat the palette.
+  // A document without `palette` (the stream's 8 s placeholder, an old cache)
+  // keeps the palette already on the page rather than flipping it to gold.
+  const palette = typeof b.palette === 'string' && b.palette
+    ? b.palette.toLowerCase()
+    : (root.getAttribute('data-palette') || 'gold'); // schema default: GOLD
+  root.setAttribute('data-palette', palette);
+  if (palette !== 'gold') {
+    root.style.removeProperty('--brand-primary');
+    root.style.removeProperty('--brand-primary-rgb');
+  } else if (typeof b.primaryColor === 'string' && b.primaryColor) {
     root.style.setProperty('--brand-primary', b.primaryColor);
     // Only when the hex parses: a malformed colour leaves the previous triplet
     // standing rather than writing `rgba(, .4)`, which the browser drops —
@@ -44,7 +58,7 @@ export function applyBranding(b: BrandingDoc | null | undefined): void {
   // §13: each panel titles itself from its OWN panel-name field.
   if (b.adminPanelName) document.title = String(b.adminPanelName);
 
-  try { localStorage.setItem('app_branding', JSON.stringify(b)); } catch { /* private mode */ }
+  try { localStorage.setItem('app_branding', JSON.stringify({ ...b, palette: palette.toUpperCase() })); } catch { /* private mode */ }
 }
 
 /** Apply whatever was cached, so the first paint is branded before the socket arrives. */

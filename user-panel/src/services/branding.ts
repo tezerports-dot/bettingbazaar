@@ -39,6 +39,8 @@ export interface BrandingDoc {
   primaryColor?: string;
   secondaryColor?: string;
   accentColor?: string;
+  /** `BRAND_PALETTES` (backend/domains/branding/palettes.js): GOLD | STAKE. */
+  palette?: string;
   userPanelName?: string;
   [k: string]: unknown;
 }
@@ -60,7 +62,23 @@ export function applyBranding(b: BrandingDoc | null | undefined): void {
   if (!b || typeof b !== 'object') return;
   const root = document.documentElement;
 
-  for (const [field, cssVar] of PAIRS) {
+  // The palette (owner, 2026-10-15). Under STAKE the stylesheet declares every
+  // colour (`redesign/theme.css`), so the brand colours are taken OFF the root
+  // rather than written over it: an inline style would beat the palette.
+  // A document without `palette` (the stream's 8 s placeholder, an old cache)
+  // keeps the palette already on the page rather than flipping it to gold.
+  const palette = typeof b.palette === 'string' && b.palette
+    ? b.palette.toLowerCase()
+    : (root.getAttribute('data-palette') || 'gold'); // schema default: GOLD
+  root.setAttribute('data-palette', palette);
+  if (palette !== 'gold') {
+    for (const [, cssVar] of PAIRS) {
+      root.style.removeProperty(cssVar);
+      root.style.removeProperty(`${cssVar}-rgb`);
+    }
+  }
+
+  for (const [field, cssVar] of palette === 'gold' ? PAIRS : []) {
     const value = b[field];
     if (typeof value !== 'string' || !value) continue;
     root.style.setProperty(cssVar, value);
@@ -75,7 +93,7 @@ export function applyBranding(b: BrandingDoc | null | undefined): void {
   // §13: each panel titles itself from its OWN panel-name field.
   if (b.userPanelName) document.title = String(b.userPanelName);
 
-  try { localStorage.setItem('app_branding', JSON.stringify(b)); } catch { /* private mode */ }
+  try { localStorage.setItem('app_branding', JSON.stringify({ ...b, palette: palette.toUpperCase() })); } catch { /* private mode */ }
 }
 
 /** Apply whatever was cached, so the first paint is branded before the socket arrives. */
