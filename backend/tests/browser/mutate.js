@@ -956,24 +956,26 @@ const CASES = [
 
   // ── Taking staff access away ─────────────────────────────────────────────
   {
-    id: 'admin/sub-admins/remove',
+    id: 'admin/staff/remove-sub-admin',
     panel: 'admin-panel',
-    what: 'Remove a sub-admin',
+    what: 'Remove a sub-admin, on their own page',
     async run(page, cfg, base) {
-      // STAFF accounts, made the way the Sub-admins screen makes them. This
-      // wrote `is_sub_admin` onto two PLAYER rows, which the database refuses
-      // since 2026-10-01 (`users_staff_flags_need_staff`, seedStaff).
+      // STAFF accounts, made the way the Staff screen makes them
+      // (`users_staff_flags_need_staff`, seedStaff).
       const target = await seedStaff({ subAdmin: true, permissions: { canViewAnalytics: true } });
       const bystander = await seedStaff({ subAdmin: true, permissions: { canViewAnalytics: true } });
 
-      await go(page, cfg, base, '/sub-admins');
-      const row = await rowFor(page, target.userId);
-      if (!row) return ['NOT DRIVEN', `seeded sub-admin ${target.userId} never appeared`];
-      const hit = await pressInRow(row, 'Remove Sub-Admin');
-      if (!hit.ok) return ['NOT DRIVEN', hit.why];
+      await go(page, cfg, base, `/staff/${target.userId}`);
+      const remove = page.getByRole('button', { name: /^\s*Remove sub-admin\s*$/i }).first();
+      if (await remove.count() === 0) return ['NOT DRIVEN', `no Remove sub-admin control on /staff/${target.userId}`];
+      const first = await clickThrough(remove, { timeout: 8000 });
+      if (!first.ok) return ['NOT DRIVEN', first.why];
+      // The second press, beside the first: nothing is removed before it.
+      if (!(await isSubAdmin(target.userId))) return ['FAILED', 'one press removed the sub-admin with no confirmation'];
+      const yes = page.getByRole('button', { name: /^\s*Yes, remove\s*$/i }).first();
+      const second = await clickThrough(yes, { timeout: 8000 });
+      if (!second.ok) return ['FAILED', `the confirmation could not be pressed: ${second.why}`];
       await settle(page, 4000);
-      const said = await confirmWith(page, 'Remove');
-      if (said === 'stuck') return ['FAILED', 'the Remove confirmation could not be pressed'];
 
       const gone = !(await isSubAdmin(target.userId));
       const kept = await isSubAdmin(bystander.userId);
@@ -2114,66 +2116,41 @@ const CASES = [
 
 
   {
-    id: 'admin/sub-admins/grant',
+    id: 'admin/staff/queue-manager',
     panel: 'admin-panel',
-    what: 'Grant, once a person is chosen — to a STAFF account, never a player',
+    what: 'Switch queue-manager access on, on a STAFF account\'s page — never a player\'s',
     async run(page, cfg, base) {
-      // A staff login holding no authority yet. Queue-manager access routes
-      // players' payments, so it goes on a STAFF account only: the route
+      // Queue-manager access routes players' payments, so it goes on a STAFF
+      // account only: the staff page opens for STAFF rows alone, the route
       // refuses a player id with 409 and the database refuses the flag
-      // (owner, 2026-10-01 — separate accounts). This granted it to a PLAYER.
+      // (owner, 2026-10-01 — separate accounts).
       const target = await seedStaff({});
       const player = await seedPlayer({ balancePaise: 0 });
-      await go(page, cfg, base, '/sub-admins');
-      const grant = page.getByRole('button', { name: /^\s*Grant\s*$/i }).first();
-      if (await grant.count() === 0) return ['NOT DRIVEN', 'no Grant control on /sub-admins'];
-      if (!await grant.isDisabled()) return ['FAILED', 'Grant is enabled with nobody chosen'];
+      await go(page, cfg, base, `/staff/${target.userId}`);
+      const toggle = page.getByRole('switch', { name: /queue-manager access/i }).first();
+      if (await toggle.count() === 0) return ['NOT DRIVEN', `no queue-manager switch on /staff/${target.userId}`];
+      const hit = await clickThrough(toggle, { timeout: 8000 });
+      if (!hit.ok) return ['FAILED', `the switch could not be pressed: ${hit.why}`];
+      await settle(page, 6000);
 
-      // Not a search box — the screen takes the user id DIRECTLY, in a field
-      // whose placeholder says so. `search()` looks for the panel's general
-      // search input and there is none here, which is why the first version
-      // reported "no search box" as though the screen were broken.
-      const field = page.getByPlaceholder(/user id to grant/i).first();
-      if (await field.count() === 0) return ['NOT DRIVEN', 'no "User id to grant…" field on /sub-admins'];
-      await field.fill(target.userId);
-      await settle(page, 3000);
-
-      if (await grant.isDisabled()) {
-        return ['FAILED', 'a person was chosen and Grant stayed disabled'];
-      }
-      const hit = await clickThrough(grant, { timeout: 8000 });
-      if (!hit.ok) return ['FAILED', `Grant enabled but could not be pressed: ${hit.why}`];
-      await settle(page, 8000);
-      await confirmWith(page, 'Grant');
-
-      // ── QUEUE MANAGER, not sub-admin ───────────────────────────────────
-      // The button calls `toggleQueueManager(id, true)`. Asserting
-      // `is_sub_admin` reported "the player is still not a sub-admin" for a
-      // press that did exactly what it says on it — the wrong column, which is
-      // §23's shape in a test rather than in a type.
       const granted = Boolean((await pgQuery(
         'SELECT is_queue_manager FROM users WHERE user_id = $1', [target.userId],
       )).rows[0]?.is_queue_manager);
-      if (!granted) return ['FAILED', 'pressed Grant and the staff account is still not a queue manager'];
+      if (!granted) return ['FAILED', 'pressed the switch and the staff account is still not a queue manager'];
       await pgQuery('UPDATE users SET is_queue_manager = FALSE WHERE user_id = $1',
         [target.userId]).catch(() => {});
 
-      // The opposite case, on the same control: a PLAYER id is refused, the
-      // player gains nothing, and the screen says why.
-      await field.fill(player.userId);
-      await settle(page, 2000);
-      const again = await clickThrough(grant, { timeout: 8000 });
-      if (!again.ok) return ['FAILED', `Grant could not be pressed for the player id: ${again.why}`];
-      await settle(page, 6000);
-      await confirmWith(page, 'Grant');
-      const playerGot = Boolean((await pgQuery(
-        'SELECT is_queue_manager FROM users WHERE user_id = $1', [player.userId],
-      )).rows[0]?.is_queue_manager);
-      if (playerGot) return ['FAILED', 'a PLAYER account was made a queue manager'];
-      if (!/staff account/i.test(await words(page))) {
-        return ['FAILED', 'the player id was refused, but the screen never said why'];
+      // The opposite case: a PLAYER's id opens no staff page, so there is no
+      // switch to press, and the screen says why.
+      await go(page, cfg, base, `/staff/${player.userId}`);
+      await settle(page, 3000);
+      if (await page.getByRole('switch', { name: /queue-manager access/i }).count() > 0) {
+        return ['FAILED', 'a PLAYER account was offered the queue-manager switch'];
       }
-      return ['DROVE', `${target.userId} (STAFF) became a queue manager; a PLAYER id was refused and the screen said why`];
+      if (!/staff account not found/i.test(await words(page))) {
+        return ['FAILED', 'a player id opened the staff page, but the screen never said why there was nothing to switch'];
+      }
+      return ['DROVE', `${target.userId} (STAFF) became a queue manager; a PLAYER id opened no switch and the screen said why`];
     },
   },
 

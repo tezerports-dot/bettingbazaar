@@ -4,7 +4,7 @@
  * `backend/domains/identity/staffPermissions.js` (`PERMISSION_KEYS`).
  *
  * Keys only. What each one is CALLED and what it opens is not kept here: the
- * Sub-admins screen renders its picker from `GET /api/admin/staff-permissions`,
+ * Staff screen renders its picker from `GET /api/admin/staff-permissions`,
  * so the words an admin reads are the server's. The previous nine-key list here
  * had labels of its own and had drifted from the routes in both directions — the
  * chat screen asked for `canModerateChatPublic` while every chat route asked for

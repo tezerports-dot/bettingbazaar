@@ -13,7 +13,7 @@ import { MemoryRouter, Routes, Route } from 'react-router';
 const { merchants } = vi.hoisted(() => ({
   merchants: {
     getAll: vi.fn(), create: vi.fn(),
-    listMerchantAccounts: vi.fn(), makeMerchantAccount: vi.fn(), listMerchantFlags: vi.fn(),
+    makeMerchantAccount: vi.fn(),
   },
 }));
 vi.mock('../../services/api', () => ({ default: { merchants, put: vi.fn(), get: vi.fn(), post: vi.fn() } }));
@@ -49,8 +49,6 @@ beforeEach(() => {
     sorts: ['joined', 'processed', 'orders', 'pool', 'commissionToday', 'commissionMonth', 'commissionTotal', 'name'],
     roles: ['MERCHANT', 'SUPERVISOR', 'AGENT', 'UNASSIGNED'],
   });
-  merchants.listMerchantAccounts.mockResolvedValue({ success: true, merchantAccounts: [] });
-  merchants.listMerchantFlags.mockResolvedValue({ success: true, flags: [] });
 });
 
 describe('merchants table', () => {
@@ -91,15 +89,6 @@ describe('merchants table', () => {
 });
 
 describe('merchants (merchant accounts), owner 2026-10-11', () => {
-  const DIRECT = {
-    teamId: 'TD-1', ownerMerchantId: 'MRC-9', ownerName: 'shop', ownerRef: 'M9', ownerStatus: 'ACTIVE', ownerOnline: true,
-    name: 'Shop Direct', poolAvailablePaise: 250000, poolHeldPaise: 50000,
-    commission: { paidPaise: 1000, owedPaise: 0, commissionPercent: 10 },
-    accounts: [{ accountId: 'mpa_1', kind: 'UPI_QR', label: 'Counter', upiId: 'shop@okhdfc', bankName: 'HDFC', accountNo: '123456789012', acceptsDeposits: true, paysWithdrawals: false, status: 'ACTIVE' }],
-    staff: [{ staffId: 'mst_1', name: 'Asha', mobile: '9876500000', roles: ['DEPOSITS', 'AUDIT'], status: 'ACTIVE' }],
-    problemDays: [],
-  };
-
   it('creates a Merchant when the kind says so', async () => {
     merchants.create.mockResolvedValue({ success: true });
     renderList();
@@ -112,18 +101,6 @@ describe('merchants (merchant accounts), owner 2026-10-11', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Create Merchant' }).pop()!);
     await waitFor(() => expect(merchants.create).toHaveBeenCalledWith(expect.objectContaining({ username: 'shop', kind: 'DIRECT' })));
     expect(merchants.create.mock.calls[0][0]).not.toHaveProperty('password');
-  });
-
-  it('lists the merchants the server sends, never a sub-member\'s mobile, and the flags', async () => {
-    merchants.listMerchantAccounts.mockResolvedValue({ success: true, merchantAccounts: [DIRECT] });
-    merchants.listMerchantFlags.mockResolvedValue({ success: true, flags: [{ id: 1, merchantId: 'MRC-9', merchantName: 'shop', day: '2026-10-10', problemCount: 6, threshold: 5 }] });
-    renderList();
-    const card = await screen.findByRole('article', { name: 'Shop Direct' });
-    expect(card).toHaveTextContent('Pool: 2,500 tokens · 500 held');
-    expect(card).toHaveTextContent('Asha · Deposits, Audit');
-    expect(card).toHaveTextContent('Counter · UPI scanner');
-    expect(screen.queryByText(/9876500000/)).toBeNull();
-    expect(screen.getByRole('table', { name: 'Merchant flags' })).toHaveTextContent('6 / 5');
   });
 
 });

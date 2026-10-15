@@ -60,14 +60,14 @@ describe('a screen outside the grant', () => {
     signInAs({ isAdmin: false, isSubAdmin: true, permissions: { canViewAnalytics: true } });
     render(<App />);
     expect(await screen.findByRole('heading', { name: /don.t have access to this screen/i })).toBeInTheDocument();
-    expect(screen.getByText(/Ask an admin to grant it on the Sub-admins screen/i)).toBeInTheDocument();
+    expect(screen.getByText(/Ask an admin to grant it on the Staff screen/i)).toBeInTheDocument();
     // The analytics area's first screen, from the same table the nav uses.
     expect(screen.getByRole('link', { name: /Go to a screen you can use/i })).toHaveAttribute('href', '#/live-cycles');
     expect(screen.queryByText(/Choose your role/i)).not.toBeInTheDocument();
   });
 
-  it('says the Sub-admins screen is a full admin\'s, to a sub-admin holding every area', async () => {
-    window.location.hash = '#/sub-admins';
+  it('says the Staff screen is a full admin\'s, to a sub-admin holding every area', async () => {
+    window.location.hash = '#/staff';
     signInAs({ isAdmin: false, isSubAdmin: true, permissions: { canManageUsers: true } });
     render(<App />);
     expect(await screen.findByText(/Only a full admin can use this screen/i)).toBeInTheDocument();

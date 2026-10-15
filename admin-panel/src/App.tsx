@@ -25,7 +25,9 @@ import { QueueDashboard } from './Pages/QueueManager/QueueDashboard';
 import { TelegramBot } from './Pages/Telegram/TelegramBot';
 import { MyAuthenticator } from './Pages/Account/MyAuthenticator';
 import { ReferralProgramme } from './Pages/Referrals/ReferralProgramme';
-import { SubAdminsList } from './Pages/SubAdmins/SubAdminsList';
+import { StaffList } from './Pages/Staff/StaffList';
+import { StaffProfile } from './Pages/Staff/StaffProfile';
+import { PaymentsPage } from './Pages/Payments/PaymentsPage';
 import { BrandingSettings } from './Pages/Branding/BrandingSettings';
 import { FAQManager } from './Pages/Content/FAQManager';
 import { SupportLinks } from './Pages/Content/SupportLinks';
@@ -243,6 +245,13 @@ const App: React.FC = () => {
 
         {/* Reading back who can place cosmetic bets. The grant is made from the
             Users list; this is the roster and the way to take it away. */}
+        {/* Every pool and pool request, agents and merchants behind one switch
+            (owner, 2026-10-14). Each part asks its own area. */}
+        <Route path="/payments" element={
+          <PermRoute permission={['canFundMerchants', 'canManageTeams', 'canManageMerchants']}>
+            <Layout><PaymentsPage /></Layout>
+          </PermRoute>
+        } />
         <Route path="/teams" element={
           <PermRoute permission="canManageTeams"><Layout><TeamsManager /></Layout></PermRoute>
         } />
@@ -350,8 +359,12 @@ const App: React.FC = () => {
         <Route path="/business-policy/deposit" element={
           <PermRoute permission="canManageBusinessPolicy"><Layout><DepositPolicy /></Layout></PermRoute>
         } />
-        <Route path="/sub-admins" element={
-          <AdminOnly><Layout><SubAdminsList /></Layout></AdminOnly>
+        {/* Every staff account, and one account's page (owner, 2026-10-14). */}
+        <Route path="/staff" element={
+          <AdminOnly><Layout><StaffList /></Layout></AdminOnly>
+        } />
+        <Route path="/staff/:userId" element={
+          <AdminOnly><Layout><StaffProfile /></Layout></AdminOnly>
         } />
         <Route path="/player-screen" element={
           <PermRoute permission="canManageSystemSettings"><Layout><PlayerScreenSettings /></Layout></PermRoute>

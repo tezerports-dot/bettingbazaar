@@ -21,7 +21,6 @@ import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
 import api from '../../services/api';
 import type { MerchantRow } from '../../types';
-import { MerchantAccountsPanel } from './MerchantAccountsPanel';
 import { ROLE_LABEL } from './merchantLabels';
 import toast from 'react-hot-toast';
 
@@ -52,7 +51,6 @@ export const MerchantsList: React.FC = () => {
   // (merchant account) serving INR itself (owner, 2026-10-11).
   const emptyCreate = { username: '', mobile: '', email: '', kind: 'AGENT' as 'AGENT' | 'DIRECT' };
   const [createForm, setCreateForm] = useState(emptyCreate);
-  const [accountsReload, setAccountsReload] = useState(0);
   const [isCreating, setIsCreating] = useState(false);
 
   const { page, limit, setPage } = usePagination();
@@ -101,7 +99,6 @@ export const MerchantsList: React.FC = () => {
       setShowCreateModal(false);
       setCreateForm(emptyCreate);
       void loadMerchants();
-      setAccountsReload((n) => n + 1);
     } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to create merchant'); }
     finally { setIsCreating(false); }
   };
@@ -187,7 +184,8 @@ export const MerchantsList: React.FC = () => {
           onPageChange={setPage} isLoading={isLoading} sort={sort} onSort={changeSort} onRowClick={open} />
       </div>
 
-      <MerchantAccountsPanel reloadKey={accountsReload} />
+      {/* A merchant's pool, payment accounts and sub-members are on Payments
+          (Merchants side), beside every other pool. */}
 
       {/* Create Merchant Modal */}
       {showCreateModal && (

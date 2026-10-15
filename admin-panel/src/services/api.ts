@@ -8,6 +8,7 @@ import type {
   FAQ,
   SupportLinks,
   SupervisorRail, TeamSupervisor, TeamView, TeamMemberView, TeamPoolRequest, TeamRedFlag,
+  StaffRow, StaffRole,
 } from '../types';
 
 const _adminViteUrl = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '');
@@ -673,12 +674,20 @@ export const referrals = {
 // --- SUB ADMINS ---------------------------------------------------------------
 
 export const subAdmins = {
-  getAll: async () => {
-    const res = await api.get<any>('/api/admin/sub-admins');
-    if (res.data?.success && res.data?.subAdmins) {
-      return { success: true, data: res.data.subAdmins };
-    }
-    return res.data;
+  /**
+   * The staff table (`GET /api/admin/staff`, full admin): every STAFF account
+   * with its roles, areas and whether it has an authenticator, sorted by a key
+   * the server offers (`sorts`) and narrowed to a role it names (`roles`).
+   */
+  listStaff: async (q: { page?: number; limit?: number; search?: string; role?: string; sort?: string; dir?: 'asc' | 'desc' } = {}) => {
+    const res = await api.get<any>('/api/admin/staff', { params: q });
+    return res.data as { success: boolean; staff: StaffRow[]; sorts: string[]; roles: StaffRole[]; pagination: { total: number; pages: number } };
+  },
+
+  /** One staff account's page (`GET /api/admin/staff/:userId`). */
+  getStaff: async (userId: string) => {
+    const res = await api.get<any>(`/api/admin/staff/${encodeURIComponent(userId)}`);
+    return res.data as { success: boolean; staff: StaffRow; isSelf: boolean };
   },
 
   create: async (data: {
@@ -708,17 +717,9 @@ export const subAdmins = {
   },
 
   /**
-   * Queue-manager authority.
-   *
-   * A queue manager assigns payment orders to merchants, which decides where a
-   * player's money is routed. Both endpoints existed and nothing called them,
-   * so the grant could only be made by writing the row by hand.
+   * Queue-manager authority: routes players' payments, so a STAFF account
+   * only (the server refuses any other with 409 and says what to do).
    */
-  listQueueManagers: async () => {
-    const res = await api.get<any>('/api/admin/queue-managers');
-    return res.data;
-  },
-
   setQueueManager: async (userId: string, enable: boolean) => {
     const res = await api.post(`/api/admin/users/${userId}/queue-manager`, { enable });
     return res.data;

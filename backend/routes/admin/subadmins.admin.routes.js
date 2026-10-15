@@ -21,6 +21,7 @@ import {
 } from '../../domains/identity/staffPermissions.js';
 import { personalStaffRoom } from '../../domains/notification/staffEventAreas.js';
 import { resetEnrolment } from '../../domains/identity/totp.service.js';
+import { respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -64,21 +65,40 @@ router.get('/staff-permissions', authenticate, isAdmin, (req, res) => {
   });
 });
 
-router.get('/sub-admins', authenticate, isAdmin, async (req, res) => {
+/**
+ * The staff table (owner, 2026-10-14): every STAFF account — admins,
+ * sub-admins, queue managers, mediators — one row each, sorted by a key the
+ * server offers (`sorts`) and narrowed to a role it names (`roles`). The panel
+ * renders both lists and keeps neither (§32 S25). A row carries whether the
+ * account has an authenticator, never its secret, and never a password hash.
+ */
+router.get('/staff', authenticate, isAdmin, async (req, res) => {
   try {
-    // The projection omits the password hash and the second-factor secret, so
-    // the exclusion is a property of the repository rather than something each
-    // route has to remember to ask for.
-    const { users } = await db.users.listUsers({ isSubAdmin: true, limit: 200 });
-    // Whether each has an authenticator: a yes/no, never its secret.
-    const enrolled = await db.totp.enrolledAmong(users.map((u) => u.userId));
+    const { search, role, sort, dir, page, limit } = req.query;
+    const { rows, total } = await db.adminDirectory.listStaff({
+      search: search || null, role: role || null, sort, dir, page, limit,
+    });
+    const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
     res.json({
       success: true,
-      subAdmins: users.map((u) => ({ ...u, authenticatorEnrolled: enrolled.has(u.userId) })),
+      staff: rows,
+      sorts: Object.keys(db.adminDirectory.STAFF_SORTS),
+      roles: Object.keys(db.adminDirectory.STAFF_ROLES),
+      pagination: { page: Math.max(Number(page) || 1, 1), limit: size, total, pages: Math.ceil(total / size) },
     });
   } catch (error) {
-    console.error('Get sub-admins error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch sub-admins' });
+    return respondError(res, error, 'GET /admin/staff', { message: 'Failed to fetch staff' });
+  }
+});
+
+/** One staff account's page: its row, and the full grant the toggles edit. */
+router.get('/staff/:userId', authenticate, isAdmin, async (req, res) => {
+  try {
+    const staff = await db.adminDirectory.staffRow(req.params.userId);
+    if (!staff) return res.status(404).json({ success: false, code: 'NOT_STAFF', message: 'Staff account not found.' });
+    res.json({ success: true, staff, isSelf: String(req.user.userId) === staff.userId });
+  } catch (error) {
+    return respondError(res, error, 'GET /admin/staff/:userId', { message: 'Failed to fetch the staff account' });
   }
 });
 

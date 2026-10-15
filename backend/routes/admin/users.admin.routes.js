@@ -520,16 +520,8 @@ router.get('/analytics/phantom-stats', authenticate, hasPermission('canManagePha
  * ════════════════════════════════════════════════════════════════════════════
  */
 
-// Get all queue managers
-router.get('/queue-managers', authenticate, isAdmin, async (req, res) => {
-  try {
-    const managers = await db.users.listQueueManagers();
-    res.json({ success: true, managers });
-  } catch (error) {
-    console.error('Get queue managers error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch queue managers' });
-  }
-});
+// Queue managers are listed on the staff table (`GET /staff?role=QUEUE_MANAGER`,
+// subadmins.admin.routes.js); the grant stays here.
 
 // Assign queue manager role
 router.post('/users/:userId/queue-manager', authenticate, isAdmin, async (req, res) => {

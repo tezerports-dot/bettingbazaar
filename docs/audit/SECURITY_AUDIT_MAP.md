@@ -3597,9 +3597,9 @@ new route and decide. Each of the three questions is defined in §2.
 <details><summary>Staff routes only a full admin can use (each must be in ADMIN_ONLY_AREAS, with its reason)</summary>
 
 - `DELETE /sub-admins/:subAdminId  (backend/routes/admin/subadmins.admin.routes.js)`
-- `GET /queue-managers  (backend/routes/admin/users.admin.routes.js)`
+- `GET /staff  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff-permissions  (backend/routes/admin/subadmins.admin.routes.js)`
-- `GET /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
+- `GET /staff/:userId  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /staff/:userId/reset-authenticator  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /users/:userId/queue-manager  (backend/routes/admin/users.admin.routes.js)`
@@ -3611,9 +3611,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 464 |
+| `pgQuery` call sites | 465 |
 | Parameters only (safe by construction) | 302 |
-| Interpolating into statement text (each needs a reading) | 155 |
+| Interpolating into statement text (each needs a reading) | 156 |
 | Statement text built elsewhere and passed in (each needs a reading) | 7 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
@@ -3632,7 +3632,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 140 | 0 | 0 |
-| `admin-panel` | 130 | 0 | 0 |
+| `admin-panel` | 135 | 0 | 0 |
 | `merchant-panel` | 63 | 0 | 0 |
 
 <!-- END GENERATED -->

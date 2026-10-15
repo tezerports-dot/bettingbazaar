@@ -8,8 +8,8 @@
  * (merchantAccount.admin.routes.js, `canManageMerchants`):
  *   GET /api/admin/merchant-accounts  the accounts, sub-members, pool and problem days
  *   GET /api/admin/merchant-flags     the days problems crossed the threshold
- * A merchant's pool requests are fulfilled on Supervisors & Teams (Pool
- * requests, `canFundMerchants`), beside the agents' teams'.
+ * Shown on Payments (Merchants side), above it the merchants' pool requests
+ * (`canFundMerchants`).
  *
  * A sub-member's mobile is served but never shown (CLAUDE.md §24).
  */

@@ -33,8 +33,9 @@ describePg('sub-admin routes', () => {
 
   const uniqueMobile = () => `9${String(Date.now()).slice(-8)}${Math.floor(Math.random() * 10)}`;
 
-  it('refuses all four without a token', async () => {
-    expect((await request(app).get('/sub-admins')).status).toBe(401);
+  it('refuses every one without a token', async () => {
+    expect((await request(app).get('/staff')).status).toBe(401);
+    expect((await request(app).get('/staff/x')).status).toBe(401);
     expect((await request(app).post('/sub-admins').send({})).status).toBe(401);
     expect((await request(app).put('/sub-admins/x/permissions').send({})).status).toBe(401);
     expect((await request(app).delete('/sub-admins/x')).status).toBe(401);
@@ -163,18 +164,36 @@ describePg('sub-admin routes', () => {
     expect((await as(app, admin).delete('/sub-admins/not-a-user')).status).toBe(404);
   });
 
-  it('lists sub-admins without leaking a credential', async () => {
-    await as(app, admin).post('/sub-admins').send({
+  it('lists staff without leaking a credential, and opens one by id', async () => {
+    const made = await as(app, admin).post('/sub-admins').send({
       username: 'Listed', mobile: uniqueMobile(), password: 'a-long-enough-password-123',
+      permissions: { canViewAnalytics: true },
     });
-    const res = await as(app, admin).get('/sub-admins');
+    const id = made.body.subAdmin.userId;
+    const res = await as(app, admin).get('/staff').query({ role: 'SUB_ADMIN', search: id });
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body.subAdmins)).toBe(true);
-    expect(res.body.subAdmins.length).toBeGreaterThan(0);
+    const row = res.body.staff.find((u) => u.userId === id);
+    expect(row).toMatchObject({ roles: ['SUB_ADMIN'], areas: ['canViewAnalytics'], authenticatorEnrolled: false });
+    expect(res.body.roles).toEqual(['ADMIN', 'SUB_ADMIN', 'QUEUE_MANAGER', 'MEDIATOR']);
+    expect(res.body.sorts).toEqual(expect.arrayContaining(['joined', 'lastLogin', 'areas', 'name']));
 
     const body = JSON.stringify(res.body);
     expect(body).not.toMatch(/passwordHash|password_hash/);
     expect(body).not.toMatch(/twoFactorSecret|two_factor_secret/);
     expect(body).not.toMatch(/backupCodes|backup_codes/);
+
+    const one = await as(app, admin).get(`/staff/${id}`);
+    expect(one.status).toBe(200);
+    expect(one.body.staff.userId).toBe(id);
+    expect(one.body.isSelf).toBe(false);
+  });
+
+  it('refuses an unknown role or sort by name, and a player on the staff page', async () => {
+    expect((await as(app, admin).get('/staff').query({ role: 'BOSS' })).body.code).toBe('UNKNOWN_ROLE');
+    expect((await as(app, admin).get('/staff').query({ sort: 'password_hash' })).status).toBe(400);
+    const plain = await actor({});
+    expect((await as(app, admin).get(`/staff/${plain.userId}`)).status).toBe(404);
+    const listed = await as(app, admin).get('/staff').query({ search: plain.userId });
+    expect(listed.body.staff).toEqual([]);
   });
 });

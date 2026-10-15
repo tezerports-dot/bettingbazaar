@@ -872,16 +872,6 @@ export async function listPhantomAgents() {
   return rows.map(toUser);
 }
 
-/** Accounts with the queue-manager flag. */
-export async function listQueueManagers() {
-  const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM users
-      WHERE is_queue_manager AND status <> 'DELETED'
-      ORDER BY username`, [], 'user_list_queue_managers',
-  );
-  return rows.map(toUser);
-}
-
 /** How many accounts match a status. Counted from rows, never accumulated. */
 export async function countUsers({ status = null } = {}) {
   const where = []; const params = [];
