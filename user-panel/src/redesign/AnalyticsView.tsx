@@ -141,7 +141,7 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
   const predictShortfall = (
     <div style={{ ...box, border: '1px dashed var(--line2)', padding: 18, textAlign: 'center' }}>
       <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 6 }}>Shown from {MIN_SAMPLE} results</div>
-      <div style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>This board has {R.sample} real so far{demoCount ? '; demo results are not counted here' : ''}. A split worked out from fewer would read as a signal and be noise.</div>
+      <div style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>This board has {R.sample} so far. A split worked out from fewer would read as a signal and be noise.</div>
     </div>
   );
 
@@ -291,7 +291,7 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
     <div ref={rootRef} aria-label={`${board?.name ?? ''} results and streak analytics`} style={{ width: '100%', minWidth: 0 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', margin: '4px 0 10px' }}>
         <h2 className="font-grotesk" style={{ margin: 0, fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>Results &amp; Streak Analytics</h2>
-        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>{fmt(A.total)} {board?.name ?? ''} results{demoCount ? ` · ${fmt(demoCount)} demo` : ''}</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>{fmt(A.total)} {board?.name ?? ''} results</span>
       </div>
       <div style={{ margin: '0 0 12px' }}>
         {/* One swipeable strip, drawn like the game tabs above (owner,

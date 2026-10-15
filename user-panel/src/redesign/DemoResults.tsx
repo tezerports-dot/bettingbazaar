@@ -14,8 +14,9 @@
  *
  * Whether they are on is the server's (`SystemConfig.demoResultsOn`, sent by
  * systemConfigPayload.js); the panel keeps no copy, and shows no demo result
- * until that has arrived. No line is shown with them (owner, 2026-10-15);
- * they are drawn faded (`DEMO_STYLE`) and counted in the analytics heading.
+ * until that has arrived. They are drawn faded (`DEMO_STYLE`) and named
+ * nowhere on screen; the board rules say the results include demo ones
+ * (owner, 2026-10-15).
  */
 import type React from 'react';
 import { useEffect, useState } from 'react';

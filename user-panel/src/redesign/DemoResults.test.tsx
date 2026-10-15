@@ -1,5 +1,5 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-/** Demo results fill the analytics window behind the real ones, counted in the heading (owner, 2026-10-15). */
+/** Demo results fill the analytics window behind the real ones, named nowhere on screen (owner, 2026-10-15). */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -32,10 +32,10 @@ describe('demo results', () => {
     expect(withDemoResults([...real], 'b1', 1440, false).winners).toHaveLength(3);
   });
 
-  it('the analytics count them in the heading, with no separate line, and show every result', async () => {
+  it('the analytics show every result and do not mention demo results', async () => {
     render(<AnalyticsView board={board} winners={['DELHI', 'BOMBAY']} />);
-    expect(await screen.findByText(/1,440 One Minute results · 1,438 demo/)).toBeInTheDocument();
-    expect(screen.queryByText(/demo results/i)).toBeNull();
+    expect(await screen.findByText(/^1,440 One Minute results$/)).toBeInTheDocument();
+    expect(screen.queryByText(/demo/i)).toBeNull();
     const strip = screen.getByTestId('run-strip');
     expect(strip.querySelectorAll('span[data-demo]').length).toBe(1438);
   });

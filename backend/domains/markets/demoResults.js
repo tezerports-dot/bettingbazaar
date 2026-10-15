@@ -10,8 +10,8 @@
  * Demo results are display only: never a cycle, a bet or a payout, never in
  * the Results list, the cycle-history feed or any server figure. The winners
  * are drawn by `redesign/demoResults.ts` in the player app (§11), the same
- * for every player, faded and counted in the analytics heading, with no
- * separate line (owner, 2026-10-15). `SystemConfig.demoResultsOn` switches
+ * for every player, faded and named nowhere on screen; the admin says so in
+ * the board rules (owner, 2026-10-15). `SystemConfig.demoResultsOn` switches
  * them off.
  */
 
