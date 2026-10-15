@@ -81,7 +81,10 @@ function walk(dir, out = []) {
   return out;
 }
 
-const isTest = (f) => /[\\/]tests?[\\/]|\.test\.|\.spec\./.test(f);
+// `database/spec/*.spec.js` are the config and schema SPECS the product loads
+// (config.spec.js is SystemConfig's owner, §2), not test specs: a module only
+// they import is product code (2026-10-15, `domains/branding/palettes.js`).
+const isTest = (f) => !/^database[\\/]spec[\\/]/.test(f) && /[\\/]tests?[\\/]|\.test\.|\.spec\./.test(f);
 const files = ROOTS.flatMap((d) => walk(join(ROOT, d)));
 const raw = new Map(files.map((f) => [relative(ROOT, f), readFileSync(f, 'utf8')]));
 // Every question below is asked of CODE: comments are blanked (see the header).
