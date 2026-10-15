@@ -109,6 +109,21 @@ export function miniAppLink(bot, param) {
 }
 
 /**
+ * The same Mini App as `miniAppLink`, addressed to the Telegram app itself
+ * (`tg://resolve`). On a phone the https link first opens a browser tab at
+ * t.me's "Open in Telegram" page; this one opens Telegram straight away. A
+ * device without Telegram cannot open it, so a panel keeps `miniAppLink` as
+ * the fallback.
+ */
+export function miniAppAppLink(bot, param) {
+  if (!bot?.botUsername) return null;
+  if (!START_PARAM_SHAPE.test(String(param))) throw new Error(`miniAppAppLink: start parameter ${param} is not one Telegram accepts`);
+  const name = encodeURIComponent(String(bot.botUsername).replace(/^@/, ''));
+  const app = bot.miniAppShortName ? `&appname=${encodeURIComponent(bot.miniAppShortName)}` : '';
+  return `tg://resolve?domain=${name}${app}&startapp=${param}`;
+}
+
+/**
  * The bot's Mini App with no start parameter: the link that opens the player
  * app's way in from Telegram whatever has happened to our own domains, because
  * it is Telegram's address and the Mini App's URL is set in BotFather

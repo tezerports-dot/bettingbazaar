@@ -19,7 +19,7 @@
  */
 import crypto from 'crypto';
 import { db } from '#db';
-import { miniAppBot, miniAppLink } from '../telegram/telegramClient.js';
+import { miniAppBot, miniAppLink, miniAppAppLink } from '../telegram/telegramClient.js';
 import { issueChallenge } from './twoFactorChallenge.js';
 import { refusal } from '../../shared/httpError.js';
 import { publicAppOrigin } from '../../config/publicAppOrigin.js';
@@ -122,6 +122,9 @@ export function telegramUnavailable() {
 export function telegramBlock(bot, challenge) {
   return {
     url: miniAppLink(bot, challenge.challengeId),
+    // The Telegram app's own address for the same link, which a phone opens
+    // without a browser tab first; `url` stays the fallback.
+    appUrl: miniAppAppLink(bot, challenge.challengeId),
     botUsername: bot.botUsername,
     expiresAt: challenge.expiresAt,
   };
