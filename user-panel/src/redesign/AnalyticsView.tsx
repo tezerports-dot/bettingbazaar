@@ -270,11 +270,18 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>{fmt(A.total)} {board?.name ?? ''} results</span>
       </div>
       <div style={{ margin: '0 0 12px' }}>
-        <div role="tablist" aria-label="Analytics" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {/* One swipeable strip, drawn like the game tabs above (owner,
+            2026-10-15: "single slidable strip ... as we are doing for games
+            button above"): flat names, the open one lit with an underline. */}
+        <div role="tablist" aria-label="Analytics" className="bb-noscroll bb-gametabs" style={{ display: 'flex', gap: 2, overflowX: 'auto', borderBottom: '1px solid var(--line)', scrollSnapType: 'x proximity', margin: '0 -4px' }}>
           {SECTIONS.map((s) => {
             const on = active === s.key;
             return (
-              <button key={s.key} type="button" role="tab" id={`bb-an-tab-${s.key}`} aria-selected={on} aria-controls={`bb-an-${s.key}`} onClick={() => setActive(s.key)} style={{ flex: 'none', padding: '9px 15px', borderRadius: 999, border: `1px solid ${on ? 'var(--gold)' : 'var(--line2)'}`, background: on ? 'var(--gold-metal)' : 'var(--surface2)', color: on ? 'var(--on-gold)' : 'var(--text2)', fontSize: 12, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap', boxShadow: on ? '0 0 14px -4px var(--glow)' : 'none' }}>{s.label}</button>
+              <button key={s.key} type="button" role="tab" id={`bb-an-tab-${s.key}`} aria-selected={on} aria-controls={`bb-an-${s.key}`}
+                onClick={(e) => { setActive(s.key); e.currentTarget.scrollIntoView?.({ inline: 'nearest', block: 'nearest', behavior: 'smooth' }); }}
+                className={`bb-gametab${on ? ' bb-gametab--on' : ''}`}>
+                <span className="font-grotesk bb-gametab__name">{s.label}</span>
+              </button>
             );
           })}
         </div>
