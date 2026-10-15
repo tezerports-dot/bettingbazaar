@@ -14,8 +14,9 @@
  *
  * Demo results (owner, 2026-10-15): while a board has fewer than its window
  * of real results, the rest is filled with demo ones before the oldest real
- * one, faded on screen and always under the server's line (DemoResults.tsx).
- * The Probability section reads the real results only.
+ * one, faded on screen (DemoResults.tsx). Every section reads the whole
+ * window, demo results included, the Probability section too (owner,
+ * 2026-10-15).
  *
  * Nothing here is held back for a thin board any more: the streak and gap
  * figures are shown from the first result with the real count beside them
@@ -77,10 +78,7 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
     () => withDemoResults(winners, boardKey, analyticsWindowFor(board), !!demoCfg?.on),
     [winners, boardKey, board, demoCfg],
   );
-  const demoCount = filled.winners.length - filled.real;
   const A = useMemo(() => analyticsFor(filled.winners, board), [filled, board]);
-  // The next-winner signal never reads a demo result.
-  const R = useMemo(() => (demoCount ? analyticsFor(winners, board) : A), [demoCount, winners, board, A]);
 
   // The big road and the strips slide sideways; they open on the newest end.
   const roadRef = useRef<HTMLDivElement | null>(null);
@@ -111,9 +109,9 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
   gapRows.sort((a, b) => Number(a.len) - Number(b.len));
 
   // Descriptive next-winner signal (blend of base rate and streak-break tendency).
-  const baseD = R.delhiWins / Math.max(1, R.total);
-  const pSame = R.cont(R.current.len);
-  let probDelhi = R.current.side === 'DELHI' ? Math.round((0.5 * baseD + 0.5 * pSame) * 100) : Math.round((0.5 * baseD + 0.5 * (1 - pSame)) * 100);
+  const baseD = A.delhiWins / Math.max(1, A.total);
+  const pSame = A.cont(A.current.len);
+  let probDelhi = A.current.side === 'DELHI' ? Math.round((0.5 * baseD + 0.5 * pSame) * 100) : Math.round((0.5 * baseD + 0.5 * (1 - pSame)) * 100);
   probDelhi = Math.max(8, Math.min(92, probDelhi));
   const probBombay = 100 - probDelhi;
   const favorSide = probDelhi >= probBombay ? 'DELHI' : 'BOMBAY';
@@ -125,7 +123,7 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
 
   const empty = A.sample === 0;
   const thin = !A.sufficient;
-  const predictThin = !R.sufficient;
+  const predictThin = !A.sufficient;
   const emptyCard = (
     <div style={{ ...box, border: '1px dashed var(--line2)', padding: 18, textAlign: 'center' }}>
       <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 6 }}>No results on this board yet</div>
@@ -141,7 +139,7 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
   const predictShortfall = (
     <div style={{ ...box, border: '1px dashed var(--line2)', padding: 18, textAlign: 'center' }}>
       <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 6 }}>Shown from {MIN_SAMPLE} results</div>
-      <div style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>This board has {R.sample} so far. A split worked out from fewer would read as a signal and be noise.</div>
+      <div style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>This board has {A.sample} so far. A split worked out from fewer would read as a signal and be noise.</div>
     </div>
   );
 

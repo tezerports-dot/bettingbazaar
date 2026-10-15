@@ -2,7 +2,7 @@
 /** Demo results fill the analytics window behind the real ones, named nowhere on screen (owner, 2026-10-15). */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 
 let config: Record<string, unknown> = { demoResultsOn: true };
 vi.mock('../services/backend.service', () => ({ getBackend: () => ({ getSystemConfig: () => Promise.resolve(config) }) }));
@@ -38,6 +38,15 @@ describe('demo results', () => {
     expect(screen.queryByText(/demo/i)).toBeNull();
     const strip = screen.getByTestId('run-strip');
     expect(strip.querySelectorAll('span[data-demo]').length).toBe(1438);
+  });
+
+  it('Probability reads the whole window, demo results included', async () => {
+    config = { demoResultsOn: true };
+    render(<AnalyticsView board={board} winners={['DELHI', 'BOMBAY']} />);
+    await screen.findByText(/^1,440 One Minute results$/);
+    fireEvent.click(screen.getByRole('tab', { name: 'Probability' }));
+    expect(screen.queryByText(/Shown from \d+ results/)).toBeNull();
+    expect(screen.getByText('DELHI next')).toBeInTheDocument();
   });
 
   it('switched off, nothing is filled', async () => {
