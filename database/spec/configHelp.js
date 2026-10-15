@@ -36,6 +36,14 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'The line players read beside the pool totals and at the end of the board rules, saying the totals include house bets that are never paid out. You can change the wording but not remove it (10 to 160 characters).',
     example: '"Pool totals include house bets, which are never paid out."',
   },
+  demoResultsOn: {
+    what: 'Whether the analytics fill each board’s 1,440-result window with demo results placed before its first real results. Each new real result replaces the oldest demo one; once a board has 1,440 real results none are shown. Demo results are never in the Results list and never affect a round.',
+    example: 'On while the platform is new; off to show real results only.',
+  },
+  demoResultsLabel: {
+    what: 'The line players read on the analytics whenever demo results are in the window, saying they are demo results. You can change the wording but not remove it (10 to 160 characters).',
+    example: '"Includes demo results shown before the first real results."',
+  },
   iosUrl: {
     what: 'Where iPhone users are sent to get the app. Leave empty while iPhone users install the web app (PWA) from the browser.',
     example: 'https://apps.apple.com/app/id1234567890, or empty.',

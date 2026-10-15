@@ -19,7 +19,7 @@
  * `payoutMultiplier` and `winningsFeePercent` (system config); until it has
  * arrived the profit is not shown rather than guessed.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Side, RUN_WINDOWS, RUN_BUCKETS, LADDER_MAX_STEPS,
   runsOf, runLengthTable, gapSummary, ladderPlan, ladderBacktest, winReturn,
@@ -28,6 +28,7 @@ import { fmt } from './format';
 import { inputStyle, fieldLabel } from './Screen';
 import { getBackend } from '../services/backend.service';
 import { Board } from '../types';
+import { DEMO_STYLE } from './DemoResults';
 
 const backend = getBackend();
 
@@ -63,11 +64,14 @@ function usePayout(): ((stake: number) => number) | null {
 
 interface Props {
   board?: Board;
-  /** The board's real winners, newest first. */
+  /** The board's winners, newest first: the real ones, then any demo ones (DemoResults.tsx). */
   winners: Side[];
+  /** How many of `winners` are real; the rest are demo. All of them when absent. */
+  real?: number;
 }
 
-const RunsAndGaps: React.FC<Props> = ({ board, winners }) => {
+const RunsAndGaps: React.FC<Props> = ({ board, winners, real }) => {
+  const realCount = real ?? winners.length;
   // The windows that exist for this board; one longer than the history is cut to it.
   const windows = useMemo(() => {
     const out: number[] = [];
@@ -82,11 +86,14 @@ const RunsAndGaps: React.FC<Props> = ({ board, winners }) => {
 
   const table = useMemo(() => runLengthTable(winners, lookBack), [winners, lookBack]);
   const gaps = useMemo(() => ({ DELHI: gapSummary(winners, 'DELHI', lookBack), BOMBAY: gapSummary(winners, 'BOMBAY', lookBack) }), [winners, lookBack]);
-  // The strip: the newest 40 results as runs, oldest on the left.
-  const strip = useMemo(() => {
-    const runs = runsOf(winners.slice(0, 40));
-    return runs.reverse();
-  }, [winners]);
+  // The strip: every result in the window as runs, oldest on the left; it
+  // slides sideways and opens on the newest end (owner, 2026-10-15: all 1,440).
+  const strip = useMemo(() => runsOf(winners).reverse(), [winners]);
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = stripRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, [strip]);
 
   const payout = usePayout();
 
@@ -109,15 +116,17 @@ const RunsAndGaps: React.FC<Props> = ({ board, winners }) => {
       <section style={box} aria-label="Run strip">
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
           <span style={heading}>Run strip · newest last</span>
-          <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>last {Math.min(40, winners.length)} results</span>
+          <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>all {fmt(winners.length)} results · slide for older</span>
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '12px 0 2px' }}>
+        <div ref={stripRef} data-testid="run-strip" style={{ display: 'flex', flexWrap: 'nowrap', gap: 8, padding: '12px 0 6px', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
           {strip.map((r, i) => (
             <div key={i} title={`${sideName(r.side)} ×${r.len}`} style={{ flex: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
               <div style={{ display: 'flex', gap: 2 }}>
-                {Array.from({ length: r.len }, (_, k) => (
-                  <span key={k} style={{ width: 18, height: 22, borderRadius: 4, background: sideColor(r.side), color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{r.side === 'DELHI' ? 'D' : 'B'}</span>
-                ))}
+                {Array.from({ length: r.len }, (_, k) => {
+                  // Drawn oldest first: box k of the run is result start + len - 1 - k, newest first.
+                  const demo = r.start + r.len - 1 - k >= realCount;
+                  return <span key={k} data-demo={demo ? '' : undefined} style={{ width: 18, height: 22, borderRadius: 4, background: sideColor(r.side), color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', ...(demo ? DEMO_STYLE : null) }}>{r.side === 'DELHI' ? 'D' : 'B'}</span>;
+                })}
               </div>
               <span style={{ fontSize: 9, fontWeight: 800, color: 'var(--text3)' }}>×{r.len}</span>
             </div>
