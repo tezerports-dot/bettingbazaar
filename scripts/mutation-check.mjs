@@ -1035,20 +1035,18 @@ const MUTATIONS = [
     to: `const board  = await boardOf(req.body.type ?? cycle.type);`,
   },
   {
-    id: 'M189', file: 'database/repositories/bets.js', config: PG,
+    id: 'M189', file: 'database/repositories/bets.core.js', config: PG,
     test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
-    why: 'a bet whose cycle closed during placement is reported refunded while its stake stays locked',
-    from: `  return refundBet({
-    betId, userId: String(userId), reason,`,
-    to: `  return { ok: true }; ({
-    betId, userId: String(userId), reason,`,
+    why: 'the bet writer stops asking whether the round still takes bets, so a bet committed after the close is accepted and never counted when the winner is chosen',
+    from: `    if (round && !BETTING_STATES.includes(round.status)) {`,
+    to: `    if (false) {`,
   },
   {
     id: 'M190', file: 'backend/domains/markets/bet.routes.js', config: PG,
     test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
-    why: 'a failed refund is swallowed and the player is told "fully restored" while the stake is still locked',
-    from: `      } catch (refundErr) {`,
-    to: `      } catch (refundErr) { return res.status(400).json({ success: false, message: 'Betting window just closed. Your balance has been fully restored.' });`,
+    why: 'a bet refused because the round closed while it was written is told to retry a stale split, not that betting closed',
+    from: `    if (!stakeLock.ok && placed.reason === 'cycle_closed') {`,
+    to: `    if (false) {`,
   },
   {
     id: 'M191', file: 'backend/domains/markets/bet.routes.js', config: PG,
@@ -2875,7 +2873,7 @@ const MUTATIONS = [
     test: 'database/tests/autoHouseBetsPg.test.js',
     why: 'auto house bets keep landing after the equalizer closed phantom betting, so the balanced pools are pushed apart again',
     from: `    if (!['OPEN', 'MERGED'].includes(cycle[0].status)) return { ok: false, reason: 'CYCLE_CLOSED' };
-    if (cycle[0].phantom_bets_closed) return { ok: false, reason: 'PHANTOM_CLOSED' };
+    if (cycle[0].phantom_bets_closed || cycle[0].past_equalizer) return { ok: false, reason: 'PHANTOM_CLOSED' };
 `,
     to: `    if (!['OPEN', 'MERGED'].includes(cycle[0].status)) return { ok: false, reason: 'CYCLE_CLOSED' };
 `,
@@ -3411,7 +3409,7 @@ const MUTATIONS = [
     id: 'MAU1', file: 'database/repositories/bets.core.js', config: PG,
     test: 'database/tests/promoPg.test.js',
     why: 'the writer stops holding a stake to its cycle\'s audience, so General bonus money can be staked on a VIP board',
-    from: `if (!fundsMatchAudience(slices, await audienceOfCycle(ctx.client, cycleId))) {`,
+    from: `if (!fundsMatchAudience(slices, round?.audience ?? 'VIP')) {`,
     to: `if (false) {`,
   },
   {
