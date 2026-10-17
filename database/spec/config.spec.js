@@ -35,6 +35,9 @@ import { DEFAULT_HOUSE_BETS_LABEL, HOUSE_BETS_LABEL_LIMITS } from '../../backend
 import { DEFAULT_DEMO_RESULTS_ON } from '../../backend/domains/markets/demoResults.js';
 
 /** A number setting: `n(default, min, max)`. Bounds are inclusive. */
+/** The deepest referral level the admin may add (owner, 2026-10-17). */
+export const REFERRAL_LEVELS_MAX = 10;
+
 const n = (def, min = null, max = null) => ({ type: 'number', default: def, min, max });
 // A count of whole units — minutes the database turns into an interval. 7.5
 // minutes would pass `n` and then be read as the default by a reader that
@@ -272,17 +275,21 @@ export const SYSTEM_CONFIG_SPEC = group({
     dailyProblemFlagThreshold: int(5, 1, 100),
   }),
   // ── Referral rewards (owner, 2026-10-14: admin-editable) ─────────────────
-  // What a verified joiner earns the player who invited them (level 1) and
-  // that player's inviter (level 2), in whole rupees; 0 pays nothing at that
-  // level. Stamped on each earning when the joiner verifies, so a change
+  // What a verified joiner earns each player up the invite chain, in whole
+  // rupees: `levelRupees[0]` to the player who invited them (level 1), the
+  // next to that player's inviter (level 2), and so on, 1 to
+  // `REFERRAL_LEVELS_MAX` (10) levels, added and removed by the admin (owner,
+  // 2026-10-17); 0 pays nothing at that level. Stamped on each earning when the joiner verifies, so a change
   // applies to new joiners only. `turnoverMultiplier`: how many times its
   // amount ANY General bonus (referral or first deposit) must be played before
   // it unlocks into winnings, stamped on the bonus when it is paid (owner,
   // 2026-10-15: "all the general wallet bonus are going to have same rule").
   // Read through `referralRewardsFrom` (backend/domains/referral/referralRewards.js).
   referralRewards: group({
-    level1Rupees:       int(25, 0, 10000),
-    level2Rupees:       int(25, 0, 10000),
+    levelRupees: {
+      type: 'number[]', default: [25, 25], minItems: 1, maxItems: REFERRAL_LEVELS_MAX,
+      integer: true, min: 0, max: 10000,
+    },
     turnoverMultiplier: int(10, 1, 100),
   }),
   // ── First deposit bonus (owner, 2026-10-15) ─────────────────────────────

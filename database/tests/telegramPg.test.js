@@ -238,8 +238,7 @@ describePg('Telegram, Continue with Telegram (PostgreSQL)', () => {
     it('books what the admin set per level when the joiner verifies, and nothing at a level set to 0', async () => {
       const saved = (await getSystemConfig()).referralRewards;
       try {
-        await setConfigPath('system', 'referralRewards.level1Rupees', 50);
-        await setConfigPath('system', 'referralRewards.level2Rupees', 0);
+        await setConfigPath('system', 'referralRewards.levelRupees', [50, 0]);
         const top = await account({ mobile: '9000000001' });
         const mid = await account({ mobile: '9000000002', referredBy: top });
         await verify(tgUser('1'), '9000000001');
@@ -250,10 +249,58 @@ describePg('Telegram, Continue with Telegram (PostgreSQL)', () => {
           `SELECT earner_id, level, amount_paise::int AS paise FROM referral_earnings WHERE source_user_id = $1 ORDER BY level`, [joiner]);
         expect(rows).toEqual([{ earner_id: mid, level: 1, paise: 5_000 }]);
       } finally {
-        await setConfigPath('system', 'referralRewards.level1Rupees', saved.level1Rupees);
-        await setConfigPath('system', 'referralRewards.level2Rupees', saved.level2Rupees);
+        await setConfigPath('system', 'referralRewards.levelRupees', saved.levelRupees);
       }
       expect((await getSystemConfig()).referralRewards).toEqual(saved);
+    });
+
+    // Owner, 2026-10-17: the admin adds or removes levels, 1 to 10.
+    it('pays as many levels up the chain as the admin set, and no further', async () => {
+      const saved = (await getSystemConfig()).referralRewards;
+      try {
+        await setConfigPath('system', 'referralRewards.levelRupees', [40, 30, 20]);
+        // a ← b ← c ← d ← joiner: four inviters above the joiner, three levels paid.
+        const ids = [];
+        for (let i = 1; i <= 4; i += 1) {
+          ids.push(await account({ mobile: `900000000${i}`, referredBy: ids[i - 2] ?? null }));
+          await verify(tgUser(String(i)), `900000000${i}`);
+        }
+        const joiner = await account({ mobile: '9000000009', referredBy: ids[3] });
+        await verify(tgUser('9'), '9000000009');
+        const { rows } = await pgQuery(
+          `SELECT earner_id, level, amount_paise::int AS paise FROM referral_earnings WHERE source_user_id = $1 ORDER BY level`, [joiner]);
+        expect(rows).toEqual([
+          { earner_id: ids[3], level: 1, paise: 4_000 },
+          { earner_id: ids[2], level: 2, paise: 3_000 },
+          { earner_id: ids[1], level: 3, paise: 2_000 },
+        ]);
+      } finally {
+        await setConfigPath('system', 'referralRewards.levelRupees', saved.levelRupees);
+      }
+      expect((await getSystemConfig()).referralRewards).toEqual(saved);
+    });
+
+    it('stops at a loop in the invite chain instead of paying anyone twice', async () => {
+      const saved = (await getSystemConfig()).referralRewards;
+      try {
+        await setConfigPath('system', 'referralRewards.levelRupees', [10, 10, 10, 10, 10, 10]);
+        const a = await account({ mobile: '9000000001' });
+        const b = await account({ mobile: '9000000002', referredBy: a });
+        await pgQuery(`UPDATE users SET referred_by = $2 WHERE user_id = $1`, [a, b]);   // a ↔ b
+        const joiner = await account({ mobile: '9000000003', referredBy: b });
+        await verify(tgUser('3'), '9000000003');
+        const { rows } = await pgQuery(
+          `SELECT earner_id, level FROM referral_earnings WHERE source_user_id = $1 ORDER BY level`, [joiner]);
+        expect(rows).toEqual([{ earner_id: b, level: 1 }, { earner_id: a, level: 2 }]);
+      } finally {
+        await setConfigPath('system', 'referralRewards.levelRupees', saved.levelRupees);
+      }
+    });
+
+    it('refuses more than 10 levels, a negative amount, and an empty list', async () => {
+      await expect(setConfigPath('system', 'referralRewards.levelRupees', Array(11).fill(5))).rejects.toThrow(/at most 10/);
+      await expect(setConfigPath('system', 'referralRewards.levelRupees', [25, -1])).rejects.toThrow(/at least 0/);
+      await expect(setConfigPath('system', 'referralRewards.levelRupees', [])).rejects.toThrow(/at least 1/);
     });
 
     it('a later Verify from the same Telegram account books nothing twice', async () => {

@@ -6,6 +6,10 @@ import { SettingHelp, SettingHelpProvider, type SettingHelpMap } from '../../com
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 
+// The deepest referral level the admin may add. A §11 mirror of
+// REFERRAL_LEVELS_MAX (database/spec/config.spec.js); the server refuses more.
+const REFERRAL_LEVELS_MAX = 10;
+
 // BB token buy/sell rates remain removed: internal token conversion is fixed 1:1.
 // USDT pricing below is buy-only: no user or merchant USDT sell rail exists.
 // §5 MIRROR — the operational half of `merchantOrderLimits`.
@@ -262,7 +266,7 @@ export const SystemSettings: React.FC = () => {
     // The daily red flag on team members (Step 2f): low activity.
     redFlags: { lowActivityPercent: 25 },  // schema default: 25
     // What a referral pays (owner, 2026-10-14: admin-editable).
-    referralRewards: { level1Rupees: 25, level2Rupees: 25, turnoverMultiplier: 10 },  // schema defaults: 25 / 25 / 10
+    referralRewards: { levelRupees: [25, 25] as number[], turnoverMultiplier: 10 },  // schema defaults: [25, 25] / 10
     // What a player's first completed deposit pays into GENERAL (owner, 2026-10-15).
     firstDepositBonus: { rupees: 0 },  // schema default: 0 (off)
     // Overload ceilings — past either one the server answers 503 fast rather
@@ -380,8 +384,7 @@ export const SystemSettings: React.FC = () => {
             lowActivityPercent: response.data.redFlags?.lowActivityPercent ?? 25, // schema default: 25
           },
           referralRewards: {
-            level1Rupees:       response.data.referralRewards?.level1Rupees       ?? 25, // schema default: 25
-            level2Rupees:       response.data.referralRewards?.level2Rupees       ?? 25, // schema default: 25
+            levelRupees:        response.data.referralRewards?.levelRupees        ?? [25, 25], // schema default: [25, 25]
             turnoverMultiplier: response.data.referralRewards?.turnoverMultiplier ?? 10, // schema default: 10
           },
           firstDepositBonus: {
@@ -1375,28 +1378,44 @@ export const SystemSettings: React.FC = () => {
           player&apos;s first completed buy. One play requirement applies to every bonus.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-          <div>
-            <label className="label" htmlFor="referral-level1Rupees">Level 1 reward (₹ per joiner)</label>
-            <input id="referral-level1Rupees"
-              type="number" min={0} max={10000} step={1}
-              value={formData.referralRewards.level1Rupees}
-              onChange={(e) => setFormData({ ...formData, referralRewards: { ...formData.referralRewards,
-                level1Rupees: Math.min(10000, Math.max(0, Math.floor(Number(e.target.value) || 0))) } })}
-              className="input"
-            />
-            <SettingHelp path="referralRewards.level1Rupees" />
-          </div>
-          <div>
-            <label className="label" htmlFor="referral-level2Rupees">Level 2 reward (₹ per joiner)</label>
-            <input id="referral-level2Rupees"
-              type="number" min={0} max={10000} step={1}
-              value={formData.referralRewards.level2Rupees}
-              onChange={(e) => setFormData({ ...formData, referralRewards: { ...formData.referralRewards,
-                level2Rupees: Math.min(10000, Math.max(0, Math.floor(Number(e.target.value) || 0))) } })}
-              className="input"
-            />
-            <SettingHelp path="referralRewards.level2Rupees" />
-          </div>
+          {/* Referral levels (owner, 2026-10-17): 1 to REFERRAL_LEVELS_MAX, level 1 first. */}
+          <fieldset className="md:col-span-2 xl:col-span-4">
+            <legend className="label">Referral rewards by level (₹ per joiner, 0 = off)</legend>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+              {formData.referralRewards.levelRupees.map((rupees, i) => (
+                <div key={i}>
+                  <label className="text-xs text-gray-400 mb-1 block" htmlFor={`referral-level-${i + 1}`}>
+                    Level {i + 1}{i === 0 ? ' · who invited them' : i === 1 ? ' · their inviter' : ''}
+                  </label>
+                  <input id={`referral-level-${i + 1}`}
+                    type="number" min={0} max={10000} step={1}
+                    value={rupees}
+                    onChange={(e) => {
+                      const levelRupees = [...formData.referralRewards.levelRupees];
+                      levelRupees[i] = Math.min(10000, Math.max(0, Math.floor(Number(e.target.value) || 0)));
+                      setFormData({ ...formData, referralRewards: { ...formData.referralRewards, levelRupees } });
+                    }}
+                    className="input"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2 mt-3">
+              <button type="button" className="btn-secondary text-xs"
+                disabled={formData.referralRewards.levelRupees.length >= REFERRAL_LEVELS_MAX}
+                onClick={() => setFormData({ ...formData, referralRewards: { ...formData.referralRewards,
+                  levelRupees: [...formData.referralRewards.levelRupees, 0] } })}>
+                + Add level {formData.referralRewards.levelRupees.length + 1}
+              </button>
+              <button type="button" className="btn-secondary text-xs"
+                disabled={formData.referralRewards.levelRupees.length <= 1}
+                onClick={() => setFormData({ ...formData, referralRewards: { ...formData.referralRewards,
+                  levelRupees: formData.referralRewards.levelRupees.slice(0, -1) } })}>
+                − Remove level {formData.referralRewards.levelRupees.length}
+              </button>
+            </div>
+            <SettingHelp path="referralRewards.levelRupees" />
+          </fieldset>
           <div>
             <label className="label" htmlFor="firstDepositBonus-rupees">First deposit bonus (₹, 0 = off)</label>
             <input id="firstDepositBonus-rupees"

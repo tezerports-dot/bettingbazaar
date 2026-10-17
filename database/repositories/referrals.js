@@ -73,35 +73,38 @@ export async function recordEarning({
  * that commit without the verification are a form submitted in a loop paying
  * ₹25 a time (§21).
  *
- * Level 1 is the joiner's `referred_by`; level 2 is that account's own. Both
- * walk `users`, the one place the edge is stored, so nothing here takes a
- * referrer from a caller. The earning id is derived from the pair and the
+ * Level 1 is the joiner's `referred_by`, level 2 that account's own, and so
+ * on for as many levels as the admin set (`levelsPaise`, level 1 first; owner,
+ * 2026-10-17). The chain is walked in `users`, the one place the edge is
+ * stored, so nothing here takes a referrer from a caller. The earning id is derived from the pair and the
  * level, so a second verification of one account (a relink is not one, but a
  * retried transaction would be) books nothing further.
  *
  * @param {string} joinerId
- * @param {{client: import('pg').PoolClient, amountPaise: number}} opts
+ * @param {{client: import('pg').PoolClient, levelsPaise: number[]}} opts
  * @returns {Promise<number[]>} the levels booked by this call
  */
-export async function recordJoinerEarnings(joinerId, { client, amountsPaise }) {
+export async function recordJoinerEarnings(joinerId, { client, levelsPaise }) {
   if (!client) throw new Error('recordJoinerEarnings runs inside the verifying transaction; pass its client');
-  const l1 = amountsPaise?.[1];
-  const l2 = amountsPaise?.[2];
-  if (![l1, l2].every((a) => Number.isInteger(a) && a >= 0)) {
+  if (!Array.isArray(levelsPaise) || !levelsPaise.length
+      || !levelsPaise.every((a) => Number.isInteger(a) && a >= 0)) {
     throw new Error('recordJoinerEarnings requires a whole, non-negative amount in paise for each level');
   }
   const { rows } = await client.query(
-    `WITH joiner AS (
+    `WITH RECURSIVE joiner AS (
        SELECT user_id, referred_by FROM users
         WHERE user_id = $1 AND account_type = 'PLAYER' AND joining_number IS NOT NULL
-     ), l1 AS (
-       SELECT u.user_id, u.referred_by FROM users u JOIN joiner j ON u.user_id = j.referred_by
-     ), l2 AS (
-       SELECT u.user_id FROM users u JOIN l1 ON u.user_id = l1.referred_by
-     ), earners AS (
-       SELECT 1 AS level, user_id AS earner_id, $2::bigint AS amount FROM l1
+     ), chain AS (
+       -- Up the invite chain, one level per step, as deep as there are
+       -- amounts. "seen" stops a loop in the tree from paying anyone twice.
+       SELECT 1 AS level, u.user_id, u.referred_by, ARRAY[j.user_id, u.user_id] AS seen
+         FROM users u JOIN joiner j ON u.user_id = j.referred_by
        UNION ALL
-       SELECT 2, user_id, $3::bigint FROM l2
+       SELECT c.level + 1, u.user_id, u.referred_by, c.seen || u.user_id
+         FROM chain c JOIN users u ON u.user_id = c.referred_by
+        WHERE c.level < cardinality($2::bigint[]) AND NOT u.user_id = ANY(c.seen)
+     ), earners AS (
+       SELECT c.level, c.user_id AS earner_id, ($2::bigint[])[c.level] AS amount FROM chain c
      )
      INSERT INTO referral_earnings
        (earning_id, earner_id, source_user_id, level, amount_paise, queue_position)
@@ -113,11 +116,12 @@ export async function recordJoinerEarnings(joinerId, { client, amountsPaise }) {
       -- refusal from aborting the verification it rides in.
       -- A level an admin set to ₹0 pays nothing, so it earns no row.
       WHERE e.earner_id <> $1 AND e.amount > 0
+      ORDER BY e.level
      ON CONFLICT (earning_id) DO NOTHING
      RETURNING level`,
-    [String(joinerId), l1, l2],
+    [String(joinerId), levelsPaise],
   );
-  return rows.map((r) => Number(r.level)).sort();
+  return rows.map((r) => Number(r.level)).sort((x, y) => x - y);
 }
 
 export async function listEarnings({ earnerId = null, status = null, limit = 100 } = {}) {
