@@ -22,7 +22,18 @@
  * rather than once per page. A cached token would work for the first login
  * attempt and mysteriously 403 every retry after a wrong password — which is
  * exactly when a user retries most.
+ *
+ * ── Warmed before the tap ──────────────────────────────────────────────────
+ * Loading Turnstile and solving its challenge takes seconds, and up to the
+ * whole timeout on a slow line. A screen with one submit button calls
+ * `warmCaptchaToken()` when it appears, so that work happens while the person
+ * reads it, not after they press. The warmed token is still single-use: the
+ * next `getCaptchaToken()` takes it (waiting for it if it is still being
+ * solved) and clears it, and a retry fetches a fresh one. It is used only while
+ * younger than WARM_TOKEN_MAX_AGE_MS, inside Cloudflare's 300 s lifetime.
  */
+
+import { readEnv } from './originFailover';
 
 interface TurnstileApi {
   render: (el: HTMLElement, opts: Record<string, unknown>) => string;
@@ -35,7 +46,7 @@ function turnstile(): TurnstileApi | null {
 }
 
 function siteKey(): string {
-  return String((import.meta as any).env?.VITE_TURNSTILE_SITE_KEY || '').trim();
+  return readEnv('VITE_TURNSTILE_SITE_KEY').trim();
 }
 
 
@@ -66,8 +77,51 @@ function loadScript(): Promise<void> {
   return scriptPromise;
 }
 
+/** A warmed token is used only while younger than this (Cloudflare keeps one for 300 s). */
+export const WARM_TOKEN_MAX_AGE_MS = 240_000;
+
+interface Warm { token: Promise<string | null>; startedAt: number; settled: boolean }
+let warm: Warm | null = null;
+
 /**
- * Get a fresh token for one submission.
+ * Start solving the challenge now, in the background, for the next submit.
+ * No-op with captcha off, or while a warmed token is still young enough.
+ */
+export function warmCaptchaToken(): void {
+  if (!siteKey()) return;
+  if (warm && Date.now() - warm.startedAt < WARM_TOKEN_MAX_AGE_MS) return;
+  const entry: Warm = { token: solveOnce(), startedAt: Date.now(), settled: false };
+  warm = entry;
+  void entry.token.then((t) => {
+    entry.settled = true;
+    if (!t && warm === entry) warm = null;   // a failed warm-up is not kept
+  });
+}
+
+/** Forget any warmed token (tests). */
+export function resetWarmCaptcha(): void { warm = null; }
+
+/**
+ * Get a token for one submission: the warmed one if there is one young
+ * enough (waiting for it if it is still being solved), else a fresh one.
+ */
+export async function getCaptchaToken(timeoutMs = 30_000): Promise<string | null> {
+  const w = warm;
+  warm = null;                                // single-use, whatever happens next
+  if (w && Date.now() - w.startedAt < WARM_TOKEN_MAX_AGE_MS) {
+    const wasSettled = w.settled;
+    const token = await w.token;
+    if (token) return token;
+    // The warm-up failed while the person was waiting on it: say why rather
+    // than make them wait a second full timeout. One that had already failed
+    // before the tap is tried once more, fresh.
+    if (!wasSettled) return null;
+  }
+  return solveOnce(timeoutMs);
+}
+
+/**
+ * Solve one challenge.
  *
  * Resolves `null` — never rejects — when captcha is disabled or Cloudflare
  * cannot be reached. The caller submits without a token and the server decides:
@@ -78,7 +132,7 @@ function loadScript(): Promise<void> {
  *
  * @param timeoutMs give up and submit without a token after this long.
  */
-export async function getCaptchaToken(timeoutMs = 30_000): Promise<string | null> {
+async function solveOnce(timeoutMs = 30_000): Promise<string | null> {
   lastFailure = null;
   const key = siteKey();
   if (!key) return null;
