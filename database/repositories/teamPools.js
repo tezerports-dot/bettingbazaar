@@ -26,7 +26,7 @@ import { pgQuery, withTransaction } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { ACCOUNTS, postMovement } from './treasury.js';
 import { lockWalletWithin } from './wallets.core.js';
-import { creditBuyWithin, consumeWithdrawalStakeWithin, returnSettledStakeWithin } from './wallets.js';
+import { creditBuyWithin, consumeWithdrawalStakeWithin, returnSettledStakeWithin, creditCompensationWithin } from './wallets.js';
 import { recordConsideration, assertRecordable, DIRECTIONS } from './adminTokenConsiderations.js';
 import { creditFirstDepositBonusWithin } from './promo.js';
 
@@ -37,7 +37,7 @@ const newRequestId = () => `tpr_${randomBytes(10).toString('hex')}`;
 
 /** Thrown inside a transaction to unwind it and answer with a reason. */
 class Refused extends Error {
-  constructor(reason) { super(reason); this.reason = reason; }
+  constructor(reason, detail = null) { super(reason); this.reason = reason; this.detail = detail; }
 }
 
 function toPool(teamId, row) {
@@ -705,6 +705,108 @@ export async function reverseSellFromPool(orderId, { actor = 'system', reason = 
     if (e instanceof Refused) return { ok: false, reason: e.reason };
     throw e;
   }
+}
+
+/**
+ * The compensation choices the Dispute Manager has, in percent of the order's
+ * tokens (owner, 2026-10-17: "three options 0%, 5%, 10% of the value of the
+ * order"). 0 pays nothing; the table's CHECK holds a paid row to 5 or 10.
+ */
+export const DISPUTE_COMPENSATION_PERCENTS = Object.freeze([0, 5, 10]);
+
+/**
+ * Pay the player of a decided dispute `percent` of the order's tokens out of
+ * the losing team's own pool, in ONE transaction: the compensation row, the
+ * pool entry, the wallet credit and TEAM_FLOAT → USER_FLOAT commit together or
+ * not at all (§19). Every guard is asked here, under the order's lock:
+ *   - the order's dispute was decided (it is no longer DISPUTED) and its
+ *     recorded loser is the MERCHANT side (`dispute_faults`);
+ *   - once per order (the row's PK; a repeat answers `already`);
+ *   - the pool's AVAILABLE tokens cover it whole (in the UPDATE's WHERE), or
+ *     nothing moves and the answer is `pool_short` with what is there.
+ * Held tokens are other orders' and are never taken.
+ */
+export async function payDisputeCompensation(orderId, { percent, actor = 'system' }) {
+  const oid = String(orderId);
+  const pct = Number(percent);
+  if (!DISPUTE_COMPENSATION_PERCENTS.includes(pct) || pct === 0) {
+    throw Object.assign(new Error(`Compensation is ${DISPUTE_COMPENSATION_PERCENTS.filter(Boolean).join(' or ')} percent.`),
+      { status: 400, code: 'UNKNOWN_COMPENSATION' });
+  }
+  try {
+    return await withTransaction(async (client) => {
+      const { rows: o } = await client.query(
+        `SELECT o.order_id, o.team_id, o.user_id, o.state, o.token_amount_paise,
+                f.party, f.merchant_id
+           FROM order_states o
+           LEFT JOIN dispute_faults f ON f.order_id = o.order_id
+          WHERE o.order_id = $1
+          FOR UPDATE OF o`, [oid]);
+      const order = o[0];
+      if (!order) throw new Refused('not_found');
+      if (order.party !== 'MERCHANT') throw new Refused('not_merchant_fault');
+      if (!order.team_id) throw new Refused('no_team');
+      const orderPaise = toNum(order.token_amount_paise);
+      const amount = Math.floor((orderPaise * pct) / 100);
+      if (amount <= 0) throw new Refused('nothing_to_pay');
+
+      const { rows: made } = await client.query(
+        `INSERT INTO dispute_compensations
+           (order_id, team_id, user_id, merchant_id, percent, order_paise, amount_paise, decided_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (order_id) DO NOTHING
+         RETURNING amount_paise`,
+        [oid, order.team_id, String(order.user_id), String(order.merchant_id), pct, orderPaise, amount, String(actor)]);
+      if (!made[0]) {
+        const { rows: had } = await client.query(
+          'SELECT percent, amount_paise FROM dispute_compensations WHERE order_id = $1', [oid]);
+        return { ok: true, already: true, percent: had[0].percent, amountPaise: toNum(had[0].amount_paise) };
+      }
+
+      const { rows: pool } = await client.query(
+        `UPDATE team_pools SET available_paise = available_paise - $2, updated_at = now()
+          WHERE team_id = $1 AND available_paise >= $2
+          RETURNING available_paise, held_paise`, [order.team_id, amount]);
+      if (!pool[0]) {
+        const { rows: have } = await client.query(
+          'SELECT available_paise FROM team_pools WHERE team_id = $1', [order.team_id]);
+        throw new Refused('pool_short', { availablePaise: toNum(have[0]?.available_paise) });
+      }
+      await writeEntry(client, {
+        txId: `pool_dispute_comp_${oid}`, teamId: order.team_id, kind: 'DISPUTE_COMPENSATION',
+        availableDelta: -amount, heldDelta: 0, pool: pool[0], actor, refId: oid,
+        note: `${pct}% compensation to the player`,
+      });
+      const wallet = await lockWalletWithin(client, String(order.user_id));
+      const credited = await creditCompensationWithin(wallet, { orderId: oid, amountPaise: amount });
+      if (credited.idempotent) throw new Refused('already_credited');
+      if (!credited.ok) throw new Refused(credited.refused ?? 'credit_refused');
+      const moved = await postMovement({
+        client, movementId: `dispute_comp_${oid}`, operation: 'DISPUTE_COMPENSATION',
+        legs: { [ACCOUNTS.TEAM_FLOAT]: -amount, [ACCOUNTS.USER_FLOAT]: amount },
+        actor: String(actor), refModel: 'PaymentOrder', refId: oid,
+        reason: `${pct}% dispute compensation, paid from the team's pool`,
+      });
+      if (!moved.ok) throw new Refused(moved.reason);
+      if (moved.idempotent) throw new Refused('already_credited');
+      return {
+        ok: true, percent: pct, amountPaise: amount, teamId: order.team_id, userId: String(order.user_id),
+        poolAvailablePaise: toNum(pool[0].available_paise),
+      };
+    });
+  } catch (e) {
+    if (e instanceof Refused) return { ok: false, reason: e.reason, ...(e.detail ?? {}) };
+    throw e;
+  }
+}
+
+/** A decided order's compensation, or null. */
+export async function compensationFor(orderId) {
+  const { rows } = await pgQuery(
+    'SELECT percent, amount_paise, decided_by, created_at FROM dispute_compensations WHERE order_id = $1',
+    [String(orderId)], 'dispute_compensation_get');
+  const r = rows[0];
+  return r ? { percent: r.percent, amountPaise: toNum(r.amount_paise), decidedBy: r.decided_by, at: r.created_at } : null;
 }
 
 /**

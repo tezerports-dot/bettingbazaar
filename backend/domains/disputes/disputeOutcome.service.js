@@ -18,8 +18,9 @@
  *   - and the order was disputed FROM a state where that question was open: a
  *     buy that was PAID (waiting for the member) or REJECTED (the member said
  *     no money came), a sell the member marked PAID or COMPLETED (inside its
- *     hold). A buy disputed after it COMPLETED has already been delivered, and
- *     dismissing that dispute says nothing against the member who confirmed it.
+ *     hold), or a sell the platform disputed because the member did not pay
+ *     it in its window (PROCESSING: only not paying loses). A buy disputed
+ *     after it COMPLETED has already been delivered, and dismissing that dispute says nothing against the member who confirmed it.
  * Security review, 2026-10-03: before this, deciding any DISPUTED order
  * suspended somebody — a member for confirming a buy the player later
  * disputed, a player for a red flag they never answered.
@@ -50,7 +51,9 @@ import { announceMerchantFlag } from '../merchant/merchantProblems.service.js';
 /** The states a payment dispute is raised from, per order type. */
 export const PAYMENT_DISPUTE_FROM = Object.freeze({
   DEPOSIT:    Object.freeze(['PAID', 'REJECTED']),
-  WITHDRAWAL: Object.freeze(['PAID', 'COMPLETED']),
+  // PROCESSING: a sell the member did not pay in its window, disputed by the
+  // platform (`disputeUnpaidSell`, owner 2026-10-17).
+  WITHDRAWAL: Object.freeze(['PROCESSING', 'PAID', 'COMPLETED']),
 });
 
 /**
@@ -64,6 +67,10 @@ export function partyAtFault(order, { completed, disputedFrom }) {
     if (!completed) return FAULT_PARTIES.PLAYER;
     return disputedFrom === 'REJECTED' || order.utr ? FAULT_PARTIES.MERCHANT : null;
   }
+  // A sell disputed before the member said they paid: completing it means the
+  // member did pay, only late, and the player claimed nothing; not completing
+  // it means they never paid.
+  if (disputedFrom === 'PROCESSING') return completed ? null : FAULT_PARTIES.MERCHANT;
   return completed ? FAULT_PARTIES.PLAYER : FAULT_PARTIES.MERCHANT;
 }
 
