@@ -32,9 +32,9 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'The text players read while maintenance mode is on.',
     example: '"We are upgrading our servers. Back by 3:00 PM IST."',
   },
-  houseBetsLabel: {
-    what: 'The line players read at the end of the board rules, saying the totals include house bets that are never paid out. You can change the wording but not remove it (10 to 160 characters).',
-    example: '"Pool totals include house bets, which are never paid out."',
+  phantomBetsLabel: {
+    what: 'The line players read at the end of the board rules, saying the totals include phantom bets that are never paid out. You can change the wording but not remove it (10 to 160 characters).',
+    example: '"Pool totals include phantom bets, which are never paid out."',
   },
   demoResultsOn: {
     what: 'Whether the analytics fill each board’s 1,440-result window with demo results placed before its first real results. Each new real result replaces the oldest demo one; once a board has 1,440 real results none are shown. Demo results are never in the Results list and never affect a round.',

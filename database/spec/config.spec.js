@@ -31,7 +31,7 @@
 import { ORDER_SIZES, USDT_BUY_STEP } from '../../backend/domains/merchant/denominations.js';
 import { approvedApiHosts } from '../../backend/config/apiHosts.js';
 import { BRAND_PALETTES } from '../../backend/domains/branding/palettes.js';
-import { DEFAULT_HOUSE_BETS_LABEL, HOUSE_BETS_LABEL_LIMITS } from '../../backend/domains/markets/houseBets.js';
+import { DEFAULT_PHANTOM_BETS_LABEL, PHANTOM_BETS_LABEL_LIMITS } from '../../backend/domains/markets/phantomBets.js';
 import { DEFAULT_DEMO_RESULTS_ON } from '../../backend/domains/markets/demoResults.js';
 
 /** A number setting: `n(default, min, max)`. Bounds are inclusive. */
@@ -73,10 +73,10 @@ export const SYSTEM_CONFIG_SPEC = group({
   maintenanceMessage: s(''),
 
   // ── The line players read at the end of the board rules ──────────────────
-  // House (phantom) bets count in the totals and are never paid; this says so
+  // Phantom bets count in the totals and are never paid; this says so
   // (owner, 2026-10-15). Admin-editable wording, never blank
-  // (HOUSE_BETS_LABEL_LIMITS, backend/domains/markets/houseBets.js).
-  houseBetsLabel: { type: 'string', default: DEFAULT_HOUSE_BETS_LABEL, trimmed: true, ...HOUSE_BETS_LABEL_LIMITS },
+  // (PHANTOM_BETS_LABEL_LIMITS, backend/domains/markets/phantomBets.js).
+  phantomBetsLabel: { type: 'string', default: DEFAULT_PHANTOM_BETS_LABEL, trimmed: true, ...PHANTOM_BETS_LABEL_LIMITS },
 
   // ── Demo results filling the analytics window ──────────────────────────────
   // (owner, 2026-10-15; backend/domains/markets/demoResults.js).

@@ -176,7 +176,7 @@ router.post('/cycles/:cycleId/equalize', authenticate, hasPermission('canManageC
       if (result.reason === 'PHANTOM_CLOSED') {
         return res.status(409).json({
           success: false, code: 'PHANTOM_CLOSED',
-          message: 'This round was already balanced; house betting on it is closed.',
+          message: 'This round was already balanced; phantom betting on it is closed.',
         });
       }
       return res.status(409).json({

@@ -18,6 +18,7 @@ import { Plus, Save, X, ArrowUp, ArrowDown, Power } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { boards as boardsApi } from '../../services/api';
 import type { Board } from '../../types';
+import { RtpFunds } from './RtpFunds';
 
 type Phases = Board['phases'];
 interface Form {
@@ -255,6 +256,7 @@ export const BoardsManager: React.FC = () => {
           </div>
         </div>
       )}
+      <RtpFunds />
     </div>
   );
 };

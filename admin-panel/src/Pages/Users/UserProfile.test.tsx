@@ -62,12 +62,12 @@ describe('player page', () => {
     for (const name of ['Block player', 'Add', 'Deduct', 'Save']) expect(screen.getByRole('button', { name })).toBeInTheDocument();
   });
 
-  it('hides balance and house-bettor controls from a sub-admin with the players area alone', async () => {
+  it('hides balance and phantom-bettor controls from a sub-admin with the players area alone', async () => {
     as({ isAdmin: false, isSubAdmin: true, permissions: { canManageUsers: true } });
     renderPage();
     await screen.findByRole('heading', { name: 'player1' });
     expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
-    expect(screen.queryByLabelText('House-bettor access level')).toBeNull();
+    expect(screen.queryByLabelText('Phantom-bettor access level')).toBeNull();
     expect(screen.getByRole('button', { name: 'Block player' })).toBeInTheDocument();
   });
 
@@ -122,12 +122,12 @@ describe('player page', () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Cannot delete: 1 order(s) still open.'));
   });
 
-  it('sets house-bettor access from the page', async () => {
+  it('sets phantom-bettor access from the page', async () => {
     as({ isAdmin: true });
     post.mockResolvedValue({ data: { success: true } });
     renderPage();
     await screen.findByRole('heading', { name: 'player1' });
-    fireEvent.change(screen.getByLabelText('House-bettor access level'), { target: { value: 'K1' } });
+    fireEvent.change(screen.getByLabelText('Phantom-bettor access level'), { target: { value: 'K1' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(post).toHaveBeenCalledWith('/api/admin/users/u-1/phantom-access', { accessLevel: 'K1' }));
   });

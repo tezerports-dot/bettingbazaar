@@ -48,7 +48,7 @@ export const DEFAULT_FOOTER_PAGES = Object.freeze(['home', 'results', 'wallet', 
  * @param {object|null} cfg the SystemConfig row, or null when it cannot be read
  * @returns {object} the full field set — never a partial one
  */
-// The house-bets line players read beside the pool totals.
+// The phantom-bets line players read beside the pool totals.
 import { demoResultsOnOf } from '../markets/demoResults.js';
 // The INR peg comes from the one place that owns it.
 import { USDT_CHAINS, USDT_CHAIN_SPEC } from '../merchant/merchantCurrency.js';

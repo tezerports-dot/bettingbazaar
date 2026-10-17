@@ -1,14 +1,14 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * Auto house bets: a phantom agent's plan per board and side (owner,
- * 2026-10-15). The one writer of `phantom_auto_plans` (schema.sql "AUTO HOUSE
- * BETS"); the rules are backend/domains/markets/houseBets.js.
+ * Auto phantom bets: a phantom agent's plan per board and side (owner,
+ * 2026-10-15). The one writer of `phantom_auto_plans` (schema.sql "AUTO PHANTOM
+ * BETS"); the rules are backend/domains/markets/phantomBets.js.
  */
 import { pgQuery } from '../client.js';
 import { AUDIENCES } from './markets.js';
 import {
   AUTO_BET_STEPS_MAX, AUTO_BET_MIN_RUPEES, AUTO_BET_MAX_RUPEES,
-} from '../../backend/domains/markets/houseBets.js';
+} from '../../backend/domains/markets/phantomBets.js';
 
 const bad = (message) => Object.assign(new Error(message), { status: 400, code: 'AUTO_BETS_INVALID' });
 

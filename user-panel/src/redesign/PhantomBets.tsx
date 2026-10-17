@@ -1,14 +1,14 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * House bets on the board screen (owner, 2026-10-15). The line saying the
- * pool totals include house bets is shown under the board rules only
- * (`houseBetsNotice`, BoardRules.tsx), not beside the totals.
+ * Phantom bets on the board screen (owner, 2026-10-15). The line saying the
+ * pool totals include phantom bets is shown under the board rules only
+ * (`phantomBetsNotice`, BoardRules.tsx), not beside the totals.
  *
- * `AutoHouseBetsPanel`: a phantom agent's auto plan for this board and the
+ * `AutoPhantomBetsPanel`: a phantom agent's auto plan for this board and the
  * profile being played (VIP and General rounds each have their own plans;
  * owner, 2026-10-15), one per side: a list of sizes bet one a second, in order and looped, until the
  * equalizer, in every round until it is stopped: set once, never restarted
- * per round (backend/domains/markets/houseBets.js). Shown in ghost mode only.
+ * per round (backend/domains/markets/phantomBets.js). Shown in ghost mode only.
  * The limits come with the plans (`GET /api/bet/phantom/auto`).
  */
 import React, { useCallback, useEffect, useState } from 'react';
@@ -42,7 +42,7 @@ const SideEditor: React.FC<{
     if (sizes.some((n) => !Number.isFinite(n))) { setError('Sizes are whole rupees, separated by commas or spaces.'); return; }
     setSaving(true);
     try {
-      const res: any = await player.saveAutoHouseBets({ boardKey, audience, side, amounts: sizes, enabled: nextEnabled });
+      const res: any = await player.saveAutoPhantomBets({ boardKey, audience, side, amounts: sizes, enabled: nextEnabled });
       if (!res?.success) throw new Error(res?.message);
       setEnabled(res.plan.enabled);
       onSaved(res.plan);
@@ -85,14 +85,14 @@ const SideEditor: React.FC<{
   );
 };
 
-export const AutoHouseBetsPanel: React.FC<{ boardKey: string; boardName: string; audience: Audience }> = ({ boardKey, boardName, audience }) => {
+export const AutoPhantomBetsPanel: React.FC<{ boardKey: string; boardName: string; audience: Audience }> = ({ boardKey, boardName, audience }) => {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [limits, setLimits] = useState<Limits | null>(null);
   const [error, setError] = useState('');
   const load = useCallback(async () => {
     setError('');
     try {
-      const res: any = await player.autoHouseBets();
+      const res: any = await player.autoPhantomBets();
       if (!res?.success) throw new Error(res?.message);
       setPlans(res.plans || []);
       setLimits(res.limits || null);
@@ -106,7 +106,7 @@ export const AutoHouseBetsPanel: React.FC<{ boardKey: string; boardName: string;
   return (
     <div style={{ marginTop: 10, padding: 12, borderRadius: 14, border: '1px solid rgba(139,111,224,.28)', background: 'rgba(139,111,224,.07)' }}>
       <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.06em', color: '#c4b5fd', marginBottom: 8 }}>
-        👻 AUTO HOUSE BETS · {boardName} · {audience === 'VIP' ? 'VIP' : 'General'} rounds
+        👻 AUTO PHANTOM BETS · {boardName} · {audience === 'VIP' ? 'VIP' : 'General'} rounds
       </div>
       {error ? (
         <div role="alert" style={{ fontSize: 11, color: 'var(--danger, #f87171)' }}>

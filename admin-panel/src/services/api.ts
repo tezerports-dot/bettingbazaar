@@ -430,6 +430,11 @@ export const boards = {
   update: async (key: string, patch: Record<string, unknown>) =>
     (await api.put<any>(`/api/admin/boards/${encodeURIComponent(key)}`, patch)).data,
   setOrder: async (keys: string[]) => (await api.put<any>('/api/admin/boards/order', { keys })).data,
+  rtpFunds: async () => (await api.get<any>('/api/admin/rtp')).data,
+  saveRtp: async (game: string, audience: string, body: { enabled: boolean; ratePercent: number }) =>
+    (await api.put<any>(`/api/admin/rtp/${encodeURIComponent(game)}/${encodeURIComponent(audience)}`, body)).data,
+  rtpEntries: async (game: string, audience: string) =>
+    (await api.get<any>(`/api/admin/rtp/${encodeURIComponent(game)}/${encodeURIComponent(audience)}/entries`)).data,
 };
 
 // --- RULES POP-UP (owner, 2026-10-14) -------------------------------------------
@@ -441,9 +446,9 @@ export interface BoardRulesTextDraft {
   intro: string;
   sections: { title: string; body: string }[];
 }
-/** What players are shown: the text filled in, plus the house-bets line (renderBoardRules). */
+/** What players are shown: the text filled in, plus the phantom-bets line (renderBoardRules). */
 export interface BoardRulesPreview extends BoardRulesTextDraft {
-  houseBetsNotice?: string;
+  phantomBetsNotice?: string;
 }
 export const boardRules = {
   get: async () => (await api.get<any>('/api/admin/board-rules')).data,

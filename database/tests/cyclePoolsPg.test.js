@@ -71,7 +71,7 @@ describePg('real cycle pools', () => {
     await bet(cycleId, 'DELHI', 100);
     await bet(cycleId, 'DELHI', 900, { phantom: true });
 
-    // Phantom stakes are house figures that move the displayed total without
+    // Phantom stakes are figures that move the displayed total without
     // anybody having staked anything. Counting them would inflate the pool a
     // winner is paid a share of — and the winning side is the MINORITY real
     // side, so it would also pick the winner from numbers nobody bet.

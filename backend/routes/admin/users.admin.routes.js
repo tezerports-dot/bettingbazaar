@@ -499,7 +499,7 @@ router.post('/users/:userId/phantom-access', authenticate, hasPermission('canMan
   }
 });
 
-// Real against house volume per round whose betting has closed (owner,
+// Real against phantom volume per round whose betting has closed (owner,
 // 2026-10-15). `?limit=` 1–100, default 20 (stats.realVolumeByCycle).
 router.get('/analytics/real-volume', authenticate, hasPermission('canManagePhantomAgents'), async (req, res) => {
   try {

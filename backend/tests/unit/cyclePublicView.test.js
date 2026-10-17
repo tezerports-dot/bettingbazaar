@@ -48,7 +48,7 @@ const rawCycle = () => ({
 });
 
 /**
- * The same cycle once the house pools are balanced (`equalizePhantomPools`):
+ * The same cycle once the phantom pools are balanced (`equalizePhantomPools`):
  * the two totals now differ by real money alone, so the smaller one, BOMBAY,
  * is the winner. This is what the merged phase must not send.
  */
@@ -103,7 +103,7 @@ describe('the pools are blind from the merge until the result (owner, 2026-10-08
     expect(JSON.stringify(view)).not.toMatch(/1200|800/);
   });
 
-  it('hides MERGED and CLOSED, and an OPEN cycle whose house pools are already balanced', () => {
+  it('hides MERGED and CLOSED, and an OPEN cycle whose phantom pools are already balanced', () => {
     expect(poolsHidden({ ...rawCycle(), status: 'MERGED' })).toBe(true);
     expect(poolsHidden({ ...rawCycle(), status: 'CLOSED' })).toBe(true);
     // The ticker balanced the pools but has not yet moved the status.

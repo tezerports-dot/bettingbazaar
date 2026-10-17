@@ -255,8 +255,8 @@ export const SystemSettings: React.FC = () => {
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
     // The line under the board rules (owner, 2026-10-15). '' until loaded: the
-    // server always sends one (houseBetsLabelOf), and an empty save is refused.
-    houseBetsLabel: '',
+    // server always sends one (phantomBetsLabelOf), and an empty save is refused.
+    phantomBetsLabel: '',
     // Demo results in the analytics (owner, 2026-10-15); schema default: true.
     demoResultsOn: true,
     // How long a sell stays in escrow after the member marks it paid.
@@ -369,7 +369,7 @@ export const SystemSettings: React.FC = () => {
           })(),
           directMerchants: { ...directMerchantDefaults(), ...(response.data.directMerchants ?? {}) },
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
-          houseBetsLabel:     response.data.houseBetsLabel     ?? '',
+          phantomBetsLabel:     response.data.phantomBetsLabel     ?? '',
           demoResultsOn:      response.data.demoResultsOn      ?? true,  // schema default: true
           riskRules: {
             enforceMultiplesOf10:     response.data.riskRules?.enforceMultiplesOf10     ?? true,
@@ -753,14 +753,14 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
-            <label className="label" htmlFor="house-bets-label">House Bets Line (shown to players)</label>
-            <input id="house-bets-label"
+            <label className="label" htmlFor="phantom-bets-label">Phantom Bets Line (shown to players)</label>
+            <input id="phantom-bets-label"
               type="text" minLength={10} maxLength={160}
-              value={formData.houseBetsLabel}
-              onChange={(e) => setFormData({ ...formData, houseBetsLabel: e.target.value })}
+              value={formData.phantomBetsLabel}
+              onChange={(e) => setFormData({ ...formData, phantomBetsLabel: e.target.value })}
               className="input"
             />
-            <SettingHelp path="houseBetsLabel" />
+            <SettingHelp path="phantomBetsLabel" />
             <p className="text-xs text-gold-400/80 mt-1">
               Players see this at the end of the board rules.
               You can reword it; it cannot be removed.

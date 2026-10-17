@@ -36,7 +36,7 @@
  */
 
 import express from 'express';
-import { houseBetsLabelOf } from '../markets/houseBets.js';
+import { phantomBetsLabelOf } from '../markets/phantomBets.js';
 import { db } from '#db';
 import { authenticatePlayer } from '../identity/auth.middleware.js';
 import { paiseToRupees } from '../../shared/money.js';
@@ -368,7 +368,7 @@ router.get('/v1/board-rules', async (req, res) => {
       multiplier: config.payoutMultiplier,
       // schema default: false (database/spec/config.spec.js riskRules)
       bothSides: !(config.riskRules?.blockOppositeSideBetting ?? false),
-      houseBetsLabel: houseBetsLabelOf(config),
+      phantomBetsLabel: phantomBetsLabelOf(config),
     }) });
   } catch (error) {
     return respondError(res, error, 'GET /api/v1/board-rules', { message: 'Could not load the board rules' });

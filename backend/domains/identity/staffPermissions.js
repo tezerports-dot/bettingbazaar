@@ -64,8 +64,8 @@ export const STAFF_PERMISSIONS = Object.freeze([
     description: 'Credit or debit a player\'s wallet by hand, and read the adjustment history.' },
   { key: 'canViewTransactions', group: 'players', label: 'View transactions',
     description: 'The transaction history of every player, read only.' },
-  { key: 'canManagePhantomAgents', group: 'players', label: 'House bettors',
-    description: 'Choose who may place cosmetic house bets and on which boards, and read their statistics.' },
+  { key: 'canManagePhantomAgents', group: 'players', label: 'Phantom bettors',
+    description: 'Choose who may place cosmetic phantom bets and on which boards, and read their statistics.' },
   { key: 'canManageReferrals', group: 'players', label: 'Referral programme', money: true,
     description: 'Read referral statistics and pay out the referral queue.' },
 

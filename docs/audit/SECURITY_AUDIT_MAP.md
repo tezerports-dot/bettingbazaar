@@ -3540,7 +3540,7 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 313 |
+| Route declarations in `backend/**` | 316 |
 | Reachable with **no auth middleware** | 42 |
 | Staff routes carrying an **area** (permission key) | 172 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 8 |
@@ -3612,16 +3612,17 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 473 |
-| Parameters only (safe by construction) | 307 |
-| Interpolating into statement text (each needs a reading) | 159 |
-| Statement text built elsewhere and passed in (each needs a reading) | 7 |
+| `pgQuery` call sites | 477 |
+| Parameters only (safe by construction) | 311 |
+| Interpolating into statement text (each needs a reading) | 158 |
+| Statement text built elsewhere and passed in (each needs a reading) | 8 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
 
 - `database/repositories/adminTokenConsiderations.js — text`
 - `database/repositories/identity.js — text`
 - `database/repositories/merchants.js — text`
+- `database/repositories/rtp.js — RESERVED_SQL`
 - `database/repositories/teamOversight.js — sql`
 - `database/repositories/teamPools.js — poolExposureSql`
 - `database/repositories/users.js — text`
@@ -3633,7 +3634,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 153 | 0 | 0 |
-| `admin-panel` | 138 | 0 | 0 |
+| `admin-panel` | 139 | 0 | 0 |
 | `merchant-panel` | 65 | 0 | 0 |
 
 <!-- END GENERATED -->

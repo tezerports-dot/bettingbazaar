@@ -23,7 +23,7 @@ import { CHIP_SCALE_STEP, chipScales, chipsFor } from '../constants';
 import { useShell } from './RedesignShell';
 import { useViewport } from './useViewport';
 import { useToast } from '../components/ui/Toast';
-import { AutoHouseBetsPanel } from './HouseBets';
+import { AutoPhantomBetsPanel } from './PhantomBets';
 import { LiveNumber } from './LiveNumber';
 import { fmt, timeStr } from './format';
 import { analyticsFor, winnersByBoard, Side } from './analytics';
@@ -521,7 +521,7 @@ const GameScreen: React.FC = () => {
             {isGhostMode && (
               <div style={{ textAlign: 'center', fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: '#c4b5fd', marginTop: 8 }}>👻 GHOST MODE ACTIVE · phantom bets balance the pool and are never paid out</div>
             )}
-            {isGhostMode && currentBoard && <AutoHouseBetsPanel boardKey={currentBoard.key} boardName={currentBoard.name} audience={audience} />}
+            {isGhostMode && currentBoard && <AutoPhantomBetsPanel boardKey={currentBoard.key} boardName={currentBoard.name} audience={audience} />}
           </div>
         </div>
 

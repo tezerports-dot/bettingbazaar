@@ -38,14 +38,14 @@ export const CycleHistory: React.FC = () => {
   const [endDate, setEndDate] = useState('');
   const [selectedCycle, setSelectedCycle] = useState<Cycle | null>(null);
   /**
-   * Real against house volume per round whose betting has closed (owner,
+   * Real against phantom volume per round whose betting has closed (owner,
    * 2026-10-15): of what players were shown, how much was real money.
-   * `GET /api/admin/analytics/real-volume` (stats.realVolumeByCycle); house
+   * `GET /api/admin/analytics/real-volume` (stats.realVolumeByCycle); phantom
    * figures include the equalizer's top-up. A round still taking bets is on
    * Live Cycles, where its split is the main admin's alone.
    */
   const [volume, setVolume] = useState<any[]>([]);
-  // House volume is the phantom-agents area (canManagePhantomAgents), not
+  // Phantom volume is the phantom-agents area (canManagePhantomAgents), not
   // analytics: asked for only by an account that holds it, so an analytics-only
   // sub-admin is not sent a request the server refuses.
   const canSeePhantom = usePermissions().can('canManagePhantomAgents');
@@ -186,9 +186,9 @@ export const CycleHistory: React.FC = () => {
 
   const volumePanel = volume.length > 0 && (
     <div className="card">
-      <p className="text-sm font-semibold text-gray-300">Real vs house volume: recent closed rounds</p>
+      <p className="text-sm font-semibold text-gray-300">Real vs phantom volume: recent closed rounds</p>
       <p className="text-xs text-gray-500 mt-0.5 mb-3">
-        Players are shown real and house stakes together. House bets (manual, auto and the equalizer's top-up)
+        Players are shown real and phantom stakes together. Phantom bets (manual, auto and the equalizer's top-up)
         always lose and are never paid out; this is how much of each round was real money.
       </p>
       <div className="overflow-x-auto max-h-80 overflow-y-auto">
@@ -198,7 +198,7 @@ export const CycleHistory: React.FC = () => {
               <th className="py-1.5 pr-3 font-medium">Round</th>
               <th className="py-1.5 pr-3 font-medium text-right">Real (D / B)</th>
               <th className="py-1.5 pr-3 font-medium text-right">Players · bets</th>
-              <th className="py-1.5 pr-3 font-medium text-right">House (D / B)</th>
+              <th className="py-1.5 pr-3 font-medium text-right">Phantom (D / B)</th>
               <th className="py-1.5 pr-3 font-medium text-right">Shown total</th>
               <th className="py-1.5 font-medium text-right">Real share</th>
             </tr>
@@ -220,8 +220,8 @@ export const CycleHistory: React.FC = () => {
                 </td>
                 <td className="py-1.5 pr-3 text-right text-gray-300">{r.realBettors} · {r.realBets}</td>
                 <td className="py-1.5 pr-3 text-right text-gray-400">
-                  {formatters.currency(r.houseTotal)}
-                  <p className="text-[11px] text-gray-500">{formatters.currency(r.houseDelhi)} / {formatters.currency(r.houseBombay)} · {r.houseBets} bets</p>
+                  {formatters.currency(r.phantomTotal)}
+                  <p className="text-[11px] text-gray-500">{formatters.currency(r.phantomDelhi)} / {formatters.currency(r.phantomBombay)} · {r.phantomBets} bets</p>
                 </td>
                 <td className="py-1.5 pr-3 text-right text-gray-300">{formatters.currency(r.shownTotal)}</td>
                 <td className="py-1.5 text-right font-semibold text-gold-400">{r.realPercent == null ? '—' : `${r.realPercent}%`}</td>
