@@ -6,10 +6,12 @@ import { DateRangePicker } from '../../components/DateRangePicker';
 import { Kpis, Toolbar } from '../../components/design';
 import { Modal } from '../../components/Modal';
 import { usePagination } from '../../hooks/usePagination';
+import { useDebounce } from '../../hooks/useDebounce';
+import { Download } from 'lucide-react';
 import { formatters } from '../../utils/formatters';
 import { usePermissions } from '../../hooks/usePermission';
 import { useBoards } from '../../hooks/useBoards';
-import api from '../../services/api';
+import api, { type CycleHistoryFilters, type CycleHistoryTotal } from '../../services/api';
 import type { Cycle } from '../../types';
 import toast from 'react-hot-toast';
 
@@ -34,6 +36,9 @@ export const CycleHistory: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('ALL');
+  const [audienceFilter, setAudienceFilter] = useState<'ALL' | 'VIP' | 'GENERAL'>('ALL');
+  const [totals, setTotals] = useState<CycleHistoryTotal[]>([]);
+  const debouncedSearch = useDebounce(search.trim(), 400);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [selectedCycle, setSelectedCycle] = useState<Cycle | null>(null);
@@ -59,20 +64,35 @@ export const CycleHistory: React.FC = () => {
       .catch(() => { /* the panel simply does not render */ });
   }, [canSeePhantom]);
 
+  // Every filter on this screen is applied by the server (`cycleHistory`).
+  // The search box and the dates were once never sent, so they changed nothing.
+  const filters: CycleHistoryFilters = {
+    type: typeFilter === 'ALL' ? undefined : typeFilter,
+    audience: audienceFilter === 'ALL' ? undefined : audienceFilter,
+    search: debouncedSearch || undefined,
+    from: startDate || undefined,
+    to: endDate || undefined,
+  };
+  const filterKey = JSON.stringify(filters);
+
+  // A new filter starts from its first page.
+  useEffect(() => { setPage(1); }, [filterKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const loadCycles = useCallback(async () => {
     setIsLoading(true);
     try {
-      const response = await api.cycles.getHistory(page, limit, typeFilter === 'ALL' ? undefined : typeFilter);
+      const response = await api.cycles.getHistory(page, limit, JSON.parse(filterKey));
       if (response.success && response.data) {
         setCycles(response.data);
         setTotal(response.pagination?.total || 0);
+        setTotals(response.totals || []);
       }
     } catch {
       toast.error('Failed to load cycle history');
     } finally {
       setIsLoading(false);
     }
-  }, [page, limit, typeFilter]);
+  }, [page, limit, filterKey]);
 
   useEffect(() => { loadCycles(); }, [loadCycles]);
 
@@ -169,8 +189,19 @@ export const CycleHistory: React.FC = () => {
     },
   ];
 
-  const totalNetRevenue = cycles.reduce((sum, c) => sum + getNetRevenue(c), 0);
-  const totalPaidOut    = cycles.reduce((sum, c) => sum + (c.totalPaidOut || 0), 0);
+  // Totals of every matching cycle, from the server: summing `cycles` here
+  // once added up only the page on screen.
+  const totalNetRevenue = totals.reduce((sum, t) => sum + t.netProfit, 0);
+  const totalPaidOut    = totals.reduce((sum, t) => sum + t.paidOut, 0);
+  const cyclesOfBoard   = (key: string) => totals.filter((t) => t.type === key).reduce((n, t) => n + t.cycles, 0);
+
+  const downloadCsv = async () => {
+    try {
+      await api.cycles.downloadHistoryCsv(filters);
+    } catch {
+      toast.error('Export failed');
+    }
+  };
 
   const volumePanel = volume.length > 0 && (
     <div className="card">
@@ -228,7 +259,7 @@ export const CycleHistory: React.FC = () => {
         { label: 'Total Cycles', value: total },
         ...boards.map((b) => ({
           label: b.name,
-          value: cycles.filter((c) => c.type === b.key).length,
+          value: cyclesOfBoard(b.key),
           tone: metaOf(b.key).tone,
         })),
         { label: 'Total Paid Out', value: formatters.currency(totalPaidOut), tone: 'var(--warning)' },
@@ -245,8 +276,18 @@ export const CycleHistory: React.FC = () => {
           })),
         ]}
         search={{ value: search, onChange: setSearch, placeholder: 'Search cycle id…' }}
+        actions={[{ label: 'Download CSV', icon: Download, onClick: downloadCsv }]}
       />
-      <DateRangePicker filters="cycles" startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
+      <div className="flex flex-wrap items-center gap-3">
+        <Toolbar
+          tabs={(['ALL', 'VIP', 'GENERAL'] as const).map((a) => ({
+            label: a === 'ALL' ? 'All profiles' : a,
+            active: audienceFilter === a,
+            onClick: () => setAudienceFilter(a),
+          }))}
+        />
+        <DateRangePicker filters="cycles" startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
+      </div>
 
       {/* Revenue formula explanation */}
       <div className="bg-dark-800 border border-dark-600 rounded-lg p-4 text-sm">
