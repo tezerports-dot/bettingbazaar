@@ -68,4 +68,22 @@ describe('the analytics page body', () => {
     fireEvent.change(screen.getByLabelText('Steps'), { target: { value: '40' } });
     expect(screen.getByRole('alert').textContent).toMatch(/between 1 and 12 steps/);
   });
+
+  it('reads newest first, left to right, with the newest result tagged Latest (owner, 2026-10-17)', () => {
+    // `few` is newest first: D, then B B, then D D.
+    render(<AnalyticsView winners={few} />);
+    const strip = screen.getByTestId('run-strip');
+    expect(strip.firstElementChild?.textContent).toBe('LATEST');
+    const boxes = [...strip.querySelectorAll('span')].filter((el) => el.textContent === 'D' || el.textContent === 'B');
+    expect(boxes.map((el) => el.textContent).join('')).toBe('DBBDD');
+    expect(boxes[0].hasAttribute('data-latest')).toBe(true);
+    expect(strip.querySelectorAll('[data-latest]')).toHaveLength(1);
+    expect(screen.getByText('Run strip · newest first')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Previous results' }));
+    const road = screen.getByTestId('big-road');
+    expect([...road.children].map((el) => el.textContent).join('')).toBe('DBBDD');
+    expect(road.firstElementChild?.hasAttribute('data-latest')).toBe(true);
+    expect(screen.getAllByTestId('latest-tag').length).toBeGreaterThanOrEqual(2);
+  });
 });

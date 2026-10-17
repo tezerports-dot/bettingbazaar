@@ -27,6 +27,7 @@ import { AutoHouseBetsPanel } from './HouseBets';
 import { LiveNumber } from './LiveNumber';
 import { fmt, timeStr } from './format';
 import { analyticsFor, winnersByBoard, Side } from './analytics';
+import { LATEST_RING, LatestTag } from './RunsAndGaps';
 import AnalyticsView from './AnalyticsView';
 import { BetCardFigure, BetCardFill, BlindBand, shareModeFor, sharesOf } from './BetCardShare';
 import { getAssetUrl } from '../services/backend.service';
@@ -528,10 +529,10 @@ const GameScreen: React.FC = () => {
         <div style={{ flex: 'none', padding: '8px 0 4px' }}>
           <div style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--line)', borderTop: '1px solid var(--line2)', borderRadius: 16, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, boxShadow: 'var(--shadow-sm)' }}>
             <span style={{ flex: 'none', fontSize: 9, fontWeight: 800, letterSpacing: '.1em', color: 'var(--text3)' }}>{currentBoard?.name ?? ''}</span>
-            <div style={{ flex: 1, display: 'flex', gap: 5, overflow: 'hidden', alignItems: 'center' }}>
+            <div data-testid="result-strip" style={{ flex: 1, display: 'flex', gap: 5, overflow: 'hidden', alignItems: 'center', padding: 3 }}>
               {stripBeads.length === 0
                 ? <span style={{ fontSize: 9, color: 'var(--text3)' }}>No results yet</span>
-                : stripBeads.map((b, i) => <span key={i} style={{ flex: 'none', width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--shadow-sm)' }}>{b.ch}</span>)}
+                : <><LatestTag />{stripBeads.map((b, i) => <span key={i} data-latest={i === 0 ? '' : undefined} style={{ ...(i === 0 ? LATEST_RING : null), flex: 'none', width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--shadow-sm)' }}>{b.ch}</span>)}</>}
             </div>
           </div>
         </div>
