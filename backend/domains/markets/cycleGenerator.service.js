@@ -233,7 +233,10 @@ class CycleGenerator {
                 // ─── PHASE 2: PHANTOM EQUALIZER ─────────────────────────────
                 // Runs silently server-side.
                 // Users only see the resulting updated totals via cycle_update.
-                if (now >= equalizerTime && now < betsClosedTime && !cycle.phantomBetsClosed) {
+                // Also when a slow tick missed the window: the house side must be
+                // balanced (and house betting closed) before the result, or the
+                // combined totals players see disagree with the real ones.
+                if (now >= equalizerTime && !cycle.phantomBetsClosed) {
                     await this.runPhantomEqualizer(cycle);
                 }
 
@@ -279,6 +282,28 @@ class CycleGenerator {
 
     async completeCycle(cycle) {
         try {
+            // Betting stops BEFORE the pools are read. A tick that skipped the
+            // CLOSED step reaches here with the round still OPEN or MERGED, and
+            // a bet committing between the read below and the declaration
+            // would be accepted and settled without ever having been counted
+            // when the smaller side was chosen. Closing is an UPDATE of the
+            // round's row, so it waits for every bet still being written (each
+            // holds a share lock on that row, `bets.core.placeBet`), and every
+            // later bet sees CLOSED and is refused. After this, the bets are
+            // final.
+            if (['OPEN', 'MERGED'].includes(cycle.status)) {
+                const closed = await db.markets.setCycleStatus(cycle.cycleId, 'CLOSED', { from: ['OPEN', 'MERGED'] });
+                if (closed.ok) {
+                    cycle.status = 'CLOSED';
+                    emitCyclePhase({
+                        cycleId: cycle.cycleId, type: cycle.type, audience: cycle.audience, phase: 'CLOSED',
+                    }, this.transports());
+                }
+            }
+            // The house side balanced before the result, if the equalizer's
+            // window was missed (a no-op when it already ran).
+            if (!cycle.phantomBetsClosed) await this.runPhantomEqualizer(cycle);
+
             // The winner is decided by which real pool is SMALLER, so these two
             // numbers are the single most consequential read in the platform.
             // Under FLAGS.DERIVED_CYCLE_POOLS the stored fields are a periodic
@@ -547,15 +572,24 @@ class CycleGenerator {
             // the read and the write had its pool contribution silently
             // overwritten. Players watched the pool SHRINK just after they bet.
             const result = await db.markets.equalizePhantomPools(cycle.cycleId);
-            if (!result.ok) return;   // already closed, or already declared
+            if (!result.ok) {
+                // Already closed by another tick or an admin: remember it, so
+                // this cycle object stops asking.
+                if (result.reason === 'PHANTOM_CLOSED') cycle.phantomBetsClosed = true;
+                return;
+            }
 
             const { cycle: after } = result;
             const equalizedValue = after.phantomDelhi;
+            cycle.phantomBetsClosed = true;
+            const before = { delhi: cycle.phantomDelhi, bombay: cycle.phantomBombay };
+            cycle.phantomDelhi = after.phantomDelhi;
+            cycle.phantomBombay = after.phantomBombay;
             const board = await boardOf(cycle.type);
             const cycleType = board ? cycleLabel(board) : cycle.type;
 
             // Nothing to balance — the write only closed phantom betting.
-            if (cycle.phantomDelhi === cycle.phantomBombay) {
+            if (before.delhi === before.bombay) {
                 console.log(`⚖️  Phantom equalizer: ${cycle.cycleId} — already balanced at ₹${equalizedValue}`);
                 return;
             }

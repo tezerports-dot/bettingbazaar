@@ -125,7 +125,10 @@ export async function placePhantomBet({ betId, userId, cycleId, side, amountRupe
 
   return withTransaction(async (client) => {
     const { rows: cycle } = await client.query(
-      `SELECT status, phantom_bets_closed FROM cycles WHERE cycle_id = $1 FOR UPDATE`,
+      `SELECT c.status, c.phantom_bets_closed,
+              clock_timestamp() >= c.end_time - make_interval(secs => b.equalizer_sec) AS past_equalizer
+         FROM cycles c JOIN boards b ON b.board_key = c.cycle_type
+        WHERE c.cycle_id = $1 FOR UPDATE OF c`,
       [String(cycleId)],
     );
     if (!cycle.length) return { ok: false, reason: 'CYCLE_NOT_FOUND' };
@@ -133,8 +136,10 @@ export async function placePhantomBet({ betId, userId, cycleId, side, amountRupe
       return { ok: false, reason: 'CYCLE_CLOSED', status: cycle[0].status };
     }
     // Checked under the lock, so an admin closing phantom betting cannot be
-    // raced by an agent's last bet.
-    if (cycle[0].phantom_bets_closed) return { ok: false, reason: 'PHANTOM_CLOSED' };
+    // raced by an agent's last bet. The clock as well as the flag: house
+    // betting stops at the board's equalizer offset even before the tick that
+    // balances the pools has run.
+    if (cycle[0].phantom_bets_closed || cycle[0].past_equalizer) return { ok: false, reason: 'PHANTOM_CLOSED' };
 
     const { rows: bet } = await client.query(
       `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status,
@@ -182,12 +187,15 @@ export async function placeAutoPhantomBets({ cycleId, cycleType = null, bets }) 
   }
   return withTransaction(async (client) => {
     const { rows: cycle } = await client.query(
-      `SELECT status, phantom_bets_closed FROM cycles WHERE cycle_id = $1 FOR UPDATE`,
+      `SELECT c.status, c.phantom_bets_closed,
+              clock_timestamp() >= c.end_time - make_interval(secs => b.equalizer_sec) AS past_equalizer
+         FROM cycles c JOIN boards b ON b.board_key = c.cycle_type
+        WHERE c.cycle_id = $1 FOR UPDATE OF c`,
       [String(cycleId)],
     );
     if (!cycle.length) return { ok: false, reason: 'CYCLE_NOT_FOUND' };
     if (!['OPEN', 'MERGED'].includes(cycle[0].status)) return { ok: false, reason: 'CYCLE_CLOSED' };
-    if (cycle[0].phantom_bets_closed) return { ok: false, reason: 'PHANTOM_CLOSED' };
+    if (cycle[0].phantom_bets_closed || cycle[0].past_equalizer) return { ok: false, reason: 'PHANTOM_CLOSED' };
 
     const { rows: placed } = await client.query(
       `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status,
@@ -226,36 +234,6 @@ export async function placeAutoPhantomBets({ cycleId, cycleType = null, bets }) 
     };
   });
 }
-
-/**
- * This cycle, but only if it is still taking bets.
- *
- * A READ, deliberately, and not the gate. The document version made it an
- * `$inc` on the pool totals with the status in the filter, so the "is it still
- * open" question and the pool update were one atomic act. That cannot be done
- * here and must not be: a bet holds `FOR SHARE` on the cycle row, so a bet that
- * also UPDATEd it would block against every other bet doing the same — 40P01,
- * on the hottest path on the platform. The pools are derived from the bets
- * instead, so there is nothing to increment.
- *
- * What settles the race is the BET insert, which carries the stake movement in
- * its own transaction. A cycle that closes between this read and that insert
- * costs at most one bet accepted a moment late — and the settlement pays from
- * the bet rows, so a late bet is paid or refunded like any other rather than
- * being lost.
- *
- * MERGED is accepted alongside OPEN: a merged cycle is still live, it has
- * simply been folded into a longer round.
- */
-export async function getAcceptingCycle(cycleId) {
-  const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM cycles
-      WHERE cycle_id = $1 AND status IN ('OPEN', 'MERGED')`,
-    [String(cycleId)], 'cycle_get_accepting',
-  );
-  return toCycle(rows[0]);
-}
-
 
 /**
  * Every cycle still running, across all types — the public "what can I bet on"
@@ -781,21 +759,31 @@ export async function cancelCycle(cycleId, { by = null } = {}) {
  *
  * Refuses a settled or declared cycle: moving the displayed pool after the
  * result is out changes what players were shown about a round that is over.
+ *
+ * It also CLOSES house betting, in the same statement, and runs once: from
+ * here on `placePhantomBet` and `placeAutoPhantomBets` refuse the round
+ * (`PHANTOM_CLOSED`, checked under the same row lock). It used to level the
+ * pools and leave house betting open, so manual house bets kept arriving
+ * after the equalizer and every tick levelled them again: the pools players
+ * watched kept moving until the round closed.
+ *
+ * @returns {ok:true, cycle} | {ok:false, reason:'NOT_FOUND'|'ALREADY_DECLARED'|'PHANTOM_CLOSED'}
  */
 export async function equalizePhantomPools(cycleId) {
   const { rows } = await pgQuery(
     `UPDATE cycles SET
        phantom_delhi_paise  = GREATEST(phantom_delhi_paise, phantom_bombay_paise),
        phantom_bombay_paise = GREATEST(phantom_delhi_paise, phantom_bombay_paise),
-       phantom_balanced = TRUE, updated_at = now()
-      WHERE cycle_id = $1 AND NOT is_settled AND winner IS NULL
+       phantom_balanced = TRUE, phantom_bets_closed = TRUE, updated_at = now()
+      WHERE cycle_id = $1 AND NOT is_settled AND winner IS NULL AND NOT phantom_bets_closed
       RETURNING ${COLUMNS}`,
     [String(cycleId)], 'cycle_equalize_phantom',
   );
   if (!rows[0]) {
     const current = await getCycle(cycleId);
     if (!current) return { ok: false, reason: 'NOT_FOUND' };
-    return { ok: false, reason: 'ALREADY_DECLARED', winner: current.winner };
+    if (current.winner) return { ok: false, reason: 'ALREADY_DECLARED', winner: current.winner };
+    return { ok: false, reason: 'PHANTOM_CLOSED' };
   }
   // The pools the admin actually needs to see are the totals, and the real half
   // of those comes from the bets — so it is read after the write, not carried

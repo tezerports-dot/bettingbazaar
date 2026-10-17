@@ -153,12 +153,17 @@ router.post('/cycles/:cycleId/equalize', authenticate, hasPermission('canManageC
     const result = await db.markets.equalizePhantomPools(cycleId);
 
     if (!result.ok) {
-      return result.reason === 'NOT_FOUND'
-        ? res.status(404).json({ success: false, message: 'Cycle not found' })
-        : res.status(409).json({
-          success: false,
-          message: `Cycle already has a result (${result.winner}) — its pools are final`,
+      if (result.reason === 'NOT_FOUND') return res.status(404).json({ success: false, message: 'Cycle not found' });
+      if (result.reason === 'PHANTOM_CLOSED') {
+        return res.status(409).json({
+          success: false, code: 'PHANTOM_CLOSED',
+          message: 'This round was already balanced; house betting on it is closed.',
         });
+      }
+      return res.status(409).json({
+        success: false,
+        message: `Cycle already has a result (${result.winner}) — its pools are final`,
+      });
     }
 
     const { cycle } = result;

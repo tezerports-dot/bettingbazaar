@@ -53,6 +53,8 @@ function engineFor(io) {
 const fund = (userId, field, paise, key) =>
   applyDeltaPaise({ userId, field, deltaPaise: paise, txId: key, type: 'CREDIT', reason: 'test funding', counterparty: TEST_FUNDING });
 
+// The round's row is written AFTER its bets: a declared round takes no bet
+// (`placeBet` refuses it), and a bet whose round has no row yet is accepted.
 const declareCycle = (cycleId, winner, { endedMinutesAgo = 5 } = {}) => pgQuery(
   `INSERT INTO cycles (cycle_id, cycle_type, status, winner, winner_determined_at,
                        start_time, end_time)
@@ -82,9 +84,9 @@ describePg('the settlement engine', () => {
   it('pays the winners, consumes the losers, and settles the cycle', async () => {
     await fund('w1', 'depositBalance', 100_00, 'f-w1');
     await fund('l1', 'depositBalance', 100_00, 'f-l1');
-    await declareCycle('c-happy', 'DELHI');
     await bet('b-win',  'w1', 'c-happy', 'DELHI',  100_00);
     await bet('b-lose', 'l1', 'c-happy', 'BOMBAY', 100_00);
+    await declareCycle('c-happy', 'DELHI');
 
     const { io } = fakeIo();
     await engineFor(io).tick();
@@ -120,9 +122,9 @@ describePg('the settlement engine', () => {
   it('records net profit as the real pool minus what it paid', async () => {
     await fund('w1', 'depositBalance', 100_00, 'f-w1');
     await fund('l1', 'depositBalance', 300_00, 'f-l1');
-    await declareCycle('c-profit', 'DELHI');
     await bet('b-win',  'w1', 'c-profit', 'DELHI',  100_00);
     await bet('b-lose', 'l1', 'c-profit', 'BOMBAY', 300_00);
+    await declareCycle('c-profit', 'DELHI');
 
     await engineFor(fakeIo().io).tick();
 
@@ -136,12 +138,12 @@ describePg('the settlement engine', () => {
   // ── Trap 3: no result, no settlement ──────────────────────────────────────
   it('will not settle a cycle that has no result', async () => {
     await fund('u1', 'depositBalance', 100_00, 'f1');
+    await bet('b1', 'u1', 'c-undeclared', 'DELHI', 100_00);
     await pgQuery(
       `INSERT INTO cycles (cycle_id, cycle_type, status, start_time, end_time)
        VALUES ('c-undeclared', '30_MIN', 'CLOSED',
                now() - interval '35 minutes', now() - interval '5 minutes')`, [],
     );
-    await bet('b1', 'u1', 'c-undeclared', 'DELHI', 100_00);
 
     await engineFor(fakeIo().io).tick();
 
@@ -165,9 +167,9 @@ describePg('the settlement engine', () => {
   // ── Trap 6: totals from rows, not accumulators ────────────────────────────
   it('reports what the CYCLE paid, not what this pass paid', async () => {
     await fund('w1', 'depositBalance', 200_00, 'f-w1');
-    await declareCycle('c-resume', 'DELHI');
     await bet('b-1', 'w1', 'c-resume', 'DELHI', 100_00);
     await bet('b-2', 'w1', 'c-resume', 'DELHI', 100_00);
+    await declareCycle('c-resume', 'DELHI');
 
     // Simulate a pass that died after settling one bet: settle b-1 directly,
     // then let the engine finish. Its in-memory accumulator will only ever see
@@ -192,8 +194,8 @@ describePg('the settlement engine', () => {
   // ── The claim ─────────────────────────────────────────────────────────────
   it('lets only one worker settle a cycle', async () => {
     await fund('w1', 'depositBalance', 100_00, 'f-w1');
-    await declareCycle('c-race', 'DELHI');
     await bet('b1', 'w1', 'c-race', 'DELHI', 100_00);
+    await declareCycle('c-race', 'DELHI');
 
     // Two ticks at once. The claim is a guarded UPDATE, so exactly one of them
     // gets the cycle; the other finds nothing claimable and does nothing.
@@ -216,8 +218,8 @@ describePg('the settlement engine', () => {
 
   it('is idempotent: a second pass over a settled cycle pays nothing more', async () => {
     await fund('w1', 'depositBalance', 100_00, 'f-w1');
-    await declareCycle('c-twice', 'DELHI');
     await bet('b1', 'w1', 'c-twice', 'DELHI', 100_00);
+    await declareCycle('c-twice', 'DELHI');
 
     const engine = engineFor(fakeIo().io);
     await engine.tick();
@@ -232,8 +234,8 @@ describePg('the settlement engine', () => {
   // ── Phantom bets ──────────────────────────────────────────────────────────
   it('closes phantom bets without moving money for them', async () => {
     await fund('w1', 'depositBalance', 100_00, 'f-w1');
-    await declareCycle('c-phantom', 'DELHI');
     await bet('b-real', 'w1', 'c-phantom', 'DELHI', 100_00);
+    await declareCycle('c-phantom', 'DELHI');
     await pgQuery(
       `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status, is_phantom)
        VALUES ('b-ph','house','c-phantom','DELHI',900_00,'PENDING',TRUE)`, [],
@@ -257,8 +259,8 @@ describePg('the settlement engine', () => {
   // ── Refusals ──────────────────────────────────────────────────────────────
   it('settles what it can and leaves a bet with no funding record alone', async () => {
     await fund('w1', 'depositBalance', 100_00, 'f-w1');
-    await declareCycle('c-refuse', 'DELHI');
     await bet('b-good', 'w1', 'c-refuse', 'DELHI', 100_00);
+    await declareCycle('c-refuse', 'DELHI');
     // A bet with no placement ledger: its funding split cannot be
     // reconstructed, so settling it would have to GUESS which pocket to return
     // the stake to. It is refused and left for a human.
@@ -280,8 +282,8 @@ describePg('the settlement engine', () => {
   // ── The realtime notification ─────────────────────────────────────────────
   it('tells each winner the balance they actually have', async () => {
     await fund('w1', 'depositBalance', 100_00, 'f-w1');
-    await declareCycle('c-emit', 'DELHI');
     await bet('b1', 'w1', 'c-emit', 'DELHI', 100_00);
+    await declareCycle('c-emit', 'DELHI');
 
     const { io, emitted } = fakeIo();
     await engineFor(io).tick();

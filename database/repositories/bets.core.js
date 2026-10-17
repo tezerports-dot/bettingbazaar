@@ -335,6 +335,18 @@ async function audienceOfCycle(client, cycleId) {
   const { rows } = await client.query('SELECT audience FROM cycles WHERE cycle_id = $1', [String(cycleId)]);
   return rows[0]?.audience ?? 'VIP';
 }
+
+/** The statuses in which a round takes a player's bet. */
+export const BETTING_STATES = Object.freeze(['OPEN', 'MERGED']);
+
+/** A round's status and audience, share-locked for the bet being written (`placeBet`). */
+async function roundForStakeWithin(client, cycleId) {
+  const { rows } = await client.query(
+    'SELECT status, audience FROM cycles WHERE cycle_id = $1 FOR SHARE',
+    [String(cycleId)],
+  );
+  return rows[0] ?? null;
+}
 const fundsMatchAudience = (slices, audience) => (audience === 'GENERAL'
   ? slices.every((s) => s.field === 'promoBalance')
   : slices.every((s) => s.field !== 'promoBalance'));
@@ -351,6 +363,7 @@ const fundsMatchAudience = (slices, audience) => (audience === 'GENERAL'
  *   { ok: true,  idempotent: false, bet, balances }  placed by this call
  *   { ok: true,  idempotent: true,  bet }            already placed; nothing moved
  *   { ok: false, reason: 'insufficient' }            the guard refused the debit
+ *   { ok: false, reason: 'cycle_closed', status }    the round no longer takes bets
  */
 export async function placeBet({
   betId, userId, cycleId, side, slices, publicId = null, actor = null, reason = null,
@@ -375,8 +388,23 @@ export async function placeBet({
       return { commit: false, value: { ok: true, idempotent: true, bet: ctx.bet } };
     }
 
+    // The round must still be taking bets, asked HERE, in the transaction
+    // that writes the bet, under a share lock on the round's row. Every
+    // status change (`setCycleStatus`, `declareWinner`) is an UPDATE of that
+    // row, so it waits for this bet to commit or roll back, and a bet that
+    // starts after it sees the new status. So a bet this accepts is always
+    // committed before the round leaves OPEN/MERGED, and `completeCycle`,
+    // which closes the round before it reads the real pools, always counts
+    // it. Bets do not block each other: a share lock admits other shares.
+    // A bet against a cycle with no row (a repository test) is VIP's and is
+    // not refused; the route has already read the round.
+    const round = await roundForStakeWithin(ctx.client, cycleId);
+    if (round && !BETTING_STATES.includes(round.status)) {
+      return { commit: false, value: { ok: false, reason: 'cycle_closed', status: round.status } };
+    }
+
     // GENERAL money only on a GENERAL cycle, and only GENERAL money there.
-    if (!fundsMatchAudience(slices, await audienceOfCycle(ctx.client, cycleId))) {
+    if (!fundsMatchAudience(slices, round?.audience ?? 'VIP')) {
       return { commit: false, value: { ok: false, reason: 'wrong_balance_for_cycle' } };
     }
 
