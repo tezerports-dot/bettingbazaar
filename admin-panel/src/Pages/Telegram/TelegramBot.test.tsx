@@ -50,6 +50,9 @@ describe('Telegram setup: the bot and its standbys', () => {
     saveBot.mockResolvedValue({ ...PRIMARY, miniAppShortName: 'play' });
     render(<TelegramBot />);
     await screen.findByText('@bb_bot');
+    // The field is filled from the saved bot after it renders; type only once
+    // it holds the saved value, or the fill can overwrite what was typed.
+    await waitFor(() => expect((screen.getByLabelText('Primary bot Mini App short name') as HTMLInputElement).value).toBe('app'));
     fireEvent.change(screen.getByLabelText('Primary bot Mini App short name'), { target: { value: 'play' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save Primary bot' }));
     await waitFor(() => expect(saveBot).toHaveBeenCalledWith({ miniAppShortName: 'play' }));
