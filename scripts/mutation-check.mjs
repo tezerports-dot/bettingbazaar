@@ -1908,9 +1908,9 @@ const MUTATIONS = [
   {
     id: 'M317', file: 'database/spec/config.spec.js', config: PG,
     test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
-    why: 'the sell hold may be set under the owner\'s one-hour floor',
-    from: "  withdrawalHoldMinutes: int(60, 60, 1440),",
-    to: "  withdrawalHoldMinutes: int(60, 0, 1440),",
+    why: 'the sell hold can no longer be set to 0 minutes, as the owner allowed',
+    from: "  withdrawalHoldMinutes: int(60, 0, 10080),",
+    to: "  withdrawalHoldMinutes: int(60, 1, 10080),",
   },
   {
     id: 'M318', file: 'backend/domains/disputes/disputeOutcome.service.js', config: PG,
