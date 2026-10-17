@@ -18,14 +18,16 @@ describePg('commission pool funding', () => {
   afterAll(async () => { await closePg(); });
 
   it('two fundings at once spend at most what is distributable', async () => {
+    // Bonuses and casino wins are ledger costs, so other suites can leave the
+    // shared balance below zero: seed past that (trap 10).
     const available = await accountBalancePaise('PLATFORM_REVENUE');
-    const seed = 1000_00;
+    const seed = Math.max(0, -available) + 1000_00;
     // Revenue earned, as a settled round books it.
     await recordEvent({
       eventType: 'BET_CYCLE_SETTLED', idempotencyKey: `bfl-${randomUUID()}`, refModel: 'Cycle', refId: `bfl-${randomUUID()}`,
       postings: [{ account: 'USER_FUNDS', amountPaise: seed }, { account: 'PLATFORM_REVENUE', amountPaise: -seed }],
     });
-    const each = Math.max(available, 0) + seed; // each alone fits; both together do not
+    const each = available + seed; // each alone fits; both together do not
     const fund = (n) => fundMerchantBonusPool({
       amountMinor: each, actor: { userId: `bfl-admin-${n}` }, justification: `race ${n}`, idempotencyKey: `bfl-${randomUUID()}`,
     });
@@ -35,13 +37,13 @@ describePg('commission pool funding', () => {
   });
 
   it('a replay of the same key records once and is not refused', async () => {
-    const seed = 50_00;
+    const seed = Math.max(0, -(await accountBalancePaise('PLATFORM_REVENUE'))) + 50_00;
     await recordEvent({
       eventType: 'BET_CYCLE_SETTLED', idempotencyKey: `bfl-${randomUUID()}`, refModel: 'Cycle', refId: `bfl-${randomUUID()}`,
       postings: [{ account: 'USER_FUNDS', amountPaise: seed }, { account: 'PLATFORM_REVENUE', amountPaise: -seed }],
     });
     const key = `bfl-${randomUUID()}`;
-    const args = { amountMinor: seed, actor: { userId: 'bfl-admin' }, justification: 'replay', idempotencyKey: key };
+    const args = { amountMinor: 50_00, actor: { userId: 'bfl-admin' }, justification: 'replay', idempotencyKey: key };
     const first = await fundMerchantBonusPool(args);
     const again = await fundMerchantBonusPool(args);
     expect(first.idempotent).toBe(false);
