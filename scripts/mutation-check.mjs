@@ -3123,8 +3123,8 @@ const MUTATIONS = [
     id: 'M446', file: 'backend/domains/disputes/disputeResolution.admin.routes.js', config: PG,
     test: 'backend/tests/routes/disputeQueuePg.test.js',
     why: 'the dispute the dialog opens is the raw order, not the queue\'s view, so it carries no "who would be suspended" and the Resolve tab says nobody is',
-    from: `    res.json({ success: true, dispute: toDisputeView(order) });`,
-    to: `    res.json({ success: true, dispute: order });`,
+    from: `      success: true, dispute: toDisputeView(order),`,
+    to: `      success: true, dispute: order,`,
   },
 
   // ── A supervisor takes no orders, so has no online switch (helper/harness-2) ─
