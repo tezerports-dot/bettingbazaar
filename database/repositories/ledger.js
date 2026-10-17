@@ -222,6 +222,22 @@ export async function findPromoGrantsUnbooked({ limit = 200 } = {}) {
   }));
 }
 
+/** Dispute compensations (`dispute_compensations`) with no DISPUTE_COMPENSATION event yet. */
+export async function findCompensationsUnbooked({ limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT c.order_id, c.percent, c.amount_paise, c.created_at
+       FROM dispute_compensations c
+       LEFT JOIN accounting_events e ON e.ref_model = 'DisputeCompensation' AND e.ref_id = c.order_id
+      WHERE e.id IS NULL
+      ORDER BY c.created_at
+      LIMIT $1`,
+    [Math.min(Math.max(Number(limit) || 200, 1), 1000)], 'ledger_compensation_unbooked',
+  );
+  return rows.map((r) => ({
+    orderId: r.order_id, percent: Number(r.percent), amountPaise: Number(r.amount_paise), createdAt: r.created_at,
+  }));
+}
+
 /** One account's reported balance in minor units. */
 export async function accountBalanceOnPostgres(accountCode) {
   return { reportedMinor: await pgAccountBalance(accountCode) };

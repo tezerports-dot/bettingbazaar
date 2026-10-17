@@ -303,6 +303,24 @@ export async function returnSettledStakeWithin(ctx, { orderId, amountPaise }) {
 }
 
 /**
+ * A dispute's compensation to the player, paid out of the losing team's pool
+ * INSIDE the transaction that takes it from the pool
+ * (`teamPools.payDisputeCompensation`). Into winnings: the player was wronged,
+ * so it is theirs to withdraw. Key `dispute_comp_<orderId>`.
+ */
+export async function creditCompensationWithin(ctx, { orderId, amountPaise }) {
+  return applyMovementWithin(ctx, {
+    legs: [{ field: 'winningsBalance', deltaPaise: amountPaise }],
+    ledger: [{
+      txId: `dispute_comp_${orderId}`, field: 'winningsBalance', amountPaise, type: 'CREDIT',
+      reason: `Dispute compensation: ${orderId}`, refId: orderId,
+    }],
+    // TEAM_FLOAT → USER_FLOAT is the compensation's own movement.
+    counterparty: { postedByCaller: true },
+  });
+}
+
+/**
  * walletAuthority.refundWithdrawal — rejected: locked returns to winnings.
  * txId `refund_<id>`, preserved from the pre-2026-07-10 delegation so
  * historical idempotency continuity holds.

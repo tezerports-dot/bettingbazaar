@@ -6,7 +6,9 @@ import { moveDepositMoney } from '../payment/depositCredit.js';
 // The one owner of how an admin decision ends a withdrawal's money (F-027),
 // and of a cancelled buy's merchant hold.
 import { endWithdrawal } from '../payment/withdrawalHold.service.js';
-import { recordDisputeLoser, faultPreview } from './disputeOutcome.service.js';
+import { recordDisputeLoser, faultPreview, partyAtFault } from './disputeOutcome.service.js';
+import { DISPUTE_COMPENSATION_PERCENTS } from '#db/repositories/teamPools.js';
+import { sendAlert } from '../../services/alerting.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitMerchantUpdate, emitToPlayer } from '../notification/realtimeEmitters.js';
 import { respondError } from '../../shared/httpError.js';
@@ -136,7 +138,16 @@ router.get('/dispute-orders/:orderId', authenticate, hasPermission('canResolveDi
     // for this when it opens the dialog; as the raw order it carried no
     // `suspendsIfTo…` and named the parties under other keys, so the Resolve
     // tab said "Nobody is suspended" where the member would be.
-    res.json({ success: true, dispute: toDisputeView(order) });
+    const [merchantRecord, compensation] = await Promise.all([
+      db.disputeFaults.merchantOffenceRecord(order.merchantId ?? order.merchant?.merchantId ?? null),
+      db.teamPools.compensationFor(order.orderId),
+    ]);
+    res.json({
+      success: true, dispute: toDisputeView(order),
+      // What the Dispute Manager weighs before deciding against the member,
+      // and the compensation choices it may award (owner, 2026-10-17).
+      merchantRecord, compensation, compensationPercents: DISPUTE_COMPENSATION_PERCENTS,
+    });
   } catch (err) {
     return respondError(res, err, 'GET /dispute-orders/:orderId', { message: 'Failed to fetch dispute' });
   }
@@ -200,6 +211,11 @@ router.post('/dispute-orders/:orderId/chat', authenticate, hasPermission('canRes
 router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const { decision, resolution } = req.body;
+    const compensationPercent = req.body.compensationPercent == null ? 0 : Number(req.body.compensationPercent);
+    if (!DISPUTE_COMPENSATION_PERCENTS.includes(compensationPercent)) {
+      return res.status(400).json({ success: false, code: 'UNKNOWN_COMPENSATION',
+        message: `Compensation is one of ${DISPUTE_COMPENSATION_PERCENTS.join(', ')} percent.` });
+    }
     
     const validDecisions = ['RELEASE_TO_USER', 'RELEASE_TO_MERCHANT', 'CANCEL_ORDER'];
     if (!validDecisions.includes(decision)) {
@@ -240,6 +256,19 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
     const releasesToMerchant = order.type === 'WITHDRAWAL' && decision === 'RELEASE_TO_MERCHANT';
     const newStatus = (releasesToUser || releasesToMerchant) ? 'COMPLETED' : 'CANCELLED';
 
+    // Compensation is paid only by the side this decision finds at fault: asked
+    // before anything moves, from the same rule that records the loser. The
+    // payment itself asks again under the order's lock (`payDisputeCompensation`).
+    if (compensationPercent > 0) {
+      const disputedFrom = order.status === 'DISPUTED' ? await db.orders.disputedFromState(order.orderId) : null;
+      const party = order.status === 'DISPUTED'
+        ? partyAtFault(order, { completed: newStatus === 'COMPLETED', disputedFrom }) : null;
+      if (party !== 'MERCHANT') {
+        return res.status(400).json({ success: false, code: 'COMPENSATION_NEEDS_MERCHANT_FAULT',
+          message: 'Compensation is paid only when this decision finds the member or merchant at fault. Choose 0% for this decision.' });
+      }
+    }
+
     const moved = await (newStatus === 'COMPLETED' ? completeOrder : cancelOrder)(order._id, {
       set: {
         disputeDecision:   decision,
@@ -266,7 +295,7 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
     // A withdrawal's money step is keyed end to end: replaying it repairs a
     // first click that failed part-way and moves nothing when it succeeded.
     const withdrawalDecision = releasesToMerchant ? 'RELEASE' : 'REFUND';
-    const outcome = { completed: newStatus === 'COMPLETED', decision, by: req.user.userId };
+    const outcome = { completed: newStatus === 'COMPLETED', decision, by: req.user.userId, compensationPercent };
     if (moved.idempotent) {
       if (order.type === 'WITHDRAWAL') {
         await endWithdrawal(order.orderId, withdrawalDecision, { reason: resolution, by: req.user.userId });
@@ -274,7 +303,10 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
       // Keyed by the order: repairs a first decision whose suspension did not
       // land, and records nothing twice.
       await recordDisputeLoser(asDecided, outcome);
-      return res.json({ success: true, message: 'Dispute already resolved', order: moved.order ?? order });
+      // The percent paid is the one the first decision recorded.
+      const compensation = compensationPercent > 0
+        ? await payCompensation(order, req.user.userId) : null;
+      return res.json({ success: true, message: 'Dispute already resolved', order: moved.order ?? order, compensation });
     }
 
     // ── Apply token movement based on decision + order type ──────────────────
@@ -374,6 +406,13 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
       systemMessage += `\n⛔ ${fault.party === 'PLAYER' ? 'The player' : 'The team member'} lost this dispute and is suspended`
         + (fault.highRisk ? ` (lost disputes: ${fault.lostCount} — high-risk admin review)` : '') + '.';
     }
+    // After the loser is recorded, because the payment asks for that record.
+    const compensation = compensationPercent > 0
+      ? await payCompensation(order, req.user.userId) : null;
+    if (compensation?.ok) {
+      systemMessage += `\n💰 The player is compensated ${compensation.percent}% of the order: `
+        + `${compensation.amountPaise / 100} tokens to their winnings, from the team's pool.`;
+    }
 
     // The order was written by the transition above, decision fields and all —
     // there is no second save, and therefore no window in which the money has
@@ -407,10 +446,60 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
     }
     global.sseManager?.broadcastToAdmins('queue_order_update', payload);
 
-    res.json({ success: true, message: 'Dispute resolved successfully', order });
+    res.json({ success: true, message: 'Dispute resolved successfully', order, compensation });
   } catch (err) {
     console.error('POST /dispute-orders/:orderId/resolve error:', err);
     res.status(500).json({ success: false, message: 'Failed to resolve dispute' });
+  }
+});
+
+/**
+ * Pay a decided dispute's compensation (`teamPools.payDisputeCompensation`) and
+ * phrase a refusal the Dispute Manager can act on. A short pool pays nothing:
+ * the screen says what the pool has, and the same request can be sent again
+ * from the dispute once the team's pool is topped up.
+ */
+async function payCompensation(order, by) {
+  const paid = await db.teamPools.payDisputeCompensation(order.orderId, { actor: `admin:${by}` });
+  if (paid.ok) {
+    if (!paid.already) {
+      await db.audit.recordDetailed({
+        performedBy: String(by), action: 'DISPUTE_COMPENSATION_PAID', category: 'DISPUTE',
+        targetType: 'Order', targetId: order.orderId,
+        details: { percent: paid.percent, amountPaise: paid.amountPaise, teamId: paid.teamId },
+      }).catch(() => {});
+      const { emitWalletUpdate } = await import('../notification/realtimeEmitters.js');
+      await emitWalletUpdate(String(order.userId)).catch(() => {});
+    }
+    return { ok: true, percent: paid.percent, amountPaise: paid.amountPaise, already: paid.already === true };
+  }
+  const message = {
+    pool_short: `The team's pool has only ${(paid.availablePaise ?? 0) / 100} tokens available, so nothing was paid. Pay it again once the pool is topped up.`,
+    not_merchant_fault: 'This dispute was not decided against the member or merchant, so no compensation is paid.',
+    none_decided: 'This decision awarded no compensation (0%), so there is nothing to pay.',
+    no_team: 'This order has no team, so there is no pool to pay from.',
+  }[paid.reason] ?? `The compensation was not paid (${paid.reason}).`;
+  sendAlert('dispute-compensation-not-paid', 'A dispute compensation was not paid', {
+    orderId: order.orderId, reason: paid.reason,
+  }).catch(() => {});
+  return { ok: false, reason: paid.reason, message, availablePaise: paid.availablePaise ?? null };
+}
+
+// ── POST /api/admin/dispute-orders/:orderId/compensation ─────────────────────
+// Pays (or repays, once) the compensation of a dispute already decided against
+// the member: the Dispute Manager's retry after a short pool. It pays the
+// percent the decision recorded, never one sent with the retry.
+router.post('/dispute-orders/:orderId/compensation', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
+  try {
+    const order = await db.orders.getOrderRecord(req.params.orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const compensation = await payCompensation(order, req.user.userId);
+    if (!compensation.ok) {
+      return res.status(409).json({ success: false, code: compensation.reason.toUpperCase(), message: compensation.message, compensation });
+    }
+    res.json({ success: true, compensation });
+  } catch (err) {
+    return respondError(res, err, 'POST /dispute-orders/:orderId/compensation', { message: 'Could not pay the compensation.' });
   }
 });
 

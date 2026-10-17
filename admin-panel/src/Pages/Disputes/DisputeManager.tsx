@@ -24,6 +24,7 @@ interface Dispute {
   type: 'DEPOSIT' | 'WITHDRAWAL';
   amount: number;
   fiatAmount: number;
+  tokenAmount?: number;
   status: string;
   createdAt: string;
   userId?: { userId: string; username: string; mobile?: string } | null;
@@ -41,6 +42,19 @@ interface Dispute {
    *  (the team member), or null when it is not a dispute about a payment. */
   suspendsIfToUser?: 'PLAYER' | 'MERCHANT' | null;
   suspendsIfToMerchant?: 'PLAYER' | 'MERCHANT' | null;
+}
+
+/** The member's offence record, as `disputeFaults.merchantOffenceRecord` sends it. */
+interface MerchantRecord {
+  merchantId: string; name: string; status: string; suspensionReason: string | null;
+  highRisk: boolean; assignmentPaused: boolean; disputesLost: number;
+  refusalStreak: number; unpaidBuyStreak: number; recentDays: number;
+  recentRefusals: number; recentRedFlags: number; recentProblems: number; recentFlags: number;
+  compensationsPaid: number; compensatedPaise: number; repeatOffender: boolean;
+}
+/** A paid compensation (`teamPools.compensationFor`), or a refused one from the resolve answer. */
+interface CompensationResult {
+  ok?: boolean; percent?: number; amountPaise?: number; message?: string; reason?: string;
 }
 
 /** The note under the decision: who the server will suspend if it is taken. */
@@ -89,6 +103,13 @@ export const DisputeManager: React.FC = () => {
 
   // Resolve tab state
   const [decision, setDecision]           = useState('RELEASE_TO_USER');
+  // From the detail answer: the member's record, the compensation already
+  // paid, and the choices the server allows (owner, 2026-10-17).
+  const [record, setRecord]               = useState<MerchantRecord | null>(null);
+  const [paidComp, setPaidComp]           = useState<CompensationResult | null>(null);
+  const [compChoices, setCompChoices]     = useState<number[]>([0]);
+  const [compPercent, setCompPercent]     = useState(0);
+  const [compRefused, setCompRefused]     = useState<CompensationResult | null>(null);
   const [resolution, setResolution]       = useState('');
   const [isSaving, setIsSaving]           = useState(false);
 
@@ -166,7 +187,12 @@ export const DisputeManager: React.FC = () => {
     try {
       const res = await api.get<any>(`/api/admin/dispute-orders/${d._id}`);
       setSelected(res.data?.dispute || d);
-    } catch { setSelected(d); }
+      setRecord(res.data?.merchantRecord ?? null);
+      setPaidComp(res.data?.compensation ?? null);
+      setCompChoices(Array.isArray(res.data?.compensationPercents) ? res.data.compensationPercents : [0]);
+    } catch { setSelected(d); setRecord(null); setPaidComp(null); setCompChoices([0]); }
+    setCompPercent(0);
+    setCompRefused(null);
     setActiveTab('chat');
     setDecision('RELEASE_TO_USER');
     setResolution('');
@@ -194,20 +220,51 @@ export const DisputeManager: React.FC = () => {
     finally { setSendingMsg(false); }
   };
 
+  // The server's own answer for who this decision finds at fault; compensation
+  // is offered only when it is the member (the route refuses it otherwise).
+  const againstMember = !!selected
+    && (decision === 'RELEASE_TO_USER' ? selected.suspendsIfToUser : selected.suspendsIfToMerchant) === 'MERCHANT';
+
   // ── Resolve dispute ───────────────────────────────────────────────────────
   const handleResolve = async () => {
     if (!selected || !resolution.trim()) { toast.error('Resolution notes required'); return; }
     setIsSaving(true);
     try {
-      await api.post(`/api/admin/dispute-orders/${selected._id}/resolve`, {
+      const res = await api.post<any>(`/api/admin/dispute-orders/${selected._id}/resolve`, {
         decision,
         resolution: resolution.trim(),
+        compensationPercent: againstMember ? compPercent : 0,
       });
-      toast.success('Dispute resolved');
+      const comp: CompensationResult | null = res.data?.compensation ?? null;
+      if (comp && comp.ok === false) {
+        // Decided, but the team's pool could not pay: stay open so it can be paid again.
+        toast.error(comp.message || 'The compensation was not paid');
+        setCompRefused(comp);
+        load();
+        return;
+      }
+      toast.success(comp?.ok ? `Dispute resolved; ${comp.percent}% compensation paid` : 'Dispute resolved');
       setSelected(null);
       load();
     } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to resolve'); }
     finally { setIsSaving(false); }
+  };
+
+  // Pay a refused compensation again, once the team's pool can cover it.
+  const handlePayAgain = async () => {
+    if (!selected || !compRefused) return;
+    setIsSaving(true);
+    try {
+      // The server pays the percent the decision recorded; the retry names none.
+      const res = await api.post<any>(`/api/admin/dispute-orders/${selected._id}/compensation`, {});
+      toast.success(`${res.data?.compensation?.percent ?? compPercent}% compensation paid`);
+      setSelected(null);
+      load();
+    } catch (e: any) {
+      const c = e.response?.data?.compensation;
+      setCompRefused(c ?? compRefused);
+      toast.error(e.response?.data?.message || 'The compensation was not paid');
+    } finally { setIsSaving(false); }
   };
 
   const handleEscalate = async (disputeId: string) => {
@@ -469,6 +526,43 @@ export const DisputeManager: React.FC = () => {
                   {suspensionNote(decision === 'RELEASE_TO_USER' ? selected.suspendsIfToUser : selected.suspendsIfToMerchant)}
                 </p>
 
+                {record && (
+                  <div className={`text-xs rounded-lg p-2 border ${record.repeatOffender ? 'border-red-700/50 bg-red-900/20 text-red-200' : 'border-dark-600 bg-dark-700 text-gray-300'}`}>
+                    <p className="font-semibold mb-1">
+                      {record.repeatOffender ? 'Repeat offender: ' : 'Record of '}{record.name} ({record.status}{record.highRisk ? ', high risk' : ''}{record.assignmentPaused ? ', paused' : ''})
+                    </p>
+                    <p>Disputes lost: {record.disputesLost} · Compensation already paid: {record.compensationsPaid} ({formatters.currency(record.compensatedPaise / 100)})</p>
+                    <p>Refusals in a row: {record.refusalStreak} · Unpaid buys in a row: {record.unpaidBuyStreak}</p>
+                    <p>Last {record.recentDays} days: {record.recentRefusals} refusals, {record.recentRedFlags} red flags, {record.recentProblems} problems, {record.recentFlags} daily flags</p>
+                    {record.suspensionReason && <p>Suspended for: {record.suspensionReason}</p>}
+                  </div>
+                )}
+
+                {paidComp && (
+                  <p className="text-xs text-green-300">Compensation already paid: {paidComp.percent}% ({formatters.currency((paidComp.amountPaise ?? 0) / 100)}).</p>
+                )}
+                {!paidComp && againstMember && compChoices.length > 1 && (
+                  <div>
+                    <label className="label" htmlFor="compensation">Compensate the player from the team's pool</label>
+                    <select id="compensation" value={compPercent} disabled={!!compRefused}
+                      onChange={e => setCompPercent(Number(e.target.value))} className="input">
+                      {compChoices.map((p) => (
+                        <option key={p} value={p}>
+                          {p === 0 ? 'No compensation (0%)' : `${p}% of the order: ${formatters.currency((selected.tokenAmount ?? selected.amount) * p / 100)}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {compRefused && (
+                  <div role="alert" className="text-xs text-red-300 bg-red-900/20 border border-red-700/40 rounded-lg p-2 space-y-2">
+                    <p>The dispute is decided, but the compensation was not paid. {compRefused.message}</p>
+                    <button onClick={handlePayAgain} disabled={isSaving} className="btn-primary text-xs disabled:opacity-50">
+                      {isSaving ? 'Paying…' : `Pay ${compPercent}% compensation again`}
+                    </button>
+                  </div>
+                )}
+
                 <div>
                   <label className="label" htmlFor="resolution-notes">Resolution Notes *</label>
                   <textarea id="resolution-notes" value={resolution} onChange={e => setResolution(e.target.value)}
@@ -478,7 +572,7 @@ export const DisputeManager: React.FC = () => {
 
                 <div className="flex gap-3">
                   <button onClick={() => setSelected(null)} className="flex-1 btn-secondary">Cancel</button>
-                  <button onClick={handleResolve} disabled={isSaving || !resolution.trim()}
+                  <button onClick={handleResolve} disabled={isSaving || !resolution.trim() || !!compRefused}
                     className="flex-1 btn-primary disabled:opacity-50">
                     {isSaving ? 'Processing…' : 'Decide dispute'}
                   </button>

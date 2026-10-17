@@ -69,6 +69,7 @@ import { toPlayerOrderView, playerCancelFrom } from './playerOrderView.js';
 // The mirror of it, pointing the other way: the one shape a MERCHANT receives.
 // This service pushes to both parties, so it needs both projections.
 import { toMerchantOrderView } from '../merchant/merchantOrderView.js';
+import { sendAlert } from '../../services/alerting.service.js';
 
 // ─── Shared admin SSE payload ─────────────────────────────────────────────────
 function adminOrderPayload(order, user) {
@@ -1384,6 +1385,72 @@ export async function sweepUtrAfterPaid() {
 }
 
 
+/**
+ * A sell its member did not pay inside the paying window (owner, 2026-10-17:
+ * "if the merchant crosses the time limit for paying, send that order to
+ * dispute automatically").
+ *
+ * DISPUTED, not cancelled: the member may have sent the money and not pressed
+ * Paid, and only a person can tell. The player's tokens stay locked with the
+ * order (nothing moves here), and the Dispute Manager either returns them
+ * (the member did not pay: the member lost, and may owe compensation) or sends
+ * them to the team's pool (the member paid late: nobody lost). The member's
+ * silence counts as an expiry on their streak, as it did when it cancelled.
+ *
+ * The transition is first and guarded (`expectFrom: 'PROCESSING'`): a member
+ * who pressed Paid a moment ago moved the order to PAID and this matches no
+ * row; two cron instances dispute it once.
+ */
+async function disputeUnpaidSell(order) {
+  const moved = await disputeOrderState(order.orderId, {
+    expectFrom: 'PROCESSING',
+    set: {
+      disputeReason: 'The member did not pay this sell within its paying window.',
+      disputeRaisedAt: new Date(),
+      // 'system': the player raised nothing and must not appear to have.
+      disputeRaisedBy: 'system',
+    },
+  });
+  if (!moved.ok || moved.idempotent) return false;
+
+  await updateMerchantStatsOnComplete(order.merchantId, false, {
+    direction: order.type, amountRupees: order.tokenAmount,
+  }).catch(() => {});
+  const { recordMerchantRefusal, REFUSAL } = await import('../merchant/merchantRefusal.service.js');
+  // After the DISPUTED move committed (§21): a failure here is alerted, never
+  // thrown, since the sweep will not see this order again.
+  await recordMerchantRefusal({
+    orderId: order.orderId,
+    merchantId: order.merchantId,
+    userId: String(order.userId),
+    reason: 'The sell was not paid within its paying window.',
+    kind: REFUSAL.EXPIRED,
+  }).catch((err) => {
+    console.error(`[unpaid-sell] ${order.orderId}: expiry not counted on the member:`, err.message);
+    sendAlert('unpaid-sell-expiry-not-counted', 'An unpaid sell went to dispute but its expiry was not counted', {
+      orderId: order.orderId, merchantId: order.merchantId, error: err.message,
+    }).catch(() => {});
+  });
+
+  const { notify } = await import('../communication/communication.service.js');
+  await notify({
+    userId: String(order.userId),
+    type: 'ORDER_UPDATE',
+    title: 'Your sell is being reviewed',
+    message: 'The payment for your sell did not arrive in time, so our team is checking it. '
+           + 'Your tokens stay safe with the order until it is decided.',
+    meta: { orderId: order.orderId },
+  }).catch(() => {});
+  emitOrderUpdate(String(order.userId), 'order_disputed', {
+    orderId: order.orderId, status: 'DISPUTED', server_ts: Date.now(),
+  });
+  emitMerchantUpdate(String(order.merchantId), 'order_update', {
+    orderId: order.orderId, status: 'DISPUTED', server_ts: Date.now(),
+  });
+  emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'DISPUTED', server_ts: Date.now() });
+  return true;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // expireOrders  — cron worker (called from cronJobs.js or setInterval)
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1405,6 +1472,12 @@ export async function expireOrders() {
   let count = 0;
   for (const order of expired) {
     try {
+      // A started SELL whose member let the paying window pass goes to the
+      // Dispute Manager, never back to the player unasked (owner, 2026-10-17).
+      if (order.type === 'WITHDRAWAL' && order.merchantId && order.status === 'PROCESSING') {
+        if (await disputeUnpaidSell(order)) count++;
+        continue;
+      }
       // Two instances running this cron both read the same expired batch. The
       // transition is what makes the refund happen once: the loser gets
       // `idempotent` and skips the release rather than racing it.

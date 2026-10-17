@@ -26,6 +26,8 @@
  *                             an exchange, never profit
  *   PLAYER_TRADE              a pool paying a buy or taking a sell: zero for
  *                             the platform
+ *   COMPENSATION              a losing team's pool paying a player after a
+ *                             dispute: zero for the platform
  *   INTERNAL                  platform account to platform account: zero
  *   UNCLASSIFIED              an operation this list does not name, shown so
  *                             that a new producer cannot hide in the totals
@@ -46,7 +48,7 @@ export const PLATFORM_ACCOUNTS = Object.freeze([
 /** Kinds, in the order the screen and the CSV list them. */
 export const TOKEN_FLOW_KINDS = Object.freeze([
   'GAME_BOARD', 'GAME_CASINO', 'BONUS', 'COMMISSION', 'PLATFORM_COVER', 'ADJUSTMENT',
-  'POOL_TRADE', 'PLAYER_TRADE', 'INTERNAL', 'UNCLASSIFIED',
+  'POOL_TRADE', 'PLAYER_TRADE', 'COMPENSATION', 'INTERNAL', 'UNCLASSIFIED',
 ]);
 
 /** Kinds that are profit or loss; the rest are exchanges or internal. */
@@ -74,6 +76,7 @@ export const KIND_SQL = `CASE
     WHEN operation LIKE 'ADMIN\\_ADJUSTMENT\\_%' THEN 'ADJUSTMENT'
     WHEN operation IN ('TEAM_POOL_SALE', 'TEAM_POOL_BUYBACK') THEN 'POOL_TRADE'
     WHEN operation = 'TEAM_BUY_PAID' OR operation LIKE 'TEAM\\_SELL\\_%' THEN 'PLAYER_TRADE'
+    WHEN operation = 'DISPUTE_COMPENSATION' THEN 'COMPENSATION'
     WHEN operation LIKE 'ALLOCATE\\_%' OR operation LIKE 'RETURN\\_%' THEN 'INTERNAL'
     ELSE 'UNCLASSIFIED' END`;
 

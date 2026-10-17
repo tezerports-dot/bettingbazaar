@@ -109,6 +109,7 @@ export function teamFixture() {
         'DELETE FROM team_commission_shares WHERE commission_id IN (SELECT commission_id FROM team_commissions WHERE team_id = ANY($1))',
         [teams]);
       await pgQuery('DELETE FROM team_commissions WHERE team_id = ANY($1)', [teams]);
+      await pgQuery('DELETE FROM dispute_compensations WHERE team_id = ANY($1)', [teams]);
       await pgQuery('DELETE FROM team_pool_entries WHERE team_id = ANY($1)', [teams]);
       await pgQuery('DELETE FROM team_pool_requests WHERE team_id = ANY($1)', [teams]);
       await pgQuery('DELETE FROM team_pools WHERE team_id = ANY($1)', [teams]);

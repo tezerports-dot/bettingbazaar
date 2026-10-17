@@ -336,7 +336,7 @@ export const SYSTEM_CONFIG_SPEC = group({
   // Capped at 24h because the player is waiting on money they have given up.
   // The SELL escrow window: after a member says they paid, the player's tokens
   // stay in escrow at least this long and the player may dispute inside it.
-  // Floor 60 — "at least 1 hour" (owner, 2026-10-02); 0 no longer settles at once.
+  // 0 to 10,080 minutes (owner, 2026-10-17); at 0 the sweep settles it on its next pass.
   withdrawalHoldMinutes: int(60, 0, 10080),
   // The BUY escrow window: after a member rejects a paid buy as unpaid, the
   // player has this long to dispute before the hold returns to the team pool

@@ -661,8 +661,8 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         } else {
             // ── Always a HOLD ───────────────────────────────────────────────────
             // There was a "hold disabled" path that completed the order inline.
-            // The window is now at least an hour (owner, 2026-10-02), so every
-            // confirm holds and the sweep settles — money first, COMPLETED after.
+            // Every confirm holds, even at a 0-minute window (owner, 2026-10-17):
+            // the sweep settles it — money first, COMPLETED after.
             moved = await markOrderPaidState(order._id, {
                 expectFrom: 'PROCESSING',
                 expectMerchant: req.merchantId,
