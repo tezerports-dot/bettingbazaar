@@ -192,15 +192,47 @@ describe('scripts/gateway-config.mjs', () => {
       .toMatchObject({ code: 1, err: expect.stringMatching(/GATEWAY_BAD_TIME/) });
   });
 
-  it('signs a standby pool from a hosts file, in its order, comments ignored', () => {
+  // Owner, 2026-10-17: the document is public, so it names the live hosts and
+  // the NEXT standby only; the rest of the pool is never published.
+  it('signs the live hosts and the next standby from a hosts file, keeping the rest of the pool back', () => {
     const key = join(dir, 'pool.pem');
     const pub = run(['keygen', '--out', key]).out.match(/public key: (\S+)/)[1];
     const list = join(dir, 'pool.txt');
-    writeFileSync(list, '# live\napi.example.com\n\n# standby pool\nsb1.example.net  # registered, no DNS yet\nsb2.example.org\n');
+    writeFileSync(list, '# live\napi.example.com\n\n[standby]\nsb1.example.net  # registered, no DNS yet\nsb2.example.org\nsb3.example.in\n');
     const docFile = join(dir, 'pool.json');
-    expect(run(['sign', '--key', key, '--version', '2', '--hosts-file', list, '--days', '90', '--out', docFile]).code).toBe(0);
+    const signed = run(['sign', '--key', key, '--version', '2', '--hosts-file', list, '--days', '90', '--out', docFile]);
+    expect(signed.code).toBe(0);
+    expect(signed.out).toMatch(/2 hosts signed; 2 standby hosts kept back/);
+    expect(signed.out).not.toMatch(/sb2|sb3/);
+    const text = readFileSync(docFile, 'utf8');
+    expect(verifyGatewayDocument(text, pub, { now: NOW }).hosts).toEqual(['api.example.com', 'sb1.example.net']);
+    expect(text).not.toMatch(/sb2|sb3/);
+
+    // More ahead only when asked for.
+    expect(run(['sign', '--key', key, '--version', '3', '--hosts-file', list, '--standby-ahead', '2', '--days', '90', '--out', docFile]).code).toBe(0);
     expect(verifyGatewayDocument(readFileSync(docFile, 'utf8'), pub, { now: NOW }).hosts)
       .toEqual(['api.example.com', 'sb1.example.net', 'sb2.example.org']);
+  });
+
+  it('refuses a hosts file without its [standby] line, so a whole pool is never signed by mistake', () => {
+    const key = join(dir, 'nomark.pem');
+    run(['keygen', '--out', key]);
+    const list = join(dir, 'old.txt');
+    writeFileSync(list, '# live\napi.example.com\n# standby pool\nsb1.example.net\nsb2.example.org\n');
+    expect(run(['sign', '--key', key, '--version', '1', '--hosts-file', list, '--days', '1']))
+      .toMatchObject({ code: 1, err: expect.stringMatching(/needs a \[standby\] line/) });
+    writeFileSync(list, '[standby]\nsb1.example.net\n');
+    expect(run(['sign', '--key', key, '--version', '1', '--hosts-file', list, '--days', '1']))
+      .toMatchObject({ code: 1, err: expect.stringMatching(/no live host/) });
+    expect(run(['sign', '--key', key, '--version', '1', '--hosts', 'a.example.com', '--standby-ahead', '1', '--days', '1']))
+      .toMatchObject({ code: 1, err: expect.stringMatching(/--standby-ahead applies to a --hosts-file only/) });
+  });
+
+  it('still refuses --hosts and --hosts-file together', () => {
+    const key = join(dir, 'both.pem');
+    run(['keygen', '--out', key]);
+    const list = join(dir, 'both.txt');
+    writeFileSync(list, 'api.example.com\n[standby]\nsb1.example.net\n');
     expect(run(['sign', '--key', key, '--version', '3', '--hosts', 'a.example.com', '--hosts-file', list, '--days', '1']))
       .toMatchObject({ code: 1, err: expect.stringMatching(/exactly one of --hosts/) });
   });
