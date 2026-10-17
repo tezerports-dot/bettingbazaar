@@ -88,6 +88,16 @@ export const EVENT_TYPES = Object.freeze({
   // `database/repositories/teamCommission.js`).
   MERCHANT_BONUS_ISSUED: 'MERCHANT_BONUS_ISSUED',
 
+  // A casino round's net to the house (bets less wins and refunds), booked
+  // as a DELTA each time the round's figures move (reconcileCasinoRounds), so
+  // a win credited later reverses what was booked (owner, 2026-10-17).
+  CASINO_ROUND_NET: 'CASINO_ROUND_NET',
+
+  // A General bonus paid out of the platform's own holding (referral or first
+  // deposit, `promo_grants`): a cost against revenue, what the platform now
+  // owes the player (owner, 2026-10-17).
+  PROMO_BONUS_PAID: 'PROMO_BONUS_PAID',
+
   // Manual admin correction — always a NEW balancing entry, never an edit of
   // history (append-only ledger; corrections are reversing entries).
   ADJUSTMENT: 'ADJUSTMENT',
