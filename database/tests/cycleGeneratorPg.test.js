@@ -232,7 +232,7 @@ describePg('the cycle generator', () => {
   // Owner, 2026-10-08: blind from the merge until the result. Once the house
   // pools are balanced the two totals differ by real money alone, so the
   // smaller side IS the winner while blind betting is still open.
-  it('sends the total alone once the house pools are balanced, merged or not', async () => {
+  it('sends the total alone once the phantom pools are balanced, merged or not', async () => {
     await fund('u1', 300_00, 'f1');
     await openCycle('c-blind', { phantomDelhi: 500_00, phantomBombay: 400_00 });
     await bet('b1', 'u1', 'c-blind', 'DELHI',  200_00);
@@ -265,15 +265,15 @@ describePg('the cycle generator', () => {
     expect((await getCycle('c-phase')).status).toBe('CLOSED');
   });
 
-  // ── House betting stops at the equalizer (owner, 2026-10-17) ──────────────
-  // The equalizer levelled the house pools but never closed house betting, so
-  // manual house bets kept arriving after it and every tick levelled them
+  // ── Phantom betting stops at the equalizer (owner, 2026-10-17) ──────────────
+  // The equalizer levelled the phantom pools but never closed phantom betting, so
+  // manual phantom bets kept arriving after it and every tick levelled them
   // again: the pools players watched kept moving until the round closed.
   describe('the equalizer', () => {
     const house = (betId, cycleId, side, rupees) =>
       placePhantomBet({ betId, userId: 'agent', cycleId, side, amountRupees: rupees, cycleType: '30_MIN' });
 
-    it('levels the house pools once and closes house betting', async () => {
+    it('levels the phantom pools once and closes phantom betting', async () => {
       await openCycle('c-eq', { phantomDelhi: 500_00, phantomBombay: 400_00 });
       expect((await equalizePhantomPools('c-eq')).ok).toBe(true);
 
@@ -287,7 +287,7 @@ describePg('the cycle generator', () => {
       expect(rows[0].n).toBe(0);
     });
 
-    it('refuses a house bet once the clock passes the equalizer, before any tick has run', async () => {
+    it('refuses a phantom bet once the clock passes the equalizer, before any tick has run', async () => {
       // 30_MIN equalizes 120 s before the end; this round ends in 60 s.
       await pgQuery(
         `INSERT INTO cycles (cycle_id, cycle_type, status, start_time, end_time)
@@ -296,7 +296,7 @@ describePg('the cycle generator', () => {
       expect(await house('ph-clock', 'c-clock', 'DELHI', 50)).toMatchObject({ ok: false, reason: 'PHANTOM_CLOSED' });
     });
 
-    it('still takes a house bet before the equalizer', async () => {
+    it('still takes a phantom bet before the equalizer', async () => {
       await openCycle('c-early');   // ends in 15 minutes
       expect((await house('ph-early', 'c-early', 'DELHI', 50)).ok).toBe(true);
       expect((await getCycle('c-early')).phantomDelhi).toBe(50);
@@ -331,7 +331,7 @@ describePg('the cycle generator', () => {
       await bet('b-d', 'u1', 'c-race', 'DELHI', 100_00);
       await bet('b-b', 'u2', 'c-race', 'BOMBAY', 50_00);
       // Without the slow bet BOMBAY (50) is the smaller side; with it, DELHI.
-      // The house pools are already balanced, so only the close can wait.
+      // The phantom pools are already balanced, so only the close can wait.
       await equalizePhantomPools('c-race');
 
       // The slow bet stalls inside its transaction, after it took its share

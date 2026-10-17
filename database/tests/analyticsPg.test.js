@@ -290,7 +290,7 @@ describe('a player history', () => {
               ('b2','u1','c1','BOMBAY',900_00,'PENDING',TRUE)`, [],
     );
     const page = await userTimeline('u1', {});
-    // A house figure is not something the player did; showing it on their own
+    // A phantom figure is not something the player did; showing it on their own
     // history would be a lie about their account.
     expect(page.total).toBe(1);
     expect(page.entries[0]._id).toBe('b1');
@@ -356,7 +356,7 @@ describe('a player history', () => {
     expect(r).toMatchObject({
       realDelhi: 100, realBombay: 300, realTotal: 400, realBets: 3, realBettors: 2,
       // From the row (900 each), not the one 400 phantom bet row.
-      houseDelhi: 900, houseBombay: 900, houseTotal: 1800, houseBets: 1,
+      phantomDelhi: 900, phantomBombay: 900, phantomTotal: 1800, phantomBets: 1,
       shownTotal: 2200,
     });
     expect(r.realPercent).toBe(18.2);

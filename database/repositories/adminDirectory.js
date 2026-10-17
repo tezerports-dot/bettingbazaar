@@ -12,7 +12,7 @@
  *   Deposits/sells   completed BUY / SELL orders, `order_states` in tokens
  *                    (`token_amount_paise`, never `fiat_amount_paise`: trap 15)
  *   Net win/loss     settled board bets (`payout - stake` on WON, `-stake` on
- *                    LOST; house bets excluded) plus casino rounds
+ *                    LOST; phantom bets excluded) plus casino rounds
  *                    (`credited + refunded - debited`). Positive: the player is
  *                    up; negative: the player has lost that much.
  * Merchants:

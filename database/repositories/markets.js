@@ -25,6 +25,7 @@
 import { pgQuery, withTransaction } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 import { PLAY_PROFILES } from './promo.js';
+import { recordRoundWithin } from './rtp.js';
 
 
 export const SIDES = Object.freeze(['DELHI', 'BOMBAY']);
@@ -46,7 +47,8 @@ const COLUMNS = `cycle_id, cycle_type, audience, start_time, end_time, status,
   phantom_delhi_paise, phantom_bombay_paise, phantom_balanced, phantom_bets_closed,
   winner, pending_result, is_paused, winner_determined_at, winner_determined_by,
   winner_confidence, is_settled, settled_at, total_paid_out_paise, net_profit_paise,
-  total_platform_fees_paise, winnings_fee_percent_used, created_at, updated_at`;
+  total_platform_fees_paise, winnings_fee_percent_used, house_bet_side, house_bet_paise,
+  created_at, updated_at`;
 
 /**
  * The same column list, qualified with a table alias.
@@ -87,6 +89,9 @@ function toCycle(r) {
     totalPlatformFees: paiseToRupees(num(r.total_platform_fees_paise)),
     winningsFeePercentUsed: r.winnings_fee_percent_used === null
       ? null : Number(r.winnings_fee_percent_used),
+    // The round's house bet (rtp.placeHouseBet): a real last bet, never a phantom one.
+    houseBetSide: r.house_bet_side ?? null,
+    houseBet: paiseToRupees(num(r.house_bet_paise)),
     createdAt: r.created_at, updatedAt: r.updated_at,
   };
 }
@@ -136,7 +141,7 @@ export async function placePhantomBet({ betId, userId, cycleId, side, amountRupe
       return { ok: false, reason: 'CYCLE_CLOSED', status: cycle[0].status };
     }
     // Checked under the lock, so an admin closing phantom betting cannot be
-    // raced by an agent's last bet. The clock as well as the flag: house
+    // raced by an agent's last bet. The clock as well as the flag: phantom
     // betting stops at the board's equalizer offset even before the tick that
     // balances the pools has run.
     if (cycle[0].phantom_bets_closed || cycle[0].past_equalizer) return { ok: false, reason: 'PHANTOM_CLOSED' };
@@ -161,12 +166,12 @@ export async function placePhantomBet({ betId, userId, cycleId, side, amountRupe
   });
 }
 
-/** The bet id of an auto house bet: one per agent, side and second of the round. */
+/** The bet id of an auto phantom bet: one per agent, side and second of the round. */
 export const autoPhantomBetId = (cycleId, userId, side, second) =>
   `phauto_${cycleId}_${userId}_${side}_${second}`;
 
 /**
- * Place a tick's auto house bets on one cycle (owner, 2026-10-15): the rows
+ * Place a tick's auto phantom bets on one cycle (owner, 2026-10-15): the rows
  * and the cycle's phantom pools in ONE transaction, as `placePhantomBet` does,
  * under one lock of the cycle row for the whole batch rather than one per bet.
  *
@@ -522,7 +527,7 @@ export async function declareWinner(cycleId, winner, { by = 'engine', confidence
  * figures live on the row, because nothing concurrent writes them.
  *
  * PHANTOM bets are excluded, and this is the whole point of the word REAL:
- * phantom stakes are house figures that move the displayed total without
+ * phantom stakes are figures that move the displayed total without
  * anybody having staked anything. Counting them here would inflate the pool a
  * winner is paid a share of, and decide the winning side — which is the
  * MINORITY real-bet side — from numbers nobody bet.
@@ -645,19 +650,24 @@ export async function releaseSettlementClaim(cycleId) {
  * correct. Guarded on `NOT is_settled` so a replay writes nothing.
  */
 export async function markSettled(cycleId, { paidOutRupees, netProfitRupees, platformFeesRupees, feePercentUsed }) {
-  const { rows } = await pgQuery(
-    `UPDATE cycles SET
-       is_settled = TRUE, settled_at = now(),
-       total_paid_out_paise = $2, net_profit_paise = $3,
-       total_platform_fees_paise = $4, winnings_fee_percent_used = $5,
-       updated_at = now()
-      WHERE cycle_id = $1 AND NOT is_settled AND winner IS NOT NULL
-      RETURNING ${COLUMNS}`,
-    [String(cycleId), rupeesToPaise(paidOutRupees || 0), rupeesToPaise(netProfitRupees || 0),
-      rupeesToPaise(platformFeesRupees || 0), feePercentUsed ?? null],
-    'cycle_mark_settled',
-  );
-  return rows[0] ? { ok: true, cycle: toCycle(rows[0]) } : { ok: false, reason: 'ALREADY_SETTLED_OR_NO_WINNER' };
+  // The round's RTP fund entry in the same transaction (rtp.recordRoundWithin),
+  // so a round is counted in its fund exactly when it is marked settled.
+  return withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `UPDATE cycles SET
+         is_settled = TRUE, settled_at = now(),
+         total_paid_out_paise = $2, net_profit_paise = $3,
+         total_platform_fees_paise = $4, winnings_fee_percent_used = $5,
+         updated_at = now()
+        WHERE cycle_id = $1 AND NOT is_settled AND winner IS NOT NULL
+        RETURNING ${COLUMNS}`,
+      [String(cycleId), rupeesToPaise(paidOutRupees || 0), rupeesToPaise(netProfitRupees || 0),
+        rupeesToPaise(platformFeesRupees || 0), feePercentUsed ?? null],
+    );
+    if (!rows[0]) return { ok: false, reason: 'ALREADY_SETTLED_OR_NO_WINNER' };
+    const rtpEntry = await recordRoundWithin(client, cycleId);
+    return { ok: true, cycle: toCycle(rows[0]), rtpEntry };
+  });
 }
 
 /** Phantom liquidity. Admin-set, and the only pool figures stored on the row. */
@@ -760,10 +770,10 @@ export async function cancelCycle(cycleId, { by = null } = {}) {
  * Refuses a settled or declared cycle: moving the displayed pool after the
  * result is out changes what players were shown about a round that is over.
  *
- * It also CLOSES house betting, in the same statement, and runs once: from
+ * It also CLOSES phantom betting, in the same statement, and runs once: from
  * here on `placePhantomBet` and `placeAutoPhantomBets` refuse the round
  * (`PHANTOM_CLOSED`, checked under the same row lock). It used to level the
- * pools and leave house betting open, so manual house bets kept arriving
+ * pools and leave phantom betting open, so manual phantom bets kept arriving
  * after the equalizer and every tick levelled them again: the pools players
  * watched kept moving until the round closed.
  *

@@ -48,7 +48,7 @@ interface PhantomAgent {
  * and a hand-written list here silently missed every board added since.
  */
 const levelsFor = (boards: Array<{ key: string; name: string }>) => [
-  { value: 'NONE', label: 'NONE — no house bets' },
+  { value: 'NONE', label: 'NONE — no phantom bets' },
   ...boards.map((b) => ({ value: b.key, label: `${b.name} — this board only` })),
   { value: 'BOTH', label: 'BOTH — every board' },
 ];
@@ -79,7 +79,7 @@ export const PhantomAgents: React.FC = () => {
       const res = await api.subAdmins.listPhantomAgents();
       setAgents(res?.agents || []);
     } catch {
-      toast.error('Failed to load house bettors');
+      toast.error('Failed to load phantom bettors');
     } finally {
       setIsLoading(false);
     }
@@ -94,7 +94,7 @@ export const PhantomAgents: React.FC = () => {
       await api.subAdmins.assignPhantomAccess(editing.userId, level as any);
       toast.success(
         level === 'NONE'
-          ? `House-bettor access revoked from ${editing.username}`
+          ? `Phantom-bettor access revoked from ${editing.username}`
           : `${editing.username} set to ${level}`,
       );
       setEditing(null);
@@ -103,7 +103,7 @@ export const PhantomAgents: React.FC = () => {
       // revoked agent would sit here looking granted until the next visit.
       await load();
     } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Could not change house-bettor access');
+      toast.error(err?.response?.data?.message || 'Could not change phantom-bettor access');
     } finally {
       setIsSaving(false);
     }
@@ -115,7 +115,7 @@ export const PhantomAgents: React.FC = () => {
         <div className="flex items-center justify-between flex-wrap gap-3 mb-1">
           <div className="flex items-center gap-2">
             <Ghost size={17} className="text-yellow-500" />
-            <h2 className="text-base font-semibold">Accounts with house-bettor access</h2>
+            <h2 className="text-base font-semibold">Accounts with phantom-bettor access</h2>
           </div>
           <button onClick={() => void load()} className="p-1.5 rounded-lg hover:bg-dark-700" aria-label="Refresh">
             <RefreshCw size={15} className="text-gray-400" />
@@ -147,7 +147,7 @@ export const PhantomAgents: React.FC = () => {
         ) : agents.length === 0 ? (
           <EmptyState
             icon={ShieldOff}
-            title="Nobody has house-bettor access"
+            title="Nobody has phantom-bettor access"
             description="No account can place cosmetic bets. Grant access from a player's row on the Users list."
           />
         ) : (
@@ -194,7 +194,7 @@ export const PhantomAgents: React.FC = () => {
       </div>
 
       {editing && (
-        <Modal isOpen onClose={() => setEditing(null)} title="House-bettor access">
+        <Modal isOpen onClose={() => setEditing(null)} title="Phantom-bettor access">
           <div className="space-y-4">
             <div className="bg-dark-700 rounded-lg p-4 text-sm">
               <p className="text-gray-400">Account</p>

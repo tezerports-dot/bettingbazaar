@@ -1107,11 +1107,11 @@ export async function cycleAndQueueCounts({ timezone = 'Asia/Kolkata' } = {}) {
 }
 
 /**
- * Real against house volume, per round whose betting has closed (owner,
+ * Real against phantom volume, per round whose betting has closed (owner,
  * 2026-10-15: the admin sees how much of each pool was real money).
  *
  * Real stakes are the players' bets (`NOT is_phantom`, not refunded or void),
- * the same rows `realPools` sums. House stakes are the cycle row's phantom
+ * the same rows `realPools` sums. Phantom stakes are the cycle row's phantom
  * pools, which include the equalizer's top-up (it overwrites the pools rather
  * than placing bets), so a sum over phantom bet rows would understate them.
  * Only rounds past betting (not OPEN or MERGED): the split of a round still
@@ -1123,7 +1123,7 @@ export async function realVolumeByCycle({ limit = 20 } = {}) {
             c.phantom_delhi_paise AS house_delhi, c.phantom_bombay_paise AS house_bombay,
             COALESCE(r.delhi, 0) AS real_delhi, COALESCE(r.bombay, 0) AS real_bombay,
             COALESCE(r.bets, 0)::int AS real_bets, COALESCE(r.bettors, 0)::int AS real_bettors,
-            COALESCE(h.bets, 0)::int AS house_bets
+            COALESCE(h.bets, 0)::int AS phantom_bets
        FROM cycles c
        LEFT JOIN LATERAL (
          SELECT SUM(b.stake_paise) FILTER (WHERE b.side = 'DELHI')  AS delhi,
@@ -1151,7 +1151,7 @@ export async function realVolumeByCycle({ limit = 20 } = {}) {
       startTime: r.start_time, endTime: r.end_time, winner: r.winner,
       realDelhi: rupees(rd), realBombay: rupees(rb), realTotal: rupees(real),
       realBets: int(r.real_bets), realBettors: int(r.real_bettors),
-      houseDelhi: rupees(hd), houseBombay: rupees(hb), houseTotal: rupees(hd + hb), houseBets: int(r.house_bets),
+      phantomDelhi: rupees(hd), phantomBombay: rupees(hb), phantomTotal: rupees(hd + hb), phantomBets: int(r.phantom_bets),
       shownTotal: rupees(total),
       // Of what players were shown, the percent that was real money.
       realPercent: total > 0 ? Math.round((real / total) * 1000) / 10 : null,
@@ -1172,7 +1172,7 @@ export async function realVolumeByCycle({ limit = 20 } = {}) {
  * `COUNT(*) OVER ()` gives the total from the same statement, so the page and
  * the count of pages describe one instant.
  *
- * Phantom bets are excluded: they are house figures, not something the player
+ * Phantom bets are excluded: they are phantom figures, not something the player
  * did, and showing them on a player's own history would be a lie about their
  * account.
  */

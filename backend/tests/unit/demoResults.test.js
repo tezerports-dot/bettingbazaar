@@ -17,6 +17,6 @@ describe('demo results settings', () => {
     const p = systemConfigPayload({ demoResultsOn: false });
     expect(p.demoResultsOn).toBe(false);
     expect(p).not.toHaveProperty('demoResultsLabel');
-    expect(p).not.toHaveProperty('houseBetsLabel');
+    expect(p).not.toHaveProperty('phantomBetsLabel');
   });
 });

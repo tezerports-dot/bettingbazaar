@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * Auto house bets (owner, 2026-10-15), against a REAL PostgreSQL (skipped when
+ * Auto phantom bets (owner, 2026-10-15), against a REAL PostgreSQL (skipped when
  * DATABASE_URL is unset): a phantom agent's plan is saved whole or refused,
  * runs only while its owner holds phantom access, and a tick's bets move the
  * phantom pools once, however often the same second is offered.
@@ -29,7 +29,7 @@ const realBets = async (cycleId) => Number((await pgQuery(
   `SELECT COUNT(*) AS n FROM bets WHERE cycle_id = $1 AND NOT is_phantom`, [cycleId],
 )).rows[0].n);
 
-describePg('auto house bets (PostgreSQL)', () => {
+describePg('auto phantom bets (PostgreSQL)', () => {
   beforeAll(async () => { await applySchema(); });
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {

@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The cycle generator's auto house-bet step (owner, 2026-10-15): a plan for
+ * The cycle generator's auto phantom-bet step (owner, 2026-10-15): a plan for
  * the cycle's board offers this tick's seconds with the list's sizes in order,
  * other boards' plans are left alone, the public update carries the total
  * only, and the split goes to admins.
@@ -23,6 +23,8 @@ vi.mock('../../domains/markets/cycleTypes.js', () => ({
   allBoards: vi.fn(), enabledBoards: vi.fn(), boardOf: vi.fn(), cycleLabel: vi.fn(), boardMessages: vi.fn(),
 }));
 vi.mock('../../services/metrics.service.js', () => ({ recordRealtimeEvent: vi.fn() }));
+vi.mock('../../domains/markets/rtpHouseBet.js', () => ({ planHouseBet: vi.fn() }));
+vi.mock('../../domains/risk/riskValidation.service.js', () => ({ getRiskRules: vi.fn() }));
 
 const { default: CycleGenerator } = await import('../../domains/markets/cycleGenerator.service.js');
 
@@ -34,7 +36,7 @@ const plans = [
   { userId: 'ag1', boardKey: 'b1', audience: 'GENERAL', side: 'BOMBAY', amountsPaise: [7_00], startsAtMs: 0 },
 ];
 
-describe('runAutoHouseBets', () => {
+describe('runAutoPhantomBets', () => {
   let gen;
   beforeEach(() => {
     place.mockReset().mockResolvedValue({
@@ -47,7 +49,7 @@ describe('runAutoHouseBets', () => {
   });
 
   it('offers this tick\'s seconds with the sizes in order, for this board only', async () => {
-    await gen.runAutoHouseBets({ ...cycle }, plans, START + 2_500, START + 60_000);
+    await gen.runAutoPhantomBets({ ...cycle }, plans, START + 2_500, START + 60_000);
     expect(place).toHaveBeenCalledTimes(1);
     const { cycleId, bets } = place.mock.calls[0][0];
     expect(cycleId).toBe('C1');
@@ -59,7 +61,7 @@ describe('runAutoHouseBets', () => {
   });
 
   it('sends the public total only, and the split to admins', async () => {
-    await gen.runAutoHouseBets({ ...cycle }, plans, START + 2_500, START + 60_000);
+    await gen.runAutoPhantomBets({ ...cycle }, plans, START + 2_500, START + 60_000);
     expect(recordBet).toHaveBeenCalledWith('C1', expect.objectContaining({ totalDelhi: 670, totalBombay: 30 }));
     const publicPayload = recordBet.mock.calls[0][1];
     expect(Object.keys(publicPayload).some((k) => /real|phantom/i.test(k))).toBe(false);
@@ -70,7 +72,7 @@ describe('runAutoHouseBets', () => {
     // Saved halfway through the round before; the next round starts an hour later.
     const saved = [{ ...plans[0], startsAtMs: START - 3_600_000 + 30_000 }];
     const next = { ...cycle, cycleId: 'C2', startTime: new Date(START) };
-    await gen.runAutoHouseBets(next, saved, START + 1_200, START + 60_000);
+    await gen.runAutoPhantomBets(next, saved, START + 1_200, START + 60_000);
     expect(place.mock.calls[0][0]).toMatchObject({ cycleId: 'C2' });
     expect(place.mock.calls[0][0].bets).toEqual([
       { userId: 'ag1', side: 'DELHI', second: 0, amountPaise: 100_00 },
@@ -79,19 +81,19 @@ describe('runAutoHouseBets', () => {
   });
 
   it('runs each audience\'s plans on that audience\'s rounds only', async () => {
-    await gen.runAutoHouseBets({ ...cycle, cycleId: 'G1', audience: 'GENERAL' }, plans, START + 500, START + 60_000);
+    await gen.runAutoPhantomBets({ ...cycle, cycleId: 'G1', audience: 'GENERAL' }, plans, START + 500, START + 60_000);
     expect(place.mock.calls[0][0].bets).toEqual([{ userId: 'ag1', side: 'BOMBAY', second: 0, amountPaise: 7_00 }]);
   });
 
   it('places nothing at or after the equalizer, and nothing for a board with no plan', async () => {
-    await gen.runAutoHouseBets({ ...cycle }, plans, START + 60_000, START + 60_000);
-    await gen.runAutoHouseBets({ ...cycle, type: 'b9' }, plans, START + 2_500, START + 60_000);
+    await gen.runAutoPhantomBets({ ...cycle }, plans, START + 60_000, START + 60_000);
+    await gen.runAutoPhantomBets({ ...cycle, type: 'b9' }, plans, START + 2_500, START + 60_000);
     expect(place).not.toHaveBeenCalled();
   });
 
   it('a refused batch announces nothing', async () => {
     place.mockResolvedValue({ ok: false, reason: 'PHANTOM_CLOSED' });
-    await gen.runAutoHouseBets({ ...cycle }, plans, START + 2_500, START + 60_000);
+    await gen.runAutoPhantomBets({ ...cycle }, plans, START + 2_500, START + 60_000);
     expect(recordBet).not.toHaveBeenCalled();
     expect(emitToStaff).not.toHaveBeenCalled();
   });

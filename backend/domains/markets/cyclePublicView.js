@@ -57,10 +57,10 @@ const toMs = (d) => (d instanceof Date ? d.getTime() : Number(d));
 /**
  * Whether a cycle's per-side pools are withheld from players (owner,
  * 2026-10-08): from the merge until a winner is declared, and on any cycle
- * whose house pools are already balanced, i.e. an OPEN cycle the ticker has not
+ * whose phantom pools are already balanced, i.e. an OPEN cycle the ticker has not
  * yet moved to MERGED.
  *
- * `equalizePhantomPools` sets both house pools to the same figure, so after it
+ * `equalizePhantomPools` sets both phantom pools to the same figure, so after it
  * the two combined sides differ by real money alone, and the smaller one is the
  * winner (`cycleGenerator.completeCycle`) while blind betting is still open.
  * The screen hiding them was not enough: they were still in every payload.

@@ -1371,7 +1371,7 @@ Owner decisions of 2026-10-11 (DECISION_LOG). What exists:
 
 Not built: every panel screen for the above (admin switch, merchant-account
 admin, the merchant panel's accounts / sub-members / reports / paid-from
-picker, the player's UPI link button); "House bettors" wording (Phase C).
+picker, the player's UPI link button); "Phantom bettors" wording (Phase C).
 SSE pushes are per merchant, not filtered per sub-member.
 
 ## 3.13 Staff sign in with an authenticator app; staff have no Telegram (owner, 2026-10-13) — **BUILT on `feat/staff-authenticator`**

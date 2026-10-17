@@ -65,7 +65,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/users/flagged',       icon: Flag,             label: 'Flagged Players',title: 'Flagged Players',    sub: "A merchant disputed their payment — reason, proof, and the block decision", permission: 'canManageUsers' },
     { path: '/merchants',           icon: Store,            label: 'Agents & Merchants', title: 'Agents & Merchants', sub: 'Agents, supervisors and merchants with volume, pool and commission; a row opens the merchant', permission: 'canManageMerchants' },
     { path: '/teams',               icon: Users,            label: 'Teams',          title: 'Supervisors & Teams', sub: 'Supervisors, their agent teams, agents waiting for approval, red flags', permission: 'canManageTeams' },
-    { path: '/users/phantom-agents',icon: Ghost,            label: 'House Bettors',  title: 'House Bettors',      sub: 'Who can place cosmetic bets, and on which boards', permission: 'canManagePhantomAgents' },
+    { path: '/users/phantom-agents',icon: Ghost,            label: 'Phantom Bettors',  title: 'Phantom Bettors',      sub: 'Who can place cosmetic bets, and on which boards', permission: 'canManagePhantomAgents' },
     { path: '/staff',               icon: ShieldCheck,      label: 'Staff',          title: 'Staff',              sub: 'Admins, sub-admins, queue managers and mediators; a row opens the account', adminOnly: true },
   ] },
   { key: 'payments', label: 'Payments', items: [

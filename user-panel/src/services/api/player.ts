@@ -21,9 +21,9 @@ export const setPlayProfile = (profile: string): Promise<any> =>
 export const referrals = (): Promise<any> =>
   apiClient.get('/api/user/referrals');
 
-/** A phantom agent's auto house-bet plans and their limits (houseBets.js). */
-export const autoHouseBets = (): Promise<any> =>
+/** A phantom agent's auto phantom-bet plans and their limits (phantomBets.js). */
+export const autoPhantomBets = (): Promise<any> =>
   apiClient.get('/api/bet/phantom/auto');
 
-export const saveAutoHouseBets = (plan: { boardKey: string; audience: string; side: string; amounts: number[]; enabled: boolean }): Promise<any> =>
+export const saveAutoPhantomBets = (plan: { boardKey: string; audience: string; side: string; amounts: number[]; enabled: boolean }): Promise<any> =>
   apiClient.put('/api/bet/phantom/auto', plan);

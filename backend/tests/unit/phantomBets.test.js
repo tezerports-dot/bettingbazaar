@@ -1,18 +1,18 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * houseBets.js (owner, 2026-10-15): which seconds an auto plan bets, which
- * size each second gets, and the house-bets line players read.
+ * phantomBets.js (owner, 2026-10-15): which seconds an auto plan bets, which
+ * size each second gets, and the phantom-bets line players read.
  */
 import { describe, it, expect } from 'vitest';
 import {
-  secondsToPlace, firstSecond, sizeAtSecond, houseBetsLabelOf,
-  DEFAULT_HOUSE_BETS_LABEL, AUTO_BET_CATCH_UP_SECONDS,
-} from '../../domains/markets/houseBets.js';
+  secondsToPlace, firstSecond, sizeAtSecond, phantomBetsLabelOf,
+  DEFAULT_PHANTOM_BETS_LABEL, AUTO_BET_CATCH_UP_SECONDS,
+} from '../../domains/markets/phantomBets.js';
 
 const START = 1_000_000_000_000;
 const STOP = START + 60_000; // the equalizer, 60 s in
 
-describe('auto house bets: the seconds', () => {
+describe('auto phantom bets: the seconds', () => {
   it('offers the current second and the few before it, from the round start', () => {
     expect(secondsToPlace({ startMs: START, stopMs: STOP, fromMs: 0, nowMs: START + 500 })).toEqual([0]);
     expect(secondsToPlace({ startMs: START, stopMs: STOP, fromMs: 0, nowMs: START + 2_100 })).toEqual([0, 1, 2]);
@@ -43,11 +43,11 @@ describe('auto house bets: the seconds', () => {
   });
 });
 
-describe('the house-bets line', () => {
+describe('the phantom-bets line', () => {
   it('is the saved wording, or the default when blank or too short', () => {
-    expect(houseBetsLabelOf({ houseBetsLabel: '  Totals include house bets.  ' })).toBe('Totals include house bets.');
-    for (const cfg of [null, {}, { houseBetsLabel: '' }, { houseBetsLabel: '   ' }, { houseBetsLabel: 'short' }]) {
-      expect(houseBetsLabelOf(cfg)).toBe(DEFAULT_HOUSE_BETS_LABEL);
+    expect(phantomBetsLabelOf({ phantomBetsLabel: '  Totals include phantom bets.  ' })).toBe('Totals include phantom bets.');
+    for (const cfg of [null, {}, { phantomBetsLabel: '' }, { phantomBetsLabel: '   ' }, { phantomBetsLabel: 'short' }]) {
+      expect(phantomBetsLabelOf(cfg)).toBe(DEFAULT_PHANTOM_BETS_LABEL);
     }
   });
 });

@@ -558,7 +558,7 @@ export interface DashboardStats {
     tokenSell?: number;  // token redemption volume — present when backend returns it
     // Today in IST — the last bucket of the seven-day series the chart draws,
     // so the tiles and the chart agree (analytics.admin.routes.js). Player
-    // bets only; phantom bets are house liquidity.
+    // bets only; phantom bets are phantom liquidity.
     today?: { bets: number; betCount: number; payouts: number; deposits: number; netProfit: number };
   };
   // `totalBets` is ALL-TIME player bets, not today's.

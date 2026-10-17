@@ -27,7 +27,7 @@ import { poolsHidden } from './cyclePublicView.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
 import { respondError } from '../../shared/httpError.js';
-import { AUTO_BET_STEPS_MAX, AUTO_BET_MIN_RUPEES, AUTO_BET_MAX_RUPEES } from './houseBets.js';
+import { AUTO_BET_STEPS_MAX, AUTO_BET_MIN_RUPEES, AUTO_BET_MAX_RUPEES } from './phantomBets.js';
 
 const router = express.Router();
 
@@ -117,7 +117,7 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
 
     // ── The player has read how the boards work ──────────────────────────────
     // Owner, 2026-10-08: players are told how a round is won and that the
-    // pools include house bets, and accept it, before they stake anything
+    // pools include phantom bets, and accept it, before they stake anything
     // (`domains/markets/boardRules.js`, the admin's current version). After the replay gate, so a retry of
     // a bet placed under an older acceptance still answers with that bet.
     if (!(await db.boardRules.acceptsCurrent(userId))) {
@@ -544,8 +544,8 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
 //   - Pool totals shown to regular users include phantom (combined) but hide the split
 // ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-// Auto house bets (owner, 2026-10-15): a phantom agent's plan per board and
-// side, a list of sizes bet one a second until the equalizer (houseBets.js).
+// Auto phantom bets (owner, 2026-10-15): a phantom agent's plan per board and
+// side, a list of sizes bet one a second until the equalizer (phantomBets.js).
 //
 // GET /api/bet/phantom/auto  — { plans, limits }
 // PUT /api/bet/phantom/auto  — { boardKey, audience, side, amounts: [rupees…], enabled }

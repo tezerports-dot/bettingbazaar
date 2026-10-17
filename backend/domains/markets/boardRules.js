@@ -24,7 +24,8 @@
  *
  *   winner  = the side with less REAL money   cycleGenerator.completeCycle
  *   tie     = crypto random draw              cycleGenerator.completeCycle
- *   house   = phantom bets, display only      cycleGenerator.runPhantomEqualizer
+ *   phantom = display only, never paid        cycleGenerator.runPhantomEqualizer
+ *   house   = a real last bet, paid by RTP    cycleGenerator.placeRtpHouseBet
  *   payout  = multiplier × stake − fee        riskValidation.computeWinningsPayout
  *   winners = real wins + curated entries     routes/winners.routes.js
  *   VIP / General boards apart                cycles.audience, bets.core.placeBet
@@ -33,7 +34,7 @@
  */
 
 /** The version of the built-in text; a published version is always above it. */
-export const BOARD_RULES_BASE_VERSION = 4;
+export const BOARD_RULES_BASE_VERSION = 5;
 
 /** The tokens an admin may write, filled in when the text is served. */
 export const BOARD_RULES_TOKENS = Object.freeze({
@@ -58,11 +59,17 @@ export const DEFAULT_BOARD_RULES = Object.freeze({
         + 'If both sides have exactly the same real money, the winner is picked by a secure random draw.',
     },
     {
-      title: 'House bets in the pools',
+      title: 'Phantom bets in the pools',
       body: 'The pools you see on screen include bets placed by the house to make the two sides look balanced. '
-        + 'House bets are never paid out and do not decide the winner, but because of them the pools on screen '
+        + 'Phantom bets are never paid out and do not decide the winner, but because of them the pools on screen '
         + 'do not show which side has less real money. Once the pools merge, only the total of both sides is '
         + 'shown until the result.',
+    },
+    {
+      title: 'House bets',
+      body: 'The house may place real bets to return money to players. A house bet is the last bet of a round, '
+        + 'placed when betting closes. It counts as real money on its side, so it can change which side wins, '
+        + 'and the house never wins money with it.',
     },
     { title: 'Backing a side', body: '{backingSides}' },
     {
@@ -102,7 +109,7 @@ const backingSentence = (bothSides) => (bothSides
  *   `SystemConfig.winningsFeePercent` and `payoutMultiplier`; `bothSides` is
  *   false only while `riskRules.blockOppositeSideBetting` is on.
  */
-export function renderBoardRules(text, { feePercent, multiplier, bothSides = true, houseBetsLabel }) {
+export function renderBoardRules(text, { feePercent, multiplier, bothSides = true, phantomBetsLabel }) {
   const fill = (str) => String(str)
     .replaceAll('{winningsFeePercent}', String(feePercent))
     .replaceAll('{payoutMultiplier}', String(multiplier))
@@ -112,9 +119,9 @@ export function renderBoardRules(text, { feePercent, multiplier, bothSides = tru
     heading: fill(text.heading),
     intro: fill(text.intro),
     sections: text.sections.map((sec) => ({ title: fill(sec.title), body: fill(sec.body) })),
-    // The house-bets line, after the admin's text and outside it, so no
+    // The phantom-bets line, after the admin's text and outside it, so no
     // version of the rules can leave it out (owner, 2026-10-15).
-    houseBetsNotice: houseBetsLabel,
+    phantomBetsNotice: phantomBetsLabel,
   };
 }
 

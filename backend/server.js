@@ -681,7 +681,7 @@ if (runtime.acceptsRealtime) {
 
 // The live pool feed: coalesce per-bet pool totals into ≤1 snapshot/sec/cycle.
 // Started in EVERY role, not only the realtime one: players' bets are placed
-// on the api role and auto house bets by the scheduler, and a publisher that
+// on the api role and auto phantom bets by the scheduler, and a publisher that
 // was never started held their totals forever, so players saw the pool move
 // only when a page reload re-read it (fixed 2026-10-15). A role with no
 // streams of its own hands its snapshots to the realtime workers through

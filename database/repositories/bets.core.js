@@ -163,7 +163,7 @@ export async function getBetHistory(betId) {
  * A player's bets, newest first.
  *
  * ── Phantom bets are excluded by default ────────────────────────────────────
- * A phantom bet is house liquidity placed under a managed account; it is not
+ * A phantom bet is phantom liquidity placed under a managed account; it is not
  * something a player did and must never appear in their history. Including
  * them by accident would show a player wagers they never made — so the
  * exclusion is the DEFAULT and a caller has to ask for them by name.
