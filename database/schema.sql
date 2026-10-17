@@ -1404,6 +1404,38 @@ ALTER TABLE cycles ADD COLUMN IF NOT EXISTS settlement_claimed_by TEXT;
 CREATE INDEX IF NOT EXISTS cycles_settleable_idx
   ON cycles (end_time) WHERE winner IS NOT NULL AND NOT is_settled;
 
+-- ════════════════════════════════════════════════════════════════════════════
+-- ROUND HISTORY: 1,440 rounds per board and audience (owner, 2026-10-17)
+-- ════════════════════════════════════════════════════════════════════════════
+-- Rounds older than the newest CYCLE_HISTORY_KEEP of their board and audience
+-- are deleted once settled (or cancelled) with no bet still PENDING, after
+-- their figures are added to this table, per IST day, in the same transaction
+-- (`database/repositories/cycleHistoryRetention.js`, the one writer). The bets,
+-- their transitions and the ledger are NOT deleted: they are the money record
+-- and append-only (CLAUDE.md §19).
+CREATE TABLE IF NOT EXISTS cycle_history_rollups (
+  cycle_type          TEXT NOT NULL REFERENCES boards (board_key),
+  audience            TEXT NOT NULL,
+  ist_day             DATE NOT NULL,
+  rounds              INTEGER NOT NULL DEFAULT 0,
+  delhi_wins          INTEGER NOT NULL DEFAULT 0,
+  bombay_wins         INTEGER NOT NULL DEFAULT 0,
+  cancelled           INTEGER NOT NULL DEFAULT 0,
+  real_staked_paise   BIGINT  NOT NULL DEFAULT 0,
+  house_staked_paise  BIGINT  NOT NULL DEFAULT 0,
+  paid_out_paise      BIGINT  NOT NULL DEFAULT 0,
+  net_profit_paise    BIGINT  NOT NULL DEFAULT 0,
+  fees_paise          BIGINT  NOT NULL DEFAULT 0,
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (cycle_type, audience, ist_day),
+  CONSTRAINT cycle_history_rollups_audience_known CHECK (audience IN ('VIP', 'GENERAL')),
+  CONSTRAINT cycle_history_rollups_counts CHECK (
+    rounds >= 0 AND delhi_wins >= 0 AND bombay_wins >= 0 AND cancelled >= 0
+    AND delhi_wins + bombay_wins + cancelled <= rounds),
+  CONSTRAINT cycle_history_rollups_money CHECK (
+    real_staked_paise >= 0 AND house_staked_paise >= 0 AND paid_out_paise >= 0 AND fees_paise >= 0)
+);
+
 CREATE TABLE IF NOT EXISTS game_providers (
   provider_key   TEXT PRIMARY KEY,
   name           TEXT NOT NULL,

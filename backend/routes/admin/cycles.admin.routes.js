@@ -4,6 +4,7 @@ import {
   authenticate, express, hasPermission,
 } from './_adminShared.js';
 import { db } from '#db';
+import { serverError } from '../../shared/httpError.js';
 import { allBoards } from '../../domains/markets/cycleTypes.js';
 import { voidCancelledCycle } from '#db/repositories/settlements.js';
 import { sendAlert } from '../../services/alerting.service.js';
@@ -140,6 +141,24 @@ router.get('/cycles/history', authenticate, hasPermission('canViewAnalytics'), a
   } catch (error) {
     console.error('Get cycle history error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch cycle history' });
+  }
+});
+
+// GET /api/admin/cycles/rollups — rounds older than the 1,440 kept per board
+// and audience, summed per IST day before they were removed (owner,
+// 2026-10-17; cycleHistoryRetention.js).
+router.get('/cycles/rollups', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
+  try {
+    const { type, audience, limit } = req.query;
+    if (audience && !['VIP', 'GENERAL'].includes(audience)) {
+      return res.status(400).json({ success: false, code: 'UNKNOWN_AUDIENCE', message: 'audience must be VIP or GENERAL' });
+    }
+    const days = await db.cycleHistoryRetention.listRollups({
+      cycleType: type || null, audience: audience || null, limit,
+    });
+    res.json({ success: true, keep: db.cycleHistoryRetention.CYCLE_HISTORY_KEEP, days });
+  } catch (error) {
+    return serverError(res, error, 'GET /api/admin/cycles/rollups');
   }
 });
 

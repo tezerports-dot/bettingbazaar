@@ -52,6 +52,18 @@ export const CycleHistory: React.FC = () => {
 
   const { page, limit, setPage } = usePagination();
 
+  /**
+   * Rounds older than the newest 1,440 of each board and profile, summed per
+   * IST day before they were removed (owner, 2026-10-17):
+   * `GET /api/admin/cycles/rollups` (cycleHistoryRetention.listRollups).
+   */
+  const [rollups, setRollups] = useState<{ keep: number; days: any[] }>({ keep: 0, days: [] });
+  useEffect(() => {
+    api.get<any>('/api/admin/cycles/rollups', { params: { type: typeFilter === 'ALL' ? undefined : typeFilter } })
+      .then((r) => { if (r.data?.success) setRollups({ keep: r.data.keep, days: r.data.days || [] }); })
+      .catch(() => { /* the panel simply does not render */ });
+  }, [typeFilter]);
+
   useEffect(() => {
     if (!canSeePhantom) return;
     api.get<any>('/api/admin/analytics/real-volume?limit=30')
@@ -261,6 +273,44 @@ export const CycleHistory: React.FC = () => {
       <div className="card">
         <DataTable data={cycles} columns={columns} currentPage={page} totalPages={Math.ceil(total / limit)} onPageChange={setPage} isLoading={isLoading} />
       </div>
+
+      {rollups.days.length > 0 && (
+        <div className="card">
+          <p className="text-sm font-semibold text-gray-300">Older rounds, summarised by day</p>
+          <p className="text-xs text-gray-500 mt-0.5 mb-3">
+            Each board keeps its newest {rollups.keep.toLocaleString('en-IN')} rounds per profile. Older finished rounds are
+            added up here by day and removed; their bets and the ledger are kept.
+          </p>
+          <div className="overflow-x-auto max-h-80 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-gray-500 text-left">
+                  <th className="py-1.5 pr-3 font-medium">Day</th>
+                  <th className="py-1.5 pr-3 font-medium">Board</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Rounds</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Delhi / Bombay wins</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Real staked</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Paid out</th>
+                  <th className="py-1.5 font-medium text-right">Net revenue</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rollups.days.map((d: any) => (
+                  <tr key={`${d.day}-${d.cycleType}-${d.audience}`} className="border-t border-dark-700">
+                    <td className="py-1.5 pr-3 text-gray-300">{d.day}</td>
+                    <td className="py-1.5 pr-3 text-gray-300">{boardName(d.cycleType)}{d.audience === 'GENERAL' ? ' · GENERAL' : ''}</td>
+                    <td className="py-1.5 pr-3 text-right text-gray-200">{d.rounds}{d.cancelled ? ` (${d.cancelled} cancelled)` : ''}</td>
+                    <td className="py-1.5 pr-3 text-right text-gray-300">{d.delhiWins} / {d.bombayWins}</td>
+                    <td className="py-1.5 pr-3 text-right text-gray-200">{formatters.currency(d.realStaked)}</td>
+                    <td className="py-1.5 pr-3 text-right text-gray-300">{formatters.currency(d.paidOut)}</td>
+                    <td className={`py-1.5 text-right font-semibold ${d.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>{formatters.currency(d.netProfit)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Cycle Detail Modal */}
       {selectedCycle && (
