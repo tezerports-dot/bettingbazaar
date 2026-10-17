@@ -389,7 +389,7 @@ export async function seedActors() {
       'merchant-panel': merchantToken(theMerchant),
     },
     cached: {
-      // What `/api/v1/auth/me` hands the admin panel, which `partialize`
+      // What `/api/admin/account/me` hands the admin panel, which `partialize`
       // persists — so a returning admin has it before the first paint, and
       // the route guards do not bounce them to the sign-in screen.
       'admin-panel': {

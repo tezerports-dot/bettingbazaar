@@ -124,13 +124,13 @@ describe('the code legs', () => {
  *
  * ── The defect ──────────────────────────────────────────────────────────────
  * `verifySession` ended with `catch { set({ isAuthenticated: false }); }`, so
- * ANY failure of `GET /api/v1/auth/me` showed the login form to an admin whose
+ * ANY failure of `GET /api/admin/account/me` showed the login form to an admin whose
  * token was perfectly valid — and made them do 2FA again over it, losing
  * whatever they were part-way through.
  *
  * Measured, not theorised: the browser pass made enough requests to trip the
  * platform's own IP limiter (`RATE_LIMIT_TIERS.global`, 1,000 per 15 minutes),
- * `/api/v1/auth/me` answered 429, and every screen in the admin panel rendered
+ * `/api/admin/account/me` answered 429, and every screen in the admin panel rendered
  * as logged out. The same thing happens on a 502 during a deploy or a dropped
  * connection in a lift.
  *

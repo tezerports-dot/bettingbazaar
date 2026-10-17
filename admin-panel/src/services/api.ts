@@ -174,7 +174,9 @@ export const auth = {
   },
 
   verifySession: async () => {
-    const res = await api.get<any>('/api/v1/auth/me');
+    // The staff-only restore: a player's or merchant's session is refused here
+    // (403 WRONG_PANEL) and ended, never shown the panel (§33.5).
+    const res = await api.get<any>('/api/admin/account/me');
     if (res.data?.success && res.data?.user) {
       return { success: true, data: { admin: res.data.user as Admin } };
     }

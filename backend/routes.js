@@ -42,7 +42,7 @@ import { verifyChallenge, issueChallenge, isChallengeToken } from './domains/ide
 import crypto from 'node:crypto';
 import {
   sessionSuperseded, refuseSupersededSession, accountClosed, refuseClosedAccount,
-  belongsElsewhere, refuseWrongPanel, secondFactorMissing, refuseMissingSecondFactor,
+  belongsElsewhere, refuseWrongPanel, secondFactorMissing, refuseMissingSecondFactor, hasStaffRole,
 } from './domains/identity/auth.middleware.js';
 import {
   beginEnrolment, completeEnrolment, checkSignInCode,
@@ -74,10 +74,8 @@ function extractToken(req) {
     || null;
 }
 
-/** Admin, sub-admin, queue manager or mediator. */
-function isStaffAccount(user) {
-  return Boolean(user?.isAdmin || user?.isSubAdmin || user?.isQueueManager || user?.isMediator);
-}
+/** Admin, sub-admin, queue manager or mediator: `hasStaffRole`, the one rule. */
+const isStaffAccount = hasStaffRole;
 
 /**
  * WHICH DOOR a sign-in arrived at, and who that door admits.
