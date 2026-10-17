@@ -354,7 +354,8 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
   // Per level, and per state within it. `confirmed` is the only figure a
   // referrer should treat as theirs.
   const empty = () => ({ count: 0, confirmedPaise: 0, disbursedPaise: 0, blockedPaise: 0 });
-  const byLevel = { 1: empty(), 2: empty() };
+  // Every level the admin pays today, plus any older level an earning has.
+  const byLevel = Object.fromEntries(rewards.levelsPaise.map((_, i) => [i + 1, empty()]));
 
   const detail = rows.map((r) => {
     const bucket = byLevel[r.level] || (byLevel[r.level] = empty());
@@ -382,8 +383,11 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
     };
   });
 
-  const sum = (k) => (byLevel[1][k] || 0) + (byLevel[2][k] || 0);
+  const sum = (k) => Object.values(byLevel).reduce((t, b) => t + (b[k] || 0), 0);
   const level = (n) => ({
+    level: n,
+    // What a NEW joiner earns at this level now; 0 when the level is off.
+    reward: paiseToRupees(rewards.levelsPaise[n - 1] ?? 0),
     count: byLevel[n].count,
     confirmed:    paiseToRupees(byLevel[n].confirmedPaise),
     disbursed:    paiseToRupees(byLevel[n].disbursedPaise),
@@ -392,12 +396,10 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
 
   return {
     referralCode: me?.referralCode || '',
-    // What a NEW joiner earns now, per level (the admin's settings); what each
-    // earning below pays is the amount stamped on it when its joiner verified.
-    rewardPerReferral: paiseToRupees(rewards.level1Paise),
-    rewardLevel2: paiseToRupees(rewards.level2Paise),
-    level1: level(1),
-    level2: level(2),
+    // Per level, level 1 first: what a NEW joiner earns now (the admin's
+    // settings) and the totals so far; what each earning below pays is the
+    // amount stamped on it when its joiner verified.
+    levels: Object.keys(byLevel).map(Number).sort((a, b) => a - b).map(level),
     totals: {
       referrals:   detail.length,
       // Earned and confirmed — not blocked.

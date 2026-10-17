@@ -2,7 +2,7 @@
 /**
  * The live pool feed starts in every runtime role (fixed 2026-10-15).
  *
- * Players' bets are placed on the api role and auto house bets by the
+ * Players' bets are placed on the api role and auto phantom bets by the
  * scheduler. The publisher used to start only inside the realtime-only block,
  * so on the three-role deploy (deploy/vps/docker-compose.prod.yml) the totals
  * those roles recorded were never flushed and players saw the pool move only

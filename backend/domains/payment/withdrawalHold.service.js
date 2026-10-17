@@ -34,22 +34,27 @@ import { sendAlert } from '../../services/alerting.service.js';
 import { payCommissionFor } from '../team/teamCommission.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
-/** Fallback matches the SystemConfig schema default (60), which is also its floor. */
+/** Fallback matches the SystemConfig schema default (60). */
 const DEFAULT_HOLD_MINUTES = 60;
+/** The spec's bounds (`database/spec/config.spec.js`): 0 to 10,080 (7 days). */
+const MAX_HOLD_MINUTES = 10_080;
 
 /**
- * Admin-configured hold window, in minutes — the SELL escrow window. At least
- * an hour (owner, 2026-10-02): the player is told the member says they paid
- * and has that long to say the money never arrived. The spec refuses less;
- * a value below the floor that reached the row some other way reads as the
- * floor, never as "settle now".
+ * Admin-configured hold window, in minutes — the SELL escrow window: the
+ * player is told the member says they paid and has this long to say the money
+ * never arrived, while the tokens stay out of the team's pool. Any whole number
+ * from 0 to 10,080 (owner, 2026-10-17, replacing the 60-minute floor). At 0
+ * the sell settles on the next sweep (each minute); a dispute after that is
+ * of a COMPLETED sell, refunded from the pool or covered by the platform
+ * (`teamPools.reverseSellFromPool`). A value outside the bounds that reached
+ * the row some other way reads as the default.
  */
 export async function holdMinutes() {
   try {
     const cfg = await getSystemConfig();
     const m = cfg?.withdrawalHoldMinutes;
-    // schema default: 60, and the spec's minimum.
-    if (Number.isFinite(m) && m >= DEFAULT_HOLD_MINUTES && m <= 1440) return m;
+    // schema default: 60
+    if (Number.isInteger(m) && m >= 0 && m <= MAX_HOLD_MINUTES) return m;
   } catch { /* fall through to the schema default */ }
   return DEFAULT_HOLD_MINUTES;
 }

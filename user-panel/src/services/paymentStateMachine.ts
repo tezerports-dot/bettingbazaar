@@ -3,7 +3,6 @@
 
 export const PAYMENT_STATES = [
   'PENDING_QUEUE',
-  'ASSIGNED',
   'PROCESSING',
   'PAID',
   'COMPLETED',
@@ -17,13 +16,12 @@ export type PaymentOrderState = typeof PAYMENT_STATES[number];
 
 /** States where the order is still active (UI should poll or listen via SSE) */
 export const ACTIVE_STATES: PaymentOrderState[] = [
-  'PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED',
+  'PENDING_QUEUE', 'PROCESSING', 'PAID', 'DISPUTED',
 ];
 
 /** Human-readable labels for display */
 export const PAYMENT_STATE_LABELS: Record<PaymentOrderState, string> = {
   PENDING_QUEUE: 'Waiting for Merchant',
-  ASSIGNED:      'Merchant Assigned — Submit Payment',
   PROCESSING:    'Payment Processing',
   PAID:          'Payment Submitted — Awaiting Merchant Review',
   COMPLETED:     'Completed',
@@ -36,7 +34,6 @@ export const PAYMENT_STATE_LABELS: Record<PaymentOrderState, string> = {
 /** Colour token for badge rendering */
 export const PAYMENT_STATE_COLOR: Record<PaymentOrderState, 'yellow' | 'blue' | 'green' | 'red' | 'orange'> = {
   PENDING_QUEUE: 'yellow',
-  ASSIGNED:      'blue',
   PROCESSING:    'orange',
   PAID:          'orange',
   COMPLETED:     'green',

@@ -236,7 +236,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
             // silently skips an order the merchant is meant to work.
             const page = await db.orders.findOrders({
                 merchantId,
-                states: ['ASSIGNED', 'PROCESSING', 'PAID', 'PENDING_QUEUE'],
+                states: ['PROCESSING', 'PAID', 'PENDING_QUEUE'],
                 limit,
                 cursor: decodeOrderCursor(req.query.cursor),
             });
@@ -292,7 +292,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         // stream carries every order and every cycle
         // result — the last thing a revoked admin should keep receiving.
         const adminUser = await db.users.getUser(decoded.userId);
-        if (!adminUser || adminUser.isBlocked
+        if (!adminUser || adminUser.isBlocked || adminUser.accountType !== 'STAFF'
             || (!adminUser.isAdmin && !adminUser.isSubAdmin && !adminUser.isQueueManager)) {
             return res.status(403).json({ success: false, message: 'Admin access required' });
         }

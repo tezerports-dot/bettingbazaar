@@ -1371,7 +1371,7 @@ Owner decisions of 2026-10-11 (DECISION_LOG). What exists:
 
 Not built: every panel screen for the above (admin switch, merchant-account
 admin, the merchant panel's accounts / sub-members / reports / paid-from
-picker, the player's UPI link button); "House bettors" wording (Phase C).
+picker, the player's UPI link button); "Phantom bettors" wording (Phase C).
 SSE pushes are per merchant, not filtered per sub-member.
 
 ## 3.13 Staff sign in with an authenticator app; staff have no Telegram (owner, 2026-10-13) — **BUILT on `feat/staff-authenticator`**
@@ -1448,6 +1448,56 @@ Telegram card, the merchant password form, application form and Telegram card;
 the password on admin-made merchants and on sub-members. Added: an Install app
 button in the player app (the browser's own prompt; Add to Home Screen on an
 iPhone).
+
+## 3.15 Merchant orders start on assignment; one-line rows; reason-only reject (owner, 2026-10-16) — **BUILT on `feat/merchant-auto-accept`**
+
+The owner asked for orders to be taken without the merchant approving them,
+each order shown as one line (UTR, amount, ✓/✗), and "Payment not received"
+to take a reason with no image.
+
+- *No Accept step.* Routing moves an order PENDING_QUEUE → PROCESSING in the
+  assigning transaction (ASSIGNED is gone from the state machine, the
+  `/merchant/accept/:id` route and `NOT_ACCEPTED_YET` / `ACCEPT_FIRST` with
+  it). The player is shown where to pay at once.
+- *Who may still hand an order on (F-052 kept closed).* Once the player can
+  pay, the order cannot change hands: only a started sell, or a cash buy whose
+  QR is not scanned yet, may be declined by the member or reassigned by an
+  admin (`mayChangeHands`, re-asked under the order lock by
+  `refuseIfPayableWithin`, 409 `PLAYER_MAY_BE_PAYING`). A bank, merchant-account
+  or USDT buy stays with its member (400 `CANNOT_DECLINE`). Panels read
+  `canDecline` / `canReassign`.
+- *Player cancel.* While queued, or a cash buy before its QR
+  (`playerMayCancel`).
+- *Response time.* Measured from the player's Paid tap to confirm on a buy,
+  from the start to confirm on a sell, stamped once at confirm.
+- *Merchant panel.* `OrderCard` replaced by `OrderRow`: one line, UTR, amount,
+  ✓ confirm, ✗ "Payment not received" with a reason only.
+- *Defaults chosen without an answer (change any of them):* the three above
+  (no decline of a started bank/USDT buy; cancel only while queued or before a
+  cash QR; response time from Paid).
+- *Tests.* `startedOnAssignmentPg` (6, replaces `acceptBeforePayPg`), pg and
+  route suites rewritten for no accept; `OrderRow` and dialog tests; mutations
+  MAA1–MAA4 KILLED, M90, M122, M357, M375, M462 repointed and KILLED. e2e
+  scenarios and the browser drive edited, NOT run. Generated reports
+  (`ROUTE_COVERAGE.md`, `E2E_WORKFLOWS.md`) still name the accept route until
+  regenerated.
+
+## 3.16 Merchant order report: a row per order with who pressed ✓/✗ (owner, 2026-10-16) — **BUILT on `feat/merchant-reports-table`** (stacked on 3.15)
+
+- Every merchant ✓ (buy confirm, sell Paid) and ✗ (buy rejected as not
+  received) records its actor on the order transition (`merchantActorTag`): the
+  member or owner, or the sub-member by staff id.
+- `merchantReports.orderReport` is the one order report for agents and
+  merchant accounts: transaction ID, user, UTR, amount (tokens), time, ✓/✗ and
+  who, over a range of IST days, totals over every row (not the page), a
+  sub-member's slice in the WHERE. `GET /api/merchant/reports/orders` (paged)
+  and `.csv` (up to 10,000 rows). The account-only `/account/reports/orders.csv`
+  and `ordersForExport` are deleted.
+- Merchant panel: `OrderReportTable` on History (the Completed tab and its
+  client-built CSV are gone) and under the account's Reports figures.
+- Tests: `merchantOrderReportPg` (5), `merchantAccountPg` (+ the desk's name on
+  the row and CSV), `OrderReportTable` (3), `MerchantAccount` reports test;
+  mutations MRT1–MRT4 KILLED.
 
 ## 4. How to pick this up
 

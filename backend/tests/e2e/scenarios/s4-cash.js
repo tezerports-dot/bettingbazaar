@@ -86,8 +86,8 @@ export default async function run() {
     return;
   }
   const row = await stateOf(oid);
-  check(A, 'system', 'the cash buy is ASSIGNED to the Ready member', `ASSIGNED to ${m.merchantId}`,
-    `${row.state} to ${row.merchant_id ?? 'nobody'}`, row.state === 'ASSIGNED' && row.merchant_id === m.merchantId);
+  check(A, 'system', 'the cash buy is started on the Ready member (no Accept)', `PROCESSING with ${m.merchantId}`,
+    `${row.state} with ${row.merchant_id ?? 'nobody'}`, row.state === 'PROCESSING' && row.merchant_id === m.merchantId);
   check(A, 'system', 'the order carries the rail its size implies', 'CASH_ATM',
     row.payment_mode ?? 'missing', row.payment_mode === 'CASH_ATM');
   const hold = (await orderPoolTrail(oid)).entries.filter(e => e.kind === 'BUY_HOLD');
@@ -134,16 +134,7 @@ export default async function run() {
     check(A, 'player', 'cancel the waiting sell', '200', `${back.status} ${back.body.message ?? ''}`, back.status === 200);
   }
 
-  // ── Nothing to pay until the member accepts and scans the machine (2d) ──
-  const unaccepted = await POST(pT, `/api/payment/order/${oid}/mark-paid`, {});
-  check(A, 'player', '"I\'ve paid" before the member accepts', '409 NOT_ACCEPTED_YET',
-    `${unaccepted.status} ${unaccepted.body.code ?? ''}`, unaccepted.status === 409 && unaccepted.body.code === 'NOT_ACCEPTED_YET');
-  const scanFirst = await POST(mT, `/api/merchant/orders/${oid}/cash-link`, { link: `upi://pay?pa=atm.cash@icici&am=1000.00` });
-  check(A, 'merchant', 'scanning before accepting the order', '409 ACCEPT_FIRST',
-    `${scanFirst.status} ${scanFirst.body.code ?? ''}`, scanFirst.status === 409 && scanFirst.body.code === 'ACCEPT_FIRST',
-    'until the member accepts, an admin may still move the order; a QR attached now would be another member\'s machine');
-  const accepted = await POST(mT, `/api/merchant/accept/${oid}`, {});
-  check(A, 'merchant', 'the member accepts the cash buy', '200', `${accepted.status} ${accepted.body.message ?? ''}`, accepted.status === 200);
+  // ── Nothing to pay until the member scans the machine (2d) ──────────────
   const tooSoon = await POST(pT, `/api/payment/order/${oid}/mark-paid`, {});
   check(A, 'player', '"I\'ve paid" before the member scans the machine', '409 CASH_LINK_PENDING',
     `${tooSoon.status} ${tooSoon.body.code ?? ''}`, tooSoon.status === 409 && tooSoon.body.code === 'CASH_LINK_PENDING',
@@ -167,21 +158,18 @@ export default async function run() {
 
   // ── "Payment not received" waits for the tap (owner, 2026-10-07) ─────────
   // The member's rejection denies a payment the player CLAIMED; with the QR
-  // scanned and no tap yet there is none. Both doors refuse, and the player is
-  // neither warned nor flagged.
-  const earlyProof = await POST(mT, `/api/merchant/order-reject-proof/${oid}/upload-url`,
-    { fileName: 'statement.jpg', contentType: 'image/jpeg', fileSize: 1024 });
+  // scanned and no tap yet there is none. The route refuses, and the player
+  // is neither warned nor flagged. A reason only, no proof (owner, 2026-10-17).
   const earlyReject = await POST(mT, `/api/merchant/orders/${oid}/reject`,
-    { reason: 'No credit for this order in my account', proofFileKey: 'merchant-reject-proof/none.jpg' });
+    { reason: 'No credit for this order in my account' });
   const unwarned = (await pgQuery('SELECT warning_count, payment_flagged FROM users WHERE user_id = $1',
     [p.userId], 'e2e')).rows[0] ?? {};
   const unpaid = await stateOf(oid);
-  check(A, 'merchant', '"payment not received" and its proof upload before the player taps Paid',
-    '400 NOT_PAID_YET from both; still PROCESSING; player not warned or flagged',
-    `${earlyProof.status} ${earlyProof.body.code ?? ''}; ${earlyReject.status} ${earlyReject.body.code ?? ''}; `
+  check(A, 'merchant', '"payment not received" before the player taps Paid',
+    '400 NOT_PAID_YET; still PROCESSING; player not warned or flagged',
+    `${earlyReject.status} ${earlyReject.body.code ?? ''}; `
       + `${unpaid.state}; warnings ${unwarned.warning_count}, flagged ${unwarned.payment_flagged}`,
-    earlyProof.status === 400 && earlyProof.body.code === 'NOT_PAID_YET'
-      && earlyReject.status === 400 && earlyReject.body.code === 'NOT_PAID_YET'
+    earlyReject.status === 400 && earlyReject.body.code === 'NOT_PAID_YET'
       && unpaid.state === 'PROCESSING' && Number(unwarned.warning_count) === 0 && unwarned.payment_flagged === false,
     'REJECTED has one edge in the state machine, from PAID; the message tells the member to wait for the tap');
 

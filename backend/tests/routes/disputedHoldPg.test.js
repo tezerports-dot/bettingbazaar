@@ -109,7 +109,6 @@ describePg('a disputed withdrawal hold', () => {
     made.push(orderId);
     expect((await getOrderRecord(orderId)).merchantId, 'routed to somebody else').toBe(merchant.merchantId);
 
-    expect((await as(merchantApp, merchant).post(`/accept/${orderId}`)).status).toBe(200);
     const confirmed = await as(merchantApp, merchant).post(`/confirm/${orderId}`).send({ utrNumber: payoutUtr() });
     expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
     // The window passes.

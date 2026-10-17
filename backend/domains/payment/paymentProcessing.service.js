@@ -41,9 +41,10 @@ import {
 } from '../configuration/tokenRates.js';
 import { debitWinningsForWithdrawal, refundWithdrawal } from '../wallet/walletAuthority.service.js';
 import {
-  MERCHANT_CURRENCY, merchantTypeOf, usdtAddressFor,
+  MERCHANT_CURRENCY, merchantTypeOf, usdtAddressFor, formatOrderFiat,
   USDT_CHAIN_SPEC, USDT_CHAINS, isUsdtChain,
 } from '../merchant/merchantCurrency.js';
+import { postSystemMessage } from '#db/repositories/chat.js';
 // Risk Platform (Phase 010): the single validation authority for funding orders.
 import { assessFundingOrder, getRiskRules, computePayoutFeeMinor } from '../risk/riskValidation.service.js';
 // What a valid payment reference looks like on this order, what to call it, and
@@ -64,7 +65,7 @@ import {
 } from '#db/repositories/teamRouting.js';
 import { routingForSize } from '../merchant/denominations.js';
 // The only shape of an order a player receives.
-import { toPlayerOrderView, PLAYER_CANCEL_STATES } from './playerOrderView.js';
+import { toPlayerOrderView, playerCancelFrom } from './playerOrderView.js';
 // The mirror of it, pointing the other way: the one shape a MERCHANT receives.
 // This service pushes to both parties, so it needs both projections.
 import { toMerchantOrderView } from '../merchant/merchantOrderView.js';
@@ -177,7 +178,10 @@ function buildMerchantSnapshot(merchant, expiresAt, order = null, payAccount = n
 
 // ─── Assign an order to a team member; returns true if assigned ───────────────
 /**
- * Hand a PENDING_QUEUE order to a member of a working team on its rail.
+ * Hand a PENDING_QUEUE order to a member of a working team on its rail, and
+ * START it: there is no accept step (owner, 2026-10-17, "no merchant
+ * approval"). The move is PENDING_QUEUE → PROCESSING, the payment window runs
+ * from now, and the player is shown where to pay at once.
  *
  * ── The choice and the hold are one transaction ────────────────────────────
  * `db.teamRouting.assignToTeam` ranks the eligible members (fewest open orders,
@@ -237,11 +241,42 @@ async function tryAssignMerchant(order, { alsoBar = [] } = {}) {
     _id:              order.orderId,
     payTo:            toPlayerOrderView(order).payTo ?? null,
     expiresAt:        order.expiresAt,
-    status:           'ASSIGNED',
+    status:           order.status,
     server_ts:        Date.now(),
   });
 
+  await postStartedNote(order, cfg);
   return true;
+}
+
+/**
+ * The order's chat opens with what each side does next. A note: a failure is
+ * logged by `postSystemMessage` and the order stands (§21).
+ */
+async function postStartedNote(order, cfg) {
+  const amount = formatOrderFiat(order);
+  const windowMinutes = Math.round((routedToMerchants(order)
+    ? merchantRoutingSettings(cfg).processingWindowSeconds[order.type]
+    : routingSettings(cfg).processingWindowSeconds[railOf(order)]) / 60);
+  let text;
+  if (order.type === 'DEPOSIT') {
+    // Named the way the player's screen names it, never a UPI handle (§24).
+    const payTo = order.currency === MERCHANT_CURRENCY.USDT
+      ? `the merchant's USDT address on ${USDT_CHAIN_SPEC[order.usdtChain]?.label ?? 'the order chain'}, shown on the order`
+      : order.paymentMode === PAYMENT_MODES.CASH_ATM
+        ? 'the cash machine QR the member scans'
+        : order.payAccountId
+          ? 'the payment details shown on the order'
+          : 'the member\'s bank account shown on the order, by bank transfer';
+    text = `✅ Order started\n📋 Order: ${order.orderId}\n💰 Pay ${amount} to ${payTo}\n⏱ Payment window: ${windowMinutes} minutes`;
+  } else {
+    text = `✅ Withdrawal started\n📋 Order: ${order.orderId}\n💸 The merchant sends ${amount} to your bank account\n⏱ Window: ${windowMinutes} minutes`;
+  }
+  const chat = await postSystemMessage(order.orderId, text);
+  if (chat && global.io) {
+    const oid = String(order.orderId);
+    global.io.to(`order_${oid}`).emit(`chat_${oid}`, { ...chat, orderId: oid });
+  }
 }
 
 /** An order merchant accounts serve: the window and cap are `merchantRouting`'s, per direction. */
@@ -254,8 +289,10 @@ async function assignToMerchantAccount(order, cfg, barredMerchantIds) {
     actor: 'assignment',
     buildSet: async (cand, payAccount) => {
       const merchant = await db.merchants.getMerchant(cand.merchantId);
+      const now = new Date();
       return {
-        assignedAt: new Date(),
+        assignedAt: now,
+        processingAt: now,
         expiresAt,
         merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order, payAccount),
       };
@@ -276,8 +313,10 @@ async function assignToAgents(order, cfg, barredMerchantIds) {
     // about them at the moment the order became theirs.
     buildSet: async (cand) => {
       const merchant = await db.merchants.getMerchant(cand.merchantId);
+      const now = new Date();
       return {
-        assignedAt: new Date(),
+        assignedAt: now,
+        processingAt: now,
         expiresAt,
         merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order),
       };
@@ -305,7 +344,7 @@ export async function assignQueuedOrders({ limit = 200 } = {}) {
     try {
       if (await tryAssignMerchant(order)) {
         assigned += 1;
-        emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED', server_ts: Date.now() });
+        emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: order.status, server_ts: Date.now() });
       }
     } catch (error) {
       // One bad row must not hold up everybody behind it.
@@ -473,7 +512,7 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // Offered to the teams now; if nobody is free it waits PENDING_QUEUE and
   // `assignQueuedOrders` offers it again on every run until it expires.
   if (await tryAssignMerchant(order)) {
-    emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED', server_ts: Date.now() });
+    emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: order.status, server_ts: Date.now() });
   }
 
   // THROUGH the projection, not a literal that happens to agree with it.
@@ -639,7 +678,7 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
   // Offered to the teams now; if nobody is free it waits PENDING_QUEUE for the
   // assignment sweep, its stake locked, until it is served or expires.
   if (await tryAssignMerchant(order)) {
-    emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED', server_ts: Date.now() });
+    emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: order.status, server_ts: Date.now() });
   }
 
   await emitWalletUpdate(user.userId);
@@ -823,18 +862,8 @@ export async function markOrderPaid(userId, orderId, utrNumber) {
     throw Object.assign(new Error('Access denied'), { status: 403 });
   if (order.type !== 'DEPOSIT')
     throw Object.assign(new Error('Only DEPOSIT orders can be marked paid by user'), { status: 400 });
-  // ── Nothing is paid before the member accepts ─────────────────────────
-  // ASSIGNED is the state a member may still decline and an admin may still
-  // move (`/reject`, the admin reassign), so the player is shown where to pay
-  // only from PROCESSING (`playerOrderView`), and "I've paid" is taken only
-  // there. Otherwise a member could take a transfer, decline, and leave the
-  // player's money with them and the order with somebody else.
-  if (order.status === 'ASSIGNED') {
-    throw Object.assign(
-      new Error('The member has not accepted this order yet. Wait for the payment details, pay them, then tap I\'ve paid.'),
-      { status: 409, code: 'NOT_ACCEPTED_YET' },
-    );
-  }
+  // "I've paid" is taken only on a started order (PROCESSING), the one state in
+  // which the player is shown where to pay (`playerOrderView`).
   if (order.status !== 'PROCESSING')
     throw Object.assign(new Error(`Cannot mark paid — order is in ${order.status} status`), { status: 400 });
 
@@ -1118,7 +1147,7 @@ export async function updateMerchantStatsOnComplete(merchantId, success, detail 
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// cancelOrder  — user or admin cancels an order no member has accepted yet
+// cancelOrder  — user or admin cancels an order nobody can have paid on yet
 // ═════════════════════════════════════════════════════════════════════════════
 export async function cancelOrder(actorId, isAdmin, orderId) {
   const order = await db.orders.getOrderRecord(orderId);
@@ -1134,15 +1163,14 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
   // means the protection lived in a different domain from the decision. The
   // transition decides now, and only the winner refunds.
   //
-  // From the queue, or from a member who has not ACCEPTED yet
-  // (`PLAYER_CANCEL_STATES`): until then nobody was shown where to pay and
-  // nobody paid, so the player owes nothing and the member loses nothing. The
-  // "Finding a merchant" screen covers both states, and offering Cancel on it
-  // only while the order happened to be unassigned left the player stuck the
-  // moment a member was picked. A member accepting in the same instant is
-  // settled by the WHERE: one of the two moves wins and the other is refused.
+  // From the queue, or a started cash buy with no ATM QR scanned yet
+  // (`playerCancelFrom`): nobody was shown where to pay and nobody paid, so the
+  // player owes nothing and the member loses nothing. Routing picking a member
+  // in the same instant is settled by the WHERE, and a QR scanned in the same
+  // instant by `refuseIfPayableWithin` under the row lock.
   const cancelled = await cancelOrderState(order.orderId, {
-    expectFrom: [...PLAYER_CANCEL_STATES],
+    expectFrom: playerCancelFrom(order),
+    within: (client) => db.orders.refuseIfPayableWithin(client, order.orderId),
     set: {
       cancelReason: 'USER_CANCELLED',
       cancelledAt:  new Date(),
@@ -1160,7 +1188,7 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
   if (!cancelled.idempotent && order.type === 'WITHDRAWAL' && order.escrowLocked) {
     await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
   }
-  // An ASSIGNED deposit holds its tokens in the member's team pool from the
+  // A started deposit holds its tokens in the member's team pool from the
   // assigning transaction; they go back now. A PENDING_QUEUE one holds nothing
   // (a requeue releases in the transaction that moves it back), so this is a
   // no-op there.
@@ -1189,7 +1217,7 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
  * A buy order the player has PAID for and the merchant has not answered.
  *
  * ── The window nobody was watching ─────────────────────────────────────────
- * `expireOrders` covers PENDING_QUEUE, ASSIGNED and PROCESSING and CANCELS what
+ * `expireOrders` covers PENDING_QUEUE and PROCESSING and CANCELS what
  * it finds, and it stops short of PAID on purpose: cancelling an order the
  * player has already paid for strands the payment. That is right, and it left
  * the case with no owner at all. A merchant who neither approves nor rejects a
@@ -1386,7 +1414,7 @@ export async function expireOrders() {
       // orphaned it permanently, and for a WITHDRAWAL that means the player's
       // money sits in escrow forever with nothing scheduled to release it.
       const moved = await cancelOrderState(order.orderId, {
-        expectFrom: ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING'],
+        expectFrom: ['PENDING_QUEUE', 'PROCESSING'],
         set: {
           cancelReason: 'EXPIRED',
           cancelledAt:  new Date(),
@@ -1419,8 +1447,8 @@ export async function expireOrders() {
 
         // ── Whose failure was this? The DIRECTION decides ──────────────────
         // An expired assignment used to count against the merchant in every
-        // case, and on a BUY that is the wrong party. A buy expires at ASSIGNED
-        // or PROCESSING because THE PLAYER NEVER PAID — the merchant was
+        // case, and on a BUY that is the wrong party. A started buy expires
+        // because THE PLAYER NEVER PAID — the merchant was
         // standing by, did nothing wrong, and took a strike for it. Three
         // players who changed their minds and an honest merchant is suspended,
         // which is precisely the failure mode that gets a control switched off.
@@ -1447,23 +1475,20 @@ export async function expireOrders() {
           // Both counts are advanced by one function, so an expiry cannot be
           // recorded against one party and forgotten against the other.
           //
-          // A buy the member never accepted, or a cash buy whose member never
-          // scanned the machine's QR, gave the player nothing to pay (Step
-          // 2d), so it is not the player's: only the member's count moves.
+          // A cash buy whose member never scanned the machine's QR gave the
+          // player nothing to pay (Step 2d), so it is not the player's: only
+          // the member's count moves.
           const { recordPlayerPaymentFailure } =
             await import('./playerPaymentFailure.service.js');
-          const neverAccepted = order.status === 'ASSIGNED';
           const noCashLink = order.paymentMode === PAYMENT_MODES.CASH_ATM && !order.cashLink;
           await recordPlayerPaymentFailure({
             orderId: order.orderId,
             userId: String(order.userId),
             merchantId: order.merchantId ?? null,
-            reason: neverAccepted
-              ? 'The member never accepted this buy.'
-              : noCashLink
-                ? 'The member never scanned the cash machine for this buy.'
-                : 'The buy order expired before any payment was made.',
-            playerCouldPay: !neverAccepted && !noCashLink,
+            reason: noCashLink
+              ? 'The member never scanned the cash machine for this buy.'
+              : 'The buy order expired before any payment was made.',
+            playerCouldPay: !noCashLink,
           });
         } else {
           const { recordMerchantRefusal, REFUSAL } =
@@ -1495,4 +1520,4 @@ export async function expireOrders() {
 }
 
 // Export tryAssignMerchant for re-assignment after rejection
-export { tryAssignMerchant, buildMerchantSnapshot };
+export { tryAssignMerchant };

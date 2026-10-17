@@ -108,7 +108,6 @@ export function toOrder(r) {
 
     approvedBy: r.approved_by, approvedAt: r.approved_at,
     rejectedBy: r.rejected_by, rejectedAt: r.rejected_at,
-    rejectionProofUrl: r.rejection_proof_url,
     cancelReason: r.cancel_reason, cancelledAt: r.cancelled_at,
     warningIssued: r.warning_issued,
     paidAt: r.paid_at, completedAt: r.completed_at, expiresAt: r.expires_at,
@@ -236,7 +235,7 @@ const SETTABLE = Object.freeze({
 
   approvedBy: 'approved_by', approvedAt: 'approved_at',
   rejectedBy: 'rejected_by',
-  rejectionProofUrl: 'rejection_proof_url', rejectedAt: 'rejected_at',
+  rejectedAt: 'rejected_at',
   cancelReason: 'cancel_reason', cancelledAt: 'cancelled_at',
   warningIssued: 'warning_issued',
   paidAt: 'paid_at', completedAt: 'completed_at', expiresAt: 'expires_at',
@@ -485,7 +484,7 @@ export async function claimUtrGrace(orderId, userId, graceSeconds) {
       WHERE order_id = $1
         AND user_id  = $2
         AND utr_grace_at IS NULL
-        AND state IN ('ASSIGNED', 'PROCESSING')
+        AND state = 'PROCESSING'
       RETURNING *`,
     [String(orderId), String(userId), seconds], 'order_claim_utr_grace',
   );
@@ -496,8 +495,8 @@ export async function claimUtrGrace(orderId, userId, graceSeconds) {
  * Attach the ATM's payment link to a CASH buy — the one writer of `cash_link`.
  *
  * Every condition is in the WHERE (trap 18): the order is a CASH buy, it is
- * this member's, they have accepted it (PROCESSING: before that they may still
- * decline it), and the player has not yet said they paid. A second scan
+ * this member's, it is started (PROCESSING), and the player has not yet said
+ * they paid. A second scan
  * before then REPLACES the first (the member picked the wrong amount, or the
  * machine timed out and showed a new QR); after PAID the link is what was
  * paid, and nothing moves it. The caller has already checked the link itself
@@ -521,6 +520,57 @@ export async function setCashLink(orderId, merchantId, link) {
     [String(orderId), String(merchantId), String(link)], 'order_set_cash_link',
   );
   return rows[0] ? toOrder(rows[0]) : null;
+}
+
+// ── Whether a started order may still change hands ──────────────────────────
+/**
+ * A started order (PROCESSING) may go back to the queue — the member declines
+ * it, an admin moves it — only while nobody can have paid on it (owner,
+ * 2026-10-17: orders start the moment routing hands them out, with no accept):
+ *   a SELL: the member pays the player, and has not said they did;
+ *   a CASH buy: the player pays the ATM QR the member scans, and none is
+ *     scanned yet.
+ * Any other buy shows the player where to pay from the moment it starts, so it
+ * never changes hands: a member could otherwise take a transfer and decline,
+ * leaving the player's money with them and the order with somebody else. It
+ * runs to its deadline, a "payment not received", or a dispute.
+ *
+ * `mayChangeHands` is the read for screens and messages; the guard is
+ * `refuseIfPayableWithin`, asked inside the move under the order's row lock,
+ * which `setCashLink`'s UPDATE also takes, so a scan and a hand-over cannot
+ * both win.
+ */
+export function mayChangeHands(order) {
+  if (!order || order.status !== 'PROCESSING') return false;
+  if (order.type === 'WITHDRAWAL') return true;
+  return order.paymentMode === 'CASH_ATM' && !order.cashLink;
+}
+
+/** Thrown inside a hand-over's transaction when the player may already be paying. */
+export class PlayerMayBePaying extends Error {
+  constructor() {
+    super('The player has been shown where to pay, so this order can no longer change hands.');
+    this.status = 409;
+    this.code = 'PLAYER_MAY_BE_PAYING';
+  }
+}
+
+/**
+ * `mayChangeHands`, asked of the locked row inside a transition (a `within`)
+ * that takes an order off its member: a requeue or a cancel. Only a move FROM
+ * PROCESSING is asked — read off the transition row the move has just
+ * written, so an order routed between the caller's read and its move is
+ * judged as it really was. A queued order has nobody to pay and passes.
+ */
+export async function refuseIfPayableWithin(client, orderId) {
+  const { rows } = await client.query(
+    `SELECT 1 FROM order_states o
+      WHERE o.order_id = $1 AND o.order_type = 'DEPOSIT'
+        AND (o.payment_mode <> 'CASH_ATM' OR o.cash_link IS NOT NULL)
+        AND (SELECT t.from_state FROM order_transitions t
+              WHERE t.order_id = o.order_id ORDER BY t.id DESC LIMIT 1) = 'PROCESSING'`,
+    [String(orderId)]);
+  if (rows.length) throw new PlayerMayBePaying();
 }
 
 /**
@@ -681,7 +731,7 @@ export async function countOpenDeposits(userId, { currency = 'INR' } = {}) {
       WHERE user_id = $1
         AND order_type = 'DEPOSIT'
         AND currency = $2
-        AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID')`,
+        AND state IN ('PENDING_QUEUE', 'PROCESSING', 'PAID')`,
     [String(userId), String(currency)], 'order_open_deposits_for_user',
   );
   return rows[0]?.n ?? 0;
@@ -692,7 +742,7 @@ export async function pendingWithdrawalTotal(userId) {
     `SELECT COALESCE(SUM(token_amount_paise), 0) AS total
        FROM order_states
       WHERE user_id = $1 AND order_type = 'WITHDRAWAL'
-        AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID')`,
+        AND state IN ('PENDING_QUEUE', 'PROCESSING', 'PAID')`,
     [String(userId)], 'order_pending_withdrawal_total',
   );
   return rupees(rows[0].total);
@@ -711,7 +761,7 @@ export async function playerSellEscrow(userId) {
             COALESCE(SUM(token_amount_paise) FILTER (WHERE state = 'DISPUTED'), 0)  AS in_dispute
        FROM order_states
       WHERE user_id = $1 AND order_type = 'WITHDRAWAL' AND escrow_locked
-        AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED')`,
+        AND state IN ('PENDING_QUEUE', 'PROCESSING', 'PAID', 'DISPUTED')`,
     [String(userId)], 'order_player_sell_escrow',
   );
   return { inSellOrders: rupees(rows[0].in_orders), inDispute: rupees(rows[0].in_dispute) };
@@ -895,6 +945,9 @@ export async function paymentQueue({ state = null, limit = 200 } = {}) {
   const byState = Object.fromEntries(counts.map((r) => [r.state, r.n]));
   const orders = rows.map((r) => ({
     ...toOrder(r),
+    // Whether the queue manager may move it to another member: the same answer
+    // the reassign route asks (`mayChangeHands`), so the screen keeps no copy.
+    canReassign: mayChangeHands(toOrder(r)),
     // A LEFT JOIN, so an order survives a party row that is gone. The money
     // moved; losing the order because an account was deleted would put a hole
     // in the queue an operator has to work.
@@ -910,7 +963,6 @@ export async function paymentQueue({ state = null, limit = 200 } = {}) {
     orders,
     grouped: {
       pending:    orders.filter((o) => o.status === 'PENDING_QUEUE'),
-      assigned:   orders.filter((o) => o.status === 'ASSIGNED'),
       processing: orders.filter((o) => o.status === 'PROCESSING'),
       paid:       orders.filter((o) => o.status === 'PAID'),
       disputed:   orders.filter((o) => o.status === 'DISPUTED'),
@@ -919,7 +971,6 @@ export async function paymentQueue({ state = null, limit = 200 } = {}) {
     // Real depths, over every order — not "how many of the most recent 200".
     stats: {
       pending:    byState.PENDING_QUEUE ?? 0,
-      assigned:   byState.ASSIGNED ?? 0,
       processing: byState.PROCESSING ?? 0,
       paid:       byState.PAID ?? 0,
       disputed:   byState.DISPUTED ?? 0,
@@ -1443,7 +1494,7 @@ export async function findExpiredOrders({
   //    merchant accounts serve (its own `inr_routing`), passed in by the caller.
   const { rows } = await pgQuery(
     `SELECT o.* FROM order_states o
-      WHERE o.state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING')
+      WHERE o.state IN ('PENDING_QUEUE', 'PROCESSING')
         AND (
               (o.expires_at IS NOT NULL AND o.expires_at <= now())
               OR (o.expires_at IS NULL
@@ -1467,6 +1518,23 @@ export async function findExpiredOrders({
  * nothing else. Every order reaches a member through team routing, so there is
  * no open pool to show (§3.10, 2c).
  */
+/**
+ * A merchant account's sub-member's slice of the orders, as a WHERE term
+ * (owner, 2026-10-11; `listScopeFor`): the buys paid into their deposit
+ * accounts, and, with withdrawal accounts, the sells not yet paid or paid from
+ * one of theirs. Pushes its parameters onto `params`. One copy for the order
+ * list and the report (`merchantReports.orderReport`), so the two never
+ * disagree on what a sub-member sees.
+ */
+export function staffScopeSql(scope, params, alias = '') {
+  params.push(scope.depositAccountIds ?? []);
+  const dep = `(${alias}order_type = 'DEPOSIT' AND ${alias}pay_account_id = ANY($${params.length}::text[]))`;
+  params.push(scope.withdrawalAccountIds ?? null);
+  const wd = `(${alias}order_type = 'WITHDRAWAL' AND $${params.length}::text[] IS NOT NULL
+               AND (${alias}paid_from_account_id IS NULL OR ${alias}paid_from_account_id = ANY($${params.length}::text[])))`;
+  return `(${dep} OR ${wd})`;
+}
+
 export async function merchantVisibleOrders({
   merchantId, state = null, orderType = null,
   limit = 50, offset = 0,
@@ -1480,14 +1548,7 @@ export async function merchantVisibleOrders({
   const filters = [];
   if (state) { params.push(String(state)); filters.push(`state = $${params.length}`); }
   if (orderType) { params.push(String(orderType)); filters.push(`order_type = $${params.length}`); }
-  if (scope) {
-    params.push(scope.depositAccountIds ?? []);
-    const dep = `(order_type = 'DEPOSIT' AND pay_account_id = ANY($${params.length}::text[]))`;
-    params.push(scope.withdrawalAccountIds ?? null);
-    const wd = `(order_type = 'WITHDRAWAL' AND $${params.length}::text[] IS NOT NULL
-                 AND (paid_from_account_id IS NULL OR paid_from_account_id = ANY($${params.length}::text[])))`;
-    filters.push(`(${dep} OR ${wd})`);
-  }
+  if (scope) filters.push(staffScopeSql(scope, params));
 
   const size = Math.min(Math.max(Number(limit) || 50, 1), 100);
   const skip = Math.max(Number(offset) || 0, 0);
@@ -1536,7 +1597,7 @@ export async function orderCounts({ since = null } = {}) {
     `SELECT
        COUNT(*)::int AS total,
        COUNT(*) FILTER (WHERE state = 'PENDING_QUEUE')::int AS pending,
-       COUNT(*) FILTER (WHERE state IN ('ASSIGNED','PROCESSING','PAID'))::int AS active,
+       COUNT(*) FILTER (WHERE state IN ('PROCESSING','PAID'))::int AS active,
        COUNT(*) FILTER (WHERE state = 'COMPLETED')::int AS completed,
        COUNT(*) FILTER (WHERE state = 'DISPUTED')::int AS disputed,
        COUNT(*) FILTER (WHERE red_flagged)::int AS flagged,

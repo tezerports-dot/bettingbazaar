@@ -31,10 +31,13 @@
 import { ORDER_SIZES, USDT_BUY_STEP } from '../../backend/domains/merchant/denominations.js';
 import { approvedApiHosts } from '../../backend/config/apiHosts.js';
 import { BRAND_PALETTES } from '../../backend/domains/branding/palettes.js';
-import { DEFAULT_HOUSE_BETS_LABEL, HOUSE_BETS_LABEL_LIMITS } from '../../backend/domains/markets/houseBets.js';
+import { DEFAULT_PHANTOM_BETS_LABEL, PHANTOM_BETS_LABEL_LIMITS } from '../../backend/domains/markets/phantomBets.js';
 import { DEFAULT_DEMO_RESULTS_ON } from '../../backend/domains/markets/demoResults.js';
 
 /** A number setting: `n(default, min, max)`. Bounds are inclusive. */
+/** The deepest referral level the admin may add (owner, 2026-10-17). */
+export const REFERRAL_LEVELS_MAX = 10;
+
 const n = (def, min = null, max = null) => ({ type: 'number', default: def, min, max });
 // A count of whole units — minutes the database turns into an interval. 7.5
 // minutes would pass `n` and then be read as the default by a reader that
@@ -70,10 +73,10 @@ export const SYSTEM_CONFIG_SPEC = group({
   maintenanceMessage: s(''),
 
   // ── The line players read at the end of the board rules ──────────────────
-  // House (phantom) bets count in the totals and are never paid; this says so
+  // Phantom bets count in the totals and are never paid; this says so
   // (owner, 2026-10-15). Admin-editable wording, never blank
-  // (HOUSE_BETS_LABEL_LIMITS, backend/domains/markets/houseBets.js).
-  houseBetsLabel: { type: 'string', default: DEFAULT_HOUSE_BETS_LABEL, trimmed: true, ...HOUSE_BETS_LABEL_LIMITS },
+  // (PHANTOM_BETS_LABEL_LIMITS, backend/domains/markets/phantomBets.js).
+  phantomBetsLabel: { type: 'string', default: DEFAULT_PHANTOM_BETS_LABEL, trimmed: true, ...PHANTOM_BETS_LABEL_LIMITS },
 
   // ── Demo results filling the analytics window ──────────────────────────────
   // (owner, 2026-10-15; backend/domains/markets/demoResults.js).
@@ -272,17 +275,21 @@ export const SYSTEM_CONFIG_SPEC = group({
     dailyProblemFlagThreshold: int(5, 1, 100),
   }),
   // ── Referral rewards (owner, 2026-10-14: admin-editable) ─────────────────
-  // What a verified joiner earns the player who invited them (level 1) and
-  // that player's inviter (level 2), in whole rupees; 0 pays nothing at that
-  // level. Stamped on each earning when the joiner verifies, so a change
+  // What a verified joiner earns each player up the invite chain, in whole
+  // rupees: `levelRupees[0]` to the player who invited them (level 1), the
+  // next to that player's inviter (level 2), and so on, 1 to
+  // `REFERRAL_LEVELS_MAX` (10) levels, added and removed by the admin (owner,
+  // 2026-10-17); 0 pays nothing at that level. Stamped on each earning when the joiner verifies, so a change
   // applies to new joiners only. `turnoverMultiplier`: how many times its
   // amount ANY General bonus (referral or first deposit) must be played before
   // it unlocks into winnings, stamped on the bonus when it is paid (owner,
   // 2026-10-15: "all the general wallet bonus are going to have same rule").
   // Read through `referralRewardsFrom` (backend/domains/referral/referralRewards.js).
   referralRewards: group({
-    level1Rupees:       int(25, 0, 10000),
-    level2Rupees:       int(25, 0, 10000),
+    levelRupees: {
+      type: 'number[]', default: [25, 25], minItems: 1, maxItems: REFERRAL_LEVELS_MAX,
+      integer: true, min: 0, max: 10000,
+    },
     turnoverMultiplier: int(10, 1, 100),
   }),
   // ── First deposit bonus (owner, 2026-10-15) ─────────────────────────────
@@ -330,7 +337,7 @@ export const SYSTEM_CONFIG_SPEC = group({
   // The SELL escrow window: after a member says they paid, the player's tokens
   // stay in escrow at least this long and the player may dispute inside it.
   // Floor 60 — "at least 1 hour" (owner, 2026-10-02); 0 no longer settles at once.
-  withdrawalHoldMinutes: int(60, 60, 1440),
+  withdrawalHoldMinutes: int(60, 0, 10080),
   // The BUY escrow window: after a member rejects a paid buy as unpaid, the
   // player has this long to dispute before the hold returns to the team pool
   // (owner, 2026-10-02: 15 minutes).

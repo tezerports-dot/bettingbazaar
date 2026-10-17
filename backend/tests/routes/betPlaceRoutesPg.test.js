@@ -305,7 +305,13 @@ describePg('POST /api/bet/place', () => {
       return responded;
     }
 
-    it('returns the stake and KEEPS the bet, as REFUNDED, in one transaction', async () => {
+    // Whether the round takes the bet is asked inside the transaction that
+    // writes it, under a share lock on the round (bets.core.placeBet). A bet
+    // that reaches the write after the round closed is refused there: no bet
+    // row, no stake moved, nothing to refund. It used to be accepted and then
+    // refunded by a re-check after the commit, which asked the status but not
+    // the clock.
+    it('refuses it in the write: no bet, and the balance untouched', async () => {
       const cycle = await openCycle('30_MIN', { startedAgoMs: 60_000, lengthMs: 25 * 60_000 });
       made.push(cycle.cycleId);
       const p = await fundedPlayer(1_000);
@@ -314,50 +320,25 @@ describePg('POST /api/bet/place', () => {
       const res = await placeAcrossTheClose(p, cycle, 100);
 
       expect(res.status, JSON.stringify(res.body)).toBe(400);
-      expect(res.body.message).toMatch(/fully restored/);
+      expect(res.body.code).toBe('BETTING_CLOSED');
       const after = await getBalances(p.userId);
       expect(after.depositBalance).toBe(before.depositBalance);
       expect(after.lockedBalance).toBe(before.lockedBalance);
-      // The bet is a record of what happened, not something to erase.
       const { rows } = await pgQuery(`SELECT status FROM bets WHERE user_id = $1 AND cycle_id = $2`, [p.userId, cycle.cycleId]);
-      expect(rows.map((r) => r.status)).toEqual(['REFUNDED']);
+      expect(rows).toEqual([]);
     });
 
-    it('when the refund FAILS, leaves the bet PENDING with its stake behind it, and does not claim a refund', async () => {
+    it('still takes the same bet when the round is only MERGED', async () => {
       const cycle = await openCycle('30_MIN', { startedAgoMs: 60_000, lengthMs: 25 * 60_000 });
       made.push(cycle.cycleId);
       const p = await fundedPlayer(1_000);
-      const before = await getBalances(p.userId);
+      await pgQuery(`UPDATE cycles SET status = 'MERGED' WHERE cycle_id = $1`, [cycle.cycleId]);
 
-      // Any CREDIT to this player's ledger fails — the refund, however it is
-      // written. Scoped to one user id, so nothing else in the run is touched.
-      await pgQuery(`
-        CREATE OR REPLACE FUNCTION rt_bet_refund_fails() RETURNS trigger AS $$
-        BEGIN
-          IF NEW.user_id = '${p.userId}' AND NEW.tx_type = 'CREDIT' THEN
-            RAISE EXCEPTION 'injected refund failure';
-          END IF;
-          RETURN NEW;
-        END $$ LANGUAGE plpgsql`, []);
-      await pgQuery(`DROP TRIGGER IF EXISTS rt_bet_refund_fails ON wallet_ledger`, []);
-      await pgQuery(`CREATE TRIGGER rt_bet_refund_fails BEFORE INSERT ON wallet_ledger
-                      FOR EACH ROW EXECUTE FUNCTION rt_bet_refund_fails()`, []);
-      let res;
-      try {
-        res = await placeAcrossTheClose(p, cycle, 100);
-      } finally {
-        await pgQuery(`DROP TRIGGER IF EXISTS rt_bet_refund_fails ON wallet_ledger`, []);
-      }
+      const res = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: 100, type: '30_MIN' });
 
-      // Not "your balance has been fully restored" — it was not.
-      expect(res.body.message ?? '').not.toMatch(/fully restored/);
-      // The stake is still behind a live bet, which settlement will resolve.
-      // Deleting the bet first would leave ₹100 locked against nothing.
-      const { rows } = await pgQuery(`SELECT status, stake_paise FROM bets WHERE user_id = $1 AND cycle_id = $2`, [p.userId, cycle.cycleId]);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const { rows } = await pgQuery(`SELECT status FROM bets WHERE user_id = $1 AND cycle_id = $2`, [p.userId, cycle.cycleId]);
       expect(rows.map((r) => r.status)).toEqual(['PENDING']);
-      const after = await getBalances(p.userId);
-      expect(after.lockedBalance).toBe(before.lockedBalance + 100);
-      expect(after.depositBalance).toBe(before.depositBalance - 100);
     });
   });
 

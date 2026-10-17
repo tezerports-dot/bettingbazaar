@@ -423,9 +423,9 @@ const MUTATIONS = [
     id: 'M90', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
     test: 'backend/tests/routes/merchantOrderPrivacyRoutes.test.js',
     why: 'the allowlist admits the player phone number, which the panel then made searchable',
-    from: `  'createdAt', 'updatedAt',
+    from: `  'canDecline',
 ]);`,
-    to: `  'createdAt', 'updatedAt', 'userPhone',
+    to: `  'canDecline', 'userPhone',
 ]);`,
   },
   {
@@ -586,8 +586,8 @@ const MUTATIONS = [
     test: 'backend/tests/routes/utrGracePg.test.js',
     why: 'the grace becomes repeatable, so a player taps every fifty seconds and holds a merchant\'s capacity open indefinitely — a denial of service against the queue wearing the shape of a courtesy',
     from: `        AND utr_grace_at IS NULL
-        AND state IN ('ASSIGNED', 'PROCESSING')`,
-    to: `        AND state IN ('ASSIGNED', 'PROCESSING')`,
+        AND state = 'PROCESSING'`,
+    to: `        AND state = 'PROCESSING'`,
   },
   {
     id: 'M123', file: 'database/repositories/orders.record.js', config: PG,
@@ -727,13 +727,6 @@ const MUTATIONS = [
     to: `  if (accepted && isBuy && (snapshot.usdtAddressTrc20 || snapshot.usdtAddressBep20)) {
     view.usdtAddress = snapshot.usdtAddressTrc20 || snapshot.usdtAddressBep20;
     view.usdtAddressBep20 = snapshot.usdtAddressBep20;`,
-  },
-  {
-    id: 'M151', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/merchantPanelRoutes.test.js',
-    why: 'a merchant may accept a USDT order on a chain they hold no address for, so the player is shown nothing to send to, or the other chain\'s address',
-    from: `            if (!usdtAddressFor(merchant, order.usdtChain)) {`,
-    to: `            if (false) {`,
   },
   {
     id: 'M152', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
@@ -1035,20 +1028,18 @@ const MUTATIONS = [
     to: `const board  = await boardOf(req.body.type ?? cycle.type);`,
   },
   {
-    id: 'M189', file: 'database/repositories/bets.js', config: PG,
+    id: 'M189', file: 'database/repositories/bets.core.js', config: PG,
     test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
-    why: 'a bet whose cycle closed during placement is reported refunded while its stake stays locked',
-    from: `  return refundBet({
-    betId, userId: String(userId), reason,`,
-    to: `  return { ok: true }; ({
-    betId, userId: String(userId), reason,`,
+    why: 'the bet writer stops asking whether the round still takes bets, so a bet committed after the close is accepted and never counted when the winner is chosen',
+    from: `    if (round && !BETTING_STATES.includes(round.status)) {`,
+    to: `    if (false) {`,
   },
   {
     id: 'M190', file: 'backend/domains/markets/bet.routes.js', config: PG,
     test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
-    why: 'a failed refund is swallowed and the player is told "fully restored" while the stake is still locked',
-    from: `      } catch (refundErr) {`,
-    to: `      } catch (refundErr) { return res.status(400).json({ success: false, message: 'Betting window just closed. Your balance has been fully restored.' });`,
+    why: 'a bet refused because the round closed while it was written is told to retry a stale split, not that betting closed',
+    from: `    if (!stakeLock.ok && placed.reason === 'cycle_closed') {`,
+    to: `    if (false) {`,
   },
   {
     id: 'M191', file: 'backend/domains/markets/bet.routes.js', config: PG,
@@ -1750,8 +1741,8 @@ const MUTATIONS = [
     id: 'M462', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
     test: 'backend/tests/routes/merchantPanelRoutes.test.js',
     why: "a confirmed order's response time never reaches the member's average, so routing ranks every member by the default",
-    from: '            responseMinutes: order.merchantResponseMinutes ?? null,',
-    to: '            responseMinutes: null,',
+    from: '            responseMinutes,\n',
+    to: '            responseMinutes: null,\n',
   },
   {
     id: 'M296', file: 'database/repositories/teamRouting.js', config: PG,
@@ -1917,9 +1908,9 @@ const MUTATIONS = [
   {
     id: 'M317', file: 'database/spec/config.spec.js', config: PG,
     test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
-    why: 'the sell hold may be set under the owner\'s one-hour floor',
-    from: "  withdrawalHoldMinutes: int(60, 60, 1440),",
-    to: "  withdrawalHoldMinutes: int(60, 0, 1440),",
+    why: 'the sell hold can no longer be set to 0 minutes, as the owner allowed',
+    from: "  withdrawalHoldMinutes: int(60, 0, 10080),",
+    to: "  withdrawalHoldMinutes: int(60, 1, 10080),",
   },
   {
     id: 'M318', file: 'backend/domains/disputes/disputeOutcome.service.js', config: PG,
@@ -2168,8 +2159,8 @@ const MUTATIONS = [
     id: 'M357', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/cashLinkPg.test.js',
     why: 'a player who was never given a QR is counted as not paying, and locked out after three',
-    from: "            playerCouldPay: !neverAccepted && !noCashLink,\n",
-    to: "            playerCouldPay: !neverAccepted,\n",
+    from: "            playerCouldPay: !noCashLink,\n",
+    to: "            playerCouldPay: true,\n",
   },
   {
     id: 'M358', file: 'backend/domains/payment/playerPaymentFailure.service.js', config: PG,
@@ -2265,37 +2256,16 @@ const MUTATIONS = [
   {
     id: 'M373', file: 'backend/domains/payment/playerOrderView.js', config: PG,
     test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
-    why: 'USDT is sent to a member who has not accepted, and declines: a chain payment nobody can reverse',
+    why: 'an ended USDT buy still shows the chain address: a payment to a member the order no longer has, which nobody can reverse',
     from: "  if (accepted && isBuy && snapshot.usdtPayTo && snapshot.usdtChain) {\n",
     to: "  if (isBuy && snapshot.usdtPayTo && snapshot.usdtChain) {\n",
   },
   {
-    id: 'M374', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/acceptBeforePayPg.test.js',
-    why: '"I\'ve paid" on a buy nobody accepted spends the player\'s reference on an order that cannot move',
-    from: "  if (order.status === 'ASSIGNED') {\n    throw Object.assign(\n      new Error('The member has not accepted",
-    to: "  if (false) {\n    throw Object.assign(\n      new Error('The member has not accepted",
-  },
-  {
     id: 'M375', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/acceptBeforePayPg.test.js',
+    test: 'backend/tests/routes/startedOnAssignmentPg.test.js',
     why: 'a bank buy changes hands while the tap waits, and reads PAID to the new member for money sent to the old one',
     from: "  const sameMember = order.merchantId;\n",
     to: "  const sameMember = isCashRail ? order.merchantId : undefined;\n",
-  },
-  {
-    id: 'M376', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/acceptBeforePayPg.test.js',
-    why: 'a player is counted as not paying a buy that was never accepted, when there was nothing to pay',
-    from: "          const neverAccepted = order.status === 'ASSIGNED';\n",
-    to: "          const neverAccepted = false;\n",
-  },
-  {
-    id: 'M377', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/cashLinkPg.test.js',
-    why: 'a member who has not accepted is told the order is closed, not to accept it first',
-    from: "        if (order.status === 'ASSIGNED') {\n            // The player is shown the QR only",
-    to: "        if (false) {\n            // The player is shown the QR only",
   },
   {
     id: 'M378', file: 'backend/domains/payment/cashLink.js', config: UNIT,
@@ -2642,13 +2612,6 @@ const MUTATIONS = [
     to: '        const refused = null;\n',
   },
   {
-    id: 'M429', file: 'backend/routes/upload.routes.js', config: PG,
-    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
-    why: 'the proof upload admits a buy the player has not paid, so evidence is staged for an accusation that cannot be made (§32 S3)',
-    from: '    const refused = unpaidRejectRefusal(order);\n',
-    to: '    const refused = null;\n',
-  },
-  {
     id: 'M430', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
     test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
     why: 'the transition\'s own refusal is answered with a bare status, so a member whose buy moved on under them is not told where it now stands',
@@ -2869,21 +2832,21 @@ const MUTATIONS = [
     from: `    ...(door === 'PLAYER' ? [requireCaptcha('telegram-login', { outageLimiter: telegramLoginNoCaptchaLimiter })] : []),`,
     to: ``,
   },
-  // ── Auto house bets (owner, 2026-10-15) ────────────────────────────────
+  // ── Auto phantom bets (owner, 2026-10-15) ────────────────────────────────
   {
     id: 'MHB1', file: 'database/repositories/markets.js', config: PG,
-    test: 'database/tests/autoHouseBetsPg.test.js',
-    why: 'auto house bets keep landing after the equalizer closed phantom betting, so the balanced pools are pushed apart again',
+    test: 'database/tests/autoPhantomBetsPg.test.js',
+    why: 'auto phantom bets keep landing after the equalizer closed phantom betting, so the balanced pools are pushed apart again',
     from: `    if (!['OPEN', 'MERGED'].includes(cycle[0].status)) return { ok: false, reason: 'CYCLE_CLOSED' };
-    if (cycle[0].phantom_bets_closed) return { ok: false, reason: 'PHANTOM_CLOSED' };
+    if (cycle[0].phantom_bets_closed || cycle[0].past_equalizer) return { ok: false, reason: 'PHANTOM_CLOSED' };
 `,
     to: `    if (!['OPEN', 'MERGED'].includes(cycle[0].status)) return { ok: false, reason: 'CYCLE_CLOSED' };
 `,
   },
   {
     id: 'MHB2', file: 'database/repositories/markets.js', config: PG,
-    test: 'database/tests/autoHouseBetsPg.test.js',
-    why: 'a second offered twice moves the phantom pool twice: the pools count house bets that do not exist',
+    test: 'database/tests/autoPhantomBetsPg.test.js',
+    why: 'a second offered twice moves the phantom pool twice: the pools count phantom bets that do not exist',
     from: `    for (const r of placed) {
       if (r.side === 'DELHI') delhi += Number(r.stake_paise); else bombay += Number(r.stake_paise);
     }`,
@@ -2893,14 +2856,14 @@ const MUTATIONS = [
   },
   {
     id: 'MHB3', file: 'database/repositories/phantomAutoPlans.js', config: PG,
-    test: 'database/tests/autoHouseBetsPg.test.js',
+    test: 'database/tests/autoPhantomBetsPg.test.js',
     why: 'an agent whose phantom access was revoked keeps betting through a plan saved before',
     from: `        AND (u.phantom_access = 'BOTH' OR u.phantom_access = p.board_key)`,
     to: ``,
   },
   {
-    id: 'MHB4', file: 'backend/domains/markets/houseBets.js', config: UNIT,
-    test: 'backend/tests/unit/houseBets.test.js',
+    id: 'MHB4', file: 'backend/domains/markets/phantomBets.js', config: UNIT,
+    test: 'backend/tests/unit/phantomBets.test.js',
     why: 'a plan saved mid-round bets every second it missed since the round began, in one burst',
     from: `  const from = Math.max(first, to - AUTO_BET_CATCH_UP_SECONDS + 1);`,
     to: `  const from = Math.max(0, to - AUTO_BET_CATCH_UP_SECONDS + 1);`,
@@ -2908,8 +2871,8 @@ const MUTATIONS = [
   {
     id: 'MHB5', file: 'backend/domains/markets/boardRules.js', config: PG,
     test: 'backend/tests/routes/boardRulesAndGeneralPg.test.js',
-    why: 'the board rules stop carrying the house-bets line, so players accept rules that never mention house bets',
-    from: `    houseBetsNotice: houseBetsLabel,`,
+    why: 'the board rules stop carrying the phantom-bets line, so players accept rules that never mention phantom bets',
+    from: `    phantomBetsNotice: phantomBetsLabel,`,
     to: ``,
   },
   {
@@ -3411,7 +3374,7 @@ const MUTATIONS = [
     id: 'MAU1', file: 'database/repositories/bets.core.js', config: PG,
     test: 'database/tests/promoPg.test.js',
     why: 'the writer stops holding a stake to its cycle\'s audience, so General bonus money can be staked on a VIP board',
-    from: `if (!fundsMatchAudience(slices, await audienceOfCycle(ctx.client, cycleId))) {`,
+    from: `if (!fundsMatchAudience(slices, round?.audience ?? 'VIP')) {`,
     to: `if (false) {`,
   },
   {
@@ -3685,6 +3648,63 @@ const MUTATIONS = [
     from: `  return String(currency ?? 'INR').toUpperCase() === 'USDT' ? null : mode;`,
     to: `  return mode;`,
   },
+  // ── Orders start as they are routed; no Accept (owner, 2026-10-17) ───────
+  {
+    id: 'MAA1', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/startedOnAssignmentPg.test.js',
+    why: 'a cash buy whose QR was scanned while the decline waited goes back to the queue, with the player holding a QR to pay',
+    from: `                await db.orders.refuseIfPayableWithin(client, order.orderId);\n`,
+    to: ``,
+  },
+  {
+    id: 'MAA2', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'database/tests/orderPg.test.js',
+    why: 'a started bank buy, its account already shown to the player, may be declined or reassigned to another member',
+    from: `  return order.paymentMode === 'CASH_ATM' && !order.cashLink;`,
+    to: `  return order.paymentMode === 'CASH_ATM' || !order.cashLink;`,
+  },
+  {
+    id: 'MAA3', file: 'backend/domains/payment/playerOrderView.js', config: PG,
+    test: 'backend/tests/routes/cashLinkPg.test.js',
+    why: 'a player is offered Cancel on a cash buy whose QR they may already be paying',
+    from: `  return order.status !== 'PROCESSING' || !order.cashLink;`,
+    to: `  return true;`,
+  },
+  {
+    id: 'MAA4', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantPanelRoutes.test.js',
+    why: 'a buy\'s response time runs from the routing, not from the player\'s Paid tap, so every member reads as slow by however long players take to pay',
+    from: `        const respondedFrom = isDeposit ? order.paidAt : order.processingAt;`,
+    to: `        const respondedFrom = order.processingAt;`,
+  },  {
+    id: 'MRT1', file: 'backend/domains/merchant/merchantActor.js', config: PG,
+    test: 'backend/tests/routes/merchantAccountPg.test.js',
+    why: 'a sub-member\'s ✓ is recorded as the owner\'s, so the report cannot say who confirmed the order',
+    from: "return a && a.isOwner === false && a.staffId ? `merchant_staff:${a.staffId}` : `merchant:${req.merchantId}`;",
+    to: "return `merchant:${req.merchantId}`;",
+  },
+  {
+    id: 'MRT2', file: 'database/repositories/merchantReports.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderReportPg.test.js',
+    why: 'the report reads every merchant\'s orders, so a member sees another member\'s players and references',
+    from: "        WHERE o.merchant_id = $1 AND ${RANGE_SQL.replaceAll('created_at', 'o.created_at')}\n          AND ${filters.join(' AND ')}",
+    to: "        WHERE ${RANGE_SQL.replaceAll('created_at', 'o.created_at')} AND $1::text IS NOT NULL\n          AND ${filters.join(' AND ')}",
+  },
+  {
+    id: 'MRT3', file: 'database/repositories/merchantReports.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderReportPg.test.js',
+    why: 'the totals count only the page drawn, not every order of the range',
+    from: "            count(*) OVER () AS total_count,",
+    to: "            1 AS total_count,",
+  },
+  {
+    id: 'MRT4', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderReportPg.test.js',
+    why: 'a buy rejected as not received carries no actor, so the report shows no ✗ for it',
+    from: "            expectMerchant: req.merchantId,\n            actor: merchantActorTag(req),\n            set: {\n                rejectedBy:",
+    to: "            expectMerchant: req.merchantId,\n            set: {\n                rejectedBy:",
+  },
+
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

@@ -93,7 +93,7 @@ describePg('a cash buy reaches PAID before it is evidenced', () => {
     const { order } = await createDepositOrder(p.userId, 1000);
     const orderId = order.orderId ?? order._id;
     const routed = await getOrderRecord(orderId);
-    expect(routed.status, 'the cash buy was not routed to the ready member').toBe('ASSIGNED');
+    expect(routed.status, 'the cash buy was not routed to the ready member').toBe('PROCESSING');
     expect(routed.merchantId).toBe(String(member));
     expect(routed.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
 
@@ -163,7 +163,7 @@ describePg('a cash buy reaches PAID before it is evidenced', () => {
     const { order } = await createDepositOrder(p.userId, 50_000);
     const orderId = order.orderId ?? order._id;
     const routed = await getOrderRecord(orderId);
-    expect(routed.status).toBe('ASSIGNED');
+    expect(routed.status).toBe('PROCESSING');
     expect(routed.paymentMode).toBe(PAYMENT_MODES.P2P_UPI);
     await readyToPay(orderId);
 

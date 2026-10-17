@@ -13,7 +13,7 @@ import { mountRouter, actor, as } from './_harness.js';
 const describePg = pgConfigured() ? describe : describe.skip;
 const BOARD = '30_MIN';
 
-describePg('auto house-bet routes (PostgreSQL)', () => {
+describePg('auto phantom-bet routes (PostgreSQL)', () => {
   let app;
   beforeAll(async () => {
     await applySchema();

@@ -40,7 +40,7 @@ const hex64 = 'a'.repeat(64);
 
 const assigned = (over: any = {}) => ({
   orderId: 'ORD-USDT-1',
-  status: 'ASSIGNED',
+  status: 'PROCESSING',
   tokenAmount: 50000,
   // The order's OWN quote, fixed at creation. Never recomputed on the screen.
   fiatAmount: 500,
@@ -170,7 +170,7 @@ describe('an order waiting for a merchant', () => {
   it('offers Cancel while finding a merchant, when the server says it may be cancelled', async () => {
     // The player was stuck here: the only Cancel was under Payment Orders.
     const onCancel = vi.fn().mockResolvedValue(true);
-    renderPanel({ onCancel, order: { orderId: 'O1', status: 'ASSIGNED', canCancel: true, tokenAmount: 50000, fiatAmount: 500, usdtChain: 'TRC20', payTo: null } });
+    renderPanel({ onCancel, order: { orderId: 'O1', status: 'PENDING_QUEUE', canCancel: true, tokenAmount: 50000, fiatAmount: 500, usdtChain: 'TRC20', payTo: null } });
     fireEvent.click(screen.getByRole('button', { name: /Cancel this purchase/i }));
     await waitFor(() => expect(onCancel).toHaveBeenCalledWith('O1'));
   });

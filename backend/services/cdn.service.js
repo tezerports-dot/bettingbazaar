@@ -45,6 +45,14 @@ const s3Client = new S3Client({
     secretAccessKey: process.env.S3_SECRET_KEY,
   },
   forcePathStyle: true, // Required for Vultr S3
+  // Checksums only where the operation requires one. Since SDK 3.729 the
+  // default is WHEN_SUPPORTED, which bakes `x-amz-checksum-crc32` of an EMPTY
+  // body (AAAAAA==) into every presigned PUT: the browser then uploads the real
+  // image, the storage compares it to the empty-body checksum and refuses it,
+  // so every image upload failed (2026-10-17). `presignedPutCarriesNoChecksum`
+  // in tests/unit/cdnPresignChecksum.test.js holds this.
+  requestChecksumCalculation: 'WHEN_REQUIRED',
+  responseChecksumValidation: 'WHEN_REQUIRED',
 });
 
 const BUCKET_NAME = process.env.S3_BUCKET_NAME;

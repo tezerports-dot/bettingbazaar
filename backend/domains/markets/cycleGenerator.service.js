@@ -9,8 +9,8 @@ import { computeRealPools } from './cyclePool.service.js';
 // minority-side winner). assertPublicCycleSafe throws if one slips in.
 import { assertPublicCycleSafe, publicCyclePools, poolsHidden } from './cyclePublicView.js';
 import { cycleSnapshotPublisher } from './cycleSnapshotPublisher.js';
-// Auto house bets (owner, 2026-10-15): one bet a second per plan, until the equalizer.
-import { secondsToPlace, firstSecond, sizeAtSecond } from './houseBets.js';
+// Auto phantom bets (owner, 2026-10-15): one bet a second per plan, until the equalizer.
+import { secondsToPlace, firstSecond, sizeAtSecond } from './phantomBets.js';
 // The boards (one row each, admin-created): timer, phases, labels. See
 // cycleTypes.js; every board's timing is read from its row.
 import { allBoards, enabledBoards, boardOf, cycleLabel, boardMessages } from './cycleTypes.js';
@@ -19,6 +19,8 @@ import { emitToStaff } from '../notification/staffEventAreas.js';
 import { emitCyclePhase, emitCycleResult } from '../notification/realtimeEmitters.js';
 import { announceRoundResults } from './roundResult.service.js';
 import { recordRealtimeEvent } from '../../services/metrics.service.js';
+import { planHouseBet } from './rtpHouseBet.js';
+import { getRiskRules } from '../risk/riskValidation.service.js';
 
 /**
  * Each board runs one cycle per slot for each audience (VIP, GENERAL), and the
@@ -162,11 +164,11 @@ class CycleGenerator {
                 statuses: ['OPEN', 'MERGED', 'CLOSED'], includeExpired: true,
             });
 
-            // Auto house-bet plans, read once a tick. A failed read places none
+            // Auto phantom-bet plans, read once a tick. A failed read places none
             // this tick and leaves every phase below untouched.
             const autoPlans = activeCycles.some((c) => ['OPEN', 'MERGED'].includes(c.status))
                 ? await db.phantomAutoPlans.runnablePlans().catch((e) => {
-                    console.error('❌ Auto house bets: plans unreadable:', e.message);
+                    console.error('❌ Auto phantom bets: plans unreadable:', e.message);
                     return [];
                 })
                 : [];
@@ -225,15 +227,18 @@ class CycleGenerator {
                     console.log(`📊 Cycle ${cycle.cycleId} (${cycle.type}): MERGED`);
                 }
 
-                // ─── AUTO HOUSE BETS, until the equalizer ───────────────────
+                // ─── AUTO PHANTOM BETS, until the equalizer ───────────────────
                 if (now < equalizerTime && ['OPEN', 'MERGED'].includes(cycle.status) && !cycle.phantomBetsClosed) {
-                    await this.runAutoHouseBets(cycle, autoPlans, now, equalizerTime);
+                    await this.runAutoPhantomBets(cycle, autoPlans, now, equalizerTime);
                 }
 
                 // ─── PHASE 2: PHANTOM EQUALIZER ─────────────────────────────
                 // Runs silently server-side.
                 // Users only see the resulting updated totals via cycle_update.
-                if (now >= equalizerTime && now < betsClosedTime && !cycle.phantomBetsClosed) {
+                // Also when a slow tick missed the window: the phantom side must be
+                // balanced (and phantom betting closed) before the result, or the
+                // combined totals players see disagree with the real ones.
+                if (now >= equalizerTime && !cycle.phantomBetsClosed) {
                     await this.runPhantomEqualizer(cycle);
                 }
 
@@ -277,8 +282,64 @@ class CycleGenerator {
         }
     }
 
+    /**
+     * Place the round's RTP house bet if its fund covers it, or find the one a
+     * crashed tick already placed (rtp.placeHouseBet writes it once). Null when
+     * there is none. A failure places none: the round runs as it would have.
+     */
+    async placeRtpHouseBet(cycle) {
+        try {
+            const fund = await db.rtp.fundForRound(cycle.type, cycle.audience);
+            if (!fund) {
+                const placed = await db.markets.getCycle(cycle.cycleId);
+                return placed?.houseBetSide ? { side: placed.houseBetSide, stakePaise: Math.round(placed.houseBet * 100) } : null;
+            }
+            const [stakes, { winningsFeePercent, payoutMultiplier }] = await Promise.all([
+                db.bets.cycleStakesByPlayer(cycle.cycleId), getRiskRules(),
+            ]);
+            const plan = planHouseBet({
+                stakes, rateBp: fund.rateBp, availablePaise: fund.availablePaise,
+                feePercent: winningsFeePercent, multiplier: payoutMultiplier,
+            });
+            if (!plan) {
+                const placed = await db.markets.getCycle(cycle.cycleId);
+                return placed?.houseBetSide ? { side: placed.houseBetSide, stakePaise: Math.round(placed.houseBet * 100) } : null;
+            }
+            const r = await db.rtp.placeHouseBet({
+                cycleId: cycle.cycleId, side: plan.side, stakePaise: plan.stakePaise, reservedPaise: plan.reservedPaise,
+            });
+            if (r.ok || r.reason === 'ALREADY_PLACED') return r.houseBet;
+            return null;
+        } catch (error) {
+            console.error(`❌ RTP house bet on ${cycle.cycleId}:`, error.message);
+            return null;
+        }
+    }
+
     async completeCycle(cycle) {
         try {
+            // Betting stops BEFORE the pools are read. A tick that skipped the
+            // CLOSED step reaches here with the round still OPEN or MERGED, and
+            // a bet committing between the read below and the declaration
+            // would be accepted and settled without ever having been counted
+            // when the smaller side was chosen. Closing is an UPDATE of the
+            // round's row, so it waits for every bet still being written (each
+            // holds a share lock on that row, `bets.core.placeBet`), and every
+            // later bet sees CLOSED and is refused. After this, the bets are
+            // final.
+            if (['OPEN', 'MERGED'].includes(cycle.status)) {
+                const closed = await db.markets.setCycleStatus(cycle.cycleId, 'CLOSED', { from: ['OPEN', 'MERGED'] });
+                if (closed.ok) {
+                    cycle.status = 'CLOSED';
+                    emitCyclePhase({
+                        cycleId: cycle.cycleId, type: cycle.type, audience: cycle.audience, phase: 'CLOSED',
+                    }, this.transports());
+                }
+            }
+            // The phantom side balanced before the result, if the equalizer's
+            // window was missed (a no-op when it already ran).
+            if (!cycle.phantomBetsClosed) await this.runPhantomEqualizer(cycle);
+
             // The winner is decided by which real pool is SMALLER, so these two
             // numbers are the single most consequential read in the platform.
             // Under FLAGS.DERIVED_CYCLE_POOLS the stored fields are a periodic
@@ -309,11 +370,23 @@ class CycleGenerator {
             const realDelhi  = exactPools.realDelhi;
             const realBombay = exactPools.realBombay;
 
+            // The RTP house bet, the round's last bet: betting is closed and
+            // the phantom side settled, so nothing can follow it. A real bet,
+            // counted on its side when the winner is chosen; never a phantom.
+            const houseBet = await this.placeRtpHouseBet(cycle);
+            const houseDelhi  = houseBet?.side === 'DELHI'  ? houseBet.stakePaise / 100 : 0;
+            const houseBombay = houseBet?.side === 'BOMBAY' ? houseBet.stakePaise / 100 : 0;
+            const decideDelhi  = realDelhi + houseDelhi;
+            const decideBombay = realBombay + houseBombay;
+
             // Winner = minority real-bet side (platform profits from majority)
             let winner;
-            if (realDelhi > realBombay) {
+            // Compared in paise: a rupee float sum must not decide a winner.
+            const dPaise = Math.round(decideDelhi * 100);
+            const bPaise = Math.round(decideBombay * 100);
+            if (dPaise > bPaise) {
                 winner = 'BOMBAY';
-            } else if (realBombay > realDelhi) {
+            } else if (bPaise > dPaise) {
                 winner = 'DELHI';
             } else {
                 // EXACT TIE — the only branch where a real-money outcome is
@@ -367,8 +440,8 @@ class CycleGenerator {
             // whatever the cached cycle object carried: announcing a total that
             // disagrees with the one the winner was decided from is how a
             // result comes to look arbitrary.
-            const combinedDelhi  = realDelhi  + cycle.phantomDelhi;
-            const combinedBombay = realBombay + cycle.phantomBombay;
+            const combinedDelhi  = decideDelhi  + cycle.phantomDelhi;
+            const combinedBombay = decideBombay + cycle.phantomBombay;
 
             // Public result — combined pool only, guarded against a real/phantom
             // field being added here later.
@@ -394,6 +467,8 @@ class CycleGenerator {
                 realBombay,
                 phantomDelhi:  cycle.phantomDelhi,
                 phantomBombay: cycle.phantomBombay,
+                houseBetSide:  houseBet?.side ?? null,
+                houseBet:      houseBet ? houseBet.stakePaise / 100 : 0,
                 totalDelhi:    combinedDelhi,
                 totalBombay:   combinedBombay,
                 timestamp:     new Date()
@@ -452,7 +527,7 @@ class CycleGenerator {
     }
 
     /**
-     * Place this tick's auto house bets on one cycle (owner, 2026-10-15).
+     * Place this tick's auto phantom bets on one cycle (owner, 2026-10-15).
      *
      * Every runnable plan for the cycle's board bets one size a second, in its
      * list's order and looped, from the round's start (or the plan's save)
@@ -464,7 +539,7 @@ class CycleGenerator {
      * A failure is logged and costs this tick's bets only: the phases of this
      * and every other cycle carry on.
      */
-    async runAutoHouseBets(cycle, plans, now, equalizerTime) {
+    async runAutoPhantomBets(cycle, plans, now, equalizerTime) {
         // A plan runs on its own board's rounds of its own audience only.
         const mine = plans.filter((p) => p.boardKey === cycle.type && p.audience === cycle.audience);
         if (!mine.length) return;
@@ -503,7 +578,7 @@ class CycleGenerator {
                 newTotalDelhi: totalDelhi, newTotalBombay: totalBombay,
             });
         } catch (error) {
-            console.error(`❌ Auto house bets on ${cycle.cycleId}:`, error.message);
+            console.error(`❌ Auto phantom bets on ${cycle.cycleId}:`, error.message);
         }
     }
 
@@ -547,15 +622,24 @@ class CycleGenerator {
             // the read and the write had its pool contribution silently
             // overwritten. Players watched the pool SHRINK just after they bet.
             const result = await db.markets.equalizePhantomPools(cycle.cycleId);
-            if (!result.ok) return;   // already closed, or already declared
+            if (!result.ok) {
+                // Already closed by another tick or an admin: remember it, so
+                // this cycle object stops asking.
+                if (result.reason === 'PHANTOM_CLOSED') cycle.phantomBetsClosed = true;
+                return;
+            }
 
             const { cycle: after } = result;
             const equalizedValue = after.phantomDelhi;
+            cycle.phantomBetsClosed = true;
+            const before = { delhi: cycle.phantomDelhi, bombay: cycle.phantomBombay };
+            cycle.phantomDelhi = after.phantomDelhi;
+            cycle.phantomBombay = after.phantomBombay;
             const board = await boardOf(cycle.type);
             const cycleType = board ? cycleLabel(board) : cycle.type;
 
             // Nothing to balance — the write only closed phantom betting.
-            if (cycle.phantomDelhi === cycle.phantomBombay) {
+            if (before.delhi === before.bombay) {
                 console.log(`⚖️  Phantom equalizer: ${cycle.cycleId} — already balanced at ₹${equalizedValue}`);
                 return;
             }

@@ -2,6 +2,8 @@
 /** audit.admin.routes.js — Audit logs */
 import { express, authenticate, hasPermission } from './_adminShared.js';
 import { db } from '#db';
+import { toCsv } from '../../domains/reporting/csv.util.js';
+import { respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -51,6 +53,46 @@ router.get('/audit-logs', authenticate, hasPermission('canViewAuditLogs'), async
   }
 });
 
+// GET /api/admin/audit-logs.csv?category=&action=&adminId=&startDate=&endDate=
+// The whole trail for the filters, from the same reads as the table (§2 "A
+// table's CSV"), newest first, at most AUDIT_CSV_MAX rows.
+const AUDIT_CSV_MAX = 50000;
+router.get('/audit-logs.csv', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
+  try {
+    const { category, action, adminId, startDate, endDate } = req.query;
+    const at = (v) => {
+      if (!v) return null;
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+    const rows = [];
+    for (let page = 1, pages = 1; page <= pages && rows.length < AUDIT_CSV_MAX; page += 1) {
+      const chunk = await db.audit.feed({
+        category: category || null, action: action || null, performedBy: adminId || null,
+        since: at(startDate), until: at(endDate), page, limit: 200,
+      });
+      pages = chunk.pages;
+      for (const l of chunk.entries) {
+        rows.push({
+          time: l.createdAt ? new Date(l.createdAt).toISOString() : '',
+          by: l.performedByName || l.performedBy || '',
+          role: l.performedByRole || '',
+          category: l.category || '',
+          action: l.action || '',
+          target: [l.targetType, l.targetName || l.targetId].filter(Boolean).join(' '),
+          success: l.success === false ? 'no' : 'yes',
+          details: l.details ? JSON.stringify(l.details) : '',
+          ip: l.ip || '',
+        });
+      }
+    }
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="audit-logs-${startDate || 'start'}-${endDate || 'now'}.csv"`);
+    res.send(toCsv(rows));
+  } catch (error) {
+    respondError(res, error, 'GET /admin/audit-logs.csv', { message: 'Could not build the export.' });
+  }
+});
 
 // ─── POST /api/admin/branding/images ────────────────────────────────────────
 // Register a CDN image URL into the library (called AFTER the S3 presigned-URL

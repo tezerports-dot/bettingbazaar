@@ -1,14 +1,14 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * House (phantom) bets: the rules that are fixed, and the line players read.
+ * Phantom bets: the rules that are fixed, and the line players read.
  *
- * Phantom bets are house stakes that count in the public pool totals and are
+ * Phantom bets are phantom stakes that count in the public pool totals and are
  * never paid (the settlement skips `is_phantom`). Players are told so where
  * they read the totals and in the board rules (owner, 2026-10-15): the line
- * is `SystemConfig.houseBetsLabel`, admin-editable but never blank, held to
- * HOUSE_BETS_LABEL_LIMITS on save.
+ * is `SystemConfig.phantomBetsLabel`, admin-editable but never blank, held to
+ * PHANTOM_BETS_LABEL_LIMITS on save.
  *
- * Auto house bets (owner, 2026-10-15): a phantom agent sets, per board and
+ * Auto phantom bets (owner, 2026-10-15): a phantom agent sets, per board and
  * side, a list of 1 to AUTO_BET_STEPS_MAX bet sizes. One bet a second is
  * placed from the list in order, starting again at the top when it runs out,
  * from the round's start (or when the plan was saved) until the equalizer.
@@ -31,15 +31,15 @@ export const AUTO_BET_MAX_RUPEES = 10_000_000;
  */
 export const AUTO_BET_CATCH_UP_SECONDS = 5;
 
-/** The default line, and the schema default of `SystemConfig.houseBetsLabel`. */
-export const DEFAULT_HOUSE_BETS_LABEL = 'Pool totals include house bets, which are never paid out.';
+/** The default line, and the schema default of `SystemConfig.phantomBetsLabel`. */
+export const DEFAULT_PHANTOM_BETS_LABEL = 'Pool totals include phantom bets, which are never paid out.';
 
-export const HOUSE_BETS_LABEL_LIMITS = { minLength: 10, maxLength: 160 };
+export const PHANTOM_BETS_LABEL_LIMITS = { minLength: 10, maxLength: 160 };
 
 /** The line as players are shown it: the saved one, or the default. Never blank. */
-export function houseBetsLabelOf(cfg) {
-  const saved = typeof cfg?.houseBetsLabel === 'string' ? cfg.houseBetsLabel.trim() : '';
-  return saved.length >= HOUSE_BETS_LABEL_LIMITS.minLength ? saved : DEFAULT_HOUSE_BETS_LABEL;
+export function phantomBetsLabelOf(cfg) {
+  const saved = typeof cfg?.phantomBetsLabel === 'string' ? cfg.phantomBetsLabel.trim() : '';
+  return saved.length >= PHANTOM_BETS_LABEL_LIMITS.minLength ? saved : DEFAULT_PHANTOM_BETS_LABEL;
 }
 
 /**

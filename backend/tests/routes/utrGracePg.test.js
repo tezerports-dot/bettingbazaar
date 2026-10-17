@@ -63,7 +63,7 @@ describePg('the UTR grace', () => {
     const { order } = await createDepositOrder(p.userId, 50_000);
     const orderId = order.orderId ?? order._id;
     const routed = await getOrderRecord(orderId);
-    expect(routed.status, 'the buy was not routed to the team').toBe('ASSIGNED');
+    expect(routed.status, 'the buy was not routed to the team').toBe('PROCESSING');
     expect(team.members).toContain(routed.merchantId);
     await setOrderFields(orderId, { expiresAt: new Date(Date.now() + secondsLeft * 1000) });
     return orderId;

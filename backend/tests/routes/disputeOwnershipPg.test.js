@@ -115,9 +115,8 @@ describePg('a dispute belongs to the player', () => {
     }
     expect((await getOrderRecord(orderId)).merchantId, 'routed to somebody else').toBe(merchant.merchantId);
 
-    // The member takes it on their own route.
-    const accepted = await as(merchantApp, merchant).post(`/accept/${orderId}`);
-    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    // Routing started it as it handed it out (no Accept, owner 2026-10-17).
+    expect((await getOrderRecord(orderId)).status).toBe('PROCESSING');
 
     if (state !== 'PROCESSING') {
       if (type === 'DEPOSIT') {

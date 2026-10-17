@@ -10,6 +10,8 @@ import { normalisePhone, isValidMobile } from '../identity/signupFields.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
 import { NAME_IS_A_MOBILE_MESSAGE } from '../identity/mobileInText.js';
 import { respondError } from '../../shared/httpError.js';
+import { toCsv } from '../reporting/csv.util.js';
+import { paiseToRupees } from '../../shared/money.js';
 
 const router = express.Router();
 
@@ -63,6 +65,50 @@ router.get('/merchants', authenticate, hasPermission('canManageMerchants'), asyn
     });
   } catch (error) {
     return respondError(res, error, 'GET /admin/merchants', { message: 'Failed to fetch merchants' });
+  }
+});
+
+/** GET /api/admin/merchants.csv — every merchant the table's filters match, as CSV (rupees). */
+router.get('/merchants.csv', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
+  try {
+    const { status, accountStatus, role, sort, dir, search } = req.query;
+    const { rows } = await db.adminDirectory.listMerchants({
+      approval: status && status !== 'ALL' ? String(status) : null,
+      status: accountStatus && accountStatus !== 'ALL' ? String(accountStatus) : null,
+      role: role && role !== 'ALL' ? String(role) : null,
+      search: search ? String(search) : null,
+      sort: sort ? String(sort) : undefined,
+      dir: dir ? String(dir) : undefined,
+      exportAll: true,
+    });
+    const csv = toCsv(rows.map((m) => ({
+      merchant_id: m.merchantId,
+      name: m.name,
+      mobile: m.mobile,
+      role: m.role,
+      team: m.team?.name || '',
+      status: m.status,
+      approval: m.merchantApprovalStatus,
+      online: m.isOnline ? 'yes' : 'no',
+      rail: m.rail || '',
+      takes_buys: m.acceptsDeposits ? 'yes' : 'no',
+      takes_sells: m.acceptsWithdrawals ? 'yes' : 'no',
+      priority: m.routingPriority,
+      completed_orders: m.completedOrders,
+      processed: paiseToRupees(m.processedPaise),
+      pool_available: paiseToRupees(m.pool.availablePaise),
+      pool_held: paiseToRupees(m.pool.heldPaise),
+      commission_today: paiseToRupees(m.commission.todayPaise),
+      commission_month: paiseToRupees(m.commission.monthPaise),
+      commission_total: paiseToRupees(m.commission.totalPaise),
+      lost_disputes: m.lostDisputes,
+      created_at: m.createdAt ? new Date(m.createdAt).toISOString() : '',
+    })));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="merchants.csv"');
+    res.send(csv);
+  } catch (error) {
+    return respondError(res, error, 'GET /admin/merchants.csv', { message: 'Could not build the export.' });
   }
 });
 
@@ -263,7 +309,7 @@ router.get('/merchants/:merchantId/earnings', authenticate, hasPermission('canMa
     const earnings = await db.stats.merchantEarnings(merchant.merchantId);
     const totalOrders     = merchant.totalOrdersAll;
     const completedOrders = merchant.totalOrdersCompleted;
-    const pendingOrders   = counts.pending + counts.assigned + counts.processing;
+    const pendingOrders   = counts.pending + counts.processing;
     const totalVolume     = earnings.lifetime.totalVolume;
 
     res.json({ success: true, earnings: {

@@ -108,7 +108,7 @@ export async function bettingStats() {
 export async function operationStats() {
   const { rows } = await pgQuery(
     `SELECT
-       COUNT(*) FILTER (WHERE state IN ('ASSIGNED', 'PROCESSING'))::int AS pending_orders,
+       COUNT(*) FILTER (WHERE state = 'PROCESSING')::int AS pending_orders,
        COUNT(*) FILTER (WHERE state = 'PENDING_QUEUE')::int             AS queued_orders,
        COUNT(*) FILTER (WHERE state = 'DISPUTED')::int                  AS active_disputes,
        COUNT(*) FILTER (WHERE red_flagged AND state <> 'COMPLETED')::int AS flagged
@@ -138,7 +138,7 @@ export async function userActivity(userId) {
     pgQuery(
       `SELECT COUNT(*)::int AS n,
               COUNT(*) FILTER (WHERE state = 'COMPLETED')::int AS completed,
-              COUNT(*) FILTER (WHERE state IN ('ASSIGNED','PROCESSING','PAID'))::int AS open,
+              COUNT(*) FILTER (WHERE state IN ('PROCESSING','PAID'))::int AS open,
               COALESCE(SUM(token_amount_paise) FILTER (WHERE state = 'COMPLETED' AND order_type = 'DEPOSIT'), 0) AS deposited,
               COALESCE(SUM(token_amount_paise) FILTER (WHERE state = 'COMPLETED' AND order_type = 'WITHDRAWAL'), 0) AS withdrawn
          FROM order_states WHERE user_id = $1`, [uid], 'stats_user_orders'),
@@ -825,7 +825,6 @@ export async function merchantQueueCounts(merchantId) {
   const { rows } = await pgQuery(
     `SELECT
        COUNT(*) FILTER (WHERE state = 'PENDING_QUEUE')::int AS pending,
-       COUNT(*) FILTER (WHERE state = 'ASSIGNED')::int      AS assigned,
        COUNT(*) FILTER (WHERE state = 'PROCESSING')::int    AS processing,
        COUNT(*) FILTER (WHERE state = 'DISPUTED')::int      AS disputed,
        COUNT(*) FILTER (WHERE state IN ('PAID','COMPLETED')
@@ -902,6 +901,95 @@ export async function platformFinance({ from = null, to = null } = {}) {
     bets:        { amount: rupees(stakedPaise),   count: b.bet_count },
     payouts:     { amount: rupees(paidOutPaise),  count: b.win_count },
     netProfit: rupees(stakedPaise - paidOutPaise),
+  };
+}
+
+/**
+ * The platform's profit and loss over the IST days `from`..`to` (both
+ * `YYYY-MM-DD`, inclusive; either may be null), in one statement.
+ *
+ * Revenue is what the house KEPT, not money that passed through it:
+ *   board games  settled player stakes (WON or LOST) minus what winners were
+ *                paid (`payout_paise` is net of the winnings fee, so the fee
+ *                is inside this figure; `winningsFees` shows it apart);
+ *   casino       bets minus wins minus refunds (`game_transactions`).
+ * Costs are what the platform paid out of its own holding:
+ *   referral and first-deposit bonuses (`promo_grants`), and team commission
+ *   (`team_commissions`, paid from MERCHANT_BONUS_POOL into team pools).
+ * Deposits and withdrawals are money moving in and out, shown beside it and
+ * never counted as revenue: the screen this feeds once called deposits revenue.
+ *
+ * Settled bets count on the day they settled; a stake still riding is not yet
+ * earned and is reported apart as `openStakes`.
+ */
+export async function profitAndLoss({ from = null, to = null } = {}) {
+  const params = [from, to];
+  const inWindow = (col) => `($1::date IS NULL OR ${col} >= ($1::date)::timestamp AT TIME ZONE 'Asia/Kolkata')
+      AND ($2::date IS NULL OR ${col} < ($2::date + 1)::timestamp AT TIME ZONE 'Asia/Kolkata')`;
+  const { rows } = await pgQuery(
+    `SELECT
+       (SELECT COALESCE(SUM(stake_paise), 0) FROM bets
+         WHERE NOT is_phantom AND status IN ('WON', 'LOST') AND ${inWindow('settled_at')}) AS settled_stakes,
+       (SELECT COUNT(*) FROM bets
+         WHERE NOT is_phantom AND status IN ('WON', 'LOST') AND ${inWindow('settled_at')}) AS settled_bets,
+       (SELECT COALESCE(SUM(payout_paise), 0) FROM bets
+         WHERE NOT is_phantom AND status = 'WON' AND ${inWindow('settled_at')}) AS payouts,
+       (SELECT COUNT(*) FROM bets
+         WHERE NOT is_phantom AND status = 'WON' AND ${inWindow('settled_at')}) AS wins,
+       (SELECT COALESCE(SUM(platform_fee_paise), 0) FROM bets
+         WHERE NOT is_phantom AND status = 'WON' AND ${inWindow('settled_at')}) AS winnings_fees,
+       (SELECT COALESCE(SUM(stake_paise), 0) FROM bets
+         WHERE NOT is_phantom AND status = 'PENDING' AND ${inWindow('placed_at')}) AS open_stakes,
+       (SELECT COALESCE(SUM(CASE WHEN tx_type = 'BET' THEN amount_paise
+                                 WHEN tx_type IN ('WIN', 'REFUND', 'ROLLBACK') THEN -amount_paise
+                                 ELSE 0 END), 0)
+          FROM game_transactions WHERE ${inWindow('created_at')}) AS casino_ggr,
+       (SELECT COALESCE(SUM(amount_paise), 0) FROM promo_grants
+         WHERE source = 'REFERRAL' AND ${inWindow('created_at')}) AS referral_bonuses,
+       (SELECT COUNT(*) FROM promo_grants
+         WHERE source = 'REFERRAL' AND ${inWindow('created_at')}) AS referral_count,
+       (SELECT COALESCE(SUM(amount_paise), 0) FROM promo_grants
+         WHERE source = 'FIRST_DEPOSIT' AND ${inWindow('created_at')}) AS first_deposit_bonuses,
+       (SELECT COUNT(*) FROM promo_grants
+         WHERE source = 'FIRST_DEPOSIT' AND ${inWindow('created_at')}) AS first_deposit_count,
+       (SELECT COALESCE(SUM(commission_paise), 0) FROM team_commissions
+         WHERE ${inWindow('created_at')}) AS team_commission,
+       (SELECT COUNT(*) FROM team_commissions WHERE ${inWindow('created_at')}) AS commission_count,
+       -- TOKENS, across rails (trap 15).
+       (SELECT COALESCE(SUM(token_amount_paise), 0) FROM order_states
+         WHERE order_type = 'DEPOSIT' AND state = 'COMPLETED' AND ${inWindow('completed_at')}) AS deposits,
+       (SELECT COUNT(*) FROM order_states
+         WHERE order_type = 'DEPOSIT' AND state = 'COMPLETED' AND ${inWindow('completed_at')}) AS deposit_count,
+       (SELECT COALESCE(SUM(token_amount_paise), 0) FROM order_states
+         WHERE order_type = 'WITHDRAWAL' AND state = 'COMPLETED' AND ${inWindow('completed_at')}) AS withdrawals,
+       (SELECT COUNT(*) FROM order_states
+         WHERE order_type = 'WITHDRAWAL' AND state = 'COMPLETED' AND ${inWindow('completed_at')}) AS withdrawal_count`,
+    params, 'stats_profit_and_loss',
+  );
+  const r = rows[0];
+  const boardGgr = Number(r.settled_stakes) - Number(r.payouts);
+  const revenue = boardGgr + Number(r.casino_ggr);
+  const costs = Number(r.referral_bonuses) + Number(r.first_deposit_bonuses) + Number(r.team_commission);
+  return {
+    revenue: {
+      boardGames: { amount: rupees(boardGgr), settledStakes: rupees(r.settled_stakes), payouts: rupees(r.payouts),
+                    bets: int(r.settled_bets), wins: int(r.wins) },
+      winningsFees: rupees(r.winnings_fees),
+      casino: rupees(r.casino_ggr),
+      total: rupees(revenue),
+    },
+    costs: {
+      referralBonuses: { amount: rupees(r.referral_bonuses), count: int(r.referral_count) },
+      firstDepositBonuses: { amount: rupees(r.first_deposit_bonuses), count: int(r.first_deposit_count) },
+      teamCommission: { amount: rupees(r.team_commission), count: int(r.commission_count) },
+      total: rupees(costs),
+    },
+    netProfit: rupees(revenue - costs),
+    openStakes: rupees(r.open_stakes),
+    moneyFlow: {
+      deposits: { amount: rupees(r.deposits), count: int(r.deposit_count) },
+      withdrawals: { amount: rupees(r.withdrawals), count: int(r.withdrawal_count) },
+    },
   };
 }
 
@@ -1091,7 +1179,7 @@ export async function cycleAndQueueCounts({ timezone = 'Asia/Kolkata' } = {}) {
     ),
     pgQuery(
       `SELECT COUNT(*) FILTER (WHERE state = 'PENDING_QUEUE')::int AS queued,
-              COUNT(*) FILTER (WHERE state IN ('ASSIGNED', 'PROCESSING', 'PAID'))::int AS in_flight,
+              COUNT(*) FILTER (WHERE state IN ('PROCESSING', 'PAID'))::int AS in_flight,
               COUNT(*) FILTER (WHERE state = 'DISPUTED')::int      AS disputed
          FROM order_states`, [], 'stats_queue_counts',
     ),
@@ -1107,11 +1195,11 @@ export async function cycleAndQueueCounts({ timezone = 'Asia/Kolkata' } = {}) {
 }
 
 /**
- * Real against house volume, per round whose betting has closed (owner,
+ * Real against phantom volume, per round whose betting has closed (owner,
  * 2026-10-15: the admin sees how much of each pool was real money).
  *
  * Real stakes are the players' bets (`NOT is_phantom`, not refunded or void),
- * the same rows `realPools` sums. House stakes are the cycle row's phantom
+ * the same rows `realPools` sums. Phantom stakes are the cycle row's phantom
  * pools, which include the equalizer's top-up (it overwrites the pools rather
  * than placing bets), so a sum over phantom bet rows would understate them.
  * Only rounds past betting (not OPEN or MERGED): the split of a round still
@@ -1123,7 +1211,7 @@ export async function realVolumeByCycle({ limit = 20 } = {}) {
             c.phantom_delhi_paise AS house_delhi, c.phantom_bombay_paise AS house_bombay,
             COALESCE(r.delhi, 0) AS real_delhi, COALESCE(r.bombay, 0) AS real_bombay,
             COALESCE(r.bets, 0)::int AS real_bets, COALESCE(r.bettors, 0)::int AS real_bettors,
-            COALESCE(h.bets, 0)::int AS house_bets
+            COALESCE(h.bets, 0)::int AS phantom_bets
        FROM cycles c
        LEFT JOIN LATERAL (
          SELECT SUM(b.stake_paise) FILTER (WHERE b.side = 'DELHI')  AS delhi,
@@ -1151,7 +1239,7 @@ export async function realVolumeByCycle({ limit = 20 } = {}) {
       startTime: r.start_time, endTime: r.end_time, winner: r.winner,
       realDelhi: rupees(rd), realBombay: rupees(rb), realTotal: rupees(real),
       realBets: int(r.real_bets), realBettors: int(r.real_bettors),
-      houseDelhi: rupees(hd), houseBombay: rupees(hb), houseTotal: rupees(hd + hb), houseBets: int(r.house_bets),
+      phantomDelhi: rupees(hd), phantomBombay: rupees(hb), phantomTotal: rupees(hd + hb), phantomBets: int(r.phantom_bets),
       shownTotal: rupees(total),
       // Of what players were shown, the percent that was real money.
       realPercent: total > 0 ? Math.round((real / total) * 1000) / 10 : null,
@@ -1172,7 +1260,7 @@ export async function realVolumeByCycle({ limit = 20 } = {}) {
  * `COUNT(*) OVER ()` gives the total from the same statement, so the page and
  * the count of pages describe one instant.
  *
- * Phantom bets are excluded: they are house figures, not something the player
+ * Phantom bets are excluded: they are phantom figures, not something the player
  * did, and showing them on a player's own history would be a lie about their
  * account.
  */

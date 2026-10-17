@@ -24,7 +24,7 @@ const RulesPage: React.FC = () => {
   const branding = (() => { try { return JSON.parse(localStorage.getItem('app_branding') || '{}'); } catch { return {}; } })();
   const rulesBannerUrl: string = branding.rulesPageImageUrl || '';
   const [slides, setSlides] = useState<PromoContent[]>([]);
-  // How a round is won, house bets, payout, winners list: the server's text,
+  // How a round is won, phantom bets, payout, winners list: the server's text,
   // the same the board screen's pop-up asks players to accept.
   const { rules, error: rulesError } = useBoardRulesText();
 

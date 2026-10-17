@@ -64,8 +64,8 @@ export const STAFF_PERMISSIONS = Object.freeze([
     description: 'Credit or debit a player\'s wallet by hand, and read the adjustment history.' },
   { key: 'canViewTransactions', group: 'players', label: 'View transactions',
     description: 'The transaction history of every player, read only.' },
-  { key: 'canManagePhantomAgents', group: 'players', label: 'House bettors',
-    description: 'Choose who may place cosmetic house bets and on which boards, and read their statistics.' },
+  { key: 'canManagePhantomAgents', group: 'players', label: 'Phantom bettors',
+    description: 'Choose who may place cosmetic phantom bets and on which boards, and read their statistics.' },
   { key: 'canManageReferrals', group: 'players', label: 'Referral programme', money: true,
     description: 'Read referral statistics and pay out the referral queue.' },
 
@@ -125,7 +125,7 @@ export const STAFF_PERMISSIONS = Object.freeze([
  */
 export const ADMIN_ONLY_AREAS = Object.freeze([
   { area: 'Sub-admins', why: 'Creating a sub-admin or changing one\'s permissions grants authority; a holder could grant themselves everything.',
-    routes: ['GET /staff', 'GET /staff/:userId', 'POST /sub-admins', 'PUT /sub-admins/:subAdminId/permissions', 'DELETE /sub-admins/:subAdminId', 'GET /staff-permissions'] },
+    routes: ['GET /staff', 'GET /staff.csv', 'GET /staff/:userId', 'POST /sub-admins', 'PUT /sub-admins/:subAdminId/permissions', 'DELETE /sub-admins/:subAdminId', 'GET /staff-permissions'] },
   { area: 'Queue managers', why: 'The queue-manager role routes players\' payments; granting it is granting authority.',
     routes: ['POST /users/:userId/queue-manager'] },
   { area: 'Staff authenticators', why: 'Resetting a staff account\'s authenticator lets whoever holds its password enrol a new one; a holder could take over any staff account whose password they know.',
@@ -138,7 +138,7 @@ export const ADMIN_ONLY_AREAS = Object.freeze([
  * state and replace its own recovery codes (account.admin.routes.js).
  */
 export const SELF_ROUTES = Object.freeze([
-  'GET /account/2fa', 'POST /account/2fa/recovery-codes',
+  'GET /account/me', 'GET /account/2fa', 'POST /account/2fa/recovery-codes',
 ]);
 
 export const PERMISSION_KEYS = Object.freeze(STAFF_PERMISSIONS.map((p) => p.key));

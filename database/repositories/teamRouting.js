@@ -38,7 +38,7 @@ import { USDT_CHAIN_SPEC } from '../../backend/domains/merchant/merchantCurrency
 
 export { RAILS, railOf, PAYMENT_MODES, paymentModeFor, routedToMerchants } from './orderRails.js';
 
-const OPEN_STATES = ['ASSIGNED', 'PROCESSING', 'PAID'];
+const OPEN_STATES = ['PROCESSING', 'PAID'];
 
 /**
  * The routing settings, with the schema defaults (config.spec.js teamRouting)
@@ -138,7 +138,8 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
 
 /**
  * Assign a PENDING_QUEUE order to the best eligible member, holding a buy's
- * tokens in the team's pool in the same transaction.
+ * tokens in the team's pool in the same transaction. The order is STARTED
+ * (PROCESSING) by that move: there is no accept step (owner, 2026-10-17).
  *
  * `set` carries the fields written with the move (snapshot, expiry, rate) —
  * `buildSet(candidate)` is called per candidate, because the snapshot names
@@ -158,7 +159,7 @@ export async function assignToTeam(order, { cap, barredMerchantIds = [], buildSe
     const set = { ...(await buildSet(cand)), merchantId: cand.merchantId };
     let moved;
     try {
-      moved = await transitionOrder(order.orderId, 'ASSIGNED', {
+      moved = await transitionOrder(order.orderId, 'PROCESSING', {
         set, actor, reason: `Assigned to a member of team ${cand.teamId}`,
         within: async (client) => {
           // The member, locked: every assignment to them serialises here.
@@ -321,7 +322,7 @@ export async function assignToDirect(order, { cap, barredMerchantIds = [], build
     const set = { ...(await buildSet(cand, account)), merchantId: cand.merchantId };
     let moved;
     try {
-      moved = await transitionOrder(oid, 'ASSIGNED', {
+      moved = await transitionOrder(oid, 'PROCESSING', {
         set, actor, reason: `Assigned to merchant account ${cand.teamId}`,
         within: async (client) => {
           const { rows: owner } = await client.query(

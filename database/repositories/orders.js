@@ -39,7 +39,7 @@
  * that is really a bug in this file.
  */
 import {
-  transition as pgTransition, reassign as pgReassign, REVISITABLE,
+  transition as pgTransition, REVISITABLE,
 } from './orders.core.js';
 import { setOrderFields, getOrderRecord } from './orders.record.js';
 import { pgQuery } from '../client.js';
@@ -146,45 +146,3 @@ export async function transitionOrder(orderId, to, { set = {}, expectFrom = null
   };
 }
 
-/**
- * Hand a live order to a different merchant.
- *
- * ── This wrote to the document store, with a string id ──────────────────────
- * `reassignOrder` in the lifecycle service was the one function the migration
- * never moved. It called `findOneAndUpdate({_id: orderId})` with an order id
- * like `WD_9f3a…` where an ObjectId was expected, so admin reassignment threw a
- * cast error — and had it not, it would have written to a store nothing reads
- * and reported success while the order kept its old merchant.
- */
-export async function reassignOrder(orderId, { set = {}, from, actor = null, reason = null } = {}) {
-  const merchantId = set.merchantId;
-  if (!merchantId) throw new Error('reassignOrder requires set.merchantId');
-
-  const result = await pgReassign({
-    orderId: String(orderId), merchantId: String(merchantId), actor, reason,
-    ...(from ? { from: Array.isArray(from) ? from : [from] } : {}),
-  });
-
-  if (!result.ok) {
-    return {
-      ok: false,
-      reason: refusalReason(result.reason),
-      status: result.state ?? null,
-      attempted: 'ASSIGNED',
-      allowedFrom: result.allowedFrom ?? [],
-    };
-  }
-
-  // The snapshot and the new deadline are written after the assignee moved, so
-  // a refused reassignment cannot leave the previous merchant's order carrying
-  // the next merchant's payment details.
-  const detail = Object.keys(set).length ? await setOrderFields(orderId, set) : null;
-
-  return {
-    ok: true,
-    idempotent: Boolean(result.idempotent),
-    reason: result.idempotent ? REASON.ALREADY_THERE : REASON.APPLIED,
-    status: 'ASSIGNED',
-    order: detail ?? await getOrderRecord(orderId),
-  };
-}

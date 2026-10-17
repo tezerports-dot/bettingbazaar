@@ -82,8 +82,8 @@ describePg('a cash buy is paid through the machine the member scans', () => {
     await closePg();
   });
 
-  /** A ₹1,000 cash buy, routed to a fresh member of a working CASH team and accepted by them. */
-  const cashBuy = async ({ accept = true } = {}) => {
+  /** A ₹1,000 cash buy, routed to a fresh member of a working CASH team, which starts it. */
+  const cashBuy = async () => {
     const player = await actor({});
     const member = await merchantActor({});
     await teams.workingTeam({ rail: 'CASH', poolTokens: 10_000, include: [member.merchantId] });
@@ -92,13 +92,9 @@ describePg('a cash buy is paid through the machine the member scans', () => {
     const orderId = order.orderId ?? order._id;
     made.push(orderId);
     const row = await getOrderRecord(orderId);
-    expect(row.status, 'the cash buy was not routed').toBe('ASSIGNED');
+    expect(row.status, 'the cash buy was not routed').toBe('PROCESSING');
     expect(row.merchantId).toBe(String(member.merchantId));
     expect(row.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
-    if (accept) {
-      const res = await as(merchantApp, member).post(`/accept/${orderId}`).send({});
-      expect(res.status, res.body.message).toBe(200);
-    }
     return { orderId, player, member };
   };
 
@@ -120,27 +116,26 @@ describePg('a cash buy is paid through the machine the member scans', () => {
     expect((await getOrderRecord(orderId)).status).toBe('PROCESSING');
   });
 
-  it('nothing is scanned, shown or paid before the member accepts: they may still decline', async () => {
-    const { orderId, player, member } = await cashBuy({ accept: false });
-    const early = await scan(member, orderId, atm(1000));
-    expect(early.status).toBe(409);
-    expect(early.body.code).toBe('ACCEPT_FIRST');
-    expect((await getOrderRecord(orderId)).cashLink).toBeNull();
-    // The writer itself refuses it too (the route is not the only caller).
-    expect(await setCashLink(orderId, member.merchantId, atm(1000))).toBeNull();
-    const paid = await as(playerApp, player).post(`/order/${orderId}/mark-paid`).send({});
-    expect(paid.status).toBe(409);
-    expect(paid.body.code).toBe('NOT_ACCEPTED_YET');
-    expect((await getOrderRecord(orderId)).status).toBe('ASSIGNED');
-  });
+  it('the player may cancel before the scan, and not once the QR is theirs to pay', async () => {
+    // Routing started it (no Accept, owner 2026-10-17), but until the member
+    // scans the machine there is nothing the player can have paid.
+    const first = await cashBuy();
+    const view = await status(first.player, first.orderId);
+    expect(view.canCancel).toBe(true);
+    const cancelled = await as(playerApp, first.player).post('/order/cancel').send({ orderId: first.orderId });
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    expect(await getOrderRecord(first.orderId)).toMatchObject({ status: 'CANCELLED', poolHeldPaise: 0 });
+    // Nothing is counted against either side.
+    expect((await getUser(first.player.userId)).consecutivePaymentFailures).toBe(0);
+    expect((await getMerchant(first.member.merchantId)).consecutiveExpiries).toBe(0);
 
-  it('a buy the member never accepted lapses on the member, not the player', async () => {
-    const { orderId, player, member } = await cashBuy({ accept: false });
-    await pgQuery(`UPDATE order_states SET expires_at = now() - interval '1 minute' WHERE order_id = $1`, [orderId]);
-    await expireOrders();
-    expect((await getOrderRecord(orderId)).status).toBe('CANCELLED');
-    expect((await getUser(player.userId)).consecutivePaymentFailures).toBe(0);
-    expect((await getMerchant(member.merchantId)).consecutiveExpiries).toBe(1);
+    // Scanned: the player may be paying, so the order is theirs to finish.
+    const second = await cashBuy();
+    expect((await scan(second.member, second.orderId, atm(1000))).status).toBe(200);
+    expect((await status(second.player, second.orderId)).canCancel).toBe(false);
+    const refused = await as(playerApp, second.player).post('/order/cancel').send({ orderId: second.orderId });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect((await getOrderRecord(second.orderId)).status).toBe('PROCESSING');
   });
 
   it('the member scans, and the player is given exactly that link to pay', async () => {

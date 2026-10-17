@@ -19,7 +19,8 @@ import { DateRangePicker } from '../../components/DateRangePicker';
 import { Kpis, Toolbar } from '../../components/design';
 import { usePagination } from '../../hooks/usePagination';
 import { formatters } from '../../utils/formatters';
-import api from '../../services/api';
+import api, { downloadCsv } from '../../services/api';
+import { Download } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -144,7 +145,14 @@ export const AuditLogs: React.FC = () => {
         { label: 'This Week', value: logs.filter((l) => { const w = new Date(); w.setDate(w.getDate() - 7); return new Date(l.timestamp) > w; }).length, tone: 'var(--success)' },
       ]} />
 
-      <Toolbar search={{ value: search, onChange: setSearch, placeholder: 'Search actor, action…' }} />
+      <Toolbar
+        search={{ value: search, onChange: setSearch, placeholder: 'Search actor, action…' }}
+        actions={[{
+          label: 'Download CSV', icon: Download,
+          onClick: () => void downloadCsv('/api/admin/audit-logs.csv', { startDate: startDate || undefined, endDate: endDate || undefined }, 'audit-logs.csv')
+            .catch(() => toast.error('Could not download the audit log.')),
+        }]}
+      />
       <DateRangePicker filters="audit entries" startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
 
       {/* Table */}

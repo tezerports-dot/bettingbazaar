@@ -65,6 +65,7 @@ import * as chat from './repositories/chat.js';
 import * as config from './repositories/config.js';
 import * as balanceAdjustments from './repositories/balanceAdjustments.js';
 import * as markets from './repositories/markets.js';
+import * as cycleHistoryRetention from './repositories/cycleHistoryRetention.js';
 import * as games from './repositories/games.js';
 import * as content from './repositories/content.js';
 import * as androidReleases from './repositories/androidReleases.js';
@@ -75,6 +76,7 @@ import * as promo from './repositories/promo.js';
 import * as boardRules from './repositories/boardRules.js';
 import * as phantomAutoPlans from './repositories/phantomAutoPlans.js';
 import * as boards from './repositories/boards.js';
+import * as rtp from './repositories/rtp.js';
 import * as audit from './repositories/audit.js';
 import * as operations from './repositories/operations.js';
 import * as supportDocuments from './repositories/supportDocuments.js';
@@ -89,6 +91,8 @@ import * as merchantPaymentAccounts from './repositories/merchantPaymentAccounts
 import * as merchantProblems from './repositories/merchantProblems.js';
 import * as merchantReports from './repositories/merchantReports.js';
 import * as adminDirectory from './repositories/adminDirectory.js';
+import * as tokenHolders from './repositories/tokenHolders.js';
+import * as tokenLedger from './repositories/tokenLedger.js';
 import * as disputeFaults from './repositories/disputeFaults.js';
 import * as stats from './repositories/stats.js';
 import * as utr from './repositories/utr.js';
@@ -131,6 +135,7 @@ export const db = Object.freeze({
 
   // Trading
   markets,
+  cycleHistoryRetention,
   bets: merge(betsCore, betsApi),
   settlements,
   casino: merge(casinoCore, casinoApi),
@@ -157,6 +162,7 @@ export const db = Object.freeze({
   boardRules,
   phantomAutoPlans,
   boards,
+  rtp,
   chat,
 
   // Platform
@@ -174,6 +180,9 @@ export const db = Object.freeze({
   merchantReports,
   // The admin's sortable player and merchant tables (owner, 2026-10-14)
   adminDirectory,
+  // Who holds the token supply, holder by holder (owner, 2026-10-17)
+  tokenHolders,
+  tokenLedger,
   disputeFaults,
   operations,
   supportDocuments,

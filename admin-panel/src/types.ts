@@ -373,7 +373,6 @@ export interface MerchantTransaction {
 
 export type OrderStatus =
   | 'PENDING_QUEUE'
-  | 'ASSIGNED'
   | 'PROCESSING'
   | 'PAID'
   | 'COMPLETED'
@@ -401,6 +400,8 @@ export interface PaymentOrder {
   /** The team serving it, once routed. */
   teamId?: string | null;
   status: OrderStatus;
+  /** May the queue manager move it to another member (`mayChangeHands`, orders.record.js). */
+  canReassign?: boolean;
   assignedBy?: string;
   assignedAt?: string;
   createdAt: string;
@@ -558,7 +559,7 @@ export interface DashboardStats {
     tokenSell?: number;  // token redemption volume — present when backend returns it
     // Today in IST — the last bucket of the seven-day series the chart draws,
     // so the tiles and the chart agree (analytics.admin.routes.js). Player
-    // bets only; phantom bets are house liquidity.
+    // bets only; phantom bets are phantom liquidity.
     today?: { bets: number; betCount: number; payouts: number; deposits: number; netProfit: number };
   };
   // `totalBets` is ALL-TIME player bets, not today's.
@@ -566,15 +567,24 @@ export interface DashboardStats {
   queue: { pendingOrders: number; avgWaitTime: number };
 }
 
+/** `GET /api/admin/analytics/financials` `data` (`stats.profitAndLoss` + `providerRevenue`). Rupees. */
 export interface FinancialStats {
-  totalRevenue: number;
-  totalExpenses: number;
+  revenue: {
+    boardGames: { amount: number; settledStakes: number; payouts: number; bets: number; wins: number };
+    winningsFees: number;
+    casino: number;
+    total: number;
+  };
+  costs: {
+    referralBonuses: { amount: number; count: number };
+    firstDepositBonuses: { amount: number; count: number };
+    teamCommission: { amount: number; count: number };
+    total: number;
+  };
   netProfit: number;
-  profitMargin: number;
-  deposits: { count: number; amount: number };
-  withdrawals: { count: number; amount: number };
-  bets: { count: number; amount: number };
-  payouts: { count: number; amount: number };
+  openStakes: number;
+  moneyFlow: { deposits: { amount: number; count: number }; withdrawals: { amount: number; count: number } };
+  byProvider: { key: string; bets: number; betCount: number; wins: number; winCount: number; refunds: number; ggr: number }[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

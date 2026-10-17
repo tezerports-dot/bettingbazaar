@@ -18,7 +18,11 @@
  * routes changed instead.
  */
 import express from 'express';
-import { authenticate, isAdmin, hasPermission } from '../../domains/identity/auth.middleware.js';
+import { authenticateStaff, isAdmin, hasPermission } from '../../domains/identity/auth.middleware.js';
+
+// Every admin route's `authenticate` is the STAFF door: a player's or
+// merchant's session is refused 403 WRONG_PANEL wherever a router is mounted.
+const authenticate = authenticateStaff;
 
 export { express, authenticate, isAdmin, hasPermission };
 

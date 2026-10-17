@@ -39,7 +39,7 @@
  * transition that moves money atomic with the money it moves.
  */
 import { ORDER_STATES, ALLOWED_FROM } from '#db/repositories/orders.core.js';
-import { transitionOrder as pgTransitionOrder, reassignOrder as pgReassignOrder } from '#db/repositories/orders.js';
+import { transitionOrder as pgTransitionOrder } from '#db/repositories/orders.js';
 import { payCommissionFor } from '../team/teamCommission.service.js';
 
 export { ORDER_STATES };
@@ -116,9 +116,8 @@ export async function transitionOrder(orderId, to, { set = {}, expectFrom = null
 // One per legal move, so a call site reads as the thing it means rather than as
 // a string literal that could be typed wrong.
 
-export const assignOrder    = (id, o) => transitionOrder(id, ORDER_STATES.ASSIGNED, o);
 /**
- * Back to the queue, because the assigned merchant declined.
+ * Back to the queue, because the member declined it or an admin moved it.
  *
  * The one transition that moves an order BACKWARDS, and the reason
  * PENDING_QUEUE had to become a state the rule table can enter. The guard is
@@ -127,7 +126,6 @@ export const assignOrder    = (id, o) => transitionOrder(id, ORDER_STATES.ASSIGN
  * docs/ORDERS_REQUEUE_CYCLE.md.
  */
 export const requeueOrder   = (id, o) => transitionOrder(id, ORDER_STATES.PENDING_QUEUE, o);
-export const startOrder     = (id, o) => transitionOrder(id, ORDER_STATES.PROCESSING, o);
 export const markOrderPaid  = (id, o) => transitionOrder(id, ORDER_STATES.PAID, o);
 export const completeOrder  = (id, o) => transitionOrder(id, ORDER_STATES.COMPLETED, o);
 export const disputeOrder   = (id, o) => transitionOrder(id, ORDER_STATES.DISPUTED, o);
@@ -135,36 +133,6 @@ export const cancelOrder    = (id, o) => transitionOrder(id, ORDER_STATES.CANCEL
 export const failOrder      = (id, o) => transitionOrder(id, ORDER_STATES.FAILED, o);
 export const rejectOrder    = (id, o) => transitionOrder(id, ORDER_STATES.REJECTED, o);
 
-/**
- * Hand a LIVE order to a different merchant.
- *
- * ── Why this is not transitionOrder ─────────────────────────────────────────
- * Admin reassignment (merchant.assignment.routes.js) accepts an order that is
- * ASSIGNED *or* PROCESSING and leaves it ASSIGNED to someone else. Neither is a
- * lifecycle move: ASSIGNED→ASSIGNED does not change the state at all, and the
- * rule table only admits ASSIGNED from PENDING_QUEUE, so `expectFrom` cannot
- * express it either — it may only ever NARROW what ALLOWED_FROM already permits.
- *
- * Forcing it through the state machine would mean widening ALLOWED_FROM to
- * accept ASSIGNED from ASSIGNED and PROCESSING, which would also let the
- * ordinary assignment path silently re-assign an order already being worked on.
- * Splitting it into requeue-then-assign is worse: between the two writes the
- * order sits in PENDING_QUEUE with no session around them, where the automatic
- * assigner can and will pick it up and hand it to a third merchant.
- *
- * So this is what it actually is — a guarded change of assignee that happens to
- * normalise the state — and it still gets the property that matters: the
- * expected states are in the FILTER, so two admins reassigning the same order
- * at once produce one winner rather than a last-write-wins overwrite.
- *
- * Stage 2 must model this explicitly on the Postgres side; `order_states`
- * carries merchant_id, so it is a column update plus a recorded transition, not
- * a state change. See docs/ORDERS_REQUEUE_CYCLE.md for the neighbouring
- * decision about keys on repeatable edges.
- */
-export async function reassignOrder(orderId, { set = {}, from = [ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING], actor = null, reason = null } = {}) {
-  return pgReassignOrder(orderId, { set, from, actor, reason });
-}
 
 /**
  * Is this move legal from where the order stands right now?

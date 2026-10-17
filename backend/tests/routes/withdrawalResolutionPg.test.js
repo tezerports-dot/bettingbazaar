@@ -51,7 +51,7 @@ import {
   creditWinnings, lockWithdrawal, refundWithdrawal,
 } from '../../domains/wallet/walletAuthority.service.js';
 import { createWithdrawalOrder } from '../../domains/payment/paymentProcessing.service.js';
-import { endWithdrawal } from '../../domains/payment/withdrawalHold.service.js';
+import { endWithdrawal, settleDueHolds } from '../../domains/payment/withdrawalHold.service.js';
 import { toPlayerOrderView } from '../../domains/payment/playerOrderView.js';
 import { approveMerchant } from '#db/repositories/merchants.js';
 import { teamFixture } from '../teamFixture.js';
@@ -137,12 +137,10 @@ describePg('ending a withdrawal, in every state its money can be in', () => {
     const { order } = await createWithdrawalOrder(player.userId, RUPEES);
     const orderId = order.orderId ?? order._id;
     const routed = await getOrderRecord(orderId);
-    expect(routed.status, 'the withdrawal was not routed to the member').toBe('ASSIGNED');
+    expect(routed.status, 'the withdrawal was not routed to the member').toBe('PROCESSING');
     expect(routed.merchantId).toBe(String(merchant.merchantId));
     expect(routed.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
 
-    const accepted = await as(merchantApp, merchant).post(`/accept/${orderId}`).send({});
-    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     if (held) {
       // Every sell is a bank transfer, so the member gives its UTR (2d).
       const confirmed = await as(merchantApp, merchant).post(`/confirm/${orderId}`)
@@ -397,11 +395,9 @@ describePg('ending a withdrawal, in every state its money can be in', () => {
     });
   });
 
-  // ── The member's own confirm always holds, for at least an hour ──────────
-  // `withdrawalHoldMinutes` could be set to 0, and the confirm then settled at
-  // once — no window in which the player could say nothing arrived. The owner's
-  // rule (2c+, 2026-10-02) is "at least 1 hour": the spec's floor is 60 and the
-  // zero-hold path is gone. rejectedBuyWindowPg asserts the floor itself.
+  // ── The member's own confirm holds for the configured window ─────────────
+  // Set to 60 in beforeAll. The window is the admin's (0 to 10,080, owner,
+  // 2026-10-17); rejectedBuyWindowPg asserts the bounds.
   describe('the member confirm', () => {
     it('holds the stake and the team\'s credit for the window, and tells the player until when', async () => {
       const s = await sell({ state: 'PROCESSING' });
@@ -416,6 +412,24 @@ describePg('ending a withdrawal, in every state its money can be in', () => {
       expect(await snapshot(s)).toEqual(before);
       expect(new Date(toPlayerOrderView(row).disputeUntil).getTime())
         .toBe(new Date(row.merchantCreditHoldUntil).getTime());
+    });
+
+    it('at 0 minutes holds nothing back: the next sweep settles the sell into the pool', async () => {
+      await applySystemConfig({ withdrawalHoldMinutes: 0 });
+      try {
+        const s = await sell({ state: 'PROCESSING' });
+        const poolBefore = (await getPool(team.teamId)).availablePaise;
+        const res = await as(merchantApp, s.merchant).post(`/confirm/${s.orderId}`).send({ utrNumber: payoutUtr() });
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        const held = await getOrderRecord(s.orderId);
+        expect(held.status).toBe('PAID');
+        expect(new Date(held.merchantCreditHoldUntil).getTime()).toBeLessThanOrEqual(Date.now() + 1_000);
+        await settleDueHolds();
+        expect((await getOrderRecord(s.orderId)).status).toBe('COMPLETED');
+        expect((await getPool(team.teamId)).availablePaise - poolBefore).toBe(A);
+      } finally {
+        await applySystemConfig({ withdrawalHoldMinutes: 60 });
+      }
     });
   });
 });

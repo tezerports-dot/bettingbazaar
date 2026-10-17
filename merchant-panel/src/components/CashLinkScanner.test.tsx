@@ -16,7 +16,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import CashLinkScanner from './CashLinkScanner';
-import { OrderCard, type OrderActions } from './OrderCard';
 import { readCashLink } from '../utils/cashLink';
 import { OrderStatus } from '../types';
 
@@ -115,55 +114,5 @@ describe('reading a decoded QR', () => {
     expect(readCashLink('upi://pay?pa=9876543210@ybl&am=1000', 1000)).toMatchObject({ ok: false, message: expect.stringMatching(/mobile number/) });
     expect(readCashLink('upi://pay?pa=atm@sbi&am=1000&pn=Ravi%2098765%2043210', 1000)).toMatchObject({ ok: false, message: expect.stringMatching(/name or note/) });
     expect(readCashLink('upi://pay?pa=atm@sbi&am=1000&pn=SBI%20ATM%20123456', 1000).ok).toBe(true);
-  });
-});
-
-describe('the order card', () => {
-  const actions = (): OrderActions => ({
-    onAccept: vi.fn(), onReject: vi.fn(), onPaymentNotReceived: vi.fn(), onRelease: vi.fn(),
-    onPayout: vi.fn(), onRedFlag: vi.fn(), onScanCashLink: vi.fn(), onOpen: vi.fn(),
-  });
-  // `upiId` is PLANTED: the server keeps no UPI handle (`merchants.bank_upi_id`
-  // was dropped) and sends none. It stays as an unknown key the card must not
-  // render, so a handle reappearing anywhere upstream is not shown by default.
-  const MERCHANT: any = {
-    acceptedCurrencies: ['INR'],
-    bankDetails: { upiId: '9876501234@ybl', accountNo: '50100123456789', ifsc: 'HDFC0000123', bankName: 'HDFC Bank', accountHolderName: 'Ravi Kumar' },
-  };
-
-  it('asks for the accept first: nothing is scanned for an order the member may still decline', () => {
-    render(<OrderCard order={cashOrder({ status: OrderStatus.ASSIGNED })} merchant={MERCHANT} now={Date.now()} actions={actions()} />);
-    expect(screen.queryByRole('button', { name: /Scan/ })).toBeNull();
-    expect(screen.getByRole('button', { name: /Accept/ })).toBeInTheDocument();
-  });
-
-  it('asks for the scan on an accepted cash buy, and calls it', () => {
-    const a = actions();
-    render(<OrderCard order={cashOrder()} merchant={MERCHANT} now={Date.now()} actions={a} />);
-    expect(screen.getByText('Scan the cash machine')).toBeInTheDocument();
-    // Nothing for the player to pay yet, so no "waiting for the user" either.
-    expect(screen.queryByText(/Waiting for the user to pay/)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /Scan the machine's QR/ }));
-    expect(a.onScanCashLink).toHaveBeenCalledWith(expect.objectContaining({ orderId: 'ORD-C1' }));
-    // A cash buy is paid to the machine, never to the member.
-    expect(document.body.innerHTML).not.toContain('50100123456789');
-  });
-
-  it('offers the scan again once sent, until the player taps', () => {
-    render(<OrderCard order={cashOrder({ cashLink: LINK, cashLinkAt: new Date().toISOString() })} merchant={MERCHANT} now={Date.now()} actions={actions()} />);
-    expect(screen.getByText('QR sent to the player')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Scan again/ })).toBeInTheDocument();
-    const paid = cashOrder({ status: OrderStatus.PAID, cashLink: LINK });
-    render(<OrderCard order={paid} merchant={MERCHANT} now={Date.now()} actions={actions()} />);
-    expect(screen.getAllByRole('button', { name: /Scan again/ })).toHaveLength(1);
-  });
-
-  it('shows a bank-transfer buy the member\'s own account, never their UPI handle', () => {
-    const order = cashOrder({ paymentMode: 'P2P_UPI', fiatAmount: 50000, amount: 50000, tokenAmount: 50000 });
-    render(<OrderCard order={order} merchant={MERCHANT} now={Date.now()} actions={actions()} />);
-    expect(screen.getByText('Your bank account — user transfers here')).toBeInTheDocument();
-    expect(screen.getByText('50100123456789')).toBeInTheDocument();
-    expect(document.body.innerHTML).not.toContain('9876501234');
-    expect(screen.queryByRole('button', { name: /Scan/ })).toBeNull();
   });
 });

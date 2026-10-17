@@ -83,7 +83,7 @@ describePg('a casino WIN is paid into winnings; a stake goes back where it came 
       { field: 'winningsBalance', tx_type: 'CREDIT', amount: 35_000, before: 0, after: 35_000 },
     ]);
     // The house paid it, in the same transaction: USER_FLOAT rose by the win
-    // and the house side (its reserve, then the platform's holding) fell by it.
+    // and the phantom side (its reserve, then the platform's holding) fell by it.
     const legs = await treasuryLegs(winTx);
     expect(legs.USER_FLOAT).toBe(35_000);
     expect((legs.HOUSE_RESERVE ?? 0) + (legs.TOKEN_SUPPLY ?? 0)).toBe(-35_000);

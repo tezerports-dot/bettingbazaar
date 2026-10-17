@@ -13,6 +13,14 @@
  *
  * About the caller themselves, so no area (`SELF_ROUTES`, staffPermissions.js):
  * every staff account, of any role. `authenticateStaff` admits STAFF rows only.
+ *
+ *   GET  /api/admin/account/me                   the admin panel's session
+ *                                                restore: the signed-in STAFF
+ *                                                account and its roles. A
+ *                                                player's or merchant's session
+ *                                                is refused 403 WRONG_PANEL by
+ *                                                `authenticateStaff`, so the
+ *                                                panel never adopts one.
  * Replacing the authenticator itself is not here: only a full admin's reset
  * (`POST /staff/:userId/reset-authenticator`) or the break-glass script does it.
  */
@@ -24,6 +32,21 @@ import { twoFactorLimiter } from '../../middleware/security.js';
 import { respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
+
+router.get('/account/me', authenticateStaff, (req, res) => {
+  const u = req.user;
+  res.json({
+    success: true,
+    user: {
+      id: u.userId, _id: u.userId, username: u.username, mobile: u.mobile,
+      accountType: u.accountType,
+      isAdmin: u.isAdmin || false, isSubAdmin: u.isSubAdmin || false,
+      isQueueManager: u.isQueueManager || false, isMediator: u.isMediator || false,
+      permissions: u.subAdminPermissions || {},
+      status: u.status || 'ACTIVE', lastLogin: u.lastLogin || null,
+    },
+  });
+});
 
 router.get('/account/2fa', authenticateStaff, async (req, res) => {
   try {

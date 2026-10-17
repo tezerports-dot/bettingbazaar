@@ -10,7 +10,7 @@
 import sseService from '../../services/sse';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { Plus, RefreshCw, ArrowDownUp } from 'lucide-react';
+import { Plus, RefreshCw, ArrowDownUp, Download } from 'lucide-react';
 import { DataTable, type Column, type TableSort } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
 import { DisputeRecordBadge } from '../../components/DisputeRecordBadge';
@@ -19,7 +19,7 @@ import { Modal } from '../../components/Modal';
 import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
-import api from '../../services/api';
+import api, { downloadCsv, cleanParams } from '../../services/api';
 import type { MerchantRow } from '../../types';
 import { ROLE_LABEL } from './merchantLabels';
 import toast from 'react-hot-toast';
@@ -65,6 +65,16 @@ export const MerchantsList: React.FC = () => {
     sseService.on('merchant_status_changed', handleStatusChange);
     return () => { sseService.off('merchant_status_changed', handleStatusChange); };
   }, []);
+
+  // Every merchant the filters match, not the page (`GET /api/admin/merchants.csv`).
+  const exportCsv = async () => {
+    try {
+      await downloadCsv('/api/admin/merchants.csv', cleanParams({
+        search: debouncedSearch, role: roleFilter === 'ALL' ? undefined : roleFilter,
+        status: pendingOnly ? 'PENDING' : undefined, sort: sort.key, dir: sort.dir,
+      }), 'merchants.csv');
+    } catch { toast.error('Export failed'); }
+  };
 
   const loadMerchants = useCallback(async () => {
     setIsLoading(true);
@@ -159,6 +169,7 @@ export const MerchantsList: React.FC = () => {
         search={{ value: search, onChange: (v) => { setSearch(v); setPage(1); }, placeholder: 'Search name, mobile, ID…' }}
         actions={[
           { label: 'Refresh', icon: RefreshCw, onClick: () => void loadMerchants() },
+          { label: 'Download CSV', icon: Download, onClick: () => void exportCsv() },
           { label: 'Create Merchant', icon: Plus, primary: true, onClick: () => setShowCreateModal(true) },
         ]}
       />

@@ -20,8 +20,8 @@ export interface BoardRulesText {
   heading: string;
   intro: string;
   sections: { title: string; body: string }[];
-  /** The house-bets line, after the admin's text and outside it (boardRules.js `houseBetsNotice`). */
-  houseBetsNotice?: string;
+  /** The phantom-bets line, after the admin's text and outside it (boardRules.js `phantomBetsNotice`). */
+  phantomBetsNotice?: string;
 }
 
 /** Fired by GameContext when a bet is refused because the rules are not accepted. */
@@ -35,7 +35,7 @@ export function useBoardRulesText() {
     setError('');
     try {
       const res: any = await platform.boardRules();
-      if (res?.success) setRules({ version: res.version, heading: res.heading, intro: res.intro, sections: res.sections, houseBetsNotice: res.houseBetsNotice });
+      if (res?.success) setRules({ version: res.version, heading: res.heading, intro: res.intro, sections: res.sections, phantomBetsNotice: res.phantomBetsNotice });
       else throw new Error(res?.message);
     } catch (e: any) {
       setError(e?.message || 'Could not load the board rules');
@@ -53,9 +53,9 @@ export const BoardRulesSections: React.FC<{ rules: BoardRulesText }> = ({ rules 
         <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 3, lineHeight: 1.5, whiteSpace: 'pre-line' }}>{s.body}</div>
       </div>
     ))}
-    {rules.houseBetsNotice && (
+    {rules.phantomBetsNotice && (
       <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.5, padding: '8px 10px', borderRadius: 10, border: '1px solid var(--line2)', background: 'var(--surface2)' }}>
-        ⓘ {rules.houseBetsNotice}
+        ⓘ {rules.phantomBetsNotice}
       </div>
     )}
   </div>

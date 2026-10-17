@@ -14,7 +14,7 @@
  * This walks ONE player from signup to withdrawal and, at every seam, asks the
  * only question that matters: does the money still add up?
  *
- *     signup -> deposit order -> merchant assigned -> paid -> completed
+ *     signup -> deposit order -> started on a merchant -> paid -> completed
  *            -> balance credited -> bet placed -> cycle settled
  *            -> winnings paid -> withdrawal admitted
  *
@@ -175,8 +175,7 @@ describePg('the whole journey: signup to withdrawal', () => {
     // allows, so walking the whole path is itself the assertion that the states
     // connect. A missing edge shows up here as a refusal, not as a wrong number.
     for (const [to, extra] of [
-      [ORDER_STATES.ASSIGNED, { merchantId: MERCHANT }],
-      [ORDER_STATES.PROCESSING, {}],
+      [ORDER_STATES.PROCESSING, { merchantId: MERCHANT }],
       [ORDER_STATES.PAID, { utrNumber: `UTR${RUN}${seq}` }],
     ]) {
       const r = await transitionOrder(orderId, to, { set: extra, actor: 'workflow-test' });

@@ -10,6 +10,10 @@ describe('regulatory CSV export quoting', () => {
     expect(csv).toBe('a,b,c\nplain,"has,comma","has""quote"');
   });
   it('empty input yields empty string', () => expect(toCsv([])).toBe(''));
+  it('a text cell that would run as a formula is exported as text; numbers are left alone', () => {
+    const csv = toCsv([{ a: '=HYPERLINK("x")', b: '+1', c: '@x', d: '-x', e: -5, f: '-5' }]);
+    expect(csv.split('\n')[1]).toBe(`"'=HYPERLINK(""x"")",'+1,'@x,'-x,-5,-5`);
+  });
 });
 
 describe('shared trading vocabulary', () => {

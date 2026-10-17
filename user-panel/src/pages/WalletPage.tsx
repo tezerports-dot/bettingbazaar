@@ -62,9 +62,9 @@ interface PaymentOrder {
   _id: string; orderId: string; type: 'DEPOSIT' | 'WITHDRAWAL'; status: string;
   tokenAmount: number; fiatAmount: number; rateUsed: number; createdAt: string;
   expiresAt?: string; paidAt?: string;
-  // Whether the player may still cancel it: queued, or assigned to a member who
-  // has not accepted (`PLAYER_CANCEL_STATES`, backend/domains/payment/
-  // playerOrderView.js). The server's answer; this screen keeps no list of it.
+  // Whether the player may still cancel it: queued, or a cash buy whose member
+  // has not scanned the machine's QR yet (`playerMayCancel`, backend/domains/
+  // payment/playerOrderView.js). The server's answer; this screen keeps no list of it.
   canCancel?: boolean;
   // Until when the player may dispute while the tokens are in escrow: a buy the
   // member rejected as unpaid, or a sell the member marked paid. Derived by the
@@ -317,24 +317,20 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
   // the UPI rail a UTR field invites a reference for a transfer to no one. Say
   // what is actually happening instead (§32 S22 — a control that does nothing).
   if (!somewhereToPay && order.status !== 'PAID') {
-    // A member is assigned but has not accepted: they may still decline, so
-    // the server sends no destination until they do.
-    const awaitingAccept = order.status === 'ASSIGNED' && Boolean(payTo);
-    const atMachine = onCashRail && Boolean(payTo) && !awaitingAccept;
+    // A cash buy's member is on their way to the machine: the destination is
+    // the QR they scan there, so there is nothing to pay until they do.
+    const atMachine = onCashRail && Boolean(payTo);
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div role="status" style={{ textAlign: 'center', padding: '12px 8px' }}>
           <div style={{ fontSize: 40, marginBottom: 8 }}>⏳</div>
           <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>
-            {atMachine ? 'The member is going to the cash machine…'
-              : awaitingAccept ? 'Waiting for the merchant to accept…' : 'Waiting for merchant details…'}
+            {atMachine ? 'The member is going to the cash machine…' : 'Waiting for merchant details…'}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.5, margin: '6px 0 0' }}>
             {atMachine
               ? <>They will scan the machine's QR for {fmtINR(order.fiatAmount)}. The Pay button appears here the moment they do. There is nothing to pay until then.</>
-              : awaitingAccept
-                ? <>A merchant has your {fmtINR(order.fiatAmount)} purchase. Where to pay appears here the moment they accept it. There is nothing to pay until then.</>
-                : <>A merchant is being assigned to your {fmtINR(order.fiatAmount)} purchase. Where to pay appears here the moment one is. There is nothing to pay until then.</>}
+              : <>A merchant is being assigned to your {fmtINR(order.fiatAmount)} purchase. Where to pay appears here the moment one is. There is nothing to pay until then.</>}
           </div>
           {order.expiresAt && (
             <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 8 }}>
@@ -613,7 +609,7 @@ const WalletPage: React.FC = () => {
       // one open buy (or sell). Left out, the screen offered the size picker
       // again, the server refused the second order, and the only way out was
       // the Cancel on Payment Orders.
-      const live = ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID'];
+      const live = ['PENDING_QUEUE', 'PROCESSING', 'PAID'];
       const activeDeposit = orders.find((o: PaymentOrder) => o.type === 'DEPOSIT' && o.currency !== 'USDT' && live.includes(o.status));
       const activeWithdrawal = orders.find((o: PaymentOrder) => o.type === 'WITHDRAWAL' && live.includes(o.status));
       if (activeDeposit && buyStep === 'amount') { setActiveBuyOrder(activeDeposit); setBuyStep('pay_now'); setSide('buy'); }
@@ -779,7 +775,7 @@ const WalletPage: React.FC = () => {
   // about what this player has open.
   const activeUsdtOrder = paymentOrders.find(
     (o: any) => o.currency === 'USDT' && o.type === 'DEPOSIT'
-      && ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID'].includes(o.status),
+      && ['PENDING_QUEUE', 'PROCESSING', 'PAID'].includes(o.status),
   ) ?? null;
   const maxStake = limits?.maxStake ?? 0;
   const reserveLocked = limits?.reserveLocked ?? 0;
@@ -970,7 +966,7 @@ const WalletPage: React.FC = () => {
                     Merchant will send <b style={{ color: 'var(--green)' }}>{fmtINR(activeSellOrder.fiatAmount)}</b> to your saved account.
                     {activeSellOrder.userBankDetails?.accountNumber && <div style={{ marginTop: 6, color: 'var(--text3)' }}>{activeSellOrder.userBankDetails.bankName} ••••{activeSellOrder.userBankDetails.accountNumber.slice(-4)}</div>}
                   </div>
-                  <div style={{ background: 'color-mix(in srgb,var(--bombay) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--bombay) 30%,transparent)', borderRadius: 11, padding: 11, textAlign: 'center', fontSize: 11, color: 'var(--bombay)' }}>{activeSellOrder.status === 'PENDING_QUEUE' || activeSellOrder.status === 'ASSIGNED' ? '⏳ Finding a merchant for your payout…' : activeSellOrder.status === 'PROCESSING' ? '⏳ Merchant processing your payout…' : '✅ Payment sent. Waiting for final confirmation…'}</div>
+                  <div style={{ background: 'color-mix(in srgb,var(--bombay) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--bombay) 30%,transparent)', borderRadius: 11, padding: 11, textAlign: 'center', fontSize: 11, color: 'var(--bombay)' }}>{activeSellOrder.status === 'PENDING_QUEUE' ? '⏳ Finding a merchant for your payout…' : activeSellOrder.status === 'PROCESSING' ? '⏳ Merchant processing your payout…' : '✅ Payment sent. Waiting for final confirmation…'}</div>
                   {activeSellOrder.canCancel && (
                     <button onClick={() => { void cancelActive(activeSellOrder.orderId, resetSell); }} disabled={cancelling} style={{ width: '100%', padding: 11, borderRadius: 11, border: '1px solid color-mix(in srgb,var(--red) 40%,transparent)', background: 'none', color: 'var(--red)', fontSize: 12, fontWeight: 800, cursor: 'pointer', opacity: cancelling ? .5 : 1 }}>{cancelling ? 'Cancelling…' : 'Cancel sell order'}</button>
                   )}
@@ -1069,7 +1065,7 @@ const WalletPage: React.FC = () => {
                   <div><div style={{ fontSize: 9, color: 'var(--text3)', fontWeight: 700 }}>{order.type === 'DEPOSIT' ? 'You pay' : 'You receive'}</div><div className="font-grotesk" style={{ fontSize: 13, fontWeight: 700, color: 'var(--gold-ink)' }}>{fmtINR(order.fiatAmount)}</div></div>
                 </div>
                 {order.utrNumber && <div style={{ fontSize: 10, color: 'var(--text3)', marginBottom: 8 }}>UTR: <span className="font-grotesk" style={{ color: 'var(--text2)' }}>{order.utrNumber}</span></div>}
-                {order.expiresAt && ['ASSIGNED', 'PROCESSING'].includes(order.status) && <div style={{ marginBottom: 8 }}><CountdownTimer expiresAt={order.expiresAt} /></div>}
+                {order.expiresAt && order.status === 'PROCESSING' && <div style={{ marginBottom: 8 }}><CountdownTimer expiresAt={order.expiresAt} /></div>}
                 {order.disputeUntil && (
                   <div style={{ marginBottom: 8 }}>
                     <DisputeWindowPanel order={{ ...order, orderId: order.orderId || order._id }} onDisputed={() => { void loadOrders(); }} />

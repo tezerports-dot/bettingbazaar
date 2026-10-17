@@ -32,7 +32,6 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = 'user' 
     if (type === 'order') {
       if (upperStatus === 'COMPLETED') return 'bg-green-500/20 text-green-500';
       if (upperStatus === 'PENDING_QUEUE') return 'bg-yellow-500/20 text-yellow-500';
-      if (upperStatus === 'ASSIGNED') return 'bg-blue-500/20 text-blue-500';
       if (upperStatus === 'PROCESSING') return 'bg-purple-500/20 text-purple-500';
       if (upperStatus === 'FAILED') return 'bg-red-500/20 text-red-500';
       if (upperStatus === 'CANCELLED') return 'bg-gray-500/20 text-gray-500';

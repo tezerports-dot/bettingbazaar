@@ -6,10 +6,12 @@ import { DateRangePicker } from '../../components/DateRangePicker';
 import { Kpis, Toolbar } from '../../components/design';
 import { Modal } from '../../components/Modal';
 import { usePagination } from '../../hooks/usePagination';
+import { useDebounce } from '../../hooks/useDebounce';
+import { Download } from 'lucide-react';
 import { formatters } from '../../utils/formatters';
 import { usePermissions } from '../../hooks/usePermission';
 import { useBoards } from '../../hooks/useBoards';
-import api from '../../services/api';
+import api, { type CycleHistoryFilters, type CycleHistoryTotal } from '../../services/api';
 import type { Cycle } from '../../types';
 import toast from 'react-hot-toast';
 
@@ -34,23 +36,38 @@ export const CycleHistory: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('ALL');
+  const [audienceFilter, setAudienceFilter] = useState<'ALL' | 'VIP' | 'GENERAL'>('ALL');
+  const [totals, setTotals] = useState<CycleHistoryTotal[]>([]);
+  const debouncedSearch = useDebounce(search.trim(), 400);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [selectedCycle, setSelectedCycle] = useState<Cycle | null>(null);
   /**
-   * Real against house volume per round whose betting has closed (owner,
+   * Real against phantom volume per round whose betting has closed (owner,
    * 2026-10-15): of what players were shown, how much was real money.
-   * `GET /api/admin/analytics/real-volume` (stats.realVolumeByCycle); house
+   * `GET /api/admin/analytics/real-volume` (stats.realVolumeByCycle); phantom
    * figures include the equalizer's top-up. A round still taking bets is on
    * Live Cycles, where its split is the main admin's alone.
    */
   const [volume, setVolume] = useState<any[]>([]);
-  // House volume is the phantom-agents area (canManagePhantomAgents), not
+  // Phantom volume is the phantom-agents area (canManagePhantomAgents), not
   // analytics: asked for only by an account that holds it, so an analytics-only
   // sub-admin is not sent a request the server refuses.
   const canSeePhantom = usePermissions().can('canManagePhantomAgents');
 
   const { page, limit, setPage } = usePagination();
+
+  /**
+   * Rounds older than the newest 1,440 of each board and profile, summed per
+   * IST day before they were removed (owner, 2026-10-17):
+   * `GET /api/admin/cycles/rollups` (cycleHistoryRetention.listRollups).
+   */
+  const [rollups, setRollups] = useState<{ keep: number; days: any[] }>({ keep: 0, days: [] });
+  useEffect(() => {
+    api.get<any>('/api/admin/cycles/rollups', { params: { type: typeFilter === 'ALL' ? undefined : typeFilter } })
+      .then((r) => { if (r.data?.success) setRollups({ keep: r.data.keep, days: r.data.days || [] }); })
+      .catch(() => { /* the panel simply does not render */ });
+  }, [typeFilter]);
 
   useEffect(() => {
     if (!canSeePhantom) return;
@@ -59,20 +76,35 @@ export const CycleHistory: React.FC = () => {
       .catch(() => { /* the panel simply does not render */ });
   }, [canSeePhantom]);
 
+  // Every filter on this screen is applied by the server (`cycleHistory`).
+  // The search box and the dates were once never sent, so they changed nothing.
+  const filters: CycleHistoryFilters = {
+    type: typeFilter === 'ALL' ? undefined : typeFilter,
+    audience: audienceFilter === 'ALL' ? undefined : audienceFilter,
+    search: debouncedSearch || undefined,
+    from: startDate || undefined,
+    to: endDate || undefined,
+  };
+  const filterKey = JSON.stringify(filters);
+
+  // A new filter starts from its first page.
+  useEffect(() => { setPage(1); }, [filterKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const loadCycles = useCallback(async () => {
     setIsLoading(true);
     try {
-      const response = await api.cycles.getHistory(page, limit, typeFilter === 'ALL' ? undefined : typeFilter);
+      const response = await api.cycles.getHistory(page, limit, JSON.parse(filterKey));
       if (response.success && response.data) {
         setCycles(response.data);
         setTotal(response.pagination?.total || 0);
+        setTotals(response.totals || []);
       }
     } catch {
       toast.error('Failed to load cycle history');
     } finally {
       setIsLoading(false);
     }
-  }, [page, limit, typeFilter]);
+  }, [page, limit, filterKey]);
 
   useEffect(() => { loadCycles(); }, [loadCycles]);
 
@@ -169,14 +201,25 @@ export const CycleHistory: React.FC = () => {
     },
   ];
 
-  const totalNetRevenue = cycles.reduce((sum, c) => sum + getNetRevenue(c), 0);
-  const totalPaidOut    = cycles.reduce((sum, c) => sum + (c.totalPaidOut || 0), 0);
+  // Totals of every matching cycle, from the server: summing `cycles` here
+  // once added up only the page on screen.
+  const totalNetRevenue = totals.reduce((sum, t) => sum + t.netProfit, 0);
+  const totalPaidOut    = totals.reduce((sum, t) => sum + t.paidOut, 0);
+  const cyclesOfBoard   = (key: string) => totals.filter((t) => t.type === key).reduce((n, t) => n + t.cycles, 0);
+
+  const downloadCsv = async () => {
+    try {
+      await api.cycles.downloadHistoryCsv(filters);
+    } catch {
+      toast.error('Export failed');
+    }
+  };
 
   const volumePanel = volume.length > 0 && (
     <div className="card">
-      <p className="text-sm font-semibold text-gray-300">Real vs house volume: recent closed rounds</p>
+      <p className="text-sm font-semibold text-gray-300">Real vs phantom volume: recent closed rounds</p>
       <p className="text-xs text-gray-500 mt-0.5 mb-3">
-        Players are shown real and house stakes together. House bets (manual, auto and the equalizer's top-up)
+        Players are shown real and phantom stakes together. Phantom bets (manual, auto and the equalizer's top-up)
         always lose and are never paid out; this is how much of each round was real money.
       </p>
       <div className="overflow-x-auto max-h-80 overflow-y-auto">
@@ -186,7 +229,7 @@ export const CycleHistory: React.FC = () => {
               <th className="py-1.5 pr-3 font-medium">Round</th>
               <th className="py-1.5 pr-3 font-medium text-right">Real (D / B)</th>
               <th className="py-1.5 pr-3 font-medium text-right">Players · bets</th>
-              <th className="py-1.5 pr-3 font-medium text-right">House (D / B)</th>
+              <th className="py-1.5 pr-3 font-medium text-right">Phantom (D / B)</th>
               <th className="py-1.5 pr-3 font-medium text-right">Shown total</th>
               <th className="py-1.5 font-medium text-right">Real share</th>
             </tr>
@@ -208,8 +251,8 @@ export const CycleHistory: React.FC = () => {
                 </td>
                 <td className="py-1.5 pr-3 text-right text-gray-300">{r.realBettors} · {r.realBets}</td>
                 <td className="py-1.5 pr-3 text-right text-gray-400">
-                  {formatters.currency(r.houseTotal)}
-                  <p className="text-[11px] text-gray-500">{formatters.currency(r.houseDelhi)} / {formatters.currency(r.houseBombay)} · {r.houseBets} bets</p>
+                  {formatters.currency(r.phantomTotal)}
+                  <p className="text-[11px] text-gray-500">{formatters.currency(r.phantomDelhi)} / {formatters.currency(r.phantomBombay)} · {r.phantomBets} bets</p>
                 </td>
                 <td className="py-1.5 pr-3 text-right text-gray-300">{formatters.currency(r.shownTotal)}</td>
                 <td className="py-1.5 text-right font-semibold text-gold-400">{r.realPercent == null ? '—' : `${r.realPercent}%`}</td>
@@ -228,7 +271,7 @@ export const CycleHistory: React.FC = () => {
         { label: 'Total Cycles', value: total },
         ...boards.map((b) => ({
           label: b.name,
-          value: cycles.filter((c) => c.type === b.key).length,
+          value: cyclesOfBoard(b.key),
           tone: metaOf(b.key).tone,
         })),
         { label: 'Total Paid Out', value: formatters.currency(totalPaidOut), tone: 'var(--warning)' },
@@ -245,8 +288,18 @@ export const CycleHistory: React.FC = () => {
           })),
         ]}
         search={{ value: search, onChange: setSearch, placeholder: 'Search cycle id…' }}
+        actions={[{ label: 'Download CSV', icon: Download, onClick: downloadCsv }]}
       />
-      <DateRangePicker filters="cycles" startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
+      <div className="flex flex-wrap items-center gap-3">
+        <Toolbar
+          tabs={(['ALL', 'VIP', 'GENERAL'] as const).map((a) => ({
+            label: a === 'ALL' ? 'All profiles' : a,
+            active: audienceFilter === a,
+            onClick: () => setAudienceFilter(a),
+          }))}
+        />
+        <DateRangePicker filters="cycles" startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
+      </div>
 
       {/* Revenue formula explanation */}
       <div className="bg-dark-800 border border-dark-600 rounded-lg p-4 text-sm">
@@ -261,6 +314,44 @@ export const CycleHistory: React.FC = () => {
       <div className="card">
         <DataTable data={cycles} columns={columns} currentPage={page} totalPages={Math.ceil(total / limit)} onPageChange={setPage} isLoading={isLoading} />
       </div>
+
+      {rollups.days.length > 0 && (
+        <div className="card">
+          <p className="text-sm font-semibold text-gray-300">Older rounds, summarised by day</p>
+          <p className="text-xs text-gray-500 mt-0.5 mb-3">
+            Each board keeps its newest {rollups.keep.toLocaleString('en-IN')} rounds per profile. Older finished rounds are
+            added up here by day and removed; their bets and the ledger are kept.
+          </p>
+          <div className="overflow-x-auto max-h-80 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-gray-500 text-left">
+                  <th className="py-1.5 pr-3 font-medium">Day</th>
+                  <th className="py-1.5 pr-3 font-medium">Board</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Rounds</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Delhi / Bombay wins</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Real staked</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Paid out</th>
+                  <th className="py-1.5 font-medium text-right">Net revenue</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rollups.days.map((d: any) => (
+                  <tr key={`${d.day}-${d.cycleType}-${d.audience}`} className="border-t border-dark-700">
+                    <td className="py-1.5 pr-3 text-gray-300">{d.day}</td>
+                    <td className="py-1.5 pr-3 text-gray-300">{boardName(d.cycleType)}{d.audience === 'GENERAL' ? ' · GENERAL' : ''}</td>
+                    <td className="py-1.5 pr-3 text-right text-gray-200">{d.rounds}{d.cancelled ? ` (${d.cancelled} cancelled)` : ''}</td>
+                    <td className="py-1.5 pr-3 text-right text-gray-300">{d.delhiWins} / {d.bombayWins}</td>
+                    <td className="py-1.5 pr-3 text-right text-gray-200">{formatters.currency(d.realStaked)}</td>
+                    <td className="py-1.5 pr-3 text-right text-gray-300">{formatters.currency(d.paidOut)}</td>
+                    <td className={`py-1.5 text-right font-semibold ${d.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>{formatters.currency(d.netProfit)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Cycle Detail Modal */}
       {selectedCycle && (

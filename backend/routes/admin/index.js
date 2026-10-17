@@ -38,13 +38,14 @@ import androidReleaseRoutes from '../../domains/distribution/androidRelease.admi
 import ipBlocksRoutes from './ipBlocks.admin.routes.js';
 import teamAdminRoutes from '../../domains/team/team.admin.routes.js';
 import merchantAccountAdminRoutes from '../../domains/merchant/merchantAccount.admin.routes.js';
-import { authenticate } from '../../domains/identity/auth.middleware.js';
+import { authenticateStaff } from '../../domains/identity/auth.middleware.js';
 
 const router = express.Router();
 
-// Defense-in-depth: every /api/admin sub-router is private by default.
-// Individual sub-routes still enforce admin/sub-admin permissions as needed.
-router.use(authenticate);
+// Every /api/admin sub-router is for STAFF accounts only (§33.5). A player's
+// or merchant's session is refused here, 403 WRONG_PANEL, before any route
+// asks for an area; sub-routes still ask for theirs.
+router.use(authenticateStaff);
 
 router.use('/', analyticsRoutes);
 router.use('/', usersRoutes);

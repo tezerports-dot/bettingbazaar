@@ -165,8 +165,8 @@ export const ResultCelebration: React.FC<{ cycleId?: string; result: { cycleId?:
       )}
       {outcome.kind === 'lost' && (
         <>
-          <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.16em', color: 'rgba(255,255,255,.7)', marginTop: 6 }}>NOT THIS ROUND</span>
-          <span className="font-grotesk" style={{ fontWeight: 800, fontSize: 22, color: 'rgba(255,255,255,.85)', fontVariantNumeric: 'tabular-nums' }}>Your ₹{fmt(outcome.amount)} bet did not win</span>
+          <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.16em', color: 'var(--red)', marginTop: 6 }}>YOU LOST</span>
+          <span className="font-grotesk" style={{ fontWeight: 800, fontSize: 34, color: 'var(--red)', fontVariantNumeric: 'tabular-nums' }}>−₹{fmt(outcome.amount)}</span>
         </>
       )}
     </div>

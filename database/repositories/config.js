@@ -243,6 +243,15 @@ function coerce(field, value, path) {
       if (field.minItems && nums.length < field.minItems) {
         throw invalidConfig(`config: '${path}' needs at least ${field.minItems} value${field.minItems === 1 ? '' : 's'}`);
       }
+      if (field.maxItems && nums.length > field.maxItems) {
+        throw invalidConfig(`config: '${path}' takes at most ${field.maxItems} values; got ${nums.length}`);
+      }
+      // Bounds on each value (`integer`, `min`, `max`), as a number field has.
+      for (const v of nums) {
+        if (field.integer && !Number.isInteger(v)) throw invalidConfig(`config: '${path}' takes whole numbers only; got ${v}`);
+        if (field.min !== undefined && field.min !== null && v < field.min) throw invalidConfig(`config: '${path}' values must be at least ${field.min}; got ${v}`);
+        if (field.max !== undefined && field.max !== null && v > field.max) throw invalidConfig(`config: '${path}' values must be at most ${field.max}; got ${v}`);
+      }
       return field.allowed ? field.allowed.filter((v) => nums.includes(v)) : nums;
     }
     default:

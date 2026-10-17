@@ -112,9 +112,10 @@ describePg('what a merchant is told about a player', () => {
     return bench[rail].shift();
   };
 
+  // Routing starts an order as it hands it out (no Accept, owner 2026-10-17):
+  // this only checks the order is the member's and started.
   const accept = async (merchant, orderId) => {
-    const res = await as(app, merchant).post(`/accept/${orderId}`).send({});
-    expect(res.status, res.body.message).toBe(200);
+    expect(await getOrderRecord(orderId)).toMatchObject({ status: 'PROCESSING', merchantId: String(merchant.merchantId) });
   };
 
   /** The player's own withdrawal, routed to `merchant` and accepted: PROCESSING. */

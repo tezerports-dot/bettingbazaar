@@ -14,7 +14,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 const { order, assigned, queue, toastMock } = vi.hoisted(() => ({
   order: { _id: 'o-1', orderId: 'ORD-1', type: 'DEPOSIT', status: 'PENDING_QUEUE', amount: 1000, tokenAmount: 1000, fiatAmount: 1000, currency: 'INR', paymentMode: 'CASH_ATM', createdAt: new Date().toISOString() },
-  assigned: { _id: 'o-2', orderId: 'ORD-2', type: 'WITHDRAWAL', status: 'ASSIGNED', amount: 2000, tokenAmount: 2000, fiatAmount: 2000, currency: 'INR', paymentMode: 'P2P_UPI', createdAt: new Date().toISOString() },
+  assigned: { _id: 'o-2', orderId: 'ORD-2', type: 'WITHDRAWAL', status: 'PROCESSING', canReassign: true, amount: 2000, tokenAmount: 2000, fiatAmount: 2000, currency: 'INR', paymentMode: 'P2P_UPI', createdAt: new Date().toISOString() },
   queue: {
     getPendingOrders: vi.fn(),
     getGroupedQueue: vi.fn(),
@@ -39,7 +39,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   queue.getPendingOrders.mockResolvedValue({ success: true, data: [order] });
   queue.getGroupedQueue.mockResolvedValue({
-    success: true, grouped: { pending: [order], assigned: [assigned] }, stats: { total: 2, pending: 1, assigned: 1 },
+    success: true, grouped: { pending: [order], processing: [assigned] }, stats: { total: 2, pending: 1, processing: 1 },
   });
 });
 
@@ -100,7 +100,7 @@ describe('Queue Manager routes orders instead of hand-picking a merchant', () =>
     await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith(message));
   });
 
-  it('an ASSIGNED order is offered Reassign (no merchant argument); other statuses are offered neither', async () => {
+  it('a started order the server says may change hands is offered Reassign (no merchant argument); other statuses are offered neither', async () => {
     as({ isAdmin: false, isQueueManager: true });
     queue.reassignOrder.mockResolvedValue({
       success: true, message: 'Order taken off its member. Nobody else is free yet; it stays queued and is offered again automatically.',

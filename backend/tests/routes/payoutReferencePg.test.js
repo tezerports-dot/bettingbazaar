@@ -120,10 +120,8 @@ describePg('the payout reference is the MERCHANT\'s, and it is claimed', () => {
     const { order } = await createWithdrawalOrder(p.userId, rupees);
     const orderId = order.orderId ?? order._id;
     const routed = await getOrderRecord(orderId);
-    expect(routed.status, 'the withdrawal was not routed to the member').toBe('ASSIGNED');
+    expect(routed.status, 'the withdrawal was not routed to the member').toBe('PROCESSING');
     expect(routed.merchantId).toBe(String(merchant.merchantId));
-    const accepted = await as(app, merchant).post(`/accept/${orderId}`).send({});
-    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     return { orderId, player: p };
   };
 
@@ -213,7 +211,6 @@ describePg('the payout reference is the MERCHANT\'s, and it is claimed', () => {
     const { order } = await createDepositOrder(p.userId, UPI_RUPEES);
     const orderId = order.orderId ?? order._id;
     expect((await getOrderRecord(orderId)).merchantId).toBe(String(m.merchantId));
-    expect((await as(app, m).post(`/accept/${orderId}`).send({})).status).toBe(200);
     const playersReference = utr();
     await markOrderPaid(p.userId, orderId, playersReference);
 

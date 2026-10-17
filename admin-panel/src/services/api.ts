@@ -174,7 +174,9 @@ export const auth = {
   },
 
   verifySession: async () => {
-    const res = await api.get<any>('/api/v1/auth/me');
+    // The staff-only restore: a player's or merchant's session is refused here
+    // (403 WRONG_PANEL) and ended, never shown the panel (§33.5).
+    const res = await api.get<any>('/api/admin/account/me');
     if (res.data?.success && res.data?.user) {
       return { success: true, data: { admin: res.data.user as Admin } };
     }
@@ -377,6 +379,41 @@ export const merchants = {
 
 // --- CYCLES ------------------------------------------------------------------
 
+/** Filters of Admin › Cycle History, each applied by the server. */
+export interface CycleHistoryFilters {
+  type?: string;
+  audience?: 'VIP' | 'GENERAL';
+  search?: string;
+  /** IST calendar days the round ended on, `YYYY-MM-DD`, both inclusive. */
+  from?: string;
+  to?: string;
+}
+/** One board and profile among the matching cycles (`cycleHistory` totals). */
+export interface CycleHistoryTotal {
+  type: string; audience: 'VIP' | 'GENERAL'; cycles: number; netProfit: number; paidOut: number;
+}
+
+/** Query params without the empty ones, so an unset filter is not sent as ''. */
+export const cleanParams = (o: object): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== ''));
+
+/**
+ * Download a CSV a route builds, under the name the server gives it
+ * (`Content-Disposition`), else `fallbackName`. Every table's "Download CSV"
+ * goes through here, so the file is always the server's rows, never a copy
+ * the screen assembled.
+ */
+export async function downloadCsv(path: string, params: Record<string, unknown>, fallbackName: string): Promise<void> {
+  const res = await api.get(path, { params, responseType: 'blob' });
+  const named = /filename="?([^";]+)"?/.exec(String(res.headers?.['content-disposition'] || ''))?.[1];
+  const url = URL.createObjectURL(new Blob([res.data as BlobPart], { type: 'text/csv' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = named || fallbackName;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export const cycles = {
   getActive: async () => {
     const res = await api.get<any>('/api/cycles/active');
@@ -386,14 +423,22 @@ export const cycles = {
     return res.data;
   },
 
-  getHistory: async (page = 1, limit = 50, type?: string) => {
-    const res = await api.get<any>('/api/admin/cycles/history', { params: { page, limit, type } });
-    // Backend returns { success, cycles, pagination }
+  /**
+   * Finished cycles (`GET /api/admin/cycles/history`): every filter is applied
+   * by the server, and `totals` covers every matching cycle, not the page.
+   */
+  getHistory: async (page = 1, limit = 50, filters: CycleHistoryFilters = {}) => {
+    const res = await api.get<any>('/api/admin/cycles/history', { params: { page, limit, ...cleanParams(filters) } });
+    // Backend returns { success, cycles, totals, pagination }
     if (res.data?.success && res.data?.cycles) {
-      return { success: true, data: res.data.cycles, pagination: res.data.pagination };
+      return { success: true, data: res.data.cycles, totals: res.data.totals as CycleHistoryTotal[], pagination: res.data.pagination };
     }
     return res.data;
   },
+
+  /** The same filtered rows as CSV (`GET /api/admin/cycles/history.csv`). */
+  downloadHistoryCsv: (filters: CycleHistoryFilters = {}) =>
+    downloadCsv('/api/admin/cycles/history.csv', cleanParams(filters), 'cycle-history.csv'),
 
   triggerEqualizer: async (cycleId: string) => {
     const res = await api.post(`/api/admin/cycles/${cycleId}/equalize`);
@@ -430,6 +475,11 @@ export const boards = {
   update: async (key: string, patch: Record<string, unknown>) =>
     (await api.put<any>(`/api/admin/boards/${encodeURIComponent(key)}`, patch)).data,
   setOrder: async (keys: string[]) => (await api.put<any>('/api/admin/boards/order', { keys })).data,
+  rtpFunds: async () => (await api.get<any>('/api/admin/rtp')).data,
+  saveRtp: async (game: string, audience: string, body: { enabled: boolean; ratePercent: number }) =>
+    (await api.put<any>(`/api/admin/rtp/${encodeURIComponent(game)}/${encodeURIComponent(audience)}`, body)).data,
+  rtpEntries: async (game: string, audience: string) =>
+    (await api.get<any>(`/api/admin/rtp/${encodeURIComponent(game)}/${encodeURIComponent(audience)}/entries`)).data,
 };
 
 // --- RULES POP-UP (owner, 2026-10-14) -------------------------------------------
@@ -441,9 +491,9 @@ export interface BoardRulesTextDraft {
   intro: string;
   sections: { title: string; body: string }[];
 }
-/** What players are shown: the text filled in, plus the house-bets line (renderBoardRules). */
+/** What players are shown: the text filled in, plus the phantom-bets line (renderBoardRules). */
 export interface BoardRulesPreview extends BoardRulesTextDraft {
-  houseBetsNotice?: string;
+  phantomBetsNotice?: string;
 }
 export const boardRules = {
   get: async () => (await api.get<any>('/api/admin/board-rules')).data,
@@ -521,8 +571,9 @@ export const queueManager = {
   },
 
   
-  // Take an ASSIGNED order off its member and offer it to the next one. No
-  // body: the server routes it, and its message says whether anybody took it.
+  // Take a started order off its member and offer it to the next one, only
+  // while nobody can have paid on it (`canReassign`). No body: the server
+  // routes it, and its message says whether anybody took it.
   reassignOrder: async (orderId: string) => {
     const res = await api.post(`/api/admin/payment-orders/${orderId}/reassign`);
     return res.data;

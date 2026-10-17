@@ -13,7 +13,7 @@
  *
  * The bet route's refusal before acceptance is in betPlaceRoutesPg.test.js.
  */
-import { houseBetsLabelOf } from '../../domains/markets/houseBets.js';
+import { phantomBetsLabelOf } from '../../domains/markets/phantomBets.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getSystemConfig } from '#db/repositories/config.js';
@@ -51,8 +51,8 @@ describePg('board rules and the GENERAL profile routes', () => {
     expect(text).toMatch(/may decide or cancel a round\. A cancelled round returns every stake/);
     const fee = (await getSystemConfig()).winningsFeePercent;
     expect(text).toContain(`${fee}%`);
-    // The house-bets line rides on every version, outside the admin's text.
-    expect(res.body.houseBetsNotice).toBe(houseBetsLabelOf(await getSystemConfig()));
+    // The phantom-bets line rides on every version, outside the admin's text.
+    expect(res.body.phantomBetsNotice).toBe(phantomBetsLabelOf(await getSystemConfig()));
   });
 
   it('records an acceptance of the current version only, and never moves it back', async () => {
@@ -103,7 +103,7 @@ describePg('board rules and the GENERAL profile routes', () => {
     expect(served.body.version).toBe(before + 1);
     expect(served.body.heading).toBe(DEFAULT_BOARD_RULES.heading);
     expect(served.body.sections.at(-1)).toEqual({ title: 'Responsible play', body: 'Set yourself a limit.' });
-    expect(served.body.houseBetsNotice).toBeTruthy();
+    expect(served.body.phantomBetsNotice).toBeTruthy();
     // Placeholders are filled from the live config, never served as braces.
     expect(JSON.stringify(served.body)).not.toMatch(/\{(winningsFeePercent|payoutMultiplier|backingSides)\}/);
 

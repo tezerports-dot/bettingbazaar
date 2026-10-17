@@ -34,21 +34,21 @@ import BonusPlayPrompt from '../redesign/BonusPlayPrompt';
 import { player } from '../services/api';
 import { getAssetUrl, getBackend } from '../services/backend.service';
 
+/** One level of the invite chain (referral.service.js `levels`), level 1 first. */
 interface LevelTotals {
+  level: number;
+  /** What a new joiner earns at this level now; 0 = off. */
+  reward: number;
   count: number; confirmed: number; disbursed: number; blocked: number;
 }
 interface Row {
-  level: 1 | 2; amount: number;
+  level: number; amount: number;
   status: 'PENDING' | 'DISBURSED' | 'BLOCKED';
   reason: string; disbursedAt: string | null;
 }
 interface Summary {
   referralCode: string;
-  rewardPerReferral: number;
-  /** What the second level earns per joiner now (referral.service.js `rewardLevel2`). */
-  rewardLevel2: number;
-  level1: LevelTotals;
-  level2: LevelTotals;
+  levels: LevelTotals[];
   totals: {
     referrals: number; confirmed: number; disbursed: number;
     nextDisbursal: number; blocked: number;
@@ -126,7 +126,7 @@ const ReferralPage: React.FC = () => {
 
   if (error) {
     return (
-      <ScreenShell icon="🎁" title="Refer & Earn" sub="Invite players, earn on two levels">
+      <ScreenShell icon="🎁" title="Refer & Earn" sub="Invite players and earn">
         <div style={{ ...card, borderColor: 'var(--red)', color: 'var(--red)', fontSize: 13 }} role="alert">{error}</div>
       </ScreenShell>
     );
@@ -134,7 +134,7 @@ const ReferralPage: React.FC = () => {
 
   if (!data) {
     return (
-      <ScreenShell icon="🎁" title="Refer & Earn" sub="Invite players, earn on two levels">
+      <ScreenShell icon="🎁" title="Refer & Earn" sub="Invite players and earn">
         <div style={{ ...card, textAlign: 'center', color: 'var(--text3)', fontSize: 13 }} aria-busy="true">Loading…</div>
       </ScreenShell>
     );
@@ -149,12 +149,18 @@ const ReferralPage: React.FC = () => {
     try { await navigator.share({ title: 'Refer & Earn', text: shareText, url: link }); } catch { /* dismissed */ }
   };
   const conversion = t.clicks > 0 ? Math.round((t.referrals / t.clicks) * 100) : null;
-  const levelMax = Math.max(1, data.level1.confirmed, data.level2.confirmed);
+  const levelMax = Math.max(1, ...data.levels.map((l) => l.confirmed));
+  const paying = data.levels.filter((l) => l.reward > 0);
+  const level1Reward = data.levels[0]?.reward ?? 0;
+  // The levels after the first that pay, for the hero line ("₹10 at level 2 · ₹5 at level 3").
+  const deeper = paying.filter((l) => l.level > 1);
+  const levelsSub = paying.length > 1 ? `Invite players, earn on ${paying.length} levels` : 'Invite players and earn';
+  const whoAt = (n: number) => (n === 1 ? 'people you invited' : n === 2 ? 'people they invited' : `${n - 1} steps further down`);
 
   const shareBtn: React.CSSProperties = { flex: '1 1 0', minWidth: 96, height: 44, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, textDecoration: 'none', fontWeight: 800, fontSize: 12.5, cursor: 'pointer', color: '#fff', background: 'rgba(255,255,255,.14)', border: '1px solid rgba(255,255,255,.28)', backdropFilter: 'blur(6px)' };
 
   return (
-    <ScreenShell icon="🎁" title="Refer & Earn" sub="Invite players, earn on two levels">
+    <ScreenShell icon="🎁" title="Refer & Earn" sub={levelsSub}>
       <BonusPlayPrompt />
 
       {/* ── Hero: the reward and the link ─────────────────────────────── */}
@@ -162,13 +168,13 @@ const ReferralPage: React.FC = () => {
         {banner && <img src={banner} alt="" aria-hidden style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />}
         <div aria-hidden style={{ position: 'absolute', inset: 0, background: banner ? 'linear-gradient(180deg, rgba(0,0,0,.15) 0%, rgba(0,0,0,.72) 70%)' : 'radial-gradient(circle at 88% 18%, rgba(255,255,255,.28) 0 60px, transparent 61px), radial-gradient(circle at 96% 70%, rgba(255,255,255,.14) 0 90px, transparent 91px), linear-gradient(180deg, rgba(0,0,0,0) 30%, rgba(0,0,0,.35) 100%)' }} />
         <div style={{ position: 'relative', padding: 'clamp(18px, 4vw, 30px)', color: '#fff' }}>
-          <div style={{ display: 'inline-block', padding: '4px 10px', borderRadius: 999, background: 'rgba(0,0,0,.28)', fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase' }}>Two levels of rewards</div>
+          <div style={{ display: 'inline-block', padding: '4px 10px', borderRadius: 999, background: 'rgba(0,0,0,.28)', fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase' }}>{paying.length > 1 ? `${paying.length} levels of rewards` : 'Invite and earn'}</div>
           <h2 className="font-grotesk" style={{ margin: '12px 0 6px', fontWeight: 700, fontSize: 'clamp(24px, 5vw, 36px)', lineHeight: 1.1, textShadow: '0 2px 12px rgba(0,0,0,.35)' }}>
-            Earn {inr(data.rewardPerReferral)} for every friend who joins
+            Earn {inr(level1Reward)} for every friend who joins
           </h2>
           <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6, opacity: 0.92, maxWidth: 560 }}>
-            {data.rewardLevel2 > 0
-              ? <>Plus {inr(data.rewardLevel2)} each time someone <em>they</em> invite joins. Rewards go to your General balance.</>
+            {deeper.length > 0
+              ? <>Plus {deeper.map((l) => `${inr(l.reward)} at level ${l.level}`).join(' · ')} when people further down your invite chain join. Rewards go to your General balance.</>
               : <>Rewards go to your General balance.</>}
           </p>
 
@@ -230,8 +236,8 @@ const ReferralPage: React.FC = () => {
           <ol style={{ listStyle: 'none', margin: '12px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
             {[
               { t: 'Share your link', d: 'Send it anywhere. It opens our sign-up bot with your code already attached, so your friend never types it.' },
-              { t: 'They continue with Telegram', d: `When they join you earn ${inr(data.rewardPerReferral)}.` },
-              { t: 'Their friends count too', d: data.rewardLevel2 > 0 ? `Each person they invite earns you ${inr(data.rewardLevel2)} more.` : 'Second-level rewards are switched off right now.' },
+              { t: 'They continue with Telegram', d: `When they join you earn ${inr(level1Reward)}.` },
+              { t: 'Their friends count too', d: deeper.length > 0 ? `People they invite earn you more: ${deeper.map((l) => `${inr(l.reward)} at level ${l.level}`).join(', ')}.` : 'Rewards for deeper levels are switched off right now.' },
             ].map((step, i) => (
               <li key={step.t} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                 <span className="font-grotesk" style={{ flex: 'none', width: 30, height: 30, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13, color: 'var(--on-gold)', background: 'var(--gold-metal)' }}>{i + 1}</span>
@@ -250,7 +256,7 @@ const ReferralPage: React.FC = () => {
         {/* ── Level split ─────────────────────────────────────────────── */}
         <section aria-label="Earnings by level" style={card}>
           <span style={capLabel}>Earnings by level</span>
-          {([['Level 1', 'people you invited', data.level1], ['Level 2', 'people they invited', data.level2]] as const).map(([label, who, lv]) => (
+          {data.levels.map((lv) => [`Level ${lv.level}`, whoAt(lv.level), lv] as const).map(([label, who, lv]) => (
             <div key={label} style={{ marginTop: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
                 <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>{label} <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)' }}>· {who}</span></span>

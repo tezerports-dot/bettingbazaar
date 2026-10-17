@@ -1,8 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * A merchant saying "the money never arrived" must say why, and show it.
+ * A merchant saying "the money never arrived" must say why.
  *
- * ── Why this route needed both, and had neither ─────────────────────────────
+ * ── Why this route needed a reason, and had none ────────────────────────────
  * `POST /api/merchant/orders/:id/reject` rejects an order the player has
  * already claimed to pay — it waits in REJECTED for the player's dispute window
  * (2c+) — and adds a warning to that player's account. It is the heaviest thing
@@ -19,31 +19,20 @@
  *
  * No screen called it either, which is why nothing had noticed.
  *
+ * A reason only, no proof image (owner, 2026-10-17): the dispute the player
+ * may raise is where evidence is weighed.
+ *
  * ── What is asserted ────────────────────────────────────────────────────────
- * That both halves are refused when missing, that a refusal moves NOTHING (no
- * cancellation, no warning), and that a proof staged against a different order
- * or a different merchant cannot be attached to this one.
+ * That a missing or throwaway reason is refused, that a refusal moves NOTHING
+ * (no cancellation, no warning), and that no proof is asked for or stored.
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
 import { getUser, setBlocked } from '#db/repositories/users.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
-
-// The S3 boundary, stubbed so the ROUTE's rules are what is under test — the
-// verification arguments it passes are asserted, which is the part that binds a
-// proof to one merchant and one order. Whether S3 stores bytes is cdn.service's
-// own concern and has its own coverage.
-const cdn = vi.hoisted(() => ({ verify: vi.fn() }));
-vi.mock('../../services/cdn.service.js', async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    default: { ...actual.default, verifyUploadedObject: cdn.verify },
-  };
-});
 
 describePg('merchant rejects a paid order', () => {
   let app;
@@ -68,12 +57,9 @@ describePg('merchant rejects a paid order', () => {
   };
 
   const REASON = 'No credit against UTR 123456789012 in my statement';
-  const good = { reason: REASON, proofFileKey: 'merchant-reject-proof/x.jpg', proofCdnUrl: 'https://cdn.test/x.jpg' };
+  const good = { reason: REASON };
 
-  beforeAll(() => { /* placeholder so the mock is registered before imports */ });
-
-  it('rejects with a reason and a verified proof', async () => {
-    cdn.verify.mockResolvedValue({ cdnUrl: 'https://cdn.test/x.jpg', fileKey: good.proofFileKey });
+  it('rejects with a reason alone', async () => {
     const merchant = await merchantActor({});
     const player = await actor({});
     const orderId = await paidOrder(merchant, player);
@@ -88,12 +74,11 @@ describePg('merchant rejects a paid order', () => {
     expect(row.disputeWindowUntil).toBeTruthy();
     // The merchant's own words, not a canned string.
     expect(row.rejectedReason).toBe(REASON);
-    // And the evidence, stored with it.
-    expect(row.rejectionProofUrl).toBe('https://cdn.test/x.jpg');
+    // No proof is asked for, and none is kept.
+    expect(row).not.toHaveProperty('rejectionProofUrl');
   });
 
   it('refuses a missing or throwaway reason, and moves nothing', async () => {
-    cdn.verify.mockResolvedValue({ cdnUrl: 'https://cdn.test/x.jpg' });
     const merchant = await merchantActor({});
     const player = await actor({});
 
@@ -108,55 +93,7 @@ describePg('merchant rejects a paid order', () => {
     expect(Number((await getUser(player.userId)).warningCount || 0)).toBe(0);
   });
 
-  it('refuses without proof, and moves nothing', async () => {
-    const merchant = await merchantActor({});
-    const player = await actor({});
-    const orderId = await paidOrder(merchant, player);
-
-    const res = await as(app, merchant).post(`/orders/${orderId}/reject`)
-      .send({ reason: REASON });
-
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/proof/i);
-    expect((await getOrderRecord(orderId)).status).toBe('PAID');
-    expect(Number((await getUser(player.userId)).warningCount || 0)).toBe(0);
-  });
-
-  it('binds the proof to THIS merchant and THIS order', async () => {
-    // Without these arguments a merchant could name a key staged against a
-    // different order, or somebody else's upload, and it would be stored as
-    // evidence here.
-    cdn.verify.mockResolvedValue({ cdnUrl: 'https://cdn.test/x.jpg' });
-    const merchant = await merchantActor({});
-    const player = await actor({});
-    const orderId = await paidOrder(merchant, player);
-
-    await as(app, merchant).post(`/orders/${orderId}/reject`).send(good);
-
-    expect(cdn.verify).toHaveBeenCalledWith(expect.objectContaining({
-      fileKey: good.proofFileKey,
-      expectedUserId: String(merchant.merchantId),
-      expectedOrderId: orderId,
-      expectedCategory: 'merchant-reject-proof',
-    }));
-  });
-
-  it('refuses a proof that does not verify, and moves nothing', async () => {
-    cdn.verify.mockRejectedValue(new Error('Uploaded object owner mismatch'));
-    const merchant = await merchantActor({});
-    const player = await actor({});
-    const orderId = await paidOrder(merchant, player);
-
-    const res = await as(app, merchant).post(`/orders/${orderId}/reject`).send(good);
-
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/owner mismatch/i);
-    expect((await getOrderRecord(orderId)).status).toBe('PAID');
-    expect(Number((await getUser(player.userId)).warningCount || 0)).toBe(0);
-  });
-
   it("refuses another merchant's order", async () => {
-    cdn.verify.mockResolvedValue({ cdnUrl: 'https://cdn.test/x.jpg' });
     const mine = await merchantActor({});
     const stranger = await merchantActor({});
     const player = await actor({});
@@ -171,7 +108,6 @@ describePg('merchant rejects a paid order', () => {
     // The transition is the gate. A merchant retrying a request that timed out
     // used to run the warning engine a second time and increment the count
     // again, so a network hiccup cost the player a warning.
-    cdn.verify.mockResolvedValue({ cdnUrl: 'https://cdn.test/x.jpg' });
     const merchant = await merchantActor({});
     const player = await actor({});
     const orderId = await paidOrder(merchant, player);
@@ -200,15 +136,14 @@ describePg('merchant rejects a paid order', () => {
    *
    * So: the warning and the flag still happen, because support needs to see
    * them. The block does not, from here, ever. It moved to an admin looking at
-   * the reason and the proof on GET /api/admin/users/flagged.
+   * the reason on GET /api/admin/users/flagged.
    *
    * The count is driven WELL past the default threshold of 3 on purpose. A test
    * that rejected twice would pass against the old code too.
    */
   describe('the block moved to an admin', () => {
     it('warns and flags without blocking, however far past the threshold', async () => {
-      cdn.verify.mockResolvedValue({ cdnUrl: 'https://cdn.test/x.jpg' });
-      const merchant = await merchantActor({});
+        const merchant = await merchantActor({});
       const player = await actor({});
 
       // Five, against a default `maxWarnings` of 3. The old code blocked on the
@@ -244,8 +179,7 @@ describePg('merchant rejects a paid order', () => {
       // A wrong fix — assigning FALSE instead of leaving it alone — would
       // silently UNBLOCK a player an admin had already acted on, which is worse
       // than the bug being fixed.
-      cdn.verify.mockResolvedValue({ cdnUrl: 'https://cdn.test/x.jpg' });
-      const merchant = await merchantActor({});
+        const merchant = await merchantActor({});
       const player = await actor({});
       await setBlocked(player.userId, { blocked: true, reason: 'Blocked by an admin earlier', actor: 'admin-1' });
 

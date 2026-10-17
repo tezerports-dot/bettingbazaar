@@ -128,7 +128,7 @@ describePg('Cross-domain money conservation', () => {
     return got;
   };
   // Assigned and never marked paid in this suite, so it completes from ASSIGNED.
-  const confirm = (o) => moveDepositMoney(o, { releaseUTR: async () => {}, requireState: 'ASSIGNED' });
+  const confirm = (o) => moveDepositMoney(o, { releaseUTR: async () => {}, requireState: 'PROCESSING' });
 
   // ── The full chain, books closed at every step ─────────────────────────────
   it('conserves every paise across pool funding → buy → bet → settle → sell', async () => {

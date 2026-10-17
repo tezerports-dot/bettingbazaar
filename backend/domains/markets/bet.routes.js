@@ -24,11 +24,10 @@ import { cycleSnapshotPublisher } from './cycleSnapshotPublisher.js';
 import { poolsHidden } from './cyclePublicView.js';
 // Pages the operator when a bet's stake cannot be conclusively refunded or
 // released — the one outcome no automated path can resolve on its own.
-import { sendAlert } from '../../services/alerting.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
 import { respondError } from '../../shared/httpError.js';
-import { AUTO_BET_STEPS_MAX, AUTO_BET_MIN_RUPEES, AUTO_BET_MAX_RUPEES } from './houseBets.js';
+import { AUTO_BET_STEPS_MAX, AUTO_BET_MIN_RUPEES, AUTO_BET_MAX_RUPEES } from './phantomBets.js';
 
 const router = express.Router();
 
@@ -118,7 +117,7 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
 
     // ── The player has read how the boards work ──────────────────────────────
     // Owner, 2026-10-08: players are told how a round is won and that the
-    // pools include house bets, and accept it, before they stake anything
+    // pools include phantom bets, and accept it, before they stake anything
     // (`domains/markets/boardRules.js`, the admin's current version). After the replay gate, so a retry of
     // a bet placed under an older acceptance still answers with that bet.
     if (!(await db.boardRules.acceptsCurrent(userId))) {
@@ -376,6 +375,14 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
         message: 'Your profile changed while this bet was being placed. Please try again.',
       });
     }
+    if (!stakeLock.ok && placed.reason === 'cycle_closed') {
+      // Betting closed between the check above and the write. Nothing moved.
+      return res.status(400).json({
+        success: false,
+        message: 'Betting closed for this cycle. Your balance was not touched.',
+        code: 'BETTING_CLOSED',
+      });
+    }
     if (!stakeLock.ok) {
       // Concurrent request won the race — our pre-computed split is now stale.
       return res.status(400).json({
@@ -412,81 +419,18 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
       });
     } catch (_) { /* SSE failure never blocks the bet response */ }
 
-    // ── Commit the bet against the cycle ─────────────────────────────────────
-    // Two shapes, chosen by FLAGS.DERIVED_CYCLE_POOLS.
+    // ── The round, for the broadcast ─────────────────────────────────────────
+    // Whether the round still takes bets was asked INSIDE the transaction that
+    // wrote this one (`bets.core.placeBet`, share-locked against every status
+    // change), so a bet that got this far is in the round and is counted when
+    // the winner is chosen. This read only supplies the house figures the
+    // public total adds to the real pools.
     //
-    // STORED (default): one atomic `findOneAndUpdate` both increments the pool
-    // and proves the cycle was still open (FIX-8a) — the increment IS the
-    // TOCTOU guard. Correct, but it makes every concurrent bet queue on this
-    // one document, which is the scaling ceiling in LATENCY.md.
-    //
-    // DERIVED: the pool is recomputed from the bets, so there is nothing to
-    // increment — and any write to the Cycle document would reintroduce exactly
-    // the contention this removes, including a no-op `$set`. The guard is
-    // therefore a READ (reads do not contend), which reopens the TOCTOU window
-    // the write had closed. It is closed again on the far side: the bet is
-    // already inserted, so we re-read the status and, if the cycle closed
-    // underneath us, take the same compensating path below.
-    //
-    // The compensation is safe against a settlement that ran in that window
-    // because the delete is conditional on the bet still being PENDING — if
-    // settlement already relabelled it WON/LOST, our delete matches nothing and
-    // we must not refund. See the conditional `claimed` delete below.
-    // The cycle must still be taking bets. A READ, not an increment: the pool
-    // totals are derived from the bets and nothing on this path writes them —
-    // a bet that also UPDATEd the cycle row would block against every other bet
-    // doing the same, which is a 40P01 deadlock on the hottest path here.
-    const cycleStillOpen = await db.markets.getAcceptingCycle(cycleId);
-    if (!cycleStillOpen) {
-      // Cycle closed between the pre-check and the commit. Return the stake.
-      //
-      // PENDING → REFUNDED, the stake back to the pockets it came from, and the
-      // ledger rows: ONE transaction, under the bet lock settlement also takes
-      // (`refundPlacedBet`). So either this refund or settlement owns the bet,
-      // never both, and a refund that fails leaves the bet PENDING with its
-      // stake behind it, for settlement to resolve. Nothing is stranded.
-      //
-      // It used to DELETE the bet and then refund in a second transaction whose
-      // failure was swallowed while the player was told "fully restored". The
-      // DELETE could never succeed (`bet_transitions` references the bet ON
-      // DELETE RESTRICT), so every late close answered 500 and paged an operator.
-      //
-      // Three outcomes:
-      //   ok                  → refunded (or already refunded by a replay)
-      //   invalid_transition  → settlement got there first; it owns the stake
-      //   a THROW             → unknown; page a human, tell the truth
-      let refund;
-      try {
-        refund = await betAuthority.refundPlacedBet({
-          betId: betTxBase, userId, slices: stakeSlices,
-          reason: `Bet refund — cycle closed during placement (₹${amount} on ${side})`,
-        });
-      } catch (refundErr) {
-        console.error(`Bet ${betTxBase} compensation unresolved:`, refundErr.message);
-        sendAlert('bet-compensation-unresolved',
-          'Could not return the stake of a bet whose cycle closed during placement', {
-            betId: betTxBase, userId: String(userId), cycleId, amount,
-            error: refundErr.message,
-          }).catch(() => { /* alerting must never mask the original failure */ });
-        return res.status(500).json({
-          success: false,
-          message: 'Betting closed while your bet was being placed and we could not confirm it. It stays in this cycle and will settle with it — check My Bets. Please do not retry.',
-        });
-      }
-
-      if (refund.ok) {
-        return res.status(400).json({
-          success: false,
-          message: 'Betting window just closed. Your balance has been fully restored.'
-        });
-      }
-
-      // Settlement won the race and owns this bet now. Do not touch the money.
-      return res.status(400).json({
-        success: false,
-        message: 'Betting window just closed while your bet was being placed. It was included in the cycle that just settled — check My Bets for the result.'
-      });
-    }
+    // It replaced a re-check here, after the commit, that asked the status but
+    // not the clock and refunded a bet whose round had closed meanwhile: a bet
+    // committed after `completeCycle` read the pools was accepted, settled, and
+    // never counted when the smaller side was chosen.
+    const cycleNow = await db.markets.getCycle(cycleId);
 
     // ── No separate transaction row ─────────────────────────────────────────
     // A second audit record of the same fact used to be written here, with its
@@ -508,8 +452,8 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
     const pools = await computeRealPools(cycleId).catch(() => null);
     const realD = pools ? pools.realDelhi : 0;
     const realB = pools ? pools.realBombay : 0;
-    const phantomD = cycleStillOpen.phantomDelhi || 0;
-    const phantomB = cycleStillOpen.phantomBombay || 0;
+    const phantomD = cycleNow?.phantomDelhi || 0;
+    const phantomB = cycleNow?.phantomBombay || 0;
     const updatedCycle = {
       realDelhi: realD,
       realBombay: realB,
@@ -542,7 +486,7 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
         cycleType:  cycle.type,
         totalDelhi,
         totalBombay,
-        poolsHidden: poolsHidden(cycleStillOpen),
+        poolsHidden: poolsHidden(cycleNow),
       });
 
       // ADMINS get the full real/phantom breakdown, per bet, on admin-room only
@@ -600,8 +544,8 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
 //   - Pool totals shown to regular users include phantom (combined) but hide the split
 // ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
-// Auto house bets (owner, 2026-10-15): a phantom agent's plan per board and
-// side, a list of sizes bet one a second until the equalizer (houseBets.js).
+// Auto phantom bets (owner, 2026-10-15): a phantom agent's plan per board and
+// side, a list of sizes bet one a second until the equalizer (phantomBets.js).
 //
 // GET /api/bet/phantom/auto  — { plans, limits }
 // PUT /api/bet/phantom/auto  — { boardKey, audience, side, amounts: [rupees…], enabled }

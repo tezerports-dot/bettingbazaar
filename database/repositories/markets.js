@@ -25,6 +25,8 @@
 import { pgQuery, withTransaction } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 import { PLAY_PROFILES } from './promo.js';
+import { recordRoundWithin } from './rtp.js';
+import { istDay } from '../../backend/shared/istDay.js';
 
 
 export const SIDES = Object.freeze(['DELHI', 'BOMBAY']);
@@ -46,7 +48,8 @@ const COLUMNS = `cycle_id, cycle_type, audience, start_time, end_time, status,
   phantom_delhi_paise, phantom_bombay_paise, phantom_balanced, phantom_bets_closed,
   winner, pending_result, is_paused, winner_determined_at, winner_determined_by,
   winner_confidence, is_settled, settled_at, total_paid_out_paise, net_profit_paise,
-  total_platform_fees_paise, winnings_fee_percent_used, created_at, updated_at`;
+  total_platform_fees_paise, winnings_fee_percent_used, house_bet_side, house_bet_paise,
+  created_at, updated_at`;
 
 /**
  * The same column list, qualified with a table alias.
@@ -87,6 +90,9 @@ function toCycle(r) {
     totalPlatformFees: paiseToRupees(num(r.total_platform_fees_paise)),
     winningsFeePercentUsed: r.winnings_fee_percent_used === null
       ? null : Number(r.winnings_fee_percent_used),
+    // The round's house bet (rtp.placeHouseBet): a real last bet, never a phantom one.
+    houseBetSide: r.house_bet_side ?? null,
+    houseBet: paiseToRupees(num(r.house_bet_paise)),
     createdAt: r.created_at, updatedAt: r.updated_at,
   };
 }
@@ -125,7 +131,10 @@ export async function placePhantomBet({ betId, userId, cycleId, side, amountRupe
 
   return withTransaction(async (client) => {
     const { rows: cycle } = await client.query(
-      `SELECT status, phantom_bets_closed FROM cycles WHERE cycle_id = $1 FOR UPDATE`,
+      `SELECT c.status, c.phantom_bets_closed,
+              clock_timestamp() >= c.end_time - make_interval(secs => b.equalizer_sec) AS past_equalizer
+         FROM cycles c JOIN boards b ON b.board_key = c.cycle_type
+        WHERE c.cycle_id = $1 FOR UPDATE OF c`,
       [String(cycleId)],
     );
     if (!cycle.length) return { ok: false, reason: 'CYCLE_NOT_FOUND' };
@@ -133,8 +142,10 @@ export async function placePhantomBet({ betId, userId, cycleId, side, amountRupe
       return { ok: false, reason: 'CYCLE_CLOSED', status: cycle[0].status };
     }
     // Checked under the lock, so an admin closing phantom betting cannot be
-    // raced by an agent's last bet.
-    if (cycle[0].phantom_bets_closed) return { ok: false, reason: 'PHANTOM_CLOSED' };
+    // raced by an agent's last bet. The clock as well as the flag: phantom
+    // betting stops at the board's equalizer offset even before the tick that
+    // balances the pools has run.
+    if (cycle[0].phantom_bets_closed || cycle[0].past_equalizer) return { ok: false, reason: 'PHANTOM_CLOSED' };
 
     const { rows: bet } = await client.query(
       `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status,
@@ -156,12 +167,12 @@ export async function placePhantomBet({ betId, userId, cycleId, side, amountRupe
   });
 }
 
-/** The bet id of an auto house bet: one per agent, side and second of the round. */
+/** The bet id of an auto phantom bet: one per agent, side and second of the round. */
 export const autoPhantomBetId = (cycleId, userId, side, second) =>
   `phauto_${cycleId}_${userId}_${side}_${second}`;
 
 /**
- * Place a tick's auto house bets on one cycle (owner, 2026-10-15): the rows
+ * Place a tick's auto phantom bets on one cycle (owner, 2026-10-15): the rows
  * and the cycle's phantom pools in ONE transaction, as `placePhantomBet` does,
  * under one lock of the cycle row for the whole batch rather than one per bet.
  *
@@ -182,12 +193,15 @@ export async function placeAutoPhantomBets({ cycleId, cycleType = null, bets }) 
   }
   return withTransaction(async (client) => {
     const { rows: cycle } = await client.query(
-      `SELECT status, phantom_bets_closed FROM cycles WHERE cycle_id = $1 FOR UPDATE`,
+      `SELECT c.status, c.phantom_bets_closed,
+              clock_timestamp() >= c.end_time - make_interval(secs => b.equalizer_sec) AS past_equalizer
+         FROM cycles c JOIN boards b ON b.board_key = c.cycle_type
+        WHERE c.cycle_id = $1 FOR UPDATE OF c`,
       [String(cycleId)],
     );
     if (!cycle.length) return { ok: false, reason: 'CYCLE_NOT_FOUND' };
     if (!['OPEN', 'MERGED'].includes(cycle[0].status)) return { ok: false, reason: 'CYCLE_CLOSED' };
-    if (cycle[0].phantom_bets_closed) return { ok: false, reason: 'PHANTOM_CLOSED' };
+    if (cycle[0].phantom_bets_closed || cycle[0].past_equalizer) return { ok: false, reason: 'PHANTOM_CLOSED' };
 
     const { rows: placed } = await client.query(
       `INSERT INTO bets (bet_id, user_id, cycle_id, side, stake_paise, status,
@@ -226,36 +240,6 @@ export async function placeAutoPhantomBets({ cycleId, cycleType = null, bets }) 
     };
   });
 }
-
-/**
- * This cycle, but only if it is still taking bets.
- *
- * A READ, deliberately, and not the gate. The document version made it an
- * `$inc` on the pool totals with the status in the filter, so the "is it still
- * open" question and the pool update were one atomic act. That cannot be done
- * here and must not be: a bet holds `FOR SHARE` on the cycle row, so a bet that
- * also UPDATEd it would block against every other bet doing the same — 40P01,
- * on the hottest path on the platform. The pools are derived from the bets
- * instead, so there is nothing to increment.
- *
- * What settles the race is the BET insert, which carries the stake movement in
- * its own transaction. A cycle that closes between this read and that insert
- * costs at most one bet accepted a moment late — and the settlement pays from
- * the bet rows, so a late bet is paid or refunded like any other rather than
- * being lost.
- *
- * MERGED is accepted alongside OPEN: a merged cycle is still live, it has
- * simply been folded into a longer round.
- */
-export async function getAcceptingCycle(cycleId) {
-  const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM cycles
-      WHERE cycle_id = $1 AND status IN ('OPEN', 'MERGED')`,
-    [String(cycleId)], 'cycle_get_accepting',
-  );
-  return toCycle(rows[0]);
-}
-
 
 /**
  * Every cycle still running, across all types — the public "what can I bet on"
@@ -418,36 +402,82 @@ export async function setCycleStatus(cycleId, to, { from = [] } = {}) {
   return rows[0] ? { ok: true, cycle: toCycle(rows[0]) } : { ok: false, reason: 'NOT_IN_EXPECTED_STATE' };
 }
 
+/** How many rows one CSV export of the admin's cycle history may carry. */
+export const CYCLE_HISTORY_EXPORT_MAX = 20_000;
+
 /**
- * Finished cycles, a page at a time, with the count of everything that matched.
+ * Finished cycles, a page at a time, with the totals of everything that matched.
  *
- * `COUNT(*) OVER ()` so the page and its total describe one instant. The two
+ * Filters: board (`cycleType`), profile (`audience`), part of the cycle id
+ * (`search`) and the IST calendar days the round ended on (`from`, `to`, both
+ * inclusive). The page, its count and its totals come from ONE statement, so
+ * the figures above the table describe the same rows as the table: the two
  * concurrent reads this replaced could report 51 cycles across 2 pages while
- * the page in front of the admin held rows from a third.
+ * the page in front of the admin held rows from a third, and the totals cards
+ * once added up only the page on screen.
+ *
+ * `totals` is one entry per board and profile among the matches (count, net
+ * profit and net paid out, in rupees); `exportAll` returns every match up to
+ * CYCLE_HISTORY_EXPORT_MAX instead of a page, for the CSV.
  */
-export async function cycleHistory({ cycleType = null, audience = null, page = 1, limit = 50 } = {}) {
+export async function cycleHistory({
+  cycleType = null, audience = null, search = null, from = null, to = null,
+  page = 1, limit = 50, exportAll = false,
+} = {}) {
   const params = [['RESULT_DECLARED', 'COMPLETED', 'CANCELLED']];
   const where = ['c.status = ANY($1::text[])'];
   if (cycleType) { params.push(String(cycleType)); where.push(`c.cycle_type = $${params.length}`); }
   if (audience) { params.push(audienceOf(audience)); where.push(`c.audience = $${params.length}`); }
+  const needle = search == null ? '' : String(search).trim();
+  if (needle) {
+    params.push(`%${needle.replace(/[\\%_]/g, (m) => `\\${m}`)}%`);
+    where.push(`c.cycle_id ILIKE $${params.length}`);
+  }
+  const fromDay = istDay(from, 'from');
+  const toDay = istDay(to, 'to');
+  if (fromDay) { params.push(fromDay); where.push(`c.end_time >= ($${params.length}::date)::timestamp AT TIME ZONE 'Asia/Kolkata'`); }
+  if (toDay) { params.push(toDay); where.push(`c.end_time < ($${params.length}::date + 1)::timestamp AT TIME ZONE 'Asia/Kolkata'`); }
 
-  const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
-  const wanted = Math.max(Number(page) || 1, 1);
+  const size = exportAll ? CYCLE_HISTORY_EXPORT_MAX : Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const wanted = exportAll ? 1 : Math.max(Number(page) || 1, 1);
   params.push(size, (wanted - 1) * size);
 
+  // `t` always yields one row, so the totals arrive even for a page past the
+  // end; the page's own columns are then NULL and dropped below.
   const { rows } = await pgQuery(
-    `SELECT ${qualified('c')},
-            p.real_delhi_paise, p.real_bombay_paise, p.delhi_bets, p.bombay_bets,
-            COUNT(*) OVER () AS total_matching
-       FROM cycles c ${POOL_JOIN}
-      WHERE ${where.join(' AND ')}
-      ORDER BY c.end_time DESC
-      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    `WITH f AS MATERIALIZED (
+       SELECT c.cycle_id, c.cycle_type, c.audience, c.end_time,
+              c.net_profit_paise, c.total_paid_out_paise
+         FROM cycles c
+        WHERE ${where.join(' AND ')}
+     ), t AS (
+       SELECT COALESCE(json_agg(x), '[]'::json) AS totals
+         FROM (SELECT cycle_type AS type, audience, COUNT(*)::int AS cycles,
+                      COALESCE(SUM(net_profit_paise), 0)::text AS net_profit_paise,
+                      COALESCE(SUM(total_paid_out_paise), 0)::text AS paid_out_paise
+                 FROM f GROUP BY cycle_type, audience) x
+     )
+     SELECT t.totals, pg.*
+       FROM t
+       LEFT JOIN LATERAL (
+         SELECT ${qualified('c')},
+                p.real_delhi_paise, p.real_bombay_paise, p.delhi_bets, p.bombay_bets
+           FROM f JOIN cycles c USING (cycle_id) ${POOL_JOIN}
+          ORDER BY c.end_time DESC, c.cycle_id DESC
+          LIMIT $${params.length - 1} OFFSET $${params.length}
+       ) pg ON TRUE
+      ORDER BY pg.end_time DESC NULLS LAST, pg.cycle_id DESC`,
     params, 'cycle_history',
   );
-  const total = rows.length ? Number(rows[0].total_matching) : 0;
+  const totals = (rows[0]?.totals || []).map((x) => ({
+    type: x.type, audience: x.audience, cycles: Number(x.cycles),
+    netProfit: paiseToRupees(num(x.net_profit_paise)),
+    paidOut: paiseToRupees(num(x.paid_out_paise)),
+  }));
+  const total = totals.reduce((n, x) => n + x.cycles, 0);
   return {
-    cycles: rows.map(withPools),
+    cycles: rows.filter((r) => r.cycle_id != null).map(withPools),
+    totals,
     total, page: wanted, limit: size,
     pages: Math.max(Math.ceil(total / size), 1),
   };
@@ -544,7 +574,7 @@ export async function declareWinner(cycleId, winner, { by = 'engine', confidence
  * figures live on the row, because nothing concurrent writes them.
  *
  * PHANTOM bets are excluded, and this is the whole point of the word REAL:
- * phantom stakes are house figures that move the displayed total without
+ * phantom stakes are figures that move the displayed total without
  * anybody having staked anything. Counting them here would inflate the pool a
  * winner is paid a share of, and decide the winning side — which is the
  * MINORITY real-bet side — from numbers nobody bet.
@@ -667,19 +697,24 @@ export async function releaseSettlementClaim(cycleId) {
  * correct. Guarded on `NOT is_settled` so a replay writes nothing.
  */
 export async function markSettled(cycleId, { paidOutRupees, netProfitRupees, platformFeesRupees, feePercentUsed }) {
-  const { rows } = await pgQuery(
-    `UPDATE cycles SET
-       is_settled = TRUE, settled_at = now(),
-       total_paid_out_paise = $2, net_profit_paise = $3,
-       total_platform_fees_paise = $4, winnings_fee_percent_used = $5,
-       updated_at = now()
-      WHERE cycle_id = $1 AND NOT is_settled AND winner IS NOT NULL
-      RETURNING ${COLUMNS}`,
-    [String(cycleId), rupeesToPaise(paidOutRupees || 0), rupeesToPaise(netProfitRupees || 0),
-      rupeesToPaise(platformFeesRupees || 0), feePercentUsed ?? null],
-    'cycle_mark_settled',
-  );
-  return rows[0] ? { ok: true, cycle: toCycle(rows[0]) } : { ok: false, reason: 'ALREADY_SETTLED_OR_NO_WINNER' };
+  // The round's RTP fund entry in the same transaction (rtp.recordRoundWithin),
+  // so a round is counted in its fund exactly when it is marked settled.
+  return withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `UPDATE cycles SET
+         is_settled = TRUE, settled_at = now(),
+         total_paid_out_paise = $2, net_profit_paise = $3,
+         total_platform_fees_paise = $4, winnings_fee_percent_used = $5,
+         updated_at = now()
+        WHERE cycle_id = $1 AND NOT is_settled AND winner IS NOT NULL
+        RETURNING ${COLUMNS}`,
+      [String(cycleId), rupeesToPaise(paidOutRupees || 0), rupeesToPaise(netProfitRupees || 0),
+        rupeesToPaise(platformFeesRupees || 0), feePercentUsed ?? null],
+    );
+    if (!rows[0]) return { ok: false, reason: 'ALREADY_SETTLED_OR_NO_WINNER' };
+    const rtpEntry = await recordRoundWithin(client, cycleId);
+    return { ok: true, cycle: toCycle(rows[0]), rtpEntry };
+  });
 }
 
 /** Phantom liquidity. Admin-set, and the only pool figures stored on the row. */
@@ -781,21 +816,31 @@ export async function cancelCycle(cycleId, { by = null } = {}) {
  *
  * Refuses a settled or declared cycle: moving the displayed pool after the
  * result is out changes what players were shown about a round that is over.
+ *
+ * It also CLOSES phantom betting, in the same statement, and runs once: from
+ * here on `placePhantomBet` and `placeAutoPhantomBets` refuse the round
+ * (`PHANTOM_CLOSED`, checked under the same row lock). It used to level the
+ * pools and leave phantom betting open, so manual phantom bets kept arriving
+ * after the equalizer and every tick levelled them again: the pools players
+ * watched kept moving until the round closed.
+ *
+ * @returns {ok:true, cycle} | {ok:false, reason:'NOT_FOUND'|'ALREADY_DECLARED'|'PHANTOM_CLOSED'}
  */
 export async function equalizePhantomPools(cycleId) {
   const { rows } = await pgQuery(
     `UPDATE cycles SET
        phantom_delhi_paise  = GREATEST(phantom_delhi_paise, phantom_bombay_paise),
        phantom_bombay_paise = GREATEST(phantom_delhi_paise, phantom_bombay_paise),
-       phantom_balanced = TRUE, updated_at = now()
-      WHERE cycle_id = $1 AND NOT is_settled AND winner IS NULL
+       phantom_balanced = TRUE, phantom_bets_closed = TRUE, updated_at = now()
+      WHERE cycle_id = $1 AND NOT is_settled AND winner IS NULL AND NOT phantom_bets_closed
       RETURNING ${COLUMNS}`,
     [String(cycleId)], 'cycle_equalize_phantom',
   );
   if (!rows[0]) {
     const current = await getCycle(cycleId);
     if (!current) return { ok: false, reason: 'NOT_FOUND' };
-    return { ok: false, reason: 'ALREADY_DECLARED', winner: current.winner };
+    if (current.winner) return { ok: false, reason: 'ALREADY_DECLARED', winner: current.winner };
+    return { ok: false, reason: 'PHANTOM_CLOSED' };
   }
   // The pools the admin actually needs to see are the totals, and the real half
   // of those comes from the bets — so it is read after the write, not carried

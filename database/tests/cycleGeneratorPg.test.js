@@ -22,7 +22,7 @@ import { applyDeltaPaise } from '../repositories/wallets.core.js';
 // A fixture's tokens come from somewhere too: the platform's own holding,
 // posted with the credit (see `_funding.js`).
 import { TEST_FUNDING } from './_funding.js';
-import { getCycle, currentCycleWithPools, equalizePhantomPools, setCycleStatus } from '../repositories/markets.js';
+import { getCycle, currentCycleWithPools, equalizePhantomPools, setCycleStatus, placePhantomBet } from '../repositories/markets.js';
 import CycleGenerator from '../../backend/domains/markets/cycleGenerator.service.js';
 
 const hasPg = pgConfigured();
@@ -232,7 +232,7 @@ describePg('the cycle generator', () => {
   // Owner, 2026-10-08: blind from the merge until the result. Once the house
   // pools are balanced the two totals differ by real money alone, so the
   // smaller side IS the winner while blind betting is still open.
-  it('sends the total alone once the house pools are balanced, merged or not', async () => {
+  it('sends the total alone once the phantom pools are balanced, merged or not', async () => {
     await fund('u1', 300_00, 'f1');
     await openCycle('c-blind', { phantomDelhi: 500_00, phantomBombay: 400_00 });
     await bet('b1', 'u1', 'c-blind', 'DELHI',  200_00);
@@ -264,4 +264,114 @@ describePg('the cycle generator', () => {
     expect(backwards.ok).toBe(false);
     expect((await getCycle('c-phase')).status).toBe('CLOSED');
   });
+
+  // ── Phantom betting stops at the equalizer (owner, 2026-10-17) ──────────────
+  // The equalizer levelled the phantom pools but never closed phantom betting, so
+  // manual phantom bets kept arriving after it and every tick levelled them
+  // again: the pools players watched kept moving until the round closed.
+  describe('the equalizer', () => {
+    const house = (betId, cycleId, side, rupees) =>
+      placePhantomBet({ betId, userId: 'agent', cycleId, side, amountRupees: rupees, cycleType: '30_MIN' });
+
+    it('levels the phantom pools once and closes phantom betting', async () => {
+      await openCycle('c-eq', { phantomDelhi: 500_00, phantomBombay: 400_00 });
+      expect((await equalizePhantomPools('c-eq')).ok).toBe(true);
+
+      const late = await house('ph-late', 'c-eq', 'DELHI', 50);
+      expect(late).toMatchObject({ ok: false, reason: 'PHANTOM_CLOSED' });
+      // A second pass (another tick, or the admin's button) changes nothing.
+      expect(await equalizePhantomPools('c-eq')).toMatchObject({ ok: false, reason: 'PHANTOM_CLOSED' });
+      const c = await getCycle('c-eq');
+      expect([c.phantomDelhi, c.phantomBombay, c.phantomBetsClosed]).toEqual([500, 500, true]);
+      const { rows } = await pgQuery(`SELECT COUNT(*)::int AS n FROM bets WHERE cycle_id = 'c-eq'`, []);
+      expect(rows[0].n).toBe(0);
+    });
+
+    it('refuses a phantom bet once the clock passes the equalizer, before any tick has run', async () => {
+      // 30_MIN equalizes 120 s before the end; this round ends in 60 s.
+      await pgQuery(
+        `INSERT INTO cycles (cycle_id, cycle_type, status, start_time, end_time)
+         VALUES ('c-clock', '30_MIN', 'OPEN', now() - interval '29 minutes', now() + interval '60 seconds')`, [],
+      );
+      expect(await house('ph-clock', 'c-clock', 'DELHI', 50)).toMatchObject({ ok: false, reason: 'PHANTOM_CLOSED' });
+    });
+
+    it('still takes a phantom bet before the equalizer', async () => {
+      await openCycle('c-early');   // ends in 15 minutes
+      expect((await house('ph-early', 'c-early', 'DELHI', 50)).ok).toBe(true);
+      expect((await getCycle('c-early')).phantomDelhi).toBe(50);
+    });
+  });
+
+  // ── A bet the round accepts is counted (owner, 2026-10-17) ────────────────
+  // A tick that skipped CLOSED left the round OPEN into its completion, and a
+  // bet committing between the pool read and the declaration was accepted,
+  // settled, and never counted when the smaller side was chosen.
+  describe('closing before the result', () => {
+    it('closes a round the ticks left OPEN, then refuses the next bet in the writer', async () => {
+      await fund('u1', 300_00, 'f1');
+      await openCycle('c-skip', { endedMinutesAgo: 1 });
+      await bet('b1', 'u1', 'c-skip', 'DELHI', 100_00);
+
+      await generator().completeCycle(await currentCycleWithPools('30_MIN', 'VIP'));
+      expect((await getCycle('c-skip')).winner).toBe('BOMBAY');
+
+      const late = await bet('b-late', 'u1', 'c-skip', 'BOMBAY', 200_00);
+      expect(late).toMatchObject({ ok: false, reason: 'cycle_closed' });
+      const { rows } = await pgQuery(`SELECT bet_id FROM bets WHERE cycle_id = 'c-skip' ORDER BY bet_id`, []);
+      expect(rows.map((r) => r.bet_id)).toEqual(['b1']);
+      expect((await getBalancesOf('u1')).lockedBalance).toBe(100_00);
+    });
+
+    it('waits for a bet still being written, and counts it when choosing the winner', async () => {
+      await fund('u1', 100_00, 'f1');
+      await fund('u2', 50_00, 'f2');
+      await fund('u3', 200_00, 'f3');
+      await openCycle('c-race', { endedMinutesAgo: 1 });
+      await bet('b-d', 'u1', 'c-race', 'DELHI', 100_00);
+      await bet('b-b', 'u2', 'c-race', 'BOMBAY', 50_00);
+      // Without the slow bet BOMBAY (50) is the smaller side; with it, DELHI.
+      // The phantom pools are already balanced, so only the close can wait.
+      await equalizePhantomPools('c-race');
+
+      // The slow bet stalls inside its transaction, after it took its share
+      // lock on the round and wrote its row.
+      await pgQuery(`
+        CREATE OR REPLACE FUNCTION rt_slow_bet() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.bet_id = 'b-slow' THEN PERFORM pg_sleep(1); END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`, []);
+      await pgQuery(`DROP TRIGGER IF EXISTS rt_slow_bet ON bet_transitions`, []);
+      await pgQuery(`CREATE TRIGGER rt_slow_bet BEFORE INSERT ON bet_transitions
+                      FOR EACH ROW EXECUTE FUNCTION rt_slow_bet()`, []);
+      try {
+        const slow = bet('b-slow', 'u3', 'c-race', 'BOMBAY', 200_00);
+        await waitFor(async () => {
+          const { rows } = await pgQuery(
+            `SELECT COUNT(*)::int AS n FROM pg_stat_activity WHERE wait_event = 'PgSleep'`, []);
+          return rows[0].n > 0;
+        });
+        await generator().completeCycle(await currentCycleWithPools('30_MIN', 'VIP'));
+        expect((await slow).ok).toBe(true);
+      } finally {
+        await pgQuery(`DROP TRIGGER IF EXISTS rt_slow_bet ON bet_transitions`, []);
+      }
+
+      expect((await getCycle('c-race')).winner).toBe('DELHI');
+    });
+  });
 });
+
+async function waitFor(check, { tries = 100, everyMs = 20 } = {}) {
+  for (let i = 0; i < tries; i += 1) {
+    if (await check()) return;
+    await new Promise((r) => setTimeout(r, everyMs));
+  }
+  throw new Error('waitFor: condition never held');
+}
+
+async function getBalancesOf(userId) {
+  const { rows } = await pgQuery(`SELECT locked_paise FROM wallets WHERE user_id = $1`, [userId]);
+  return { lockedBalance: Number(rows[0]?.locked_paise ?? 0) };
+}

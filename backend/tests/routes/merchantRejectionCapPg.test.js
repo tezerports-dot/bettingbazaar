@@ -108,24 +108,19 @@ describePg('a merchant who keeps refusing', () => {
     return { orderId, who, routed };
   };
 
-  /** An ASSIGNED buy this member can decline — routed to them. */
-  const assigned = async (m, owner = null) => {
-    const b = await queuedBuy(m, owner);
-    expect(b.routed, `the buy was not routed to ${m.merchantId}`).toBe(true);
-    expect((await getOrderRecord(b.orderId)).merchantId).toBe(String(m.merchantId));
-    return b;
-  };
-
   /**
-   * An ASSIGNED **sell** this member is expected to pay out — through the
-   * player's own admission, which locks the stake and routes it.
+   * A started **sell** this member is expected to pay out — through the
+   * player's own admission, which locks the stake and routes it. It is also
+   * what a member DECLINES here: routing starts an order as it hands it out
+   * (owner, 2026-10-17), and a started bank buy shows the player where to pay
+   * at once, so it can no longer be declined; a sell can, until it is paid.
    *
    * The direction matters to the cap now: a sell that lapses is the merchant
    * failing to pay the player, which is theirs; a buy that lapses is the player
    * failing to pay, which is not.
    */
-  const assignedSell = async (m) => {
-    const who = await player();
+  const assignedSell = async (m, owner = null) => {
+    const who = owner || await player();
     await updateUser(who.userId, {
       bankDetails: {
         accountNumber: '000111222333', ifscCode: 'HDFC0000001',
@@ -139,10 +134,11 @@ describePg('a merchant who keeps refusing', () => {
     const { order } = await createWithdrawalOrder(who.userId, TOKENS);
     const orderId = order.orderId ?? order._id;
     const row = await getOrderRecord(orderId);
-    expect(row.state, 'the sell was not routed').toBe('ASSIGNED');
+    expect(row.state, 'the sell was not routed').toBe('PROCESSING');
     expect(row.merchantId).toBe(String(m.merchantId));
     return { orderId, who };
   };
+  const assigned = assignedSell;
 
   const reject = (m, orderId, reason = 'Cannot serve this right now') =>
     as(app, m).post(`/reject/${orderId}`).send({ reason });
@@ -204,7 +200,8 @@ describePg('a merchant who keeps refusing', () => {
       expect((await getMerchant(m.merchantId)).consecutiveRejections).toBe(2);
 
       // A buy they DO serve: routed, paid by the player, confirmed.
-      const served = await assigned(m);
+      const served = await queuedBuy(m);
+      expect(served.routed, 'the buy was not routed to them').toBe(true);
       const utr = String(530000000000 + (seq * 7919) + Math.floor(Math.random() * 7000));
       await readyToPay(served.orderId);
       expect((await markOrderPaid(served.who.userId, served.orderId, utr)).status).toBe('PAID');
@@ -342,8 +339,8 @@ describePg('a merchant who keeps refusing', () => {
 
     it('bars that merchant from the same PLAYER\'s other orders too', async () => {
       // The order they refused is not the only one they should stop seeing.
-      // The player holds one open buy at a time, so they cancel the declined
-      // one (it is back in the queue) before buying again.
+      // The player cancels the declined sell (it is back in the queue), and
+      // their next order, a buy, is not offered to that member either.
       const m = await member();
       const who = await player();
       const first = await assigned(m, who);

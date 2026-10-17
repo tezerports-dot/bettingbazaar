@@ -36,6 +36,9 @@
  * Top-level fields a merchant may see. Anything absent here does not reach
  * them, whatever `toOrder` maps or `order_states` grows.
  */
+import { toCsv } from '../reporting/csv.util.js';
+import { mayChangeHands } from '#db/repositories/orders.record.js';
+
 export const MERCHANT_ORDER_FIELDS = Object.freeze([
   // Identity and routing.
   'orderId', '_id', 'id', 'userId', 'merchantId',
@@ -61,7 +64,7 @@ export const MERCHANT_ORDER_FIELDS = Object.freeze([
   // for this and the panel must read that name — it read `rejectionReason`,
   // which no responder has ever sent, so every rejection rendered its generic
   // fallback and the merchant never saw the reason.
-  'rejectedReason', 'rejectionProofUrl', 'cancelReason',
+  'rejectedReason', 'cancelReason',
 
   // The dispute, from the side the merchant is a party to.
   'disputeReason', 'disputeRaisedAt', 'disputeRaisedBy',
@@ -96,6 +99,10 @@ export const MERCHANT_ORDER_FIELDS = Object.freeze([
   'paidAt', 'completedAt', 'expiresAt',
 
   'createdAt', 'updatedAt',
+
+  // Whether the member may still decline it (`mayChangeHands`): derived below,
+  // so the panel keeps no copy of the rule.
+  'canDecline',
 ]);
 
 /**
@@ -157,11 +164,59 @@ export function toMerchantOrderView(order) {
     if (bank) view.userBankDetails = bank;
   }
 
+  // Orders start with no accept (owner, 2026-10-17); a started one may go back
+  // to the queue only while nobody can have paid on it.
+  view.canDecline = mayChangeHands({ ...plain, type });
+
   return view;
 }
 
 export function toMerchantOrderViews(orders) {
   return (orders || []).map((order) => toMerchantOrderView(order));
+}
+
+/**
+ * One row of the merchant's order report (owner, 2026-10-16;
+ * `merchantReports.orderReport`). An allowlist like the order view (§24.1):
+ * the order, the player's id (already in `MERCHANT_ORDER_FIELDS`), the
+ * reference, the amount in tokens, the ✓/✗ and who pressed it. `actedBy.name`
+ * is a sub-member's name, or `selfLabel` for the merchant's own press.
+ */
+export const MERCHANT_REPORT_FIELDS = Object.freeze([
+  'orderId', 'type', 'userId', 'utr', 'tokenAmount', 'state', 'result', 'actedBy', 'at',
+]);
+
+export function toMerchantReportRows(rows, { selfLabel = 'You' } = {}) {
+  return (rows || []).map((row) => {
+    const plain = {
+      ...row,
+      tokenAmount: Number(row.tokenPaise) / 100,
+      actedBy: row.actedBy
+        ? { kind: row.actedBy.kind, name: row.actedBy.kind === 'STAFF' ? (row.actedBy.name ?? 'Removed member') : selfLabel }
+        : null,
+    };
+    const view = {};
+    for (const key of MERCHANT_REPORT_FIELDS) if (plain[key] !== undefined) view[key] = plain[key];
+    return view;
+  });
+}
+
+const RESULT_MARK = Object.freeze({ CONFIRMED: '✓', REJECTED: '✗', NONE: '' });
+
+/** The report rows as CSV, the columns the owner named (2026-10-16). */
+export function merchantReportCsv(views) {
+  const iso = (v) => (v instanceof Date ? v.toISOString() : (v ?? ''));
+  return toCsv(views.map((r) => ({
+    transaction_id: r.orderId,
+    type: r.type === 'DEPOSIT' ? 'Buy' : 'Sell',
+    user: r.userId,
+    utr: r.utr ?? '',
+    amount_tokens: r.tokenAmount,
+    time: iso(r.at),
+    result: RESULT_MARK[r.result] ?? '',
+    acted_by: r.actedBy?.name ?? '',
+    state: r.state,
+  })));
 }
 
 /**

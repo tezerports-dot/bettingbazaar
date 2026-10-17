@@ -4,12 +4,15 @@ import {
   authenticate, express, hasPermission,
 } from './_adminShared.js';
 import { db } from '#db';
+import { serverError } from '../../shared/httpError.js';
 import { allBoards } from '../../domains/markets/cycleTypes.js';
 import { voidCancelledCycle } from '#db/repositories/settlements.js';
 import { sendAlert } from '../../services/alerting.service.js';
 import { emitCyclePhase, emitCycleResult } from '../../domains/notification/realtimeEmitters.js';
 import { announceRoundResults } from '../../domains/markets/roundResult.service.js';
 import { emitToStaff, maySeeLiveSplit } from '../../domains/notification/staffEventAreas.js';
+import { respondError } from '../../shared/httpError.js';
+import { toCsv } from '../../domains/reporting/csv.util.js';
 
 const router = express.Router();
 
@@ -95,51 +98,111 @@ router.get('/cycles/phases', authenticate, hasPermission('canViewAnalytics'), as
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/admin/cycles/history
-// Returns settled/completed cycles for the admin cycle history page.
-// Includes full real/phantom breakdown (admin-only data).
+// GET /api/admin/cycles/history(.csv)
+// Finished cycles for Admin › Cycle History, with the full real/phantom
+// breakdown (admin-only data). Filters: type (board), audience (VIP/GENERAL),
+// search (part of the cycle id), from/to (IST days the round ended on). The
+// totals describe every matching cycle, not the page. The CSV is the same rows,
+// every match up to CYCLE_HISTORY_EXPORT_MAX.
 // ─────────────────────────────────────────────────────────────────────────────
+const historyFilters = (q) => ({
+  cycleType: q.type || null,
+  audience: q.audience || null,
+  search: q.search || null,
+  from: q.from || null,
+  to: q.to || null,
+});
+
+const historyRow = (c) => ({
+  _id: c.cycleId,
+  cycleId: c.cycleId,
+  type: c.type,
+  audience: c.audience,
+  status: c.status,
+  startTime: c.startTime,
+  endTime: c.endTime,
+  winner: c.winner,
+  // Real pools are DERIVED from the bets — the columns the old response
+  // read (`realDelhi`, `totalDelhi`) were never on the cycle row, so
+  // every one of them fell through to its `|| 0` and the admin history
+  // showed zero volume on every settled cycle the platform had run.
+  realDelhi: c.realDelhi, realBombay: c.realBombay,
+  delhiBets: c.delhiBets, bombayBets: c.bombayBets,
+  phantomDelhi: c.phantomDelhi, phantomBombay: c.phantomBombay,
+  totalDelhi: c.totalDelhi, totalBombay: c.totalBombay,
+  isSettled: c.isSettled,
+  totalPaidOut: c.totalPaidOut,
+  netProfit: c.netProfit,
+  winnerDeterminedBy: c.winnerDeterminedBy || 'AUTOMATIC',
+  settledAt: c.settledAt,
+});
+
+const iso = (d) => (d ? new Date(d).toISOString() : '');
+
 router.get('/cycles/history', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
-    const { page = 1, limit = 50, type } = req.query;
-    // The page and its total come from one statement, so the pagination an
-    // admin clicks through matches the rows in front of them.
-    const history = await db.markets.cycleHistory({
-      cycleType: type || null, page, limit,
-    });
-
+    const { page = 1, limit = 50 } = req.query;
+    const history = await db.markets.cycleHistory({ ...historyFilters(req.query), page, limit });
     res.json({
       success: true,
-      cycles: history.cycles.map((c) => ({
-        _id: c.cycleId,
-        cycleId: c.cycleId,
-        type: c.type,
-        audience: c.audience,
-        status: c.status,
-        startTime: c.startTime,
-        endTime: c.endTime,
-        winner: c.winner,
-        // Real pools are DERIVED from the bets — the columns the old response
-        // read (`realDelhi`, `totalDelhi`) were never on the cycle row, so
-        // every one of them fell through to its `|| 0` and the admin history
-        // showed zero volume on every settled cycle the platform had run.
-        realDelhi: c.realDelhi, realBombay: c.realBombay,
-        phantomDelhi: c.phantomDelhi, phantomBombay: c.phantomBombay,
-        totalDelhi: c.totalDelhi, totalBombay: c.totalBombay,
-        isSettled: c.isSettled,
-        totalPaidOut: c.totalPaidOut,
-        netProfit: c.netProfit,
-        winnerDeterminedBy: c.winnerDeterminedBy || 'AUTOMATIC',
-        settledAt: c.settledAt,
-      })),
+      cycles: history.cycles.map(historyRow),
+      totals: history.totals,
       pagination: {
         total: history.total, page: history.page,
         limit: history.limit, pages: history.pages,
       },
     });
   } catch (error) {
-    console.error('Get cycle history error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch cycle history' });
+    respondError(res, error, 'GET /admin/cycles/history', { message: 'Failed to fetch cycle history' });
+  }
+});
+
+router.get('/cycles/history.csv', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
+  try {
+    const history = await db.markets.cycleHistory({ ...historyFilters(req.query), exportAll: true });
+    const csv = toCsv(history.cycles.map(historyRow).map((c) => ({
+      cycle_id: c.cycleId,
+      board: c.type,
+      profile: c.audience,
+      status: c.status,
+      start_time: iso(c.startTime),
+      end_time: iso(c.endTime),
+      winner: c.winner || '',
+      decided_by: c.winnerDeterminedBy,
+      real_delhi: c.realDelhi,
+      real_bombay: c.realBombay,
+      delhi_bets: c.delhiBets,
+      bombay_bets: c.bombayBets,
+      phantom_delhi: c.phantomDelhi,
+      phantom_bombay: c.phantomBombay,
+      paid_out: c.totalPaidOut ?? '',
+      net_revenue: c.netProfit ?? '',
+      settled_at: iso(c.settledAt),
+    })));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition',
+      `attachment; filename="cycle-history-${req.query.from || 'start'}-${req.query.to || 'now'}.csv"`);
+    res.send(csv);
+  } catch (error) {
+    respondError(res, error, 'GET /admin/cycles/history.csv', { message: 'Could not build the export.' });
+  }
+});
+
+// GET /api/admin/cycles/rollups — rounds older than the 1,440 kept per board
+// and audience, summed per IST day before they were removed (owner,
+// 2026-10-17; cycleHistoryRetention.js).
+router.get('/cycles/rollups', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
+  try {
+    const { type, audience, limit } = req.query;
+    if (audience && !['VIP', 'GENERAL'].includes(audience)) {
+      return res.status(400).json({ success: false, code: 'UNKNOWN_AUDIENCE', message: 'audience must be VIP or GENERAL' });
+    }
+    const days = await db.cycleHistoryRetention.listRollups({
+      cycleType: type || null, audience: audience || null, limit,
+    });
+    res.json({ success: true, keep: db.cycleHistoryRetention.CYCLE_HISTORY_KEEP, days });
+  } catch (error) {
+    return serverError(res, error, 'GET /api/admin/cycles/rollups');
   }
 });
 
@@ -153,12 +216,17 @@ router.post('/cycles/:cycleId/equalize', authenticate, hasPermission('canManageC
     const result = await db.markets.equalizePhantomPools(cycleId);
 
     if (!result.ok) {
-      return result.reason === 'NOT_FOUND'
-        ? res.status(404).json({ success: false, message: 'Cycle not found' })
-        : res.status(409).json({
-          success: false,
-          message: `Cycle already has a result (${result.winner}) — its pools are final`,
+      if (result.reason === 'NOT_FOUND') return res.status(404).json({ success: false, message: 'Cycle not found' });
+      if (result.reason === 'PHANTOM_CLOSED') {
+        return res.status(409).json({
+          success: false, code: 'PHANTOM_CLOSED',
+          message: 'This round was already balanced; phantom betting on it is closed.',
         });
+      }
+      return res.status(409).json({
+        success: false,
+        message: `Cycle already has a result (${result.winner}) — its pools are final`,
+      });
     }
 
     const { cycle } = result;

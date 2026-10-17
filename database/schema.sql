@@ -254,14 +254,20 @@ CREATE TABLE IF NOT EXISTS order_states (
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT order_states_type_known CHECK (order_type IN ('DEPOSIT', 'WITHDRAWAL')),
   CONSTRAINT order_states_amount_positive CHECK (token_amount_paise > 0),
-  -- Nine states, and the CHECK is what makes them the only nine. A state the
+  -- Eight states, and the CHECK is what makes them the only nine. A state the
   -- constraint does not name cannot be written, so "what can an order be?" is
   -- answered here rather than by reading every writer.
   CONSTRAINT order_states_known CHECK (state IN (
-    'PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID', 'COMPLETED',
+    'PENDING_QUEUE', 'PROCESSING', 'PAID', 'COMPLETED',
     'DISPUTED', 'CANCELLED', 'FAILED', 'REJECTED'
   ))
 );
+-- Eight states: there is no "assigned, waiting to be accepted" (owner,
+-- 2026-10-17). Re-added so an existing database converges (§32 S31).
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_known;
+ALTER TABLE order_states ADD CONSTRAINT order_states_known CHECK (state IN (
+  'PENDING_QUEUE', 'PROCESSING', 'PAID', 'COMPLETED',
+  'DISPUTED', 'CANCELLED', 'FAILED', 'REJECTED'));
 CREATE INDEX IF NOT EXISTS order_states_user_idx     ON order_states (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS order_states_merchant_idx ON order_states (merchant_id, state);
 CREATE INDEX IF NOT EXISTS order_states_state_idx    ON order_states (state, created_at);
@@ -278,7 +284,7 @@ CREATE TABLE IF NOT EXISTS order_transitions (
   actor       TEXT,
   reason      TEXT,
   -- The ledger event this transition produced, when it produced one. Null for
-  -- transitions that move workflow without moving money (ASSIGNED, PROCESSING).
+  -- transitions that move workflow without moving money (PENDING_QUEUE, PROCESSING).
   -- Having it here is what lets an auditor walk from an order to its accounting
   -- entry without guessing at a key format.
   ledger_key  TEXT,
@@ -1404,6 +1410,38 @@ ALTER TABLE cycles ADD COLUMN IF NOT EXISTS settlement_claimed_by TEXT;
 CREATE INDEX IF NOT EXISTS cycles_settleable_idx
   ON cycles (end_time) WHERE winner IS NOT NULL AND NOT is_settled;
 
+-- ════════════════════════════════════════════════════════════════════════════
+-- ROUND HISTORY: 1,440 rounds per board and audience (owner, 2026-10-17)
+-- ════════════════════════════════════════════════════════════════════════════
+-- Rounds older than the newest CYCLE_HISTORY_KEEP of their board and audience
+-- are deleted once settled (or cancelled) with no bet still PENDING, after
+-- their figures are added to this table, per IST day, in the same transaction
+-- (`database/repositories/cycleHistoryRetention.js`, the one writer). The bets,
+-- their transitions and the ledger are NOT deleted: they are the money record
+-- and append-only (CLAUDE.md §19).
+CREATE TABLE IF NOT EXISTS cycle_history_rollups (
+  cycle_type          TEXT NOT NULL REFERENCES boards (board_key),
+  audience            TEXT NOT NULL,
+  ist_day             DATE NOT NULL,
+  rounds              INTEGER NOT NULL DEFAULT 0,
+  delhi_wins          INTEGER NOT NULL DEFAULT 0,
+  bombay_wins         INTEGER NOT NULL DEFAULT 0,
+  cancelled           INTEGER NOT NULL DEFAULT 0,
+  real_staked_paise   BIGINT  NOT NULL DEFAULT 0,
+  house_staked_paise  BIGINT  NOT NULL DEFAULT 0,
+  paid_out_paise      BIGINT  NOT NULL DEFAULT 0,
+  net_profit_paise    BIGINT  NOT NULL DEFAULT 0,
+  fees_paise          BIGINT  NOT NULL DEFAULT 0,
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (cycle_type, audience, ist_day),
+  CONSTRAINT cycle_history_rollups_audience_known CHECK (audience IN ('VIP', 'GENERAL')),
+  CONSTRAINT cycle_history_rollups_counts CHECK (
+    rounds >= 0 AND delhi_wins >= 0 AND bombay_wins >= 0 AND cancelled >= 0
+    AND delhi_wins + bombay_wins + cancelled <= rounds),
+  CONSTRAINT cycle_history_rollups_money CHECK (
+    real_staked_paise >= 0 AND house_staked_paise >= 0 AND paid_out_paise >= 0 AND fees_paise >= 0)
+);
+
 CREATE TABLE IF NOT EXISTS game_providers (
   provider_key   TEXT PRIMARY KEY,
   name           TEXT NOT NULL,
@@ -2418,11 +2456,9 @@ ALTER TABLE order_states DROP COLUMN IF EXISTS reviewed_at;
 ALTER TABLE order_states DROP COLUMN IF EXISTS review_action;
 ALTER TABLE order_states DROP COLUMN IF EXISTS review_notes;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rejected_reason TEXT;
--- The merchant's evidence for rejecting a PAID order — a bank statement
--- screenshot or a photo showing the credit never arrived. Rejecting a PAID
--- order accuses the player of not paying, adds a warning to their account and
--- can auto-block them, so the accusation carries its proof.
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rejection_proof_url TEXT;
+-- `rejection_proof_url` is gone: a "payment not received" carries a reason
+-- only (owner, 2026-10-17).
+ALTER TABLE order_states DROP COLUMN IF EXISTS rejection_proof_url;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_reason TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_raised_at TIMESTAMPTZ;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_raised_by TEXT;
@@ -2505,8 +2541,9 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- carrying two.
 CREATE UNIQUE INDEX IF NOT EXISTS order_states_utr_unique
   ON order_states (utr) WHERE utr IS NOT NULL;
-CREATE INDEX IF NOT EXISTS order_states_expiring_idx ON order_states (expires_at)
-  WHERE expires_at IS NOT NULL AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING');
+DROP INDEX IF EXISTS order_states_expiring_idx;
+CREATE INDEX order_states_expiring_idx ON order_states (expires_at)
+  WHERE expires_at IS NOT NULL AND state IN ('PENDING_QUEUE', 'PROCESSING');
 CREATE INDEX IF NOT EXISTS order_states_disputes_idx ON order_states (dispute_raised_at DESC)
   WHERE state = 'DISPUTED';
 
@@ -3725,8 +3762,9 @@ ALTER TABLE order_states ADD CONSTRAINT order_states_pool_held_nonneg CHECK (poo
 -- A hold names the team it is held in.
 ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_pool_hold_has_team;
 ALTER TABLE order_states ADD CONSTRAINT order_states_pool_hold_has_team CHECK (pool_held_paise = 0 OR team_id IS NOT NULL);
-CREATE INDEX IF NOT EXISTS order_states_team_open_idx ON order_states (team_id)
-  WHERE state IN ('ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED');
+DROP INDEX IF EXISTS order_states_team_open_idx;
+CREATE INDEX order_states_team_open_idx ON order_states (team_id)
+  WHERE state IN ('PROCESSING', 'PAID', 'DISPUTED');
 
 -- Ready: a CASH member at the machine. Cleared by the assignment it attracts.
 ALTER TABLE merchants ADD COLUMN IF NOT EXISTS cash_ready BOOLEAN NOT NULL DEFAULT FALSE;
@@ -3850,7 +3888,7 @@ ALTER TABLE order_states ADD CONSTRAINT order_states_cash_link_shape CHECK (
   )
 );
 
--- The link is the machine the ASSIGNED member is standing at. When the order
+-- The link is the machine the order's member is standing at. When the order
 -- changes hands (reassignment, requeue, an admin move) the next member is at a
 -- different machine, so the old link is cleared in the same UPDATE, whichever
 -- path made it. A player is never shown a QR for cash somebody else collects.
@@ -4907,7 +4945,7 @@ CREATE OR REPLACE TRIGGER order_states_payout_hold
   BEFORE INSERT ON order_states FOR EACH ROW EXECUTE FUNCTION bb_payout_hold_check();
 
 -- ════════════════════════════════════════════════════════════════════════════
--- AUTO HOUSE BETS (owner, 2026-10-15)
+-- AUTO PHANTOM BETS (owner, 2026-10-15)
 -- A phantom agent's plan for one board, audience (VIP or GENERAL: each has its
 -- own rounds and its own plans; owner, 2026-10-15) and side: a list of 1 to 1,000 bet
 -- sizes, bet one a second in order and looped, from the round's start (or
@@ -4916,7 +4954,7 @@ CREATE OR REPLACE TRIGGER order_states_payout_hold
 -- `markets.placeAutoPhantomBets`. Written only by
 -- database/repositories/phantomAutoPlans.js. A plan does nothing once its
 -- owner loses phantom access to the board: the runner's read asks it.
--- Limits: backend/domains/markets/houseBets.js (AUTO_BET_*).
+-- Limits: backend/domains/markets/phantomBets.js (AUTO_BET_*).
 -- ════════════════════════════════════════════════════════════════════════════
 CREATE OR REPLACE FUNCTION bb_auto_bet_amounts_ok(amounts BIGINT[]) RETURNS BOOLEAN AS $$
   SELECT cardinality(amounts) BETWEEN 1 AND 1000
@@ -4955,3 +4993,72 @@ ALTER TABLE phantom_auto_plans ADD CONSTRAINT phantom_auto_plans_amounts
   CHECK (bb_auto_bet_amounts_ok(amounts_paise));
 CREATE INDEX IF NOT EXISTS phantom_auto_plans_enabled_idx
   ON phantom_auto_plans (board_key) WHERE enabled;
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- RTP FUND AND HOUSE BETS (owner, 2026-10-17)
+-- One fund per game and profile (VIP, GENERAL): the admin's switch and rate
+-- (`rtp_funds`), and one append-only entry per settled round (`rtp_fund_entries`)
+-- moving the balance by rate × real player pool − paid back to players. The
+-- balance is the sum of its entries. A HOUSE BET is a real bet the server places
+-- as a round's last bet, once betting has closed, so the bigger real side
+-- becomes the lower one and wins; it is stored on the round row (written once,
+-- after CLOSED, so trap 4's concurrency does not apply), counts when the winner
+-- is chosen, and moves no tokens: the house never stakes against itself. The
+-- one writer of all three is database/repositories/rtp.js. `game_key` is a
+-- board's key today and any in-house game's key later, so it names no table.
+-- Never mixed with phantom bets (owner, 2026-10-17).
+-- ════════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS rtp_funds (
+  game_key        TEXT NOT NULL,
+  audience        TEXT NOT NULL,
+  enabled         BOOLEAN NOT NULL DEFAULT FALSE,
+  rate_bp         INTEGER NOT NULL DEFAULT 8000,
+  balance_paise   BIGINT NOT NULL DEFAULT 0,
+  updated_by      TEXT,
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (game_key, audience)
+);
+ALTER TABLE rtp_funds DROP CONSTRAINT IF EXISTS rtp_funds_audience_known;
+ALTER TABLE rtp_funds ADD CONSTRAINT rtp_funds_audience_known CHECK (audience IN ('VIP', 'GENERAL'));
+ALTER TABLE rtp_funds DROP CONSTRAINT IF EXISTS rtp_funds_rate;
+ALTER TABLE rtp_funds ADD CONSTRAINT rtp_funds_rate CHECK (rate_bp BETWEEN 0 AND 10000);
+
+CREATE TABLE IF NOT EXISTS rtp_fund_entries (
+  id                  BIGSERIAL PRIMARY KEY,
+  game_key            TEXT NOT NULL,
+  audience            TEXT NOT NULL,
+  cycle_id            TEXT NOT NULL UNIQUE,
+  rate_bp             INTEGER NOT NULL,
+  pool_paise          BIGINT NOT NULL,
+  paid_back_paise     BIGINT NOT NULL,
+  delta_paise         BIGINT NOT NULL,
+  balance_after_paise BIGINT NOT NULL,
+  house_bet_paise     BIGINT NOT NULL DEFAULT 0,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  FOREIGN KEY (game_key, audience) REFERENCES rtp_funds(game_key, audience)
+);
+ALTER TABLE rtp_fund_entries DROP CONSTRAINT IF EXISTS rtp_fund_entries_figures;
+ALTER TABLE rtp_fund_entries ADD CONSTRAINT rtp_fund_entries_figures CHECK (
+  pool_paise >= 0 AND paid_back_paise >= 0 AND house_bet_paise >= 0
+  AND rate_bp BETWEEN 0 AND 10000
+  AND delta_paise = (rate_bp::BIGINT * pool_paise) / 10000 - paid_back_paise);
+CREATE INDEX IF NOT EXISTS rtp_fund_entries_fund_idx ON rtp_fund_entries (game_key, audience, id DESC);
+
+CREATE OR REPLACE FUNCTION bb_rtp_entries_append_only() RETURNS TRIGGER AS $$
+BEGIN
+  RAISE EXCEPTION 'rtp_fund_entries is append-only';
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS rtp_fund_entries_append_only ON rtp_fund_entries;
+CREATE TRIGGER rtp_fund_entries_append_only BEFORE UPDATE OR DELETE ON rtp_fund_entries
+  FOR EACH ROW EXECUTE FUNCTION bb_rtp_entries_append_only();
+
+-- The house bet on the round row: the side, the stake, and what the fund set
+-- aside for it when it was placed (released when the round's entry is written).
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS house_bet_side TEXT;
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS house_bet_paise BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS house_bet_reserved_paise BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE cycles DROP CONSTRAINT IF EXISTS cycles_house_bet_shape;
+ALTER TABLE cycles ADD CONSTRAINT cycles_house_bet_shape CHECK (
+  (house_bet_side IS NULL AND house_bet_paise = 0 AND house_bet_reserved_paise = 0)
+  OR (house_bet_side IN ('DELHI', 'BOMBAY') AND house_bet_paise > 0 AND house_bet_reserved_paise >= 0));

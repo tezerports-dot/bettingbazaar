@@ -160,9 +160,9 @@ export const RulesPopup: React.FC = () => {
               <p className="text-xs text-gray-400 whitespace-pre-line">{s.body}</p>
             </div>
           ))}
-          {preview.houseBetsNotice && (
+          {preview.phantomBetsNotice && (
             <p className="text-xs text-gray-300 border-t border-dark-700 pt-2">
-              ⓘ {preview.houseBetsNotice} <span className="text-gray-500">(always added; reword it under Settings › House Bets Line)</span>
+              ⓘ {preview.phantomBetsNotice} <span className="text-gray-500">(always added; reword it under Settings › Phantom Bets Line)</span>
             </p>
           )}
         </div>

@@ -56,7 +56,7 @@ describePg('admin directory — players and merchants tables', () => {
     await order(players.winner.userId, 'WITHDRAWAL', 1_000);
     await order(players.winner.userId, 'DEPOSIT', 9_999, 'CANCELLED'); // not completed: not counted
     await bet(players.winner.userId, 300, 'WON', 600);   // +300
-    await bet(players.winner.userId, 999, 'WON', 1998, true); // house bet: not counted
+    await bet(players.winner.userId, 999, 'WON', 1998, true); // phantom bet: not counted
     await pgQuery(
       `INSERT INTO casino_rounds (round_id, user_id, provider_key, debited_paise, debited_deposit_paise, credited_paise)
        VALUES ($1, $2, 'test', 10000, 10000, 15000)`, [nextId('ad-r'), players.winner.userId]); // +50

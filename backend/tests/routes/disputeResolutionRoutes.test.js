@@ -274,7 +274,7 @@ describePg('dispute resolution routes', () => {
     const created = await createWithdrawalOrder(who.userId, 1000);
     const { orderId } = created.order;
     made.push(orderId);
-    expect(await getOrderRecord(orderId)).toMatchObject({ status: 'ASSIGNED', merchantId: merchant.merchantId, teamId: team.teamId });
+    expect(await getOrderRecord(orderId)).toMatchObject({ status: 'PROCESSING', merchantId: merchant.merchantId, teamId: team.teamId });
     expect((await transitionOrder(orderId, 'PROCESSING', { set: { processingAt: new Date() } })).ok).toBe(true);
     // The member's confirm, with the hold window already behind it.
     expect((await transitionOrder(orderId, 'PAID', {

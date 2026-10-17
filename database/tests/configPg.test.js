@@ -97,7 +97,7 @@ describePg('the configuration store', () => {
       [{ betReservePercent: 101 }, /'betReservePercent' must be <= 100/],
       [{ winningsFeePercent: -5 }, /'winningsFeePercent' must be >= 0/],
       [{ payoutMultiplier: 0 }, /'payoutMultiplier' must be >= 1/],
-      [{ withdrawalHoldMinutes: 100000 }, /'withdrawalHoldMinutes' must be <= 1440/],
+      [{ withdrawalHoldMinutes: 100000 }, /'withdrawalHoldMinutes' must be <= 10080/],
       // A member always carries at least one order on their team's rail.
       [{ teamRouting: { concurrency: { UPI_BANK: 0 } } },
         /'teamRouting\.concurrency\.UPI_BANK' must be >= 1/],
@@ -134,15 +134,15 @@ describePg('the configuration store', () => {
       .rejects.toThrow(/'footerPages' must be an array of strings/);
   });
 
-  it('holds the house-bets line to its length, trimmed, and never blank (owner, 2026-10-15)', async () => {
+  it('holds the phantom-bets line to its length, trimmed, and never blank (owner, 2026-10-15)', async () => {
     for (const label of ['', '         ', 'too short']) {
-      await expect(applyConfig({ scope: 'system', docKey: KEY, patch: { houseBetsLabel: label } }))
-        .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/'houseBetsLabel' must be at least 10 characters/) });
+      await expect(applyConfig({ scope: 'system', docKey: KEY, patch: { phantomBetsLabel: label } }))
+        .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/'phantomBetsLabel' must be at least 10 characters/) });
     }
-    await expect(applyConfig({ scope: 'system', docKey: KEY, patch: { houseBetsLabel: 'x'.repeat(161) } }))
-      .rejects.toThrow(/'houseBetsLabel' must be at most 160 characters/);
-    await applyConfig({ scope: 'system', docKey: KEY, patch: { houseBetsLabel: '  Totals include house bets.  ' } });
-    expect((await getConfig('system', { docKey: KEY, fresh: true })).houseBetsLabel).toBe('Totals include house bets.');
+    await expect(applyConfig({ scope: 'system', docKey: KEY, patch: { phantomBetsLabel: 'x'.repeat(161) } }))
+      .rejects.toThrow(/'phantomBetsLabel' must be at most 160 characters/);
+    await applyConfig({ scope: 'system', docKey: KEY, patch: { phantomBetsLabel: '  Totals include phantom bets.  ' } });
+    expect((await getConfig('system', { docKey: KEY, fresh: true })).phantomBetsLabel).toBe('Totals include phantom bets.');
   });
 
   it('accepts a value AT each bound — the bounds are inclusive', async () => {

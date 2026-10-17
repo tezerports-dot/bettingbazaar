@@ -233,7 +233,7 @@ export function registerCronJobs(rebuildLeaderboard) {
   // backfill automatically across the first passes (200 per source per pass).
   registerRecurring('ledger-reconcile', 60 * 1000, async () => {
     try {
-      const { reconcileCompletedOrders, reconcileSettledCycles } =
+      const { reconcileCompletedOrders, reconcileSettledCycles, reconcileCasinoRounds, reconcilePromoGrants } =
         await import('../domains/revenue/revenueSettlement.service.js');
 
       const orderResults = await reconcileCompletedOrders();
@@ -245,7 +245,19 @@ export function registerCronJobs(rebuildLeaderboard) {
         if (r.error) console.error(`[ledger-reconcile] Cycle ${r.refId} failed:`, r.error);
       }
 
-      const failures = [...orderResults, ...cycleResults].filter(r => r.error);
+      // Casino rounds and General bonuses, so the ledger's revenue is the
+      // same money the Profit & Loss page counts (owner, 2026-10-17).
+      const casinoResults = await reconcileCasinoRounds();
+      for (const r of casinoResults) {
+        if (r.error) console.error(`[ledger-reconcile] CasinoRound ${r.refId} failed:`, r.error);
+      }
+      const promoResults = await reconcilePromoGrants();
+      for (const r of promoResults) {
+        if (r.error) console.error(`[ledger-reconcile] PromoGrant ${r.refId} failed:`, r.error);
+      }
+      const all = [...orderResults, ...cycleResults, ...casinoResults, ...promoResults];
+
+      const failures = all.filter(r => r.error);
       if (failures.length > 0) {
         ledgerReconcileErrors.inc(failures.length);
         sendAlert('ledger-reconcile-item', `${failures.length} ledger reconciliation item(s) failed`, {
@@ -253,7 +265,7 @@ export function registerCronJobs(rebuildLeaderboard) {
         });
       }
 
-      const recorded = [...orderResults, ...cycleResults].filter(r => r.recorded).length;
+      const recorded = all.filter(r => r.recorded).length;
       if (recorded > 0) console.log(`[ledger-reconcile] Recorded ${recorded} accounting event(s)`);
     } catch (e) {
       console.error('[ledger-reconcile] cron error:', e.message);
@@ -274,6 +286,22 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[retention] cron error:', e.message); }
   });
 
+
+  // ── Round history: 1,440 per board and audience — runs hourly ─────────────
+  // Rounds past the window, once settled with nothing PENDING, are summed into
+  // their day's summary and deleted, in one transaction; the bets and the
+  // ledger stay (owner, 2026-10-17; cycleHistoryRetention.js).
+  registerRecurring('cycle-history-retention', 60 * 60 * 1000, async () => {
+    try {
+      let total = 0;
+      for (let i = 0; i < 50; i += 1) {
+        const { pruned } = await db.cycleHistoryRetention.pruneCycleHistory();
+        total += pruned;
+        if (!pruned) break;
+      }
+      if (total > 0) console.log(`[retention] Summarised and removed ${total} old round(s)`);
+    } catch (e) { console.error('[retention] round history error:', e.message); }
+  });
 
   // ── Payment proof retention — runs hourly ──────────────────────────────────
   // Keeps the ORDER — it is the financial record — while dropping the

@@ -93,10 +93,10 @@ describe('no merchant-to-user order chat', () => {
     // through the ATM QR the member scans per order (Step 2d), and a UPI/bank
     // buy by bank transfer to the member's account (owner, 2026-10-03).
     expect(read('backend/routes/upload.routes.js')).not.toMatch(/merchant\/qr\/upload-url/);
-    // And the remaining upload categories are untouched — this deletion was
-    // scoped to the QR, not to uploads.
+    // The "payment not received" proof upload went too: the reject takes a
+    // reason only (owner, 2026-10-17). The other categories are untouched.
     const uploads = read('backend/routes/upload.routes.js');
-    expect(uploads).toMatch(/order-reject-proof/);
+    expect(uploads).not.toMatch(/router\.post\([^)]*order-reject-proof/);
     expect(uploads).toMatch(/profile\/picture/);
   });
 });

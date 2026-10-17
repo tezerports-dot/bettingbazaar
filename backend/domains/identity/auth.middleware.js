@@ -246,6 +246,15 @@ export function belongsElsewhere(user, accountTypes) {
   return !accountTypes.includes(user?.accountType);
 }
 
+/**
+ * Whether a STAFF row holds a staff role at all: admin, sub-admin, queue
+ * manager or mediator. A STAFF row with none is nobody's admin (§33.5), so the
+ * staff door and every staff route refuse it the same way.
+ */
+export function hasStaffRole(user) {
+  return Boolean(user?.isAdmin || user?.isSubAdmin || user?.isQueueManager || user?.isMediator);
+}
+
 export function refuseWrongPanel(res, user) {
   const panel = PANEL_NAME[user?.accountType] ?? 'other';
   return res.status(403).json({
@@ -264,7 +273,7 @@ export function refuseWrongPanel(res, user) {
  *   MERCHANT is never admitted here — merchants have their own door,
  *   `merchantAuth`, and no merchant-facing route relies on this one.
  */
-const makeAuthenticate = ({ accountTypes = ['PLAYER', 'STAFF'] } = {}) => async (req, res, next) => {
+const makeAuthenticate = ({ accountTypes = ['PLAYER', 'STAFF'], admits = () => true } = {}) => async (req, res, next) => {
   try {
     // The Authorization header first, the httpOnly cookie second: every panel
     // is served from one origin, so a cookie may be another panel's sign-in.
@@ -334,6 +343,7 @@ const makeAuthenticate = ({ accountTypes = ['PLAYER', 'STAFF'] } = {}) => async 
     if (accountClosed(user)) return refuseClosedAccount(res);
     if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
     if (belongsElsewhere(user, accountTypes)) return refuseWrongPanel(res, user);
+    if (!admits(user)) return refuseWrongPanel(res, user);
     if (secondFactorMissing(user.accountType, decoded)) return refuseMissingSecondFactor(res);
 
     // Check if user account is active
@@ -378,10 +388,13 @@ const authenticate = makeAuthenticate();
 const authenticatePlayer = makeAuthenticate({ accountTypes: ['PLAYER'] });
 
 /**
- * A STAFF account's own routes — its authenticator (account.admin.routes.js). A
- * player's session is refused with the panel it belongs to.
+ * Every staff route: the whole `/api/admin` router (routes/admin/index.js) and
+ * the staff account's own routes. Only a STAFF row holding a staff role gets
+ * through; a player's or merchant's session is refused 403 WRONG_PANEL with the
+ * panel it belongs to, before any route asks for an area (owner, 2026-10-17:
+ * admin, player and merchant accounts are completely separate).
  */
-const authenticateStaff = makeAuthenticate({ accountTypes: ['STAFF'] });
+const authenticateStaff = makeAuthenticate({ accountTypes: ['STAFF'], admits: hasStaffRole });
 
 
 

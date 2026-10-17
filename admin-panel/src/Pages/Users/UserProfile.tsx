@@ -8,7 +8,7 @@
 //
 // Each control is offered only to an account whose AREA admits it (block and
 // close: canManageUsers, this screen's area; balance: canAdjustBalances;
-// house-bettor access: canManagePhantomAgents), and only on a PLAYER, since
+// phantom-bettor access: canManagePhantomAgents), and only on a PLAYER, since
 // the routes refuse anything else.
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
@@ -120,7 +120,7 @@ export const UserProfile: React.FC = () => {
 
   const savePhantom = () => run('phantom',
     () => api.post(`/api/admin/users/${user.userId}/phantom-access`, { accessLevel: phantom }),
-    `House-bettor access set to ${phantom}`, 'Failed to set house-bettor access');
+    `Phantom-bettor access set to ${phantom}`, 'Failed to set phantom-bettor access');
 
   const closeAccount = async () => {
     if (await run('close', () => api.users.deleteUser(user.userId), 'Account closed', 'Failed to delete the account')) setConfirmClose(false);
@@ -171,7 +171,7 @@ export const UserProfile: React.FC = () => {
       {summary && (
         <p className="text-xs text-gray-500">
           VIP wallet = deposit {formatters.paise(summary.wallet.depositPaise)} + winnings {formatters.paise(summary.wallet.winningsPaise)}.
-          Net win / loss counts settled board bets and casino rounds; house bets are not counted.
+          Net win / loss counts settled board bets and casino rounds; phantom bets are not counted.
         </p>
       )}
 
@@ -246,9 +246,9 @@ export const UserProfile: React.FC = () => {
         )}
 
         {canPhantom && (
-          <Section title="House-bettor access" sub="House bets are cosmetic: they never win and never touch real pools.">
+          <Section title="Phantom-bettor access" sub="Phantom bets are cosmetic: they never win and never touch real pools.">
             <div className="flex flex-wrap gap-2">
-              <label htmlFor="phantom-access-level" className="sr-only">House-bettor access level</label>
+              <label htmlFor="phantom-access-level" className="sr-only">Phantom-bettor access level</label>
               <select id="phantom-access-level" className="input flex-1 min-w-[12rem]" value={phantom} onChange={(e) => setPhantom(e.target.value)}>
                 <option value="NONE">None</option>
                 {boards.map((b) => <option key={b.key} value={b.key}>{b.name} only</option>)}

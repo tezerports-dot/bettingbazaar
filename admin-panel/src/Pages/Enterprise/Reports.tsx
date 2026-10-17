@@ -8,7 +8,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Download, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
-import api from '../../services/api';
+import api, { downloadCsv } from '../../services/api';
 import { usePermissions } from '../../hooks/usePermission';
 import { Toolbar } from '../../components/design';
 
@@ -53,22 +53,9 @@ export const Reports: React.FC = () => {
 
   useEffect(() => { load(); }, [load]);
 
-  const downloadCsv = async () => {
-    try {
-      const res = await api.get('/api/admin/reports/ledger-export', {
-        params: { ...params(), format: 'csv' },
-        responseType: 'blob',
-      });
-      const url = URL.createObjectURL(new Blob([res.data as any], { type: 'text/csv' }));
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `ledger-export-${from || 'start'}-${to || 'now'}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      toast.error('Export failed');
-    }
-  };
+  const downloadLedger = () =>
+    downloadCsv('/api/admin/reports/ledger-export', { ...params(), format: 'csv' }, `ledger-export-${from || 'start'}-${to || 'now'}.csv`)
+      .catch(() => toast.error('Export failed'));
 
   return (
     <div className="om-fade space-y-6">
@@ -86,7 +73,7 @@ export const Reports: React.FC = () => {
           <RefreshCw size={16} className={`mr-2 ${loading ? 'animate-spin' : ''}`} /> Run
         </button>
         {canExport && (
-          <button onClick={downloadCsv} className="btn-primary flex items-center h-10" title="Regulatory export — one CSV row per journal posting">
+          <button onClick={downloadLedger} className="btn-primary flex items-center h-10" title="Regulatory export — one CSV row per journal posting">
             <Download size={16} className="mr-2" /> Ledger CSV
           </button>
         )}

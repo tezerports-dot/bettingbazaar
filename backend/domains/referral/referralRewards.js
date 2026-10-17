@@ -19,9 +19,9 @@
 export function referralRewardsFrom(cfg) {
   const r = cfg?.referralRewards ?? {};
   return {
-    // schema default: 25 (₹25 a level; database/spec/config.spec.js referralRewards)
-    level1Paise: Math.round(Number(r.level1Rupees ?? 25) * 100),
-    level2Paise: Math.round(Number(r.level2Rupees ?? 25) * 100),
+    // What each level earns, level 1 first. schema default: [25, 25]
+    // (database/spec/config.spec.js referralRewards.levelRupees)
+    levelsPaise: (Array.isArray(r.levelRupees) ? r.levelRupees : [25, 25]).map((v) => Math.round(Number(v) * 100)),
     // schema default: 10 (a bonus is played 10× before it unlocks)
     turnoverMultiplier: Number(r.turnoverMultiplier ?? 10),
   };

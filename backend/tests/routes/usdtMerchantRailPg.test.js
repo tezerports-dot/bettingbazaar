@@ -342,7 +342,7 @@ describePg('the USDT merchant rail', () => {
       const who = await actor({});
       const order = await queuedUsdtBuy({ owner: who, chain: 'TRC20' });
       expect(await tryAssignMerchant(await getOrderRecord(order.orderId))).toBe(true);
-      expect(await getOrderRecord(order.orderId)).toMatchObject({ status: 'ASSIGNED', merchantId: member.merchantId });
+      expect(await getOrderRecord(order.orderId)).toMatchObject({ status: 'PROCESSING', merchantId: member.merchantId });
       expect((await getPool(team.teamId)).heldPaise).toBeGreaterThan(0);
 
       // And the rail stays the team's: an admin cannot switch it away while
@@ -377,7 +377,7 @@ describePg('the USDT merchant rail', () => {
         expect(await tryAssignMerchant(await getOrderRecord(order.orderId))).toBe(true);
 
         const row = await getOrderRecord(order.orderId);
-        expect(row).toMatchObject({ status: 'ASSIGNED', merchantId: member.merchantId, rateUsed: 100, fiatAmount: 500 });
+        expect(row).toMatchObject({ status: 'PROCESSING', merchantId: member.merchantId, rateUsed: 100, fiatAmount: 500 });
         // The tokens the player will receive are held in the team's pool.
         expect(await getPool(team.teamId)).toMatchObject({ availablePaise: 450_000_00, heldPaise: 50_000_00 });
       } finally {
@@ -467,7 +467,7 @@ describePg('the USDT merchant rail', () => {
       await teams.onlyOnline(hashTeam.members.map((m) => m.merchantId));
       const order = await queuedUsdtBuy({ owner, chain });
       expect(await tryAssignMerchant(order)).toBe(true);
-      expect((await getOrderRecord(order.orderId)).status).toBe('ASSIGNED');
+      expect((await getOrderRecord(order.orderId)).status).toBe('PROCESSING');
       await readyToPay(order.orderId);
       return order.orderId;
     };

@@ -14,7 +14,8 @@
  *                        PENDING_QUEUE order. 409 NO_MEMBER_FREE carries a
  *                        sentence naming why nobody could take it.
  *   Reassign           — POST /api/admin/payment-orders/:id/reassign, no body,
- *                        on an ASSIGNED order. Takes it off its member and
+ *                        on a started order the server marks `canReassign`
+ *                        (a sell, or a cash buy before its QR). Takes it off its member and
  *                        offers it to the next; the answer says whether
  *                        anybody took it.
  *
@@ -104,7 +105,9 @@ export const QueueDashboard: React.FC = () => {
 
   /**
    * Ask routing to act on this order now. A PENDING_QUEUE order is offered to
-   * the teams; an ASSIGNED one is taken off its member and offered to the next.
+   * the teams; a started one the server says may still change hands
+   * (`canReassign`: a sell, or a cash buy before its QR) is taken off its
+   * member and offered to the next.
    * The server's own sentence is shown either way, because it is the only thing
    * that says WHY nobody took it — a cap, a team not ready, a pool short of
    * tokens — and so whether to wait or to call a supervisor.
@@ -113,7 +116,7 @@ export const QueueDashboard: React.FC = () => {
     const id = order._id || order.orderId;
     setRoutingId(id);
     try {
-      const res = order.status === 'ASSIGNED'
+      const res = order.canReassign
         ? await api.queueManager.reassignOrder(id)
         : await api.queueManager.assignOrder(id);
       if (res.success) { toast.success(res.message || 'Order assigned'); await loadData(); }
@@ -145,7 +148,7 @@ export const QueueDashboard: React.FC = () => {
 
   const sBadge = (s: string) => {
     const m: Record<string,string> = {
-      PENDING_QUEUE: 'bg-yellow-500/20 text-yellow-400', ASSIGNED: 'bg-blue-500/20 text-blue-400',
+      PENDING_QUEUE: 'bg-yellow-500/20 text-yellow-400',
       PROCESSING:    'bg-purple-500/20 text-purple-400', PAID:     'bg-indigo-500/20 text-indigo-400',
       COMPLETED:     'bg-green-500/20  text-green-400',  DISPUTED: 'bg-red-500/20 text-red-400',
       CANCELLED:     'bg-gray-500/20   text-gray-400',   FAILED:   'bg-red-800/20 text-red-500',
@@ -172,7 +175,7 @@ export const QueueDashboard: React.FC = () => {
       ? `${(order.fiatAmount||0).toLocaleString()} USDT`
       : `₹${(order.fiatAmount||0).toLocaleString()}`;
     const canOffer    = order.status === 'PENDING_QUEUE';
-    const canReassign = order.status === 'ASSIGNED';
+    const canReassign = order.status === 'PROCESSING' && order.canReassign === true;
     const busy = routingId === id;
     return (
       <div key={id} className="bg-dark-700 rounded-lg p-4 space-y-3">

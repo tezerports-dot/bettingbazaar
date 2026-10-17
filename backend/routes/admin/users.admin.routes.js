@@ -15,6 +15,8 @@ import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 import { getRiskRules } from '../../domains/risk/riskValidation.service.js';
 import { notify } from '../../domains/communication/communication.service.js';
 import { respondError } from '../../shared/httpError.js';
+import { toCsv } from '../../domains/reporting/csv.util.js';
+import { paiseToRupees } from '../../shared/money.js';
 
 const router = express.Router();
 
@@ -84,6 +86,44 @@ router.get('/users', authenticate, hasPermission('canManageUsers'), async (req, 
     });
   } catch (error) {
     return respondError(res, error, 'GET /admin/users', { message: 'Failed to fetch users' });
+  }
+});
+
+/** GET /api/admin/users.csv — every player the table's filters match, as CSV (rupees). */
+router.get('/users.csv', authenticate, hasPermission('canManageUsers'), async (req, res) => {
+  try {
+    const { status, search, sort, dir } = req.query;
+    const { rows } = await db.adminDirectory.listPlayers({
+      status: status && status !== 'ALL' && status !== 'all' ? String(status) : null,
+      search: search ? String(search) : null,
+      sort: sort ? String(sort) : undefined,
+      dir: dir ? String(dir) : undefined,
+      exportAll: true,
+    });
+    const iso = (d) => (d ? new Date(d).toISOString() : '');
+    const csv = toCsv(rows.map((u) => ({
+      user_id: u.userId,
+      username: u.username,
+      mobile: u.mobile,
+      status: u.status,
+      profile: u.playProfile,
+      joined_at: iso(u.joinedAt),
+      last_login: iso(u.lastLogin),
+      vip_balance: paiseToRupees(u.wallet.vipPaise),
+      general_balance: paiseToRupees(u.wallet.generalPaise),
+      locked_in_bets: paiseToRupees(u.wallet.lockedPaise),
+      deposits: paiseToRupees(u.totals.depositsPaise),
+      deposit_count: u.totals.depositCount,
+      withdrawals: paiseToRupees(u.totals.withdrawalsPaise),
+      net_win_loss: paiseToRupees(u.totals.netPaise),
+      lost_disputes: u.lostDisputes,
+      payment_flagged: u.paymentFlagged ? 'yes' : 'no',
+    })));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="players.csv"');
+    res.send(csv);
+  } catch (error) {
+    return respondError(res, error, 'GET /admin/users.csv', { message: 'Could not build the export.' });
   }
 });
 
@@ -376,7 +416,7 @@ router.delete('/users/:userId', authenticate, hasPermission('canManageUsers'), a
     // common refusal.
     const open = await db.orders.findOrders({
       userId: req.params.userId,
-      states: ['ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED'],
+      states: ['PROCESSING', 'PAID', 'DISPUTED'],
       limit: 1,
     });
     if (open.total > 0) {
@@ -499,7 +539,7 @@ router.post('/users/:userId/phantom-access', authenticate, hasPermission('canMan
   }
 });
 
-// Real against house volume per round whose betting has closed (owner,
+// Real against phantom volume per round whose betting has closed (owner,
 // 2026-10-15). `?limit=` 1–100, default 20 (stats.realVolumeByCycle).
 router.get('/analytics/real-volume', authenticate, hasPermission('canManagePhantomAgents'), async (req, res) => {
   try {

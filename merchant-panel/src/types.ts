@@ -11,7 +11,6 @@ export type MerchantRail = 'INR' | 'USDT';
 
 export enum OrderStatus {
   PENDING_QUEUE = 'PENDING_QUEUE',
-  ASSIGNED = 'ASSIGNED',
   PROCESSING = 'PROCESSING',
   PAID = 'PAID',
   COMPLETED = 'COMPLETED',
@@ -166,6 +165,11 @@ export interface PaymentOrder {
   inrRouting?: 'AGENTS' | 'MERCHANTS' | null;
   payAccountId?: string | null;
   paidFromAccountId?: string | null;
+  /**
+   * Whether this member may still decline it: a started order nobody can have
+   * paid on yet (merchantOrderView.js `canDecline`, from `mayChangeHands`).
+   */
+  canDecline?: boolean;
 }
 
 export interface MerchantProfile {
@@ -592,6 +596,31 @@ export interface MerchantAccountOverview {
 
 /** One direction's figures in a report (`ZERO` in merchantAccount.routes.js). */
 export interface ReportFigures { orders: number; completed: number; completedPaise: number; disputed: number; disputesLost: number }
+
+/**
+ * GET /api/merchant/reports/orders — mirrors `MERCHANT_REPORT_FIELDS` and
+ * `toMerchantReportRows` (backend/domains/merchant/merchantOrderView.js) and
+ * the totals of `orderReport` (database/repositories/merchantReports.js).
+ */
+export type OrderReportResult = 'CONFIRMED' | 'REJECTED' | 'NONE';
+export interface OrderReportRow {
+  orderId: string;
+  type: 'DEPOSIT' | 'WITHDRAWAL';
+  userId: string;
+  utr: string | null;
+  tokenAmount: number;
+  state: string;
+  result: OrderReportResult;
+  actedBy: { kind: 'MERCHANT' | 'STAFF'; name: string } | null;
+  at: string;
+}
+export interface OrderReport {
+  success: boolean;
+  range: { from: string | null; to: string | null };
+  rows: OrderReportRow[];
+  totals: { orders: number; confirmed: number; rejected: number; confirmedBuyPaise: number; confirmedSellPaise: number };
+  pagination: { total: number; limit: number; skip: number };
+}
 
 /** GET /api/merchant/account/reports. */
 export interface MerchantReport {

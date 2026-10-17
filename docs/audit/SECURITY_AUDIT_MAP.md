@@ -3540,10 +3540,10 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 313 |
+| Route declarations in `backend/**` | 329 |
 | Reachable with **no auth middleware** | 42 |
-| Staff routes carrying an **area** (permission key) | 171 |
-| Staff routes a sub-admin can **never** be given (full admin only) | 8 |
+| Staff routes carrying an **area** (permission key) | 183 |
+| Staff routes a sub-admin can **never** be given (full admin only) | 9 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.
@@ -3600,6 +3600,7 @@ new route and decide. Each of the three questions is defined in §2.
 - `DELETE /sub-admins/:subAdminId  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff-permissions  (backend/routes/admin/subadmins.admin.routes.js)`
+- `GET /staff.csv  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff/:userId  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /staff/:userId/reset-authenticator  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
@@ -3612,16 +3613,17 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 474 |
-| Parameters only (safe by construction) | 307 |
-| Interpolating into statement text (each needs a reading) | 160 |
-| Statement text built elsewhere and passed in (each needs a reading) | 7 |
+| `pgQuery` call sites | 485 |
+| Parameters only (safe by construction) | 314 |
+| Interpolating into statement text (each needs a reading) | 163 |
+| Statement text built elsewhere and passed in (each needs a reading) | 8 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
 
 - `database/repositories/adminTokenConsiderations.js — text`
 - `database/repositories/identity.js — text`
 - `database/repositories/merchants.js — text`
+- `database/repositories/rtp.js — RESERVED_SQL`
 - `database/repositories/teamOversight.js — sql`
 - `database/repositories/teamPools.js — poolExposureSql`
 - `database/repositories/users.js — text`
@@ -3633,8 +3635,8 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 153 | 0 | 0 |
-| `admin-panel` | 138 | 0 | 0 |
-| `merchant-panel` | 63 | 0 | 0 |
+| `admin-panel` | 142 | 0 | 0 |
+| `merchant-panel` | 65 | 0 | 0 |
 
 <!-- END GENERATED -->
 

@@ -32,9 +32,9 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'The text players read while maintenance mode is on.',
     example: '"We are upgrading our servers. Back by 3:00 PM IST."',
   },
-  houseBetsLabel: {
-    what: 'The line players read at the end of the board rules, saying the totals include house bets that are never paid out. You can change the wording but not remove it (10 to 160 characters).',
-    example: '"Pool totals include house bets, which are never paid out."',
+  phantomBetsLabel: {
+    what: 'The line players read at the end of the board rules, saying the totals include phantom bets that are never paid out. You can change the wording but not remove it (10 to 160 characters).',
+    example: '"Pool totals include phantom bets, which are never paid out."',
   },
   demoResultsOn: {
     what: 'Whether the analytics fill each board’s 1,440-result window with demo results placed before its first real results. Each new real result replaces the oldest demo one; once a board has 1,440 real results none are shown. Demo results are never in the Results list and never affect a round.',
@@ -168,13 +168,9 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'How many problems (refusals, unpaid buys that were its fault, lost disputes) a merchant account may have in one day before it is flagged to admins. A flag only warns; it stops nothing.',
     example: '5: the fifth problem today raises a flag.',
   },
-  'referralRewards.level1Rupees': {
-    what: 'What a player earns, in rupees, when someone they invited verifies with Telegram. Paid into their General (bonus) balance when you fund the payout queue. 0 pays nothing at this level. Applies to new joiners only: people already in the queue keep the amount they were promised.',
-    example: '50: each friend who joins earns the inviter ₹50.',
-  },
-  'referralRewards.level2Rupees': {
-    what: 'What the inviter\'s own inviter earns, in rupees, for the same joiner (the second level). 0 turns the second level off. Applies to new joiners only.',
-    example: '10: A invites B, B invites C; when C joins, B earns level 1 and A earns ₹10.',
+  'referralRewards.levelRupees': {
+    what: 'What each level up the invite chain earns, in rupees, when someone verifies with Telegram: level 1 is the person who invited them, level 2 that person\'s inviter, and so on. Add or remove levels (1 to 10). Paid into the General (bonus) balance when you fund the payout queue. 0 pays nothing at that level. Applies to new joiners only: people already in the queue keep the amount they were promised.',
+    example: '50, 10: A invites B, B invites C; when C joins, B earns ₹50 (level 1) and A earns ₹10 (level 2).',
   },
   'referralRewards.turnoverMultiplier': {
     what: 'How many times its amount every General bonus (referral and first deposit) must be played (bet) before it unlocks into withdrawable winnings. Set on each bonus when it is paid, so bonuses already paid keep theirs.',
@@ -225,7 +221,7 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     example: '2: a ₹100 winning bet pays ₹200 before the fee.',
   },
   withdrawalHoldMinutes: {
-    what: 'After an agent marks a sell as paid, how long the player\'s tokens stay in escrow. The player can dispute inside this window. At least 60.',
+    what: 'After an agent marks a sell as paid, how long the player\'s tokens stay in escrow, out of the team\'s pool, so a sell marked paid without paying can be recovered if the player disputes. Any whole number from 0 to 10,080 (7 days). At 0 the sell settles within a minute; a later dispute is refunded from the team\'s pool, or by the platform if the pool has spent it.',
     example: '120: a sell marked paid at 2:00 settles at 4:00 unless the player disputes.',
   },
   rejectedBuyDisputeMinutes: {

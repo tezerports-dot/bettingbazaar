@@ -22,6 +22,7 @@ import {
 import { personalStaffRoom } from '../../domains/notification/staffEventAreas.js';
 import { resetEnrolment } from '../../domains/identity/totp.service.js';
 import { respondError } from '../../shared/httpError.js';
+import { toCsv } from '../../domains/reporting/csv.util.js';
 
 const router = express.Router();
 
@@ -88,6 +89,34 @@ router.get('/staff', authenticate, isAdmin, async (req, res) => {
     });
   } catch (error) {
     return respondError(res, error, 'GET /admin/staff', { message: 'Failed to fetch staff' });
+  }
+});
+
+/** GET /api/admin/staff.csv — every staff account the table's filters match, as CSV. */
+router.get('/staff.csv', authenticate, isAdmin, async (req, res) => {
+  try {
+    const { search, role, sort, dir } = req.query;
+    const { rows } = await db.adminDirectory.listStaff({
+      search: search || null, role: role || null, sort, dir, exportAll: true,
+    });
+    const iso = (d) => (d ? new Date(d).toISOString() : '');
+    const csv = toCsv(rows.map((u) => ({
+      user_id: u.userId,
+      username: u.username,
+      mobile: u.mobile,
+      status: u.status,
+      blocked: u.isBlocked ? 'yes' : 'no',
+      roles: u.roles.join(' '),
+      areas: u.areas.join(' '),
+      authenticator: u.authenticatorEnrolled ? 'yes' : 'no',
+      joined_at: iso(u.joinedAt),
+      last_login: iso(u.lastLogin),
+    })));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="staff.csv"');
+    res.send(csv);
+  } catch (error) {
+    return respondError(res, error, 'GET /admin/staff.csv', { message: 'Could not build the export.' });
   }
 });
 

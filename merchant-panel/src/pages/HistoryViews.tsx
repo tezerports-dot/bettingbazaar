@@ -1,30 +1,28 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // History — design handoff "BB Merchant Panel.dc.html": three totals, then one
-// of three tabs (Volume, Earnings, Completed) with a CSV export.
+// of three tabs (Volume, Earnings, Report). Report is the server's order table
+// with ✓/✗ and who pressed it, and its CSV (`OrderReportTable`, owner 2026-10-16).
 //
 // The series are derived from the merchant's own completed orders
 // (GET /merchant/orders) and GET /merchant/earnings/weekly — nothing here is a
 // placeholder series (GOVERNANCE §2: no invented business figures).
 import React, { useEffect, useMemo, useState } from 'react';
-import { Download } from 'lucide-react';
-import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
 import { api } from '../services/api';
 import { useOrders } from '../hooks/useOrders';
 import { useViewport } from '../hooks/useViewport';
-import { counterpartyOf, formatMoney, formatMoneyCompact, formatTokens, railOf } from '../utils/rail';
-import { OrderStatus, type PaymentOrder } from '../types';
-import { Button, Card, CardTitle, EmptyState, ErrorState, SegmentedControl, Skeleton, cardStyle } from '../components/ui';
+import { formatMoney, formatMoneyCompact, formatTokens, railOf } from '../utils/rail';
+import { OrderStatus } from '../types';
+import { Card, CardTitle, ErrorState, SegmentedControl, Skeleton, cardStyle } from '../components/ui';
+import OrderReportTable from '../components/OrderReportTable';
 
-type Tab = 'volume' | 'earnings' | 'completed';
+type Tab = 'volume' | 'earnings' | 'report';
 
 interface WeeklyPoint { date: string; earnings: number; orders: number; }
 
 const DAY_MS = 86400000;
 const WINDOW_DAYS = 7;
-
-const orderKey = (order: PaymentOrder): string => String(order._id || order.id || order.orderId);
 
 /** Local YYYY-MM-DD, so buckets line up with what the operator sees on a clock. */
 function dayKey(value: string | number | Date): string {
@@ -104,34 +102,6 @@ const HistoryViews: React.FC = () => {
   const volumeMax = Math.max(1, ...volumeSeries.flatMap((day) => [day.deposits, day.withdrawals]));
   const earningsMax = Math.max(1, ...(weekly ?? []).map((point) => point.earnings));
 
-  const exportCsv = () => {
-    if (completed.length === 0) {
-      toast.error('No completed orders to export yet');
-      return;
-    }
-    const header = ['Order ID', 'Type', 'Currency', 'Amount', 'Tokens', 'Counterparty', 'Completed at'];
-    const rows = completed.map((order) => [
-      order.orderId || order._id,
-      order.type,
-      rail,
-      String(order.fiatAmount ?? order.amount ?? 0),
-      String(order.tokenAmount ?? 0),
-      counterpartyOf(order).name,
-      new Date(order.completedAt || order.createdAt).toISOString(),
-    ]);
-    // Quote every field so commas inside names cannot shift a column.
-    const csv = [header, ...rows]
-      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
-      .join('\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `merchant-completed-orders-${dayKey(Date.now())}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-    toast.success(`Exported ${completed.length} orders`);
-  };
-
   const totalsColumns = isMobile ? '1fr' : 'repeat(3, minmax(0, 1fr))';
 
   if (state === 'error') {
@@ -151,12 +121,9 @@ const HistoryViews: React.FC = () => {
           options={[
             { value: 'volume', label: 'Volume' },
             { value: 'earnings', label: 'Earnings' },
-            { value: 'completed', label: 'Completed' },
+            { value: 'report', label: 'Report' },
           ]}
         />
-        <Button variant="outline" tone="neutral" onClick={exportCsv} style={{ borderColor: 'var(--border)', padding: '10px 15px', fontSize: 12.5 }}>
-          <Download size={15} /> Export CSV
-        </Button>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: totalsColumns, gap: 12 }}>
@@ -253,51 +220,7 @@ const HistoryViews: React.FC = () => {
         </Card>
       )}
 
-      {state === 'ready' && tab === 'completed' && (
-        completed.length === 0 ? (
-          <EmptyState title="No completed orders yet" body="Orders you finish will be listed here with their amounts and timestamps." />
-        ) : (
-          <div style={{ ...cardStyle, overflow: 'hidden', padding: 0 }}>
-            <div style={{ padding: '13px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>Completed orders</span>
-              <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--muted)' }}>{completed.length} shown</span>
-            </div>
-            {completed.map((order) => {
-              const isDeposit = order.type === 'DEPOSIT';
-              return (
-                <div key={orderKey(order)} className="bb-row-hover" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '13px 16px', borderBottom: '1px solid var(--border-2)' }}>
-                  <span style={{
-                    width: 34, height: 34, borderRadius: 10, flexShrink: 0,
-                    background: isDeposit ? 'var(--dep-bg)' : 'var(--wd-bg)',
-                    color: isDeposit ? 'var(--dep)' : 'var(--wd)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 800,
-                  }}>
-                    {isDeposit ? '↓' : '↑'}
-                  </span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {counterpartyOf(order).name}
-                    </div>
-                    <div className="bb-mono" style={{ fontSize: 10.5, fontWeight: 500, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {new Date(order.completedAt || order.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                    </div>
-                  </div>
-                  <span style={{
-                    fontSize: 10, fontWeight: 800, padding: '3px 8px', borderRadius: 7, whiteSpace: 'nowrap',
-                    color: isDeposit ? 'var(--dep)' : 'var(--wd)',
-                    background: isDeposit ? 'var(--dep-bg)' : 'var(--wd-bg)',
-                  }}>
-                    {isDeposit ? 'Deposit' : 'Withdrawal'}
-                  </span>
-                  <div className="bb-mono" style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text)', flexShrink: 0 }}>
-                    {formatMoney(order.fiatAmount ?? order.amount, rail)}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )
-      )}
+      {tab === 'report' && <OrderReportTable />}
     </div>
   );
 };

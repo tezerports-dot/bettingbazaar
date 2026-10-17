@@ -33,7 +33,6 @@ import { createRequest, fulfilRequest } from '#db/repositories/teamPools.js';
 import { getOrderRecord, setCashLink } from '#db/repositories/orders.record.js';
 import { PAYMENT_MODES } from '#db/repositories/orderRails.js';
 import { checkCashLink } from '../domains/payment/cashLink.js';
-import { startOrder } from '../domains/payment/orderLifecycle.service.js';
 
 let seq = 0;
 
@@ -129,23 +128,15 @@ export function teamFixture() {
 }
 
 /**
- * What has to happen on the member's side before a player can pay a buy
- * (Step 2d): the member ACCEPTS it (until then they may still decline, so the
- * player is shown nowhere to pay), and on a CASH buy scans the machine's QR.
- * Through the transition the accept route makes, and the check and the one
- * writer the scan route uses. A no-op on anything already past that, so a
+ * What has to happen on the member's side before a player can pay a buy: on
+ * a CASH buy the member scans the machine's QR. Routing starts an order as it
+ * hands it out, so there is no Accept (owner, 2026-10-17). Through the check
+ * and the one writer the scan route uses. A no-op on anything else, so a
  * fixture can call it before every Paid tap.
  */
 export async function readyToPay(orderId) {
-  let order = await getOrderRecord(orderId);
+  const order = await getOrderRecord(orderId);
   if (!order || order.type !== 'DEPOSIT') return order;
-  if (order.status === 'ASSIGNED') {
-    const accepted = await startOrder(order.orderId, {
-      expectFrom: ['ASSIGNED'], expectMerchant: order.merchantId, set: { processingAt: new Date() },
-    });
-    if (!accepted.ok) throw new Error(`readyToPay: ${orderId} could not be accepted (${accepted.reason})`);
-    order = await getOrderRecord(orderId);
-  }
   if (order.paymentMode !== PAYMENT_MODES.CASH_ATM || order.cashLink || order.status !== 'PROCESSING') return order;
   const tr = String(order.orderId).replace(/[^A-Za-z0-9]/g, '').slice(-20);
   const link = checkCashLink(

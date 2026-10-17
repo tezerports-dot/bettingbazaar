@@ -18,6 +18,7 @@ import { ORDER_SIZE_RAILS, merchantSizes } from '../../domains/merchant/denomina
 import { assignQueuedOrders } from '../../domains/payment/paymentProcessing.service.js';
 import { db } from '#db';
 import { respondError } from '../../shared/httpError.js';
+import { toCsv } from '../../domains/reporting/csv.util.js';
 import { systemConfigPayload, footerPagesOf, FOOTER_PAGE_KEYS, DEFAULT_FOOTER_PAGES } from '../../domains/configuration/systemConfigPayload.js';
 
 const router = express.Router();
@@ -29,19 +30,22 @@ const router = express.Router();
 // endpoints and rate validation that lived here are gone; rates are no
 // longer admin-editable.
 
+const ledgerFilters = (q) => ({
+  txType: q.type && q.type !== 'all' ? String(q.type).toUpperCase() : null,
+  field: q.field && q.field !== 'all' ? String(q.field) : null,
+  from: q.startDate || null,
+  to: q.endDate || null,
+});
+
 router.get('/transactions', authenticate, hasPermission('canViewTransactions'), async (req, res) => {
   try {
-    const { type, field, page = 1, limit = 50 } = req.query;
+    const { page = 1, limit = 50 } = req.query;
 
     // The wallet ledger IS the transaction list. `type` filters by direction
-    // (CREDIT / DEBIT) and `field` by pocket, which is the vocabulary the rows
-    // actually carry — the collection this replaced had its own type and status
-    // enums, and nothing has written a row to it since the money moved.
-    const ledger = await db.wallets.platformLedger({
-      txType: type && type !== 'all' ? String(type).toUpperCase() : null,
-      field:  field && field !== 'all' ? String(field) : null,
-      page, limit,
-    });
+    // (CREDIT / DEBIT), `field` by pocket, and startDate/endDate by IST day —
+    // the vocabulary the rows actually carry. The dates were once sent by the
+    // screen and never read.
+    const ledger = await db.wallets.platformLedger({ ...ledgerFilters(req.query), page, limit });
 
     res.json({
       success: true,
@@ -52,8 +56,33 @@ router.get('/transactions', authenticate, hasPermission('canViewTransactions'), 
       },
     });
   } catch (error) {
-    console.error('Get transactions error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch transactions' });
+    respondError(res, error, 'GET /admin/transactions', { message: 'Failed to fetch transactions' });
+  }
+});
+
+/** GET /api/admin/transactions.csv — the same filtered ledger rows, as CSV. */
+router.get('/transactions.csv', authenticate, hasPermission('canViewTransactions'), async (req, res) => {
+  try {
+    const ledger = await db.wallets.platformLedger({ ...ledgerFilters(req.query), exportAll: true });
+    const csv = toCsv(ledger.entries.map((t) => ({
+      tx_id: t.txId,
+      time: t.createdAt ? new Date(t.createdAt).toISOString() : '',
+      user_id: t.userId,
+      username: t.user?.username || '',
+      type: t.type,
+      pocket: t.field,
+      amount: t.amount,
+      balance_before: t.balanceBefore,
+      balance_after: t.balanceAfter,
+      reason: t.reason || '',
+      ref_id: t.refId || '',
+    })));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition',
+      `attachment; filename="transactions-${req.query.startDate || 'start'}-${req.query.endDate || 'now'}.csv"`);
+    res.send(csv);
+  } catch (error) {
+    respondError(res, error, 'GET /admin/transactions.csv', { message: 'Could not build the export.' });
   }
 });
 

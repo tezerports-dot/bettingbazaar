@@ -12,7 +12,7 @@
  *     assigned finish where they are, and USDT never moves;
  *   · a buy paid by UPI QR (a link built with the order's amount) and one paid
  *     into a BANK account, each end to end: assigned with the pool HELD,
- *     accepted, paid, confirmed — the pool, TEAM_FLOAT → USER_FLOAT and the
+ *     started, paid, confirmed — the pool, TEAM_FLOAT → USER_FLOAT and the
  *     player's pocket asserted;
  *   · a sell is marked paid only FROM one of the account's own withdrawal
  *     accounts, named in the Paid transition;
@@ -268,7 +268,7 @@ describePg('merchant accounts', () => {
       });
       // Assigned: finishes where it is.
       expect(await getOrderRecord(assigned.orderId)).toMatchObject({
-        status: 'ASSIGNED', merchantId: String(agent.merchantId), paymentMode: 'CASH_ATM', inrRouting: 'AGENTS',
+        status: 'PROCESSING', merchantId: String(agent.merchantId), paymentMode: 'CASH_ATM', inrRouting: 'AGENTS',
       });
       // USDT: always the agents', never re-railed.
       const u = await getOrderRecord(usdt.orderId);
@@ -308,7 +308,7 @@ describePg('merchant accounts', () => {
       expect(res.status).toBe(400);
       expect((await getSystemConfig()).merchantBuySizes).toEqual([...ORDER_SIZES]);
       const { rows } = await pgQuery(
-        `SELECT order_id FROM order_states WHERE state = 'ASSIGNED' AND inr_routing = 'AGENTS' AND user_id = ANY($1) LIMIT 1`,
+        `SELECT order_id FROM order_states WHERE state = 'PROCESSING' AND inr_routing = 'AGENTS' AND user_id = ANY($1) LIMIT 1`,
         [players]);
       await expect(pgQuery(
         `UPDATE order_states SET inr_routing = 'MERCHANTS', payment_mode = 'P2P_UPI' WHERE order_id = $1`, [rows[0].order_id]))
@@ -341,17 +341,14 @@ describePg('merchant accounts', () => {
       expect(await tryAssignMerchant(order), 'the buy was not routed').toBe(true);
       const assigned = await getOrderRecord(orderId);
       expect(assigned).toMatchObject({
-        status: 'ASSIGNED', merchantId: String(m.merchantId), payAccountId: expectAccount.accountId,
+        status: 'PROCESSING', merchantId: String(m.merchantId), payAccountId: expectAccount.accountId,
         paymentMode: 'P2P_UPI', inrRouting: 'MERCHANTS',
       });
       // Held in the merchant account's pool by the assignment.
       const held = await getPool(m.team.teamId);
       expect(held.heldPaise - poolBefore.heldPaise).toBe(paise);
       expect(poolBefore.availablePaise - held.availablePaise).toBe(paise);
-      // Nowhere to pay until accepted.
-      expect(toPlayerOrderView(assigned).payTo?.paymentLink).toBeUndefined();
-      const accepted = await as(panel, m).post(`/accept/${orderId}`).send({});
-      expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+      // Started as it was routed (no Accept, owner 2026-10-17): where to pay is shown at once.
       const view = toPlayerOrderView(await getOrderRecord(orderId)).payTo;
       const ref = utr();
       expect((await markOrderPaid(p.userId, orderId, ref)).status).toBe('PAID');
@@ -437,7 +434,6 @@ describePg('merchant accounts', () => {
 
     it('is refused without the account it was paid from, and with one that does not pay withdrawals', async () => {
       const { orderId } = await routedSell(m, 50_000);
-      expect((await as(panel, m).post(`/accept/${orderId}`).send({})).status).toBe(200);
       const ref = utr();
       const none = await as(panel, m).post(`/confirm/${orderId}`).send({ utrNumber: ref });
       expect(none.status).toBe(400);
@@ -490,13 +486,15 @@ describePg('merchant accounts', () => {
       expect((await as(accountApp, s).post('/account/staff').send({})).body.code).toBe('OWNER_ONLY');
       expect((await as(accountApp, s).get('/account/reports')).body.code).toBe('ROLE_REQUIRED');
 
-      const { order, orderId } = await queuedBuy(1_000);
+      const { order, orderId, player: p } = await queuedBuy(1_000);
       await onlyDirectOnline(m.merchantId);
       expect(await tryAssignMerchant(order)).toBe(true);
-      const unassigned = await as(panel, s).post(`/accept/${orderId}`).send({});
+      // The player pays and taps Paid; the confirm is the desk's work.
+      expect((await markOrderPaid(p.userId, orderId, utr())).status).toBe('PAID');
+      const unassigned = await as(panel, s).post(`/confirm/${orderId}`).send({});
       expect(unassigned.status).toBe(403);
       expect(unassigned.body.code).toBe('ACCOUNT_NOT_ASSIGNED');
-      expect((await getOrderRecord(orderId)).status).toBe('ASSIGNED');
+      expect((await getOrderRecord(orderId)).status).toBe('PAID');
       // A WITHDRAWAL duty is refused for a member without that role.
       const badDuty = await as(accountApp, m).post(`/account/staff/${desk.staffId}/accounts`)
         .send({ accountId: m.bank.accountId, duty: 'WITHDRAWAL' });
@@ -504,8 +502,22 @@ describePg('merchant accounts', () => {
       const given = await as(accountApp, m).post(`/account/staff/${desk.staffId}/accounts`)
         .send({ accountId: m.upi.accountId, duty: 'DEPOSIT' });
       expect(given.status, JSON.stringify(given.body)).toBe(200);
-      const accepted = await as(panel, s).post(`/accept/${orderId}`).send({});
-      expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+      const confirmed = await as(panel, s).post(`/confirm/${orderId}`).send({});
+      expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
+      expect((await getOrderRecord(orderId)).status).toBe('COMPLETED');
+      // The report names who pressed ✓ (owner, 2026-10-16): the desk, by name,
+      // to the owner and to the desk; the CSV says the same.
+      for (const who of [m, s]) {
+        const report = await as(panel, who).get('/reports/orders');
+        expect(report.status, JSON.stringify(report.body)).toBe(200);
+        const row = report.body.rows.find((r) => r.orderId === orderId);
+        expect(row).toMatchObject({ result: 'CONFIRMED', actedBy: { kind: 'STAFF', name: desk.name }, type: 'DEPOSIT' });
+        expect(row.tokenAmount).toBe(1_000);
+        expect(Object.keys(row).every((k) => ['orderId', 'type', 'userId', 'utr', 'tokenAmount', 'state', 'result', 'actedBy', 'at'].includes(k))).toBe(true);
+      }
+      const csvLine = (await as(panel, m).get('/reports/orders.csv')).text.split('\n').find((l) => l.startsWith(orderId));
+      expect(csvLine).toContain('✓');
+      expect(csvLine).toContain(desk.name);
       // Their list shows the buys paid into their account.
       const list = await as(panel, s).get('/orders');
       expect(list.status).toBe(200);
@@ -514,7 +526,7 @@ describePg('merchant accounts', () => {
 
       // A sell is not theirs.
       const sell = await routedSell(m, 50_000);
-      const refused = await as(panel, s).post(`/accept/${sell.orderId}`).send({});
+      const refused = await as(panel, s).post(`/confirm/${sell.orderId}`).send({ utrNumber: utr(), paidFromAccountId: m.bank.accountId });
       expect(refused.status).toBe(403);
       expect(refused.body.code).toBe('ROLE_REQUIRED');
     });
@@ -531,13 +543,13 @@ describePg('merchant accounts', () => {
       const report = await as(accountApp, fresh).get('/account/reports');
       expect(report.status, JSON.stringify(report.body)).toBe(200);
       expect(report.body.totals).toBeTruthy();
-      const csv = await as(accountApp, fresh).get('/account/reports/orders.csv');
+      const csv = await as(panel, fresh).get('/reports/orders.csv');
       expect(csv.status).toBe(200);
       expect(csv.headers['content-type']).toMatch(/text\/csv/);
       const { order, orderId } = await queuedBuy(1_000);
       await onlyDirectOnline(m.merchantId);
       expect(await tryAssignMerchant(order)).toBe(true);
-      expect((await as(panel, fresh).post(`/accept/${orderId}`).send({})).body.code).toBe('ROLE_REQUIRED');
+      expect((await as(panel, fresh).post(`/reject/${orderId}`).send({ reason: 'Not mine to take' })).body.code).toBe('ROLE_REQUIRED');
 
       expect((await as(accountApp, m).delete(`/account/staff/${desk.staffId}`)).status).toBe(200);
       expect((await as(accountApp, staffSession(m, desk)).get('/account')).status).toBe(401);
@@ -565,10 +577,10 @@ describePg('merchant accounts', () => {
       await config({ ...TO_MERCHANTS, directMerchants: { dailyProblemFlagThreshold: 2 } });
       const m = await merchantAccount();
       const cap = Number((await getSystemConfig()).merchantOrderLimits?.maxConsecutiveRejections ?? 3);
+      // Each refusal a declined sell: a started buy shows the player where to
+      // pay at once, so it is never declined (owner, 2026-10-17).
       for (let i = 0; i < Math.max(cap, 2) + 1; i += 1) {
-        const { order, orderId } = await queuedBuy(1_000);
-        await onlyDirectOnline(m.merchantId);
-        expect(await tryAssignMerchant(order)).toBe(true);
+        const { orderId } = await routedSell(m, 50_000);
         const declined = await as(panel, m).post(`/reject/${orderId}`).send({ reason: 'Counter closed' });
         expect(declined.status, JSON.stringify(declined.body)).toBe(200);
       }
@@ -609,9 +621,15 @@ describePg('merchant accounts', () => {
       await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 200_000, include: [agent.merchantId] });
       const cap = Number((await getSystemConfig()).merchantOrderLimits?.maxConsecutiveRejections ?? 3);
       for (let i = 0; i < cap; i += 1) {
-        const { order, orderId } = await queuedBuy(50_000);
+        // A sell the agent declines (a started buy cannot be declined).
+        const p = await player();
+        await updateUser(p.userId, {
+          bankDetails: { accountNumber: '000111222333', ifscCode: 'HDFC0000001', bankName: 'HDFC Bank', accountHolderName: 'Test Player' },
+        });
+        await creditWinnings(p.userId, 50_000, 'merchant account suite float', 'Test', `seed_${p.userId}`, `mac_seed_${p.userId}`);
         await teams.onlyOnline([agent.merchantId]);
-        expect(await tryAssignMerchant(order)).toBe(true);
+        const { order: created } = await createWithdrawalOrder(p.userId, 50_000);
+        const orderId = created.orderId ?? created._id;
         expect((await getOrderRecord(orderId)).merchantId).toBe(String(agent.merchantId));
         expect((await as(panel, agent).post(`/reject/${orderId}`).send({ reason: 'busy' })).status).toBe(200);
       }
@@ -639,12 +657,10 @@ describePg('merchant accounts', () => {
       const { order, orderId, player: p } = await queuedBuy(50_000);
       await onlyDirectOnline(m.merchantId);
       expect(await tryAssignMerchant(order)).toBe(true);
-      expect((await as(panel, m).post(`/accept/${orderId}`).send({})).status).toBe(200);
       expect((await markOrderPaid(p.userId, orderId, utr())).status).toBe('PAID');
       expect((await as(panel, m).post(`/confirm/${orderId}`).send({})).status).toBe(200);
 
       const sell = await routedSell(m, 50_000);
-      expect((await as(panel, m).post(`/accept/${sell.orderId}`).send({})).status).toBe(200);
       const paid = await as(panel, m).post(`/confirm/${sell.orderId}`).send({ utrNumber: utr(), paidFromAccountId: m.bank.accountId });
       expect(paid.status, JSON.stringify(paid.body)).toBe(200);
       const poolBefore = (await getPool(m.team.teamId)).availablePaise;

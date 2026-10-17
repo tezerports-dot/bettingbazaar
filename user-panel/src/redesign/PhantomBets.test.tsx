@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
- * House bets on the board screen (owner, 2026-10-15): a phantom agent's auto
+ * Phantom bets on the board screen (owner, 2026-10-15): a phantom agent's auto
  * plan is saved as typed.
  */
 import React from 'react';
@@ -10,7 +10,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn() }));
 vi.mock('../services/apiClient', () => ({ default: api, apiClient: api }));
 
-const { AutoHouseBetsPanel } = await import('./HouseBets');
+const { AutoPhantomBetsPanel } = await import('./PhantomBets');
 
 beforeEach(() => {
   api.get.mockReset().mockResolvedValue({
@@ -24,9 +24,9 @@ beforeEach(() => {
   api.put.mockReset().mockImplementation(async (_p: string, body: any) => ({ success: true, plan: body }));
 });
 
-describe('house bets', () => {
+describe('phantom bets', () => {
   it('loads a plan, and saves the sizes as typed with the side, board and audience', async () => {
-    render(<AutoHouseBetsPanel boardKey="b1" boardName="Board One" audience="VIP" />);
+    render(<AutoPhantomBetsPanel boardKey="b1" boardName="Board One" audience="VIP" />);
     const delhi = await screen.findByLabelText(/Delhi · ON/);
     expect((delhi as HTMLTextAreaElement).value).toBe('100, 200');
 
@@ -39,14 +39,14 @@ describe('house bets', () => {
   });
 
   it('shows only the plans of the profile being played', async () => {
-    render(<AutoHouseBetsPanel boardKey="b1" boardName="Board One" audience="GENERAL" />);
+    render(<AutoPhantomBetsPanel boardKey="b1" boardName="Board One" audience="GENERAL" />);
     expect(await screen.findByText(/General rounds/)).toBeTruthy();
     expect(((await screen.findByLabelText(/Bombay · ON/)) as HTMLTextAreaElement).value).toBe('9');
     expect(((screen.getByLabelText(/Delhi · OFF/)) as HTMLTextAreaElement).value).toBe('');
   });
 
   it('refuses a size that is not whole rupees before asking the server', async () => {
-    render(<AutoHouseBetsPanel boardKey="b1" boardName="Board One" audience="VIP" />);
+    render(<AutoPhantomBetsPanel boardKey="b1" boardName="Board One" audience="VIP" />);
     const bombay = await screen.findByLabelText(/Bombay · OFF/);
     fireEvent.change(bombay, { target: { value: '50, 2.5' } });
     fireEvent.click(screen.getAllByRole('button', { name: 'Start' })[0]);
