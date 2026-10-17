@@ -8,7 +8,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { RefreshCw, ShieldCheck, ShieldAlert, PiggyBank } from 'lucide-react';
 import toast from 'react-hot-toast';
-import api from '../../services/api';
+import api, { downloadCsv } from '../../services/api';
 import { usePermissions } from '../../hooks/usePermission';
 import { Kpis, Toolbar } from '../../components/design';
 
@@ -54,6 +54,7 @@ export const RevenueLedger: React.FC = () => {
   const { can } = usePermissions();
   // Funding the pool moves platform money: the commission area, not analytics.
   const canFundPool = can('canManageCommission');
+  const canExportLedger = can('canExportLedger');
   const [summary, setSummary] = useState<{
     accounts: LedgerAccount[]; integrityOk: boolean;
     distributableRevenue: number; merchantBonusPool: number;
@@ -168,6 +169,14 @@ export const RevenueLedger: React.FC = () => {
       <div className="card">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-lg font-semibold">Journal</h3>
+          {canExportLedger && (
+            <button type="button" className="btn-primary px-3 py-1 text-sm ml-auto mr-2"
+              title="The whole journal, one row per posting (the same export as Reports)"
+              onClick={() => downloadCsv('/api/admin/reports/ledger-export', { format: 'csv' }, 'ledger-export.csv')
+                .catch(() => toast.error('Could not download the ledger.'))}>
+              Download CSV
+            </button>
+          )}
           <select aria-label="Filter the journal by accounting event type" className="input max-w-xs" value={eventType}
             onChange={e => { setEventType(e.target.value); setPage(1); }}>
             <option value="">All event types</option>

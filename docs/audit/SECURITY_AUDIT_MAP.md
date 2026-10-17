@@ -3540,9 +3540,9 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 325 |
+| Route declarations in `backend/**` | 327 |
 | Reachable with **no auth middleware** | 42 |
-| Staff routes carrying an **area** (permission key) | 180 |
+| Staff routes carrying an **area** (permission key) | 181 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 9 |
 
 A count moving is not by itself a defect — it is a prompt to read the

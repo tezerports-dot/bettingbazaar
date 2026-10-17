@@ -13,6 +13,7 @@ import { applyDeltaPaise } from '../repositories/wallets.core.js';
 import { TEST_FUNDING } from './_funding.js';
 import { placePhantomBet } from '../repositories/markets.js';
 import { pruneCycleHistory, listRollups } from '../repositories/cycleHistoryRetention.js';
+import { recordEvent } from '../repositories/ledger.core.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 const PHASES = { mergeBeforeEndSec: 40, equalizerBeforeEndSec: 30, closeBeforeEndSec: 20, celebrateBeforeEndSec: 5 };
@@ -32,7 +33,7 @@ const at = (i) => new Date(DAY0 + i * 5 * 60_000);
 
 /** A round as the generator leaves it once settled (or cancelled). */
 async function round(board, i, { audience = 'VIP', winner = 'DELHI', status = 'COMPLETED', settled = true,
-  paid = 0, profit = 0, fees = 0, house = 0 } = {}) {
+  paid = 0, profit = 0, fees = 0, house = 0, ledger = true } = {}) {
   const id = `${board}-${audience}-${i}`;
   await pgQuery(
     `INSERT INTO cycles (cycle_id, cycle_type, audience, status, start_time, end_time, phantom_delhi_paise)
@@ -41,12 +42,22 @@ async function round(board, i, { audience = 'VIP', winner = 'DELHI', status = 'C
   );
   return {
     id,
-    finish: () => pgQuery(
-      `UPDATE cycles SET status = $2, winner = $3, is_settled = $4,
-              total_paid_out_paise = $5, net_profit_paise = $6, total_platform_fees_paise = $7
-        WHERE cycle_id = $1`,
-      [id, status, status === 'CANCELLED' ? null : winner, settled, paid, profit, fees],
-    ),
+    finish: async () => {
+      await pgQuery(
+        `UPDATE cycles SET status = $2, winner = $3, is_settled = $4,
+                total_paid_out_paise = $5, net_profit_paise = $6, total_platform_fees_paise = $7
+          WHERE cycle_id = $1`,
+        [id, status, status === 'CANCELLED' ? null : winner, settled, paid, profit, fees],
+      );
+      // What the reconciler records for a completed round (BET_CYCLE_SETTLED),
+      // which retention waits for.
+      if (ledger && status === 'COMPLETED') {
+        await recordEvent({
+          eventType: 'BET_CYCLE_SETTLED', idempotencyKey: `acct_cycle_${id}`, refModel: 'Cycle', refId: id,
+          postings: [{ account: 'USER_FUNDS', amountPaise: profit }, { account: 'PLATFORM_REVENUE', amountPaise: -profit }],
+        });
+      }
+    },
   };
 }
 
@@ -148,5 +159,14 @@ describePg('round history retention', () => {
     expect(left).toEqual([{ audience: 'GENERAL', n: 2 }, { audience: 'VIP', n: 2 }]);
     const days = await listRollups({ cycleType: board });
     expect(days.map((d) => [d.audience, d.rounds]).sort()).toEqual([['GENERAL', 1], ['VIP', 1]]);
+  });
+
+  it('keeps a completed round whose ledger event is not recorded yet', async () => {
+    const board = await newBoard();
+    const unbooked = await round(board, 0, { profit: 500, ledger: false });
+    await unbooked.finish();
+    for (let i = 1; i < 3; i += 1) await (await round(board, i)).finish();
+    await pruneCycleHistory({ keep: 1, cycleType: board });
+    expect(await cyclesOf(board)).toEqual([unbooked.id, `${board}-VIP-2`]);
   });
 });

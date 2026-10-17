@@ -42,6 +42,13 @@ export async function pruneCycleHistory({ keep = CYCLE_HISTORY_KEEP, batch = 200
         WHERE r.rn > $1
           AND (c.is_settled OR c.status = 'CANCELLED')
           AND NOT EXISTS (SELECT 1 FROM bets b WHERE b.cycle_id = c.cycle_id AND b.status = 'PENDING')
+          -- A completed round leaves only once the ledger holds its
+          -- BET_CYCLE_SETTLED event: the reconciler finds rounds missing one
+          -- by joining cycles, so a round deleted first would never reach
+          -- the ledger and its revenue would be lost from the books.
+          AND (c.status <> 'COMPLETED' OR EXISTS (
+                SELECT 1 FROM accounting_events e
+                 WHERE e.ref_model = 'Cycle' AND e.ref_id = c.cycle_id))
         ORDER BY c.start_time
         LIMIT $2
         FOR UPDATE OF c SKIP LOCKED`,

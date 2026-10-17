@@ -30,7 +30,7 @@
 import { createHash } from 'node:crypto';
 import {
   recordEventOnPostgres, trialBalanceOnPostgres,
-  accountBalanceOnPostgres, getLedgerOnPostgres,
+  accountBalanceOnPostgres, getLedgerOnPostgres, recordSpendCoveredOnPostgres,
 } from '#db/repositories/ledger.js';
 import { ACCOUNTS, ACCOUNT_CODES, EVENT_TYPES, toMinor } from './chartOfAccounts.js';
 import { INR_TOKEN_RATE } from '../configuration/tokenRates.js';
@@ -296,10 +296,9 @@ export async function getLedger({ page = 1, limit = 50, eventType } = {}) {
  * Policy Platform (future MerchantBonusPolicy) — this function takes an
  * explicit amount so no configurable rule lives here.
  *
- * NOTE: the distributable check is read-then-write without a cross-document
- * transaction — concurrent fundings could jointly exceed distributable.
- * Acceptable for a rare, manual, admin-only action; flagged in
- * CLAUDE.md for when funding becomes automated.
+ * The distributable check and the posting are one transaction under a lock
+ * on PLATFORM_REVENUE (`recordSpendCoveredOnPostgres`), so two fundings at
+ * once cannot jointly exceed distributable revenue (§32 S6).
  */
 export async function fundMerchantBonusPool({ amountMinor, actor, justification, idempotencyKey }) {
   if (!justification || !justification.trim()) {
@@ -309,16 +308,11 @@ export async function fundMerchantBonusPool({ amountMinor, actor, justification,
     throw new Error('An acting admin is required to fund the team commission pool.');
   }
   const postings = buildBonusFundingPostings(amountMinor); // validates amount
+  validatePostings(postings);
 
-  const distributable = await getDistributableRevenueMinor();
-  if (amountMinor > distributable) {
-    throw new Error(
-      `Cannot fund ₹${(amountMinor / 100).toFixed(2)} — distributable platform revenue is ₹${(distributable / 100).toFixed(2)}. ` +
-      'Merchant bonuses are platform-funded only; the pool can never draw beyond earned revenue.'
-    );
-  }
-
-  return recordAccountingEvent({
+  const recorded = await recordSpendCoveredOnPostgres({
+    spendAccount: ACCOUNTS.PLATFORM_REVENUE.code,
+    spendMinor: amountMinor,
     eventType: EVENT_TYPES.MERCHANT_BONUS_FUNDED,
     idempotencyKey: idempotencyKey || derivedIdempotencyKey('bonusfund', [
       actor.userId, amountMinor, justification.trim(),
@@ -328,9 +322,15 @@ export async function fundMerchantBonusPool({ amountMinor, actor, justification,
     refId: String(actor.userId),
     occurredAt: new Date(),
     description: `Team commission pool funded from distributable platform revenue: ${justification.trim()}`,
-    metadata: { amountMinor, justification: justification.trim() },
-    recordedBy: String(actor.userId),
   });
+  if (recorded.refused) {
+    const distributable = recorded.refused.availableMinor;
+    throw new Error(
+      `Cannot fund ₹${(amountMinor / 100).toFixed(2)} — distributable platform revenue is ₹${(distributable / 100).toFixed(2)}. ` +
+      'Merchant bonuses are platform-funded only; the pool can never draw beyond earned revenue.'
+    );
+  }
+  return { idempotent: recorded.idempotent, event: recorded.event };
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

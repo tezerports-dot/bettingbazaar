@@ -138,7 +138,7 @@ export const ADMIN_ONLY_AREAS = Object.freeze([
  * state and replace its own recovery codes (account.admin.routes.js).
  */
 export const SELF_ROUTES = Object.freeze([
-  'GET /account/2fa', 'POST /account/2fa/recovery-codes',
+  'GET /account/me', 'GET /account/2fa', 'POST /account/2fa/recovery-codes',
 ]);
 
 export const PERMISSION_KEYS = Object.freeze(STAFF_PERMISSIONS.map((p) => p.key));

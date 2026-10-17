@@ -105,7 +105,7 @@ router.post('/revenue/bonus-pool/fund', authenticate, hasPermission('canManageCo
       action: 'FUND_MERCHANT_BONUS_POOL',
       category: 'FINANCIAL',
       targetType: 'AccountingEvent',
-      targetId: String(result.event._id),
+      targetId: String(result.event?.idempotencyKey ?? ''),
       details: {
         amountRupees: amount,
         idempotent: result.idempotent,
