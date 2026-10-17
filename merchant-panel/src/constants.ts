@@ -94,7 +94,13 @@ export const ENDPOINTS = {
     REQUEST_POOL:      { method: 'POST',   path: () => '/api/merchant/account/pool-requests' },
     CANCEL_POOL:       { method: 'DELETE', path: (requestId: string) => `/api/merchant/account/pool-requests/${requestId}` },
     REPORTS:           { method: 'GET',    path: () => '/api/merchant/account/reports' },
-    REPORTS_CSV:       { method: 'GET',    path: () => '/api/merchant/account/reports/orders.csv' },
+  },
+  // The order report, every merchant's (owner, 2026-10-16): a row per order
+  // with ✓/✗ and who pressed it; the CSV is the same rows. Backend:
+  // GET /reports/orders(.csv) in backend/domains/merchant/merchant.routes.js.
+  ORDER_REPORT: {
+    PAGE: '/api/merchant/reports/orders',
+    CSV:  '/api/merchant/reports/orders.csv',
   },
 };
 

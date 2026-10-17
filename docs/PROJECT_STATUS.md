@@ -1482,6 +1482,23 @@ to take a reason with no image.
   (`ROUTE_COVERAGE.md`, `E2E_WORKFLOWS.md`) still name the accept route until
   regenerated.
 
+## 3.16 Merchant order report: a row per order with who pressed ✓/✗ (owner, 2026-10-16) — **BUILT on `feat/merchant-reports-table`** (stacked on 3.15)
+
+- Every merchant ✓ (buy confirm, sell Paid) and ✗ (buy rejected as not
+  received) records its actor on the order transition (`merchantActorTag`): the
+  member or owner, or the sub-member by staff id.
+- `merchantReports.orderReport` is the one order report for agents and
+  merchant accounts: transaction ID, user, UTR, amount (tokens), time, ✓/✗ and
+  who, over a range of IST days, totals over every row (not the page), a
+  sub-member's slice in the WHERE. `GET /api/merchant/reports/orders` (paged)
+  and `.csv` (up to 10,000 rows). The account-only `/account/reports/orders.csv`
+  and `ordersForExport` are deleted.
+- Merchant panel: `OrderReportTable` on History (the Completed tab and its
+  client-built CSV are gone) and under the account's Reports figures.
+- Tests: `merchantOrderReportPg` (5), `merchantAccountPg` (+ the desk's name on
+  the row and CSV), `OrderReportTable` (3), `MerchantAccount` reports test;
+  mutations MRT1–MRT4 KILLED.
+
 ## 4. How to pick this up
 
 1. Read `CLAUDE.md` end to end. It is the only rules file.

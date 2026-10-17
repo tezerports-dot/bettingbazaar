@@ -505,6 +505,19 @@ describePg('merchant accounts', () => {
       const confirmed = await as(panel, s).post(`/confirm/${orderId}`).send({});
       expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
       expect((await getOrderRecord(orderId)).status).toBe('COMPLETED');
+      // The report names who pressed ✓ (owner, 2026-10-16): the desk, by name,
+      // to the owner and to the desk; the CSV says the same.
+      for (const who of [m, s]) {
+        const report = await as(panel, who).get('/reports/orders');
+        expect(report.status, JSON.stringify(report.body)).toBe(200);
+        const row = report.body.rows.find((r) => r.orderId === orderId);
+        expect(row).toMatchObject({ result: 'CONFIRMED', actedBy: { kind: 'STAFF', name: desk.name }, type: 'DEPOSIT' });
+        expect(row.tokenAmount).toBe(1_000);
+        expect(Object.keys(row).every((k) => ['orderId', 'type', 'userId', 'utr', 'tokenAmount', 'state', 'result', 'actedBy', 'at'].includes(k))).toBe(true);
+      }
+      const csvLine = (await as(panel, m).get('/reports/orders.csv')).text.split('\n').find((l) => l.startsWith(orderId));
+      expect(csvLine).toContain('✓');
+      expect(csvLine).toContain(desk.name);
       // Their list shows the buys paid into their account.
       const list = await as(panel, s).get('/orders');
       expect(list.status).toBe(200);
@@ -530,7 +543,7 @@ describePg('merchant accounts', () => {
       const report = await as(accountApp, fresh).get('/account/reports');
       expect(report.status, JSON.stringify(report.body)).toBe(200);
       expect(report.body.totals).toBeTruthy();
-      const csv = await as(accountApp, fresh).get('/account/reports/orders.csv');
+      const csv = await as(panel, fresh).get('/reports/orders.csv');
       expect(csv.status).toBe(200);
       expect(csv.headers['content-type']).toMatch(/text\/csv/);
       const { order, orderId } = await queuedBuy(1_000);

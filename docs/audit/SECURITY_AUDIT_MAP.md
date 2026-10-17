@@ -3548,7 +3548,7 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 311 |
+| Route declarations in `backend/**` | 312 |
 | Reachable with **no auth middleware** | 42 |
 | Staff routes carrying an **area** (permission key) | 171 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 8 |
@@ -3642,7 +3642,7 @@ new route and decide. Each of the three questions is defined in §2.
 |---|---|---|---|
 | `user-panel` | 153 | 0 | 0 |
 | `admin-panel` | 138 | 0 | 0 |
-| `merchant-panel` | 63 | 0 | 0 |
+| `merchant-panel` | 65 | 0 | 0 |
 
 <!-- END GENERATED -->
 

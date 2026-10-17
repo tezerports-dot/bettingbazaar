@@ -25,6 +25,17 @@ export const OWNER_ACTOR = Object.freeze({
   depositAccountIds: null, withdrawalAccountIds: null,
 });
 
+/**
+ * The `actor` an order transition records for a merchant's ✓ or ✗ (owner,
+ * 2026-10-16: the report shows who acted). A sub-member is named by their
+ * staff id, everyone else by the merchant id the session acts for. Read back
+ * only by `orderReport` (merchantReports.js).
+ */
+export function merchantActorTag(req) {
+  const a = req.merchantActor;
+  return a && a.isOwner === false && a.staffId ? `merchant_staff:${a.staffId}` : `merchant:${req.merchantId}`;
+}
+
 /** The actor for a sub-member row (with its assignments). */
 export function actorForStaff(staff) {
   const of = (duty) => Object.freeze(staff.assignments.filter((a) => a.duty === duty).map((a) => a.accountId));

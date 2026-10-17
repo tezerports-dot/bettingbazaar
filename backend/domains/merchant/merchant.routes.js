@@ -46,11 +46,11 @@ import {
 } from './merchantCurrency.js';
 // The merchant's own view of their account, which sign-in answers with too.
 import { formatMerchant } from './merchantSelfView.js';
-import { toMerchantOrderView, toMerchantOrderViews } from './merchantOrderView.js';
+import { toMerchantOrderView, toMerchantOrderViews, toMerchantReportRows, merchantReportCsv } from './merchantOrderView.js';
 import {
   routedToMerchants, PAYMENT_MODES,
 } from '#db/repositories/teamRouting.js';
-import { listScopeFor, refuseWork, ownerOnly } from './merchantActor.js';
+import { listScopeFor, refuseWork, ownerOnly, merchantActorTag } from './merchantActor.js';
 // What a cash buy's ATM link may be (Step 2d).
 import { checkCashLink } from '../payment/cashLink.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
@@ -411,6 +411,51 @@ router.get('/orders', merchantAuth, async (req, res) => {
     }
 });
 
+// The order report (owner, 2026-10-16): every order this merchant was given
+// over a range of IST days, with the ✓ or ✗ pressed and who pressed it, and
+// totals over every matching row. For agents and merchant accounts alike; a
+// sub-member sees their own slice (`listScopeFor`, in the WHERE). The CSV is
+// the same rows, up to ORDER_REPORT_MAX_ROWS.
+async function loadOrderReport(req, { limit, offset }) {
+    const type = req.query.type || null;
+    if (type !== null && type !== 'DEPOSIT' && type !== 'WITHDRAWAL') {
+        throw Object.assign(new Error('type is DEPOSIT or WITHDRAWAL.'), { status: 400, code: 'UNKNOWN_ORDER_TYPE' });
+    }
+    const [report, direct] = await Promise.all([
+        db.merchantReports.orderReport(req.merchantId, {
+            range: { from: req.query.from || null, to: req.query.to || null },
+            scope: listScopeFor(req.merchantActor),
+            orderType: type, limit, offset,
+        }),
+        db.teams.directTeamOf(req.merchantId),
+    ]);
+    // A merchant account's own presses are its owner's; an agent's are their own.
+    return { ...report, rows: toMerchantReportRows(report.rows, { selfLabel: direct ? 'Owner' : 'You' }) };
+}
+
+router.get('/reports/orders', merchantAuth, async (req, res) => {
+    try {
+        const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
+        const skip = Math.max(parseInt(req.query.skip, 10) || 0, 0);
+        const report = await loadOrderReport(req, { limit, offset: skip });
+        res.json({ success: true, ...report, pagination: { total: report.totals.orders, limit, skip } });
+    } catch (err) {
+        return respondError(res, err, 'GET /merchant/reports/orders', { message: 'Could not build the report.' });
+    }
+});
+
+router.get('/reports/orders.csv', merchantAuth, async (req, res) => {
+    try {
+        const report = await loadOrderReport(req, { limit: db.merchantReports.ORDER_REPORT_MAX_ROWS, offset: 0 });
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition',
+            `attachment; filename="merchant-orders-${report.range.from || 'last7'}-${report.range.to || 'today'}.csv"`);
+        res.send(merchantReportCsv(report.rows));
+    } catch (err) {
+        return respondError(res, err, 'GET /merchant/reports/orders.csv', { message: 'Could not build the export.' });
+    }
+});
+
 router.post('/confirm/:id', merchantAuth, async (req, res) => {
     try {
         const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
@@ -610,6 +655,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             moved = await completeOrder(order._id, {
                 expectFrom: 'PAID',
                 expectMerchant: req.merchantId,
+                actor: merchantActorTag(req),
                 set: { completedAt: new Date(), ...responseStamp },
             });
         } else {
@@ -620,6 +666,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             moved = await markOrderPaidState(order._id, {
                 expectFrom: 'PROCESSING',
                 expectMerchant: req.merchantId,
+                actor: merchantActorTag(req),
                 within: paidFromAccountId === null ? null : (client) => db.merchantPaymentAccounts.stampPaidFromWithin(client, {
                     orderId: order.orderId, accountId: paidFromAccountId, allowedAccountIds: allowedPayFrom,
                 }),
@@ -1352,6 +1399,7 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         const windowMinutes = await rejectedBuyDisputeMinutes();
         const rejected = await rejectOrderState(order.orderId, {
             expectMerchant: req.merchantId,
+            actor: merchantActorTag(req),
             set: {
                 rejectedBy:     req.merchantId,
                 rejectedAt:     new Date(),

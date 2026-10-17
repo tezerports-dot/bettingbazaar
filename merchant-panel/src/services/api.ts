@@ -22,6 +22,7 @@ import {
   StaffRole,
   StaffDuty,
   MerchantReport,
+  OrderReport,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -726,15 +727,31 @@ export const getMerchantReport = async (from: string, to: string): Promise<Merch
     method: ENDPOINTS.ACCOUNT.REPORTS.method,
   });
 
+/** Which orders a report covers: IST days (empty: the last seven) and a direction. */
+export interface OrderReportQuery { from: string; to: string; type?: '' | 'DEPOSIT' | 'WITHDRAWAL'; }
+
+const orderReportQuery = ({ from, to, type }: OrderReportQuery, page?: { limit: number; skip: number }): string => {
+  const q = new URLSearchParams();
+  if (from) q.append('from', from);
+  if (to) q.append('to', to);
+  if (type) q.append('type', type);
+  if (page) { q.append('limit', String(page.limit)); q.append('skip', String(page.skip)); }
+  return q.toString() ? `?${q.toString()}` : '';
+};
+
+/** One page of the order report, with totals over every row of the range. */
+export const getOrderReport = async (query: OrderReportQuery, page: { limit: number; skip: number }): Promise<OrderReport> =>
+  request<OrderReport>(`${ENDPOINTS.ORDER_REPORT.PAGE}${orderReportQuery(query, page)}`);
+
 /**
- * The orders behind a report, as a CSV file the browser saves. Fetched with
- * the session's token (a plain link would carry none), then handed to the
- * browser as a download. A refusal is thrown with the server's words.
+ * The order report as a CSV file the browser saves. Fetched with the
+ * session's token (a plain link would carry none), then handed to the browser
+ * as a download. A refusal is thrown with the server's words.
  */
-export const downloadMerchantReportCsv = async (from: string, to: string): Promise<void> => {
+export const downloadOrderReportCsv = async (query: OrderReportQuery): Promise<void> => {
   const token = getAuthToken();
-  const response = await fetch(`${BASE_URL}${ENDPOINTS.ACCOUNT.REPORTS_CSV.path()}${rangeQuery(from, to)}`, {
-    method: ENDPOINTS.ACCOUNT.REPORTS_CSV.method,
+  const response = await fetch(`${BASE_URL}${ENDPOINTS.ORDER_REPORT.CSV}${orderReportQuery(query)}`, {
+    method: 'GET',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     mode: 'cors',
     credentials: 'include',
@@ -751,7 +768,7 @@ export const downloadMerchantReportCsv = async (from: string, to: string): Promi
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `merchant-orders-${from || 'last7'}-${to || 'today'}.csv`;
+  link.download = `merchant-orders-${query.from || 'last7'}-${query.to || 'today'}.csv`;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -805,7 +822,8 @@ export const api = {
   requestMerchantPool,
   cancelMerchantPoolRequest,
   getMerchantReport,
-  downloadMerchantReportCsv,
+  getOrderReport,
+  downloadOrderReportCsv,
 
   // Red Flag
   // Utilities

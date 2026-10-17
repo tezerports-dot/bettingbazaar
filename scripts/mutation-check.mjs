@@ -3678,7 +3678,35 @@ const MUTATIONS = [
     why: 'a buy\'s response time runs from the routing, not from the player\'s Paid tap, so every member reads as slow by however long players take to pay',
     from: `        const respondedFrom = isDeposit ? order.paidAt : order.processingAt;`,
     to: `        const respondedFrom = order.processingAt;`,
+  },  {
+    id: 'MRT1', file: 'backend/domains/merchant/merchantActor.js', config: PG,
+    test: 'backend/tests/routes/merchantAccountPg.test.js',
+    why: 'a sub-member\'s ✓ is recorded as the owner\'s, so the report cannot say who confirmed the order',
+    from: "return a && a.isOwner === false && a.staffId ? `merchant_staff:${a.staffId}` : `merchant:${req.merchantId}`;",
+    to: "return `merchant:${req.merchantId}`;",
   },
+  {
+    id: 'MRT2', file: 'database/repositories/merchantReports.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderReportPg.test.js',
+    why: 'the report reads every merchant\'s orders, so a member sees another member\'s players and references',
+    from: "        WHERE o.merchant_id = $1 AND ${RANGE_SQL.replaceAll('created_at', 'o.created_at')}\n          AND ${filters.join(' AND ')}",
+    to: "        WHERE ${RANGE_SQL.replaceAll('created_at', 'o.created_at')} AND $1::text IS NOT NULL\n          AND ${filters.join(' AND ')}",
+  },
+  {
+    id: 'MRT3', file: 'database/repositories/merchantReports.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderReportPg.test.js',
+    why: 'the totals count only the page drawn, not every order of the range',
+    from: "            count(*) OVER () AS total_count,",
+    to: "            1 AS total_count,",
+  },
+  {
+    id: 'MRT4', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderReportPg.test.js',
+    why: 'a buy rejected as not received carries no actor, so the report shows no ✗ for it',
+    from: "            expectMerchant: req.merchantId,\n            actor: merchantActorTag(req),\n            set: {\n                rejectedBy:",
+    to: "            expectMerchant: req.merchantId,\n            set: {\n                rejectedBy:",
+  },
+
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

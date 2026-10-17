@@ -1518,6 +1518,23 @@ export async function findExpiredOrders({
  * nothing else. Every order reaches a member through team routing, so there is
  * no open pool to show (§3.10, 2c).
  */
+/**
+ * A merchant account's sub-member's slice of the orders, as a WHERE term
+ * (owner, 2026-10-11; `listScopeFor`): the buys paid into their deposit
+ * accounts, and, with withdrawal accounts, the sells not yet paid or paid from
+ * one of theirs. Pushes its parameters onto `params`. One copy for the order
+ * list and the report (`merchantReports.orderReport`), so the two never
+ * disagree on what a sub-member sees.
+ */
+export function staffScopeSql(scope, params, alias = '') {
+  params.push(scope.depositAccountIds ?? []);
+  const dep = `(${alias}order_type = 'DEPOSIT' AND ${alias}pay_account_id = ANY($${params.length}::text[]))`;
+  params.push(scope.withdrawalAccountIds ?? null);
+  const wd = `(${alias}order_type = 'WITHDRAWAL' AND $${params.length}::text[] IS NOT NULL
+               AND (${alias}paid_from_account_id IS NULL OR ${alias}paid_from_account_id = ANY($${params.length}::text[])))`;
+  return `(${dep} OR ${wd})`;
+}
+
 export async function merchantVisibleOrders({
   merchantId, state = null, orderType = null,
   limit = 50, offset = 0,
@@ -1531,14 +1548,7 @@ export async function merchantVisibleOrders({
   const filters = [];
   if (state) { params.push(String(state)); filters.push(`state = $${params.length}`); }
   if (orderType) { params.push(String(orderType)); filters.push(`order_type = $${params.length}`); }
-  if (scope) {
-    params.push(scope.depositAccountIds ?? []);
-    const dep = `(order_type = 'DEPOSIT' AND pay_account_id = ANY($${params.length}::text[]))`;
-    params.push(scope.withdrawalAccountIds ?? null);
-    const wd = `(order_type = 'WITHDRAWAL' AND $${params.length}::text[] IS NOT NULL
-                 AND (paid_from_account_id IS NULL OR paid_from_account_id = ANY($${params.length}::text[])))`;
-    filters.push(`(${dep} OR ${wd})`);
-  }
+  if (scope) filters.push(staffScopeSql(scope, params));
 
   const size = Math.min(Math.max(Number(limit) || 50, 1), 100);
   const skip = Math.max(Number(offset) || 0, 0);
