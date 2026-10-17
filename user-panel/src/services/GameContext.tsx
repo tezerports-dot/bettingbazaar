@@ -742,7 +742,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       }));
       if (!shown) return; // the board's pop-up has it
       if (payout > 0) addToast(`🏆 You Won ₹${payout.toLocaleString()}!`, 'success');
-      else addToast(`${data.winner === 'DELHI' ? 'Delhi' : 'Bombay'} won. Your ₹${staked.toLocaleString()} bet did not win this round.`, 'info');
+      else addToast(`${data.winner === 'DELHI' ? 'Delhi' : 'Bombay'} won. You lost ₹${staked.toLocaleString()} this round.`, 'info');
     };
 
     const handleCyclePhase = (raw: unknown) => {

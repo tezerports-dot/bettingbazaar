@@ -3,6 +3,7 @@
  * ResultsPage.tsx — 2026 "Bazaar" redesign. Latest winner, roadmap, and the
  * per-cycle result feed, driven by GameContext.pastCycles (real cycle history).
  */
+import { LatestTag, LATEST_RING, NEWEST_LEFT } from '../redesign/LatestTag';
 import React, { useMemo, useState } from 'react';
 import { useGame } from '../services/GameContext';
 import { ago } from '../redesign/format';
@@ -26,7 +27,8 @@ const ResultsPage: React.FC = () => {
 
   const boardName = (key: string) => boards.find(b => b.key === key)?.name ?? '';
 
-  const roadmapBeads = cycles.slice(0, 60).map(c => c.winner as Side).reverse().map(sd => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sideBg(sd) }));
+  // Newest first: top-left, down each column, then right (`LatestTag.tsx`).
+  const roadmapBeads = cycles.slice(0, 60).map(c => c.winner as Side).map(sd => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sideBg(sd) }));
   const latest = cycles[0]?.winner as string | undefined;
 
   return (
@@ -52,9 +54,10 @@ const ResultsPage: React.FC = () => {
 
       {/* Roadmap */}
       <div style={{ ...card, marginBottom: 14 }}>
-        <span style={capLabel}>Roadmap · newest right</span>
+        <span style={capLabel}>Roadmap</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}><LatestTag /> {NEWEST_LEFT}</div>
         <div className="bb-noscroll" style={{ display: 'grid', gridAutoFlow: 'column', gridTemplateRows: 'repeat(6,20px)', gap: 4, overflowX: 'auto', padding: '12px 0 4px' }}>
-          {roadmapBeads.length === 0 ? <span style={{ fontSize: 12, color: 'var(--text3)' }}>No results yet</span> : roadmapBeads.map((b, i) => <span key={i} style={{ width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{b.ch}</span>)}
+          {roadmapBeads.length === 0 ? <span style={{ fontSize: 12, color: 'var(--text3)' }}>No results yet</span> : roadmapBeads.map((b, i) => <span key={i} aria-label={i === 0 ? 'Latest result' : undefined} style={{ width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', ...(i === 0 ? LATEST_RING : null) }}>{b.ch}</span>)}
         </div>
       </div>
 

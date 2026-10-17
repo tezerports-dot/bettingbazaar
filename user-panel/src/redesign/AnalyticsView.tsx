@@ -24,6 +24,7 @@
  * which stays withheld below MIN_SAMPLE — a "DELHI next 67%" off four results
  * is noise wearing the costume of a signal.
  */
+import { LatestTag, LATEST_RING, NEWEST_LEFT } from './LatestTag';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { analyticsFor, MIN_SAMPLE, Side } from './analytics';
 import { analyticsWindowFor } from '../constants';
@@ -80,11 +81,12 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
   );
   const A = useMemo(() => analyticsFor(filled.winners, board), [filled, board]);
 
-  // The big road and the strips slide sideways; they open on the newest end.
+  // The big road and the strips slide sideways; newest on the left, so they
+  // open at their left end (`LatestTag.tsx`, owner 2026-10-17).
   const roadRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = roadRef.current;
-    if (el) el.scrollLeft = el.scrollWidth;
+    if (el) el.scrollLeft = 0;
   }, [A.total, active]);
 
   // Share of wins. With no results at all, say nothing rather than 0% / 100%.
@@ -117,8 +119,9 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
   const favorSide = probDelhi >= probBombay ? 'DELHI' : 'BOMBAY';
   const favorColor = favorSide === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)';
 
-  // Every result in the window, oldest left; index i newest-first is demo from `filled.real`.
-  const aBeads = A.seq.map((sd, i) => ({ ...bead(sd), demo: i >= filled.real })).reverse();
+  // Every result in the window, newest first (top-left, down each column, then
+  // right); index i is demo from `filled.real`.
+  const aBeads = A.seq.map((sd, i) => ({ ...bead(sd), demo: i >= filled.real }));
   const recent = A.seq.slice(0, 12);
 
   const empty = A.sample === 0;
@@ -150,27 +153,33 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
           <>
             <div style={box}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <span style={heading}>Big road · all {fmt(A.total)} · newest right, slide for older</span>
+                <span style={heading}>Big road · all {fmt(A.total)}</span>
                 {!empty && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--gold-ink)' }}>Current: {cur.side} ×{cur.len}</span>}
               </div>
               {empty ? (
                 <div style={{ fontSize: 11, color: 'var(--text3)', padding: '14px 0', textAlign: 'center' }}>No results on this board yet.</div>
               ) : (
+                <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '-4px 0 8px', fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>
+                  <LatestTag /> {NEWEST_LEFT}
+                </div>
                 <div ref={roadRef} data-testid="big-road" style={{ display: 'grid', gridAutoFlow: 'column', gridTemplateRows: 'repeat(6,20px)', gridAutoColumns: '20px', gap: 4, overflowX: 'auto', paddingBottom: 6, scrollSnapType: 'x proximity', WebkitOverflowScrolling: 'touch' }}>
                   {aBeads.map((b, i) => (
-                    <span key={i} data-demo={b.demo ? '' : undefined} style={{ width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', ...(b.demo ? DEMO_STYLE : null) }}>{b.ch}</span>
+                    <span key={i} data-demo={b.demo ? '' : undefined} aria-label={i === 0 ? 'Latest result' : undefined} style={{ width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', ...(b.demo ? DEMO_STYLE : null), ...(i === 0 ? LATEST_RING : null) }}>{b.ch}</span>
                   ))}
                 </div>
+                </>
               )}
             </div>
             {!empty && (
               <div style={{ ...box, marginTop: 10 }}>
-                <span style={heading}>Last {recent.length} results · newest first</span>
+                <span style={heading}>Last {recent.length} results · newest on the left</span>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
                   {recent.map((sd, i) => (
                     <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 9px 4px 4px', borderRadius: 999, background: 'var(--surface)', border: '1px solid var(--line)', fontSize: 10, fontWeight: 800, color: 'var(--text2)' }}>
                       <span style={{ width: 16, height: 16, borderRadius: '50%', background: bead(sd).bg, color: '#fff', fontSize: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{bead(sd).ch}</span>
                       {sd === 'DELHI' ? 'Delhi' : 'Bombay'}
+                      {i === 0 && <LatestTag style={{ marginLeft: 2 }} />}
                     </span>
                   ))}
                 </div>

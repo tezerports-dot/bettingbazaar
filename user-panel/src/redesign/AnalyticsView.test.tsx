@@ -27,6 +27,22 @@ describe('the analytics page body', () => {
     expect(screen.getByText('Progression calculator')).toBeTruthy();
   });
 
+  it('draws every strip newest on the left, tagged Latest (owner, 2026-10-17)', () => {
+    // Newest first: BOMBAY ×1 is the latest run, then DELHI ×2.
+    const seq: Side[] = ['BOMBAY', 'DELHI', 'DELHI', 'BOMBAY', 'DELHI'];
+    render(<AnalyticsView winners={seq} />);
+    const strip = screen.getByTestId('run-strip');
+    expect(strip.firstElementChild!.getAttribute('aria-label')).toBe('Latest run: Bombay ×1');
+    expect(strip.children[1].getAttribute('title')).toBe('Delhi ×2');
+    expect(screen.getAllByText(/Newest on the left/).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('tab', { name: 'Previous results' }));
+    const road = screen.getByTestId('big-road');
+    expect(road.firstElementChild!.getAttribute('aria-label')).toBe('Latest result');
+    expect([...road.children].map((b) => b.textContent).join('')).toBe('BDDBD');
+    // The recent chips: the first is the newest and carries the tag.
+    expect(screen.getByText('Last 5 results · newest on the left').parentElement!.textContent).toMatch(/^Last 5.*BBombayLatest/);
+  });
+
   it('shows the tapped section alone', () => {
     render(<AnalyticsView winners={few} />);
     fireEvent.click(screen.getByRole('tab', { name: 'Win share' }));

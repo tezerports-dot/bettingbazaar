@@ -19,6 +19,7 @@
  * `payoutMultiplier` and `winningsFeePercent` (system config); until it has
  * arrived the profit is not shown rather than guessed.
  */
+import { LatestTag, NEWEST_LEFT } from './LatestTag';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Side, RUN_WINDOWS, RUN_BUCKETS, LADDER_MAX_STEPS,
@@ -86,13 +87,14 @@ const RunsAndGaps: React.FC<Props> = ({ board, winners, real }) => {
 
   const table = useMemo(() => runLengthTable(winners, lookBack), [winners, lookBack]);
   const gaps = useMemo(() => ({ DELHI: gapSummary(winners, 'DELHI', lookBack), BOMBAY: gapSummary(winners, 'BOMBAY', lookBack) }), [winners, lookBack]);
-  // The strip: every result in the window as runs, oldest on the left; it
-  // slides sideways and opens on the newest end (owner, 2026-10-15: all 1,440).
-  const strip = useMemo(() => runsOf(winners).reverse(), [winners]);
+  // The strip: every result in the window as runs (owner, 2026-10-15: all
+  // 1,440), newest on the left; it slides sideways and opens at its left end
+  // (`LatestTag.tsx`, owner 2026-10-17).
+  const strip = useMemo(() => runsOf(winners), [winners]);
   const stripRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = stripRef.current;
-    if (el) el.scrollLeft = el.scrollWidth;
+    if (el) el.scrollLeft = 0;
   }, [strip]);
 
   const payout = usePayout();
@@ -115,16 +117,17 @@ const RunsAndGaps: React.FC<Props> = ({ board, winners, real }) => {
       {/* Run strip */}
       <section style={box} aria-label="Run strip">
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-          <span style={heading}>Run strip · newest last</span>
-          <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>all {fmt(winners.length)} results · slide for older</span>
+          <span style={heading}>Run strip · all {fmt(winners.length)} results</span>
+          <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>{NEWEST_LEFT}</span>
         </div>
         <div ref={stripRef} data-testid="run-strip" style={{ display: 'flex', flexWrap: 'nowrap', gap: 8, padding: '12px 0 6px', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
           {strip.map((r, i) => (
-            <div key={i} title={`${sideName(r.side)} ×${r.len}`} style={{ flex: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+            <div key={i} title={`${sideName(r.side)} ×${r.len}`} aria-label={i === 0 ? `Latest run: ${sideName(r.side)} ×${r.len}` : undefined} style={{ flex: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+              {i === 0 ? <LatestTag /> : <span style={{ height: 13 }} aria-hidden />}
               <div style={{ display: 'flex', gap: 2 }}>
                 {Array.from({ length: r.len }, (_, k) => {
-                  // Drawn oldest first: box k of the run is result start + len - 1 - k, newest first.
-                  const demo = r.start + r.len - 1 - k >= realCount;
+                  // Drawn newest first: box k of the run is result start + k.
+                  const demo = r.start + k >= realCount;
                   return <span key={k} data-demo={demo ? '' : undefined} style={{ width: 18, height: 22, borderRadius: 4, background: sideColor(r.side), color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', ...(demo ? DEMO_STYLE : null) }}>{r.side === 'DELHI' ? 'D' : 'B'}</span>;
                 })}
               </div>
