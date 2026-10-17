@@ -510,7 +510,7 @@ async function linkWithin(client, account, { telegramUser, phone }) {
         joiningNumber = await claimJoiningNumber(account.user_id, { client });
         const rewards = referralRewardsFrom(await getSystemConfig());
         referralLevels = await recordJoinerEarnings(account.user_id, {
-          client, amountsPaise: { 1: rewards.level1Paise, 2: rewards.level2Paise },
+          client, levelsPaise: rewards.levelsPaise,
         });
       }
       return { verified: true, relinked: false, joiningNumber, referralLevels };

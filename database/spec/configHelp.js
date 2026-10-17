@@ -168,13 +168,9 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'How many problems (refusals, unpaid buys that were its fault, lost disputes) a merchant account may have in one day before it is flagged to admins. A flag only warns; it stops nothing.',
     example: '5: the fifth problem today raises a flag.',
   },
-  'referralRewards.level1Rupees': {
-    what: 'What a player earns, in rupees, when someone they invited verifies with Telegram. Paid into their General (bonus) balance when you fund the payout queue. 0 pays nothing at this level. Applies to new joiners only: people already in the queue keep the amount they were promised.',
-    example: '50: each friend who joins earns the inviter ₹50.',
-  },
-  'referralRewards.level2Rupees': {
-    what: 'What the inviter\'s own inviter earns, in rupees, for the same joiner (the second level). 0 turns the second level off. Applies to new joiners only.',
-    example: '10: A invites B, B invites C; when C joins, B earns level 1 and A earns ₹10.',
+  'referralRewards.levelRupees': {
+    what: 'What each level up the invite chain earns, in rupees, when someone verifies with Telegram: level 1 is the person who invited them, level 2 that person\'s inviter, and so on. Add or remove levels (1 to 10). Paid into the General (bonus) balance when you fund the payout queue. 0 pays nothing at that level. Applies to new joiners only: people already in the queue keep the amount they were promised.',
+    example: '50, 10: A invites B, B invites C; when C joins, B earns ₹50 (level 1) and A earns ₹10 (level 2).',
   },
   'referralRewards.turnoverMultiplier': {
     what: 'How many times its amount every General bonus (referral and first deposit) must be played (bet) before it unlocks into withdrawable winnings. Set on each bonus when it is paid, so bonuses already paid keep theirs.',
