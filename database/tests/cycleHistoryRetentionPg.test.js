@@ -77,9 +77,13 @@ describePg('round history retention', () => {
     expect(placed.ok).toBe(true);
     await loseBet({ betId, userId: user, slices: [{ field: 'depositBalance', amountPaise: 120_00 }] });
     // A house bet on it too: never counted as a real stake. Closed as the
-    // settlement closes them (`closePhantomBets`).
+    // settlement closes them (`closePhantomBets`). Phantom betting stops at
+    // the board's equalizer offset by the clock, so the round is placed in
+    // the future for the bet and put back after.
+    await pgQuery(`UPDATE cycles SET end_time = now() + interval '5 minutes' WHERE cycle_id = $1`, [rounds[0].id]);
     expect((await placePhantomBet({ betId: `ph-${user}`, userId: `agent-${user}`, cycleId: rounds[0].id,
       side: 'DELHI', amountRupees: 70, cycleType: board })).ok).toBe(true);
+    await pgQuery(`UPDATE cycles SET end_time = start_time + interval '5 minutes' WHERE cycle_id = $1`, [rounds[0].id]);
     await closePhantomBets(rounds[0].id);
     for (const r of rounds) await r.finish();
 
