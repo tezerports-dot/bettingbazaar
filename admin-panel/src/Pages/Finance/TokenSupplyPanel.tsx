@@ -12,6 +12,7 @@
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { Coins, Download } from 'lucide-react';
+import { Link } from 'react-router';
 import toast from 'react-hot-toast';
 import api, { downloadCsv, cleanParams } from '../../services/api';
 import { usePermissions } from '../../hooks/usePermission';
@@ -165,7 +166,10 @@ export const TokenSupplyPanel: React.FC = () => {
                 {holders.map((h) => (
                   <tr key={`${h.kind}:${h.holderId}`}>
                     <td className="py-2">
-                      <p className="font-medium">{h.name}</p>
+                      {/* A player opens their own page, as on Players. */}
+                      {h.kind === 'PLAYER'
+                        ? <Link to={`/users/${encodeURIComponent(h.holderId)}`} className="font-medium hover:underline">{h.name}</Link>
+                        : <p className="font-medium">{h.name}</p>}
                       <p className="text-[11px] text-gray-500 font-mono">{h.holderId}</p>
                     </td>
                     <td className="py-2 text-gray-400 text-xs">{KIND_LABEL[h.kind] ?? h.kind}</td>

@@ -25,6 +25,7 @@
 import { pgQuery, withTransaction } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 import { PLAY_PROFILES } from './promo.js';
+import { istDay } from '../../backend/shared/istDay.js';
 
 
 export const SIDES = Object.freeze(['DELHI', 'BOMBAY']);
@@ -421,16 +422,6 @@ export async function setCycleStatus(cycleId, to, { from = [] } = {}) {
 /** How many rows one CSV export of the admin's cycle history may carry. */
 export const CYCLE_HISTORY_EXPORT_MAX = 20_000;
 
-/** A date the admin picked (`YYYY-MM-DD`, an IST calendar day), or null. */
-function istDay(v) {
-  if (v == null || v === '') return null;
-  const s = String(v);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(Date.parse(`${s}T00:00:00Z`))) {
-    throw Object.assign(new Error('Dates are YYYY-MM-DD.'), { status: 400, code: 'BAD_DATE' });
-  }
-  return s;
-}
-
 /**
  * Finished cycles, a page at a time, with the totals of everything that matched.
  *
@@ -459,8 +450,8 @@ export async function cycleHistory({
     params.push(`%${needle.replace(/[\\%_]/g, (m) => `\\${m}`)}%`);
     where.push(`c.cycle_id ILIKE $${params.length}`);
   }
-  const fromDay = istDay(from);
-  const toDay = istDay(to);
+  const fromDay = istDay(from, 'from');
+  const toDay = istDay(to, 'to');
   if (fromDay) { params.push(fromDay); where.push(`c.end_time >= ($${params.length}::date)::timestamp AT TIME ZONE 'Asia/Kolkata'`); }
   if (toDay) { params.push(toDay); where.push(`c.end_time < ($${params.length}::date + 1)::timestamp AT TIME ZONE 'Asia/Kolkata'`); }
 

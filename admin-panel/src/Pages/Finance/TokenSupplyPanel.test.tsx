@@ -5,7 +5,9 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render as rtlRender, screen, waitFor, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
+const render = (ui: React.ReactElement) => rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
 
 const { get, downloadCsv, can } = vi.hoisted(() => ({ get: vi.fn(), downloadCsv: vi.fn(), can: vi.fn() }));
 vi.mock('../../services/api', () => ({

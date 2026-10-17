@@ -13,7 +13,8 @@ import {
 import { db } from '#db';
 // Analytics Platform trends (Phase 012 — Enterprise Services tier)
 import { growthTrend, businessTrend, revenueTrend, riskTrend } from './analyticsPlatform.service.js';
-import { serverError, respondError, refusal } from '../../shared/httpError.js';
+import { serverError, respondError } from '../../shared/httpError.js';
+import { istDay } from '../../shared/istDay.js';
 import { toCsv } from '../reporting/csv.util.js';
 import { paiseToRupees } from '../../shared/money.js';
 
@@ -118,16 +119,6 @@ router.get('/analytics/dashboard', authenticate, hasPermission('canViewAnalytics
     res.status(500).json({ success: false, message: 'Failed to fetch dashboard metrics' });
   }
 });
-
-/** `YYYY-MM-DD` (an IST calendar day) or null; anything else is a 400. */
-function istDay(v, name) {
-  if (v == null || v === '') return null;
-  const s = String(v);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(Date.parse(`${s}T00:00:00Z`))) {
-    throw refusal(400, 'BAD_DATE', `${name} must be a date (YYYY-MM-DD).`);
-  }
-  return s;
-}
 
 const pnlWindow = (q) => ({ from: istDay(q.startDate, 'startDate'), to: istDay(q.endDate, 'endDate') });
 

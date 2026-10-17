@@ -9,14 +9,14 @@
 // areas; the Areas column names them. Full admin only, as every route here.
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { ArrowDownUp, UserPlus } from 'lucide-react';
+import { ArrowDownUp, UserPlus, Download } from 'lucide-react';
 import { DataTable, type Column, type TableSort } from '../../components/DataTable';
 import { Kpis, Toolbar } from '../../components/design';
 import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
 import { DEFAULT_PERMISSIONS, type StaffPermissionCatalog } from '../../utils/permissions';
-import api from '../../services/api';
+import api, { downloadCsv, cleanParams } from '../../services/api';
 import type { StaffRole, StaffRow } from '../../types';
 import { PermissionPicker } from './PermissionPicker';
 import { STAFF_ROLE_LABEL } from './staffLabels';
@@ -45,6 +45,15 @@ export const StaffList: React.FC = () => {
   const [form, setForm] = useState(emptyForm);
   const [createProblem, setCreateProblem] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Every staff account the filters match (`GET /api/admin/staff.csv`).
+  const exportCsv = async () => {
+    try {
+      await downloadCsv('/api/admin/staff.csv', cleanParams({
+        search: debouncedSearch, role: role === 'ALL' ? undefined : role, sort: sort.key, dir: sort.dir,
+      }), 'staff.csv');
+    } catch { toast.error('Export failed'); }
+  };
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -136,7 +145,10 @@ export const StaffList: React.FC = () => {
           onClick: () => { setRole(r); setPage(1); },
         }))}
         search={{ value: search, onChange: (v) => { setSearch(v); setPage(1); }, placeholder: 'Search name, mobile, ID…' }}
-        actions={[{ label: creating ? 'Close' : 'Create Sub-Admin', icon: UserPlus, primary: !creating, onClick: () => setCreating((c) => !c) }]}
+        actions={[
+          { label: 'Download CSV', icon: Download, onClick: () => void exportCsv() },
+          { label: creating ? 'Close' : 'Create Sub-Admin', icon: UserPlus, primary: !creating, onClick: () => setCreating((c) => !c) },
+        ]}
       />
 
       {creating && (

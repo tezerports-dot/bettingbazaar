@@ -7,7 +7,7 @@
 // Staff and merchant logins are not players and are not listed here.
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { ArrowDownUp } from 'lucide-react';
+import { ArrowDownUp, Download } from 'lucide-react';
 import { DataTable, type Column, type TableSort } from '../../components/DataTable';
 import { DisputeRecordBadge } from '../../components/DisputeRecordBadge';
 import { StatusBadge } from '../../components/StatusBadge';
@@ -15,7 +15,7 @@ import { Kpis, Toolbar, AvatarCell, Money } from '../../components/design';
 import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
-import api from '../../services/api';
+import api, { downloadCsv, cleanParams } from '../../services/api';
 import type { PlayerRow } from '../../types';
 import toast from 'react-hot-toast';
 
@@ -68,6 +68,15 @@ export const UsersList: React.FC = () => {
   useEffect(() => { void loadUsers(); }, [loadUsers]);
 
   const changeSort = (next: TableSort) => { setSort(next); setPage(1); };
+
+  // Every player the filters match, not the page (`GET /api/admin/users.csv`).
+  const exportCsv = async () => {
+    try {
+      await downloadCsv('/api/admin/users.csv', cleanParams({
+        search: debouncedSearch, status: statusFilter === 'ALL' ? undefined : statusFilter, sort: sort.key, dir: sort.dir,
+      }), 'players.csv');
+    } catch { toast.error('Export failed'); }
+  };
   const open = (u: PlayerRow) => navigate(`/users/${encodeURIComponent(u.userId)}`);
 
   const columns: Column<PlayerRow>[] = [
@@ -117,6 +126,7 @@ export const UsersList: React.FC = () => {
           onClick: () => { setStatusFilter(s); setPage(1); },
         }))}
         search={{ value: search, onChange: (v) => { setSearch(v); setPage(1); }, placeholder: 'Search name, mobile, ID…' }}
+        actions={[{ label: 'Download CSV', icon: Download, onClick: () => void exportCsv() }]}
       />
 
       {/* The same sort as the column headers, for a phone where the table

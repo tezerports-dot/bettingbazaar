@@ -31,6 +31,7 @@
  * run inside `teamPools.js`'s transaction, after its order and pool locks.
  */
 import { paiseToRupees, rupeesToPaise } from '../../backend/shared/money.js';
+import { istDay } from '../../backend/shared/istDay.js';
 import { pgQuery } from '../client.js';
 import {
   applyMovementPaise, applyMovementWithin, getBalancesPaise, withWalletLock,
@@ -351,6 +352,9 @@ export async function refundWithdrawal(userId, amount, withdrawalId) {
  * walletAuthority.getUserLedger — the same paginated history, read from
  * wallet_ledger and reshaped into the WalletLedger doc the panels render.
  */
+/** How many ledger rows one CSV export of Admin › Transactions may carry. */
+export const PLATFORM_LEDGER_EXPORT_MAX = 200_000;
+
 /**
  * Platform-wide wallet movement, a page at a time, with the player's name.
  *
@@ -367,13 +371,22 @@ export async function refundWithdrawal(userId, amount, withdrawalId) {
  * `field` filters by pocket (depositBalance, winningsBalance…) and `txType` by
  * direction (CREDIT / DEBIT), which is the vocabulary the ledger actually uses.
  */
-export async function platformLedger({ field = null, txType = null, page = 1, limit = 50 } = {}) {
+export async function platformLedger({
+  field = null, txType = null, from = null, to = null, page = 1, limit = 50, exportAll = false,
+} = {}) {
   const where = []; const params = [];
   if (field)  { params.push(String(field));  where.push(`l.field = $${params.length}`); }
   if (txType) { params.push(String(txType)); where.push(`l.tx_type = $${params.length}`); }
+  // IST days, both inclusive (Admin › Transactions' date pickers, which were
+  // once sent and never read).
+  const fromDay = istDay(from, 'startDate');
+  const toDay = istDay(to, 'endDate');
+  if (fromDay) { params.push(fromDay); where.push(`l.created_at >= ($${params.length}::date)::timestamp AT TIME ZONE 'Asia/Kolkata'`); }
+  if (toDay) { params.push(toDay); where.push(`l.created_at < ($${params.length}::date + 1)::timestamp AT TIME ZONE 'Asia/Kolkata'`); }
 
-  const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
-  const wanted = Math.max(Number(page) || 1, 1);
+  // The CSV takes every match up to PLATFORM_LEDGER_EXPORT_MAX.
+  const size = exportAll ? PLATFORM_LEDGER_EXPORT_MAX : Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const wanted = exportAll ? 1 : Math.max(Number(page) || 1, 1);
   params.push(size, (wanted - 1) * size);
 
   const { rows } = await pgQuery(
