@@ -590,7 +590,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         //
         // Which target this is depends on the branch: a deposit completes, and
         // a withdrawal only reaches PAID (asserted, not settled) and is held for
-        // at least an hour — the player's window to dispute (2c+).
+        // `withdrawalHoldMinutes` — the player's window to dispute (2c+).
         const holdFor = isDeposit ? 0 : await holdMinutes();
 
         // ── How long the member took (routing ranks members by it, §2) ───────

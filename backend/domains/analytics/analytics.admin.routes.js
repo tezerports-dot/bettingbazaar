@@ -148,7 +148,7 @@ router.get('/analytics/financials', authenticate, hasPermission('canViewAnalytic
 router.get('/analytics/financials.csv', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const window = pnlWindow(req.query);
-    const p = await db.stats.profitAndLoss(window);
+    const [p, t] = await Promise.all([db.stats.profitAndLoss(window), db.tokenLedger.tokenProfit(window)]);
     const line = (section, item, amount, count = '') => ({ section, item, amount, count });
     const csv = toCsv([
       line('Revenue', 'Board games: settled stakes', p.revenue.boardGames.settledStakes, p.revenue.boardGames.bets),
@@ -165,6 +165,13 @@ router.get('/analytics/financials.csv', authenticate, hasPermission('canViewAnal
       line('Not yet earned', 'Stakes still riding', p.openStakes),
       line('Money flow (not revenue)', 'Deposits', p.moneyFlow.deposits.amount, p.moneyFlow.deposits.count),
       line('Money flow (not revenue)', 'Withdrawals', p.moneyFlow.withdrawals.amount, p.moneyFlow.withdrawals.count),
+      // The same window read from the token ledger, every movement counted.
+      ...t.kinds.flatMap((k) => k.operations.map((o) =>
+        line(`Token ledger: ${k.kind}${k.profit ? '' : ' (not profit)'}`, o.operation, o.tokens, o.movements))),
+      line('Token ledger', 'Net profit in tokens', t.netProfit),
+      line('Token ledger cash check', 'Paid by teams for pool tokens', t.cash.receivedFromTeams),
+      line('Token ledger cash check', 'Paid back to teams', -t.cash.paidToTeams),
+      line('Token ledger cash check', 'Tokens now in wallets and pools (owed back)', -t.outstandingNow.total),
     ]);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition',
@@ -226,6 +233,55 @@ router.get('/analytics/token-holders.csv', authenticate, hasPermission('canManag
     res.send(csv);
   } catch (error) {
     respondError(res, error, 'GET /admin/analytics/token-holders.csv', { message: 'Could not build the export.' });
+  }
+});
+
+/**
+ * Profit and loss read from the token ledger (`tokenLedger.tokenProfit`): every
+ * token the platform gained or gave away, by kind and operation, over the IST
+ * days startDate..endDate, with the cash check against the team pool trades.
+ */
+router.get('/analytics/token-profit', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
+  try {
+    res.json({ success: true, data: await db.tokenLedger.tokenProfit(pnlWindow(req.query)) });
+  } catch (error) {
+    respondError(res, error, 'GET /admin/analytics/token-profit', { message: 'Could not read the token ledger.' });
+  }
+});
+
+const movementsQuery = (q) => ({
+  ...pnlWindow(q),
+  kind: q.kind ? String(q.kind) : null,
+  search: q.search ? String(q.search) : null,
+});
+
+/** Every token movement in the window, one row each with its legs (`tokenLedger.tokenMovements`), as CSV, up to `MOVEMENTS_EXPORT_MAX` rows. */
+router.get('/analytics/token-movements.csv', authenticate, hasPermission('canExportLedger'), async (req, res) => {
+  try {
+    const q = movementsQuery(req.query);
+    const m = await db.tokenLedger.tokenMovements({ ...q, limit: db.tokenLedger.MOVEMENTS_EXPORT_MAX });
+    const csv = toCsv(m.rows.map((r) => ({
+      at: r.at,
+      movement_id: r.movementId,
+      kind: r.kind,
+      operation: r.operation,
+      ref_model: r.refModel || '',
+      ref_id: r.refId || '',
+      actor: r.actor || '',
+      reason: r.reason || '',
+      token_supply: r.tokenSupply,
+      house_reserve: r.houseReserve,
+      platform_pools: r.platformPools,
+      player_wallets: r.wallets,
+      team_pools: r.teamPools,
+      platform_net: r.platformNet,
+    })));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition',
+      `attachment; filename="token-movements-${q.from || 'start'}-${q.to || 'now'}.csv"`);
+    res.send(csv);
+  } catch (error) {
+    respondError(res, error, 'GET /admin/analytics/token-movements.csv', { message: 'Could not build the export.' });
   }
 });
 

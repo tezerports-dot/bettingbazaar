@@ -221,7 +221,7 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     example: '2: a ₹100 winning bet pays ₹200 before the fee.',
   },
   withdrawalHoldMinutes: {
-    what: 'After an agent marks a sell as paid, how long the player\'s tokens stay in escrow. The player can dispute inside this window. At least 60.',
+    what: 'After an agent marks a sell as paid, how long the player\'s tokens stay in escrow, out of the team\'s pool, so a sell marked paid without paying can be recovered if the player disputes. Any whole number from 0 to 10,080 (7 days). At 0 the sell settles within a minute; a later dispute is refunded from the team\'s pool, or by the platform if the pool has spent it.',
     example: '120: a sell marked paid at 2:00 settles at 4:00 unless the player disputes.',
   },
   rejectedBuyDisputeMinutes: {
