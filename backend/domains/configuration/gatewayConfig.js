@@ -33,11 +33,12 @@ import { isPlainHostname } from '../../config/apiHosts.js';
 
 export const GATEWAY_FORMAT = 'bb-gateway-config/1';
 /**
- * Enough for the hosts in use plus a pool of STANDBY hosts signed ahead of
- * time: a standby is registered and named here before anyone blocks the live
- * one, so moving installs onto it needs a DNS record, not a signature
- * (docs/governance/DOMAIN_FAILOVER.md). The app probes them all at once
- * (`originFailover.ts`), so a long list of blocked hosts does not hold startup.
+ * The most hosts one document may name. The offline tool signs the live hosts
+ * and the NEXT standby only (`scripts/gateway-config.mjs`, owner 2026-10-17):
+ * the document is public, so a standby named here can be blocked in advance,
+ * and the rest of the pool stays unpublished until a failover needs it
+ * (docs/governance/DOMAIN_FAILOVER.md). The app probes every host at once
+ * (`originFailover.ts`), so a blocked host does not hold startup.
  */
 export const GATEWAY_MAX_HOSTS = 16;
 /** The longest a document may live (expiresAt − issuedAt), so a signed document cannot outlast a rotation by years. */

@@ -7,12 +7,15 @@ player apps are sent to", "A Telegram sign-in") and §33.2; this file is
 procedure. The signing key itself is `GATEWAY_KEY_ROTATION.md`.
 
 The design in one paragraph: a **pool of standby domains** is registered ahead
-of time and named in the gateway document, which is **signed offline**. That
-one signed file is **published to several mirrors** that live off our own
-domains (GitHub, jsDelivr, Cloudflare, IPFS, every API server), and the mirror
-URLs are **baked into every build**. When the live domain is blocked, you point
-a standby's DNS at the server and nothing needs signing: every install already
-trusts that host and moves to it on its own. The **Telegram Mini App link**
+of time and kept **private**. The gateway document, which is **signed offline**,
+names the live hosts and only the **next** standby (owner, 2026-10-17): it is
+published, so anyone blocking the site can read it, and everything in it can
+be blocked in advance. That one signed file is **published to several mirrors**
+that live off our own domains (GitHub, jsDelivr, Cloudflare, IPFS, every API
+server), and the mirror URLs are **baked into every build**. When the live
+domain is blocked, you point the next standby's DNS at the server and every
+install already trusts it and moves to it on its own; then you sign and publish
+a new version naming the standby after it. The **Telegram Mini App link**
 (`t.me/...`) is Telegram's address, not ours, so it is the way in that never
 dies, for new players and for anyone whose app was cleared.
 
@@ -53,20 +56,24 @@ Register 4 to 10 domains you will never advertise until needed. Use different
 TLDs and, ideally, two registrars, so one takedown does not take them all. You
 need not point their DNS anywhere yet.
 
-Write them, live hosts first, into a hosts file kept with your offline key (the
-order is the order apps try them in):
+Write them into a hosts file kept with your offline key, never in this
+repository: the live hosts, a `[standby]` line, then the pool in the order you
+will use it:
 
 ```
 # live
 bettingbazaar.com
-# standby pool
+[standby]
 bb-standby-one.net
 bb-standby-two.org
 bb-standby-three.in
 ```
 
-Up to 16 hosts in all (`GATEWAY_MAX_HOSTS`). The app probes them all at once,
-so a long list of blocked hosts costs one probe timeout at launch, not one each.
+Signing a hosts file names the live hosts and the FIRST standby only
+(`--standby-ahead 1`, the default); the rest of the pool is never published.
+The tool refuses a file with no `[standby]` line, so an old file that listed
+the whole pool cannot be signed whole by mistake. A document may name up to
+16 hosts (`GATEWAY_MAX_HOSTS`).
 
 ### 2. Sign the document offline
 
@@ -192,13 +199,24 @@ Installed apps (APK and web) find the new host by themselves on their next
 request that fails. Sign-ins from an app on the old address use the number
 match until a new APK ships.
 
-On the next quiet day, sign a new version offline with the blocked host moved
-to the end (or dropped) and a fresh standby added, and publish it the same way.
+The same day, as soon as you can: the standby you just used is now live, and
+the public document names no standby any more. Edit the hosts file (the new
+host under the live hosts, the blocked one removed, the used standby taken off
+the pool), sign a new version and publish it the same way. It names the next
+standby, and installs that reach a mirror pick it up. Register a fresh domain
+at the end of the pool when the pool runs short.
+
+Because the next standby is public, a blocker may block it in advance. If it
+is already blocked on the day, skip it: point the one after it instead, sign
+a version naming it as live, and publish. Installs that can reach a mirror
+move to it; an install that cannot reach a mirror comes back through the
+Telegram link.
 
 ## Checklist
 
 - [ ] Pool of standby domains registered (different TLDs)
-- [ ] Document signed offline with live hosts first, then the pool
+- [ ] Hosts file (live, `[standby]`, pool) kept offline with the key, never committed
+- [ ] Document signed offline: live hosts and the next standby only
 - [ ] Published to at least two mirrors, and to every API server
 - [ ] `VITE_GATEWAY_CONFIG_PUBLIC_KEY` and `VITE_GATEWAY_CONFIG_URLS` in the web build; web rebuilt
 - [ ] `ANDROID_GATEWAY_CONFIG_PUBLIC_KEY` and `ANDROID_GATEWAY_CONFIG_URLS` set; APK released

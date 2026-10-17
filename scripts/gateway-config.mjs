@@ -10,11 +10,16 @@
  *       and GATEWAY_CONFIG_PUBLIC_KEY.
  *
  *   node scripts/gateway-config.mjs sign --key <path> --version <n>
- *       (--hosts a.example.com,b.example.com | --hosts-file <file>)
+ *       (--hosts a.example.com,b.example.com | --hosts-file <file> [--standby-ahead <n>])
  *       (--expires <ISO instant> | --days <n>) [--out <file>]
  *       Signs a document issued now and prints it (or writes it to --out).
- *       A hosts file lists one host per line, live hosts first, then the
- *       STANDBY pool (`#` starts a comment): order is the app's preference.
+ *       `--hosts` signs exactly the hosts given, in that order.
+ *       A hosts file lists one host per line (`#` starts a comment): the live
+ *       hosts, then a `[standby]` line, then the STANDBY pool in the order to
+ *       use it. Only the live hosts and the NEXT standby are signed
+ *       (`--standby-ahead`, default 1; owner, 2026-10-17): the document is
+ *       public, so anything in it can be blocked in advance, and the rest of
+ *       the pool stays private until a failover needs it.
  *       Publish the result with scripts/gateway-publish.mjs.
  *
  *   node scripts/gateway-config.mjs verify --public-key <base64url> [--floor <n>] <file>
@@ -94,6 +99,12 @@ function sign({ flags }, out, now) {
   const version = Number(flags.version);
   if (!flags.version || !Number.isSafeInteger(version)) throw fail('sign needs --version <integer>, higher than the last one signed');
   if (Boolean(flags.hosts) === Boolean(flags['hosts-file'])) throw fail('sign needs exactly one of --hosts a.example.com,b.example.com or --hosts-file <file>');
+  if (flags.hosts && flags['standby-ahead'] !== undefined) throw fail('--standby-ahead applies to a --hosts-file only; --hosts signs exactly the hosts given');
+  const ahead = flags['standby-ahead'] === undefined ? DEFAULT_STANDBY_AHEAD : Number(flags['standby-ahead']);
+  if (!Number.isSafeInteger(ahead) || ahead < 0) throw fail('--standby-ahead must be a whole number (0 or more)');
+  const picked = flags.hosts
+    ? { hosts: flags.hosts.split(',').map((h) => h.trim()).filter(Boolean), keptBack: 0 }
+    : signedHosts(readHostsFile(flags['hosts-file']), ahead);
   if (Boolean(flags.expires) === Boolean(flags.days)) throw fail('sign needs exactly one of --expires <ISO instant> or --days <n>');
   const issued = new Date(now);
   const expires = flags.expires ? new Date(flags.expires) : new Date(now + Number(flags.days) * DAY_MS);
@@ -106,7 +117,7 @@ function sign({ flags }, out, now) {
     version,
     issuedAt: issued.toISOString(),
     expiresAt: expires.toISOString(),
-    hosts: flags.hosts ? flags.hosts.split(',').map((h) => h.trim()).filter(Boolean) : readHostsFile(flags['hosts-file']),
+    hosts: picked.hosts,
   }, privateKey);
   const text = `${JSON.stringify(document)}\n`;
   // Prove it verifies as the app will verify it, size cap included, before anyone ships it.
@@ -116,12 +127,36 @@ function sign({ flags }, out, now) {
   if (flags.out) {
     writeFileSync(resolve(flags.out), text);
     out(`signed version ${version} written to ${resolve(flags.out)}`);
+    // Counts only: the standbys kept back are not printed anywhere.
+    if (flags['hosts-file']) out(`${picked.hosts.length} hosts signed; ${picked.keptBack} standby host${picked.keptBack === 1 ? '' : 's'} kept back, unpublished`);
   } else out(text.trimEnd());
 }
 
-/** One host per line; blank lines and `#` comments ignored. Order is kept: it is the app's preference. */
+/** How many standby hosts a hosts file's signed document names (owner, 2026-10-17). */
+export const DEFAULT_STANDBY_AHEAD = 1;
+
+/**
+ * A hosts file: the live hosts, a `[standby]` line, then the standby pool, one
+ * host per line; blank lines and `#` comments ignored. Order is kept: it is the
+ * app's preference, and the pool's order is the order standbys are used in.
+ * The `[standby]` line is required, so an old file that listed the whole pool
+ * after the live hosts cannot be signed whole by mistake.
+ * @returns {{ live: string[], standby: string[] }}
+ */
 export function parseHostsFile(text) {
-  return String(text).split(/\r?\n/).map((line) => line.replace(/#.*/, '').trim()).filter(Boolean);
+  const lines = String(text).split(/\r?\n/).map((line) => line.replace(/#.*/, '').trim()).filter(Boolean);
+  const marker = lines.findIndex((l) => l.toLowerCase() === '[standby]');
+  if (marker < 0) throw fail('the hosts file needs a [standby] line between the live hosts and the standby pool');
+  if (lines.lastIndexOf('[standby]') !== marker) throw fail('the hosts file has more than one [standby] line');
+  const live = lines.slice(0, marker);
+  if (!live.length) throw fail('the hosts file names no live host before its [standby] line');
+  return { live, standby: lines.slice(marker + 1) };
+}
+
+/** The live hosts and the next `ahead` standbys: what is signed, and how many are kept back. */
+export function signedHosts({ live, standby }, ahead = DEFAULT_STANDBY_AHEAD) {
+  const next = standby.slice(0, ahead);
+  return { hosts: [...live, ...next], keptBack: standby.length - next.length };
 }
 
 function readHostsFile(path) {
