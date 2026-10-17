@@ -53,10 +53,10 @@ describe('the rule table is the same one the database enforces', () => {
 
   it('knows where an order can go from here', () => {
     expect(nextStates(ORDER_STATES.PENDING_QUEUE).sort())
-      // NOT PROCESSING: nobody takes an order straight out of the queue any
-      // more. Every order reaches a member through team routing, which moves it
-      // to ASSIGNED first (§3.10, 2c). Not REJECTED: see below.
-      .toEqual(['ASSIGNED', 'CANCELLED', 'FAILED']);
+      // PROCESSING: routing starts an order as it hands it to a member; there
+      // is no ASSIGNED step and no Accept (owner, 2026-10-17). Not REJECTED:
+      // see below.
+      .toEqual(['CANCELLED', 'FAILED', 'PROCESSING']);
     // Nothing leaves COMPLETED except a dispute. Everything else is a reversal.
     expect(nextStates(ORDER_STATES.COMPLETED)).toEqual(['DISPUTED']);
     // ...and a dispute resolves in exactly two directions.
@@ -69,7 +69,7 @@ describe('the rule table is the same one the database enforces', () => {
     // the player had not paid yet could be rejected and its player warned.
     const { ALLOWED_FROM } = await import('#db/repositories/orders.core.js');
     expect(ALLOWED_FROM[ORDER_STATES.REJECTED]).toEqual([ORDER_STATES.PAID]);
-    for (const before of [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING]) {
+    for (const before of [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.PROCESSING]) {
       expect(canTransition(before, ORDER_STATES.REJECTED), before).toBe(false);
     }
     // The opposite: the rejection the button exists for.

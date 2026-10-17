@@ -164,15 +164,6 @@ export async function getAccount(merchantId, accountId) {
   return toAccount(rows[0]);
 }
 
-/** An account by id alone — for a snapshot or a view of an order that already names it. */
-export async function getAccountById(accountId) {
-  if (!accountId) return null;
-  const { rows } = await pgQuery(
-    'SELECT * FROM merchant_payment_accounts WHERE account_id = $1',
-    [String(accountId)], 'merchant_payment_account_get_by_id');
-  return toAccount(rows[0]);
-}
-
 /** A merchant's accounts; removed ones only when asked for. */
 export async function listAccounts(merchantId, { includeRemoved = false } = {}) {
   const { rows } = await pgQuery(

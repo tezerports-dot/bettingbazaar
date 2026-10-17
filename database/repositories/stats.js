@@ -108,7 +108,7 @@ export async function bettingStats() {
 export async function operationStats() {
   const { rows } = await pgQuery(
     `SELECT
-       COUNT(*) FILTER (WHERE state IN ('ASSIGNED', 'PROCESSING'))::int AS pending_orders,
+       COUNT(*) FILTER (WHERE state = 'PROCESSING')::int AS pending_orders,
        COUNT(*) FILTER (WHERE state = 'PENDING_QUEUE')::int             AS queued_orders,
        COUNT(*) FILTER (WHERE state = 'DISPUTED')::int                  AS active_disputes,
        COUNT(*) FILTER (WHERE red_flagged AND state <> 'COMPLETED')::int AS flagged
@@ -138,7 +138,7 @@ export async function userActivity(userId) {
     pgQuery(
       `SELECT COUNT(*)::int AS n,
               COUNT(*) FILTER (WHERE state = 'COMPLETED')::int AS completed,
-              COUNT(*) FILTER (WHERE state IN ('ASSIGNED','PROCESSING','PAID'))::int AS open,
+              COUNT(*) FILTER (WHERE state IN ('PROCESSING','PAID'))::int AS open,
               COALESCE(SUM(token_amount_paise) FILTER (WHERE state = 'COMPLETED' AND order_type = 'DEPOSIT'), 0) AS deposited,
               COALESCE(SUM(token_amount_paise) FILTER (WHERE state = 'COMPLETED' AND order_type = 'WITHDRAWAL'), 0) AS withdrawn
          FROM order_states WHERE user_id = $1`, [uid], 'stats_user_orders'),
@@ -825,7 +825,6 @@ export async function merchantQueueCounts(merchantId) {
   const { rows } = await pgQuery(
     `SELECT
        COUNT(*) FILTER (WHERE state = 'PENDING_QUEUE')::int AS pending,
-       COUNT(*) FILTER (WHERE state = 'ASSIGNED')::int      AS assigned,
        COUNT(*) FILTER (WHERE state = 'PROCESSING')::int    AS processing,
        COUNT(*) FILTER (WHERE state = 'DISPUTED')::int      AS disputed,
        COUNT(*) FILTER (WHERE state IN ('PAID','COMPLETED')
@@ -1091,7 +1090,7 @@ export async function cycleAndQueueCounts({ timezone = 'Asia/Kolkata' } = {}) {
     ),
     pgQuery(
       `SELECT COUNT(*) FILTER (WHERE state = 'PENDING_QUEUE')::int AS queued,
-              COUNT(*) FILTER (WHERE state IN ('ASSIGNED', 'PROCESSING', 'PAID'))::int AS in_flight,
+              COUNT(*) FILTER (WHERE state IN ('PROCESSING', 'PAID'))::int AS in_flight,
               COUNT(*) FILTER (WHERE state = 'DISPUTED')::int      AS disputed
          FROM order_states`, [], 'stats_queue_counts',
     ),

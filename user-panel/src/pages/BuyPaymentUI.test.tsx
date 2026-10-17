@@ -238,17 +238,8 @@ describe('the ATM cash rail', () => {
     expect(screen.queryByRole('link')).toBeNull();
   });
 
-  it('waits for the member to accept, with nothing to tap', () => {
-    // Assigned but not accepted: the member may still decline, so the server
-    // sends no destination and refuses "I've paid" (NOT_ACCEPTED_YET).
-    render(<BuyPaymentUI order={{ ...CASH_ORDER, status: 'ASSIGNED', payTo: { merchantRef: 'Merchant #4411' } }} onPaid={vi.fn()} onExpire={vi.fn()} />);
-    expect(screen.getByRole('status')).toHaveTextContent(/Waiting for the merchant to accept/);
-    expect(screen.queryByRole('button', { name: /I've Paid/ })).toBeNull();
-    expect(screen.queryByRole('link')).toBeNull();
-  });
-
   it('waits for the member to scan the machine, with nothing to tap', () => {
-    // Accepted, but the QR is not scanned yet: there is nothing to pay, and
+    // Started, but the QR is not scanned yet: there is nothing to pay, and
     // the server refuses "I've paid" until there is (CASH_LINK_PENDING).
     render(<BuyPaymentUI order={{ ...CASH_ORDER, payTo: { merchantRef: 'Merchant #4411' } }} onPaid={vi.fn()} onExpire={vi.fn()} />);
     expect(screen.getByRole('status')).toHaveTextContent(/going to the cash machine/);

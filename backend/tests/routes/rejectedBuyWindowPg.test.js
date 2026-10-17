@@ -23,9 +23,8 @@
  *
  * And the rule that the button is for a buy the player marked PAID, and for
  * nothing before it (owner, 2026-10-07): REJECTED's one edge in the state
- * machine is from PAID, so an accepted buy the player has not paid yet is
- * refused with 400 by the route, by the proof upload and by the transition's
- * own WHERE, and the player is neither warned nor flagged.
+ * machine is from PAID, so a started buy the player has not paid yet is
+ * refused with 400 by the route and by the transition's own WHERE, and the player is neither warned nor flagged.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery, withTransaction } from '#db/client.js';
@@ -45,15 +44,18 @@ import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
-// The S3 boundary only: the route's rules are what is under test, and the
-// proof's binding to this member and order is asserted in
-// merchantRejectPaidRoutes.test.js.
-const cdn = vi.hoisted(() => ({ verify: vi.fn(), presign: vi.fn() }));
-vi.mock('../../services/cdn.service.js', async (importOriginal) => {
+// A seam between the route's read and its transition: the window length is
+// read there, so a test can land a dispute in that gap (the snapshot test).
+const gap = vi.hoisted(() => ({ before: null }));
+vi.mock('../../domains/payment/rejectedBuyWindow.service.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
-    default: { ...actual.default, verifyUploadedObject: cdn.verify, generatePresignedUploadUrl: cdn.presign },
+    rejectedBuyDisputeMinutes: async () => {
+      const hook = gap.before; gap.before = null;
+      if (hook) await hook();
+      return actual.rejectedBuyDisputeMinutes();
+    },
   };
 });
 
@@ -63,13 +65,11 @@ const PAISE = TOKENS * 100;
 // One of the CASH sizes: the member scans the machine's QR, and the player may
 // tap Paid before the reference (Step 2d).
 const CASH_TOKENS = 1_000;
-const REJECT = {
-  reason: 'No credit against this UTR in my statement',
-  proofFileKey: 'merchant-reject-proof/x.jpg', proofCdnUrl: 'https://cdn.test/x.jpg',
-};
+// A reason only (owner, 2026-10-17).
+const REJECT = { reason: 'No credit against this UTR in my statement' };
 
 describePg('the window after a member rejects a buy as unpaid', () => {
-  let merchantApp; let playerApp; let uploadApp;
+  let merchantApp; let playerApp;
   let seq = 0;
   const teams = teamFixture();
   const made = [];
@@ -81,9 +81,6 @@ describePg('the window after a member rejects a buy as unpaid', () => {
     await applySchema();
     merchantApp = mountRouter((await import('../../domains/merchant/merchant.routes.js')).default);
     playerApp = mountRouter((await import('../../domains/payment/payment.routes.js')).default);
-    uploadApp = mountRouter((await import('../../routes/upload.routes.js')).default);
-    cdn.verify.mockResolvedValue({ cdnUrl: REJECT.proofCdnUrl, fileKey: REJECT.proofFileKey });
-    cdn.presign.mockResolvedValue({ uploadUrl: 'https://s3.test/put', fileKey: REJECT.proofFileKey, cdnUrl: REJECT.proofCdnUrl });
     // Trap 10: the window lengths are config, shared by every suite after this.
     const cfg = await getSystemConfig();
     baseline = { rejectedBuyDisputeMinutes: cfg.rejectedBuyDisputeMinutes, withdrawalHoldMinutes: cfg.withdrawalHoldMinutes };
@@ -102,8 +99,8 @@ describePg('the window after a member rejects a buy as unpaid', () => {
 
   /**
    * A buy as production makes one, its tokens held in the member's team pool,
-   * taken as far as `upTo`: ASSIGNED (routed), PROCESSING (accepted, and on
-   * cash the machine's QR scanned: the player has somewhere to pay) or PAID
+   * taken as far as `upTo`: PROCESSING (routing started it; on cash the
+   * machine's QR scanned: the player has somewhere to pay) or PAID
    * (the player tapped Paid; on cash, before the reference).
    */
   const routedBuy = async ({ rail = 'UPI_BANK', upTo = 'PAID' } = {}) => {
@@ -122,7 +119,7 @@ describePg('the window after a member rejects a buy as unpaid', () => {
     });
     expect(await tryAssignMerchant(order), 'the router did not assign the buy').toBe(true);
     expect((await getOrderRecord(orderId)).merchantId).toBe(member.merchantId);
-    if (upTo !== 'ASSIGNED') await readyToPay(orderId);
+    if (upTo !== 'PROCESSING') await readyToPay(orderId);
     if (upTo === 'PAID') {
       expect((await markOrderPaid(player.userId, orderId, cash ? undefined : nextUtr())).status).toBe('PAID');
     }
@@ -325,7 +322,6 @@ describePg('the window after a member rejects a buy as unpaid', () => {
         status: row.status,
         window: row.disputeWindowUntil ?? null,
         rejectedAt: row.rejectedAt ?? null,
-        proof: row.rejectionProofUrl ?? null,
         pool: await getPool(buy.team.teamId),
         warnings: Number(user.warningCount || 0),
         flagged: Boolean(user.paymentFlagged),
@@ -334,16 +330,13 @@ describePg('the window after a member rejects a buy as unpaid', () => {
     };
 
     for (const [label, spec] of [
-      ['an accepted bank-transfer buy', { upTo: 'PROCESSING' }],
+      ['a started bank-transfer buy', { upTo: 'PROCESSING' }],
       ['a cash buy whose QR is scanned', { rail: 'CASH', upTo: 'PROCESSING' }],
-      ['a buy the member has not accepted', { upTo: 'ASSIGNED' }],
     ]) {
       it(`is refused with 400 on ${label}, and nothing moves: no REJECTED, no warning, no flag, the hold untouched`, async () => {
         const buy = await routedBuy(spec);
         const before = await footprint(buy);
         expect(before).toMatchObject({ status: spec.upTo, window: null, warnings: 0, flagged: false, intoRejected: [] });
-        cdn.verify.mockClear();
-
         const res = await reject(buy);
 
         expect(res.status, JSON.stringify(res.body)).toBe(400);
@@ -352,39 +345,14 @@ describePg('the window after a member rejects a buy as unpaid', () => {
         expect(res.body.message).toMatch(/has not tapped Paid/);
         expect(res.body.message).toMatch(/expires on its own/);
         expect(await footprint(buy)).toEqual(before);
-        // Nothing to accuse anybody of yet, so no evidence is asked for either.
-        expect(cdn.verify).not.toHaveBeenCalled();
       });
     }
-
-    it('the proof upload asks the same question: no upload URL before Paid, one after', async () => {
-      // §32 S3: the panel asks for the upload URL first. Left wider than the
-      // reject, it staged evidence for an accusation the reject then refused.
-      const buy = await routedBuy({ upTo: 'PROCESSING' });
-      cdn.presign.mockClear();
-      const ask = () => as(uploadApp, buy.member).post(`/merchant/order-reject-proof/${buy.orderId}/upload-url`)
-        .send({ fileName: 'statement.jpg', contentType: 'image/jpeg', fileSize: 1024 });
-
-      const early = await ask();
-      expect(early.status, JSON.stringify(early.body)).toBe(400);
-      expect(early.body).toMatchObject({ success: false, code: 'NOT_PAID_YET' });
-      expect(cdn.presign).not.toHaveBeenCalled();
-
-      // The opposite: once the player taps Paid, the same member gets one.
-      expect((await markOrderPaid(buy.player.userId, buy.orderId, nextUtr())).status).toBe('PAID');
-      const paid = await ask();
-      expect(paid.status, JSON.stringify(paid.body)).toBe(200);
-      expect(paid.body.uploadUrl).toBeTruthy();
-      expect(cdn.presign).toHaveBeenCalledWith(expect.objectContaining({
-        category: 'merchant-reject-proof', userId: String(buy.member.merchantId), orderId: buy.orderId,
-      }));
-    });
 
     it('the state machine has no edge into REJECTED but PAID: the transition itself refuses', async () => {
       // Trap 18: the route's question is a snapshot. The rule is the table the
       // transition's WHERE is built from, so a caller that skips the route —
       // and names no `expectFrom` — is refused by the database the same way.
-      for (const upTo of ['ASSIGNED', 'PROCESSING']) {
+      for (const upTo of ['PROCESSING']) {
         const buy = await routedBuy({ upTo });
         const moved = await rejectOrder(buy.orderId, { actor: 'test', set: { rejectedReason: 'never paid' } });
         expect(moved, upTo).toMatchObject({ ok: false, reason: 'illegal_transition', status: upTo });
@@ -407,7 +375,7 @@ describePg('the window after a member rejects a buy as unpaid', () => {
       expect(res.body.disputeUntil).toBeTruthy();
 
       const after = await footprint(buy);
-      expect(after).toMatchObject({ status: 'REJECTED', warnings: 1, flagged: true, proof: REJECT.proofCdnUrl });
+      expect(after).toMatchObject({ status: 'REJECTED', warnings: 1, flagged: true });
       expect(after.window).toBeTruthy();
       expect(after.intoRejected).toEqual([expect.objectContaining({ from: 'PAID', to: 'REJECTED' })]);
       // The escrow is intact: the hold stays for the player's window.
@@ -435,9 +403,9 @@ describePg('the window after a member rejects a buy as unpaid', () => {
       expect(after.intoRejected).toEqual([expect.objectContaining({ from: 'PAID' })]);
     });
 
-    it('a sell is never "payment not received", paid or not: both doors say so, and nothing moves', async () => {
+    it('a sell is never "payment not received", paid or not: the route says so, and nothing moves', async () => {
       // The member is the one who pays a sell. Built directly, PAID and
-      // assigned, because both doors refuse it before anything reads its money
+      // assigned, because the route refuses it before anything reads its money
       // (the same way merchantRejectPaidRoutes.test.js builds its buys).
       const member = await merchantActor();
       const player = await actor({});
@@ -447,15 +415,8 @@ describePg('the window after a member rejects a buy as unpaid', () => {
         orderId, userId: player.userId, type: 'WITHDRAWAL',
         tokenAmountRupees: CASH_TOKENS, fiatAmountRupees: CASH_TOKENS, state: 'PAID', merchantId: member.merchantId,
       });
-      cdn.presign.mockClear();
-
-      const proof = await as(uploadApp, member).post(`/merchant/order-reject-proof/${orderId}/upload-url`)
-        .send({ fileName: 'statement.jpg', contentType: 'image/jpeg', fileSize: 1024 });
       const res = await as(merchantApp, member).post(`/orders/${orderId}/reject`).send(REJECT);
 
-      expect(proof.status, JSON.stringify(proof.body)).toBe(400);
-      expect(proof.body.code).toBe('NOT_A_BUY');
-      expect(cdn.presign).not.toHaveBeenCalled();
       expect(res.status, JSON.stringify(res.body)).toBe(400);
       expect(res.body.code).toBe('NOT_A_BUY');
       expect((await getOrderRecord(orderId)).status).toBe('PAID');
@@ -473,19 +434,18 @@ describePg('the window after a member rejects a buy as unpaid', () => {
       expect((await getOrderRecord(buy.orderId)).status).toBe('PROCESSING');
     });
 
-    it('the read is a snapshot, the transition is the guard: a buy disputed while the proof was checked is refused by the database, and nobody is warned', async () => {
-      // The route read PAID; the player's dispute lands in the gap the proof
-      // check leaves before the transition. The WHERE refuses, and the member
-      // is told where the buy now stands rather than a bare status.
+    it('the read is a snapshot, the transition is the guard: a buy disputed after the read is refused by the database, and nobody is warned', async () => {
+      // The route read PAID; the player's dispute lands in the gap before the
+      // transition. The WHERE refuses, and the member is told where the buy
+      // now stands rather than a bare status.
       const buy = await paidBuy();
-      cdn.verify.mockImplementationOnce(async () => {
+      gap.before = async () => {
         const raised = await disputeOrder(buy.orderId, {
           expectFrom: 'PAID',
           set: { disputeRaisedBy: 'user', disputeReason: 'I paid', disputeRaisedAt: new Date() },
         });
         expect(raised.ok).toBe(true);
-        return { cdnUrl: REJECT.proofCdnUrl, fileKey: REJECT.proofFileKey };
-      });
+      };
 
       const res = await reject(buy);
 

@@ -14,8 +14,9 @@
  *                      (merchantStaff.js) — the OWNER's;
  *   pool requests      tokens into or out of its pool, fulfilled by an admin
  *                      (teamPools.js) — the OWNER's;
- *   reports            per account and sub-member, with a CSV — the owner's
- *                      and AUDIT's.
+ *   reports            per account and sub-member — the owner's and AUDIT's.
+ *                      The orders behind them, with who pressed ✓ or ✗, are
+ *                      GET /merchant/reports/orders(.csv), every merchant's.
  *
  * Every write is scoped to the session's own merchant in the repository's
  * WHERE (trap 16): an account or sub-member id of another merchant matches no
@@ -31,7 +32,6 @@ import { NAME_IS_A_MOBILE_MESSAGE } from '../identity/mobileInText.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
 import { ownerOnly, ownerOrAudit } from './merchantActor.js';
 import { rupeesToPaise } from '../../shared/money.js';
-import { toCsv } from '../reporting/csv.util.js';
 import { refuse as refuseTeam } from '../team/teamRefusals.js';
 
 const router = express.Router();
@@ -291,34 +291,6 @@ router.get('/account/reports', merchantAuth, requireMerchantAccount, ownerOrAudi
     res.json({ success: true, range, totals, byAccount, bySubMember, unattributed });
   } catch (err) {
     respondError(res, err, 'GET /merchant/account/reports', { message: 'Could not build the report.' });
-  }
-});
-
-/** GET /api/merchant/account/reports/orders.csv?from&to — the orders behind the report, as CSV. */
-router.get('/account/reports/orders.csv', merchantAuth, requireMerchantAccount, ownerOrAudit, async (req, res) => {
-  try {
-    const rows = await db.merchantReports.ordersForExport(req.merchantId, {
-      from: req.query.from || null, to: req.query.to || null,
-    });
-    const csv = toCsv(rows.map((r) => ({
-      order_id: r.order_id,
-      direction: r.order_type,
-      state: r.state,
-      tokens: Number(r.token_amount_paise) / 100,
-      utr: r.utr ?? '',
-      account_id: r.pay_account_id ?? r.paid_from_account_id ?? '',
-      account_label: r.account_label ?? '',
-      created_at: r.created_at?.toISOString?.() ?? r.created_at,
-      completed_at: r.completed_at?.toISOString?.() ?? (r.completed_at ?? ''),
-      disputed: r.dispute_raised_at ? 'yes' : 'no',
-      dispute_lost: r.dispute_lost ? 'yes' : 'no',
-    })));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition',
-      `attachment; filename="merchant-orders-${req.query.from || 'last7'}-${req.query.to || 'today'}.csv"`);
-    res.send(csv);
-  } catch (err) {
-    respondError(res, err, 'GET /merchant/account/reports/orders.csv', { message: 'Could not build the export.' });
   }
 });
 

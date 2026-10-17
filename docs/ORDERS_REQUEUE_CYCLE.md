@@ -1,5 +1,11 @@
 # The requeue cycle, and why a transition key cannot be derived from its destination
 
+> **Superseded state names (2026-10-17).** ASSIGNED no longer exists: routing
+> moves an order PENDING_QUEUE → PROCESSING, and a decline or reassignment moves
+> it PROCESSING → PENDING_QUEUE (only while `mayChangeHands`). `REVISITABLE` now
+> computes to `COMPLETED, DISPUTED, PENDING_QUEUE, PROCESSING`. The reasoning
+> below still holds; read ASSIGNED as "started, not yet paid".
+
 **Status: found, measured, and fixed in `postgres/orderPg.js`. This document is
 the decision record, because the fix changes a rule every future caller obeys.**
 

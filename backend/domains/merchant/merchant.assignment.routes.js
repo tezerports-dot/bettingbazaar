@@ -26,6 +26,7 @@ import { db } from '#db';
 import { requeueOrder } from '../payment/orderLifecycle.service.js';
 import { tryAssignMerchant } from '../payment/paymentProcessing.service.js';
 import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
+import { respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -36,11 +37,13 @@ const router = express.Router();
 
 // ─── POST /api/admin/payment-orders/:id/reassign ─────────────────────────────
 /**
- * Take an ASSIGNED order off its member and offer it to the next one.
+ * Take a started order off its member and offer it to the next one.
  *
- * ASSIGNED only. Once a member has accepted, the player is paying THAT member's
- * account, and moving the order would send them to somebody who never receives
- * the money; such an order is resolved through a dispute instead.
+ * Only while nobody can have paid on it (`mayChangeHands`): a sell its member
+ * has not paid, or a cash buy with no ATM QR scanned. Any other buy shows the
+ * player where to pay from the moment it starts, and moving it would send them
+ * to somebody who never receives the money; such an order is resolved through
+ * a dispute instead. Asked again under the row lock (`refuseIfPayableWithin`).
  *
  * The requeue and the release of the team's pool hold are one transaction, so
  * the order is never queued while still holding a team's tokens. It is then
@@ -54,22 +57,24 @@ router.post('/payment-orders/:id/reassign', authenticate, queueManagerOrPermissi
   try {
     const order = await db.orders.getOrderRecord(req.params.id);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (order.status !== 'ASSIGNED') {
+    if (!db.orders.mayChangeHands(order)) {
       return res.status(400).json({
         success: false,
+        code: 'CANNOT_REASSIGN',
         message: order.status === 'PROCESSING'
-          ? 'The member has accepted this order and the player may already be paying them. Resolve it through a dispute instead.'
+          ? 'The player has been shown where to pay this member, and may already be paying. Resolve it through a dispute instead.'
           : `Order is ${order.status}, cannot reassign`,
       });
     }
     const previousMerchantId = order.merchantId;
 
     const requeued = await requeueOrder(order.orderId, {
-      expectFrom: 'ASSIGNED',
+      expectFrom: 'PROCESSING',
       set: { merchantId: null, merchantSnapshot: null, expiresAt: null },
       actor: `admin:${req.user.userId}`,
       reason: 'Reassigned by a queue manager',
       within: async (client) => {
+        await db.orders.refuseIfPayableWithin(client, order.orderId);
         await db.teamPools.detachFromTeamWithin(client, order.orderId, {
           actor: `admin:${req.user.userId}`, reason: 'Reassigned by a queue manager',
         });
@@ -116,8 +121,8 @@ router.post('/payment-orders/:id/reassign', authenticate, queueManagerOrPermissi
       order: await db.orders.getOrderRecord(order.orderId),
     });
   } catch (error) {
-    console.error('POST /payment-orders/:id/reassign error:', error);
-    res.status(500).json({ success: false, message: 'Failed to reassign order' });
+    // The player may already be paying (asked under the row lock): said as it is.
+    return respondError(res, error, 'POST /payment-orders/:id/reassign', { message: 'Failed to reassign order' });
   }
 });
 
@@ -166,7 +171,7 @@ router.post('/queue/assign/:orderId', authenticate, queueManagerOrPermission('ca
           + 'not ready, or short of pool tokens. It stays queued and is offered again automatically.',
       });
     }
-    emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED', server_ts: Date.now() });
+    emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: order.status, server_ts: Date.now() });
     res.json({
       success: true,
       message: 'Order assigned',

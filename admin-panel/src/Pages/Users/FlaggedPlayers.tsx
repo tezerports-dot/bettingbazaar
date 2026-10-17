@@ -16,15 +16,15 @@
  * every rejection, an index was created for it, and no query ever came back
  * for it.
  *
- * ── The proof is the point ──────────────────────────────────────────────────
+ * ── The reason is the point ─────────────────────────────────────────────────
  * A rejection is one merchant's unreviewed word about someone else's money.
- * The merchant's stated reason and the screenshot they uploaded are shown
- * here BEFORE either action, because the alternative is an admin blocking a
- * player on a row count. A rejection with no proof image is itself a signal —
- * it is rendered as a gap, not hidden.
+ * The merchant's stated reason and the order behind it are shown here BEFORE
+ * either action, because the alternative is an admin blocking a player on a
+ * row count. A rejection carries a reason only, no proof image (owner,
+ * 2026-10-17); evidence is weighed in the dispute the player may raise.
  */
 import React, { useEffect, useState } from 'react';
-import { Flag, ShieldAlert, Ban, CheckCircle2, RefreshCw, ExternalLink, AlertTriangle } from 'lucide-react';
+import { Flag, ShieldAlert, Ban, CheckCircle2, RefreshCw, AlertTriangle } from 'lucide-react';
 import { Modal } from '../../components/Modal';
 import { UserAvatar } from '../../components/UserAvatar';
 import { formatters } from '../../utils/formatters';
@@ -34,7 +34,6 @@ import toast from 'react-hot-toast';
 interface Rejection {
   orderId: string;
   reason: string | null;
-  proofUrl: string | null;
   rejectedAt: string | null;
   merchantId: string | null;
   amountPaise: number | null;
@@ -122,7 +121,7 @@ export const FlaggedPlayers: React.FC = () => {
           <p className="text-gray-400 text-sm mt-1 max-w-3xl">
             A merchant rejected a payment these players said they made. A rejection warns and
             flags — it does not block. The block is yours to make, from the merchant's reason
-            and proof below.
+            and the order below.
           </p>
         </div>
         <button onClick={load} disabled={loading}
@@ -218,24 +217,6 @@ export const FlaggedPlayers: React.FC = () => {
                     {p.lastRejection.rejectedAt && ` · ${formatters.datetime(p.lastRejection.rejectedAt)}`}
                   </p>
                 )}
-                {p.lastRejection?.proofUrl ? (
-                  <a href={p.lastRejection.proofUrl} target="_blank" rel="noopener noreferrer"
-                    className="inline-block group">
-                    <img src={p.lastRejection.proofUrl} alt="Merchant's proof"
-                      className="max-h-56 rounded-lg border border-dark-600 group-hover:border-gray-500" />
-                    <span className="mt-1 inline-flex items-center gap-1 text-xs text-gray-400 group-hover:text-gray-200">
-                      <ExternalLink size={11} /> Open full size
-                    </span>
-                  </a>
-                ) : (
-                  // Rendered, not hidden: a complaint with no evidence is a
-                  // reason to doubt it, and an admin cannot weigh what they
-                  // are not shown.
-                  <p className="flex items-center gap-2 text-xs text-yellow-500">
-                    <AlertTriangle size={13} className="shrink-0" />
-                    No proof image on this rejection.
-                  </p>
-                )}
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
@@ -269,7 +250,7 @@ export const FlaggedPlayers: React.FC = () => {
             <label className="label" htmlFor="reason-shown-in-the-audit-trail">Reason (shown in the audit trail)</label>
             <textarea id="reason-shown-in-the-audit-trail" value={blockReason} onChange={e => setBlockReason(e.target.value)}
               className="input resize-none w-full" rows={3}
-              placeholder="e.g. Third unverified payment claim; proof shows no credit on any of them." />
+              placeholder="e.g. Third unverified payment claim; no credit on any of them in the statement." />
           </div>
           <div className="flex justify-end gap-2">
             <button onClick={() => setBlockTarget(null)} className="btn-secondary text-sm">Cancel</button>

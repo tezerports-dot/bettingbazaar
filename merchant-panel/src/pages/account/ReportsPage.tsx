@@ -3,18 +3,20 @@
  * A merchant account's reports (owner, 2026-10-11 — Phase B): deposits and
  * withdrawals over a range of IST days, per payment account and per
  * sub-member — orders, completed, completed tokens, disputes and disputes
- * lost — with the orders behind them as a CSV.
+ * lost — and the orders behind them, one row each with who pressed ✓ or ✗
+ * (`OrderReportTable`, owner 2026-10-16), downloadable as CSV.
  *
  * The figures are the server's (GET /api/merchant/account/reports); nothing
  * here adds them up again. The owner's and AUDIT's (`ownerOrAudit`); a range
  * the server refuses (INVALID_REPORT_RANGE) is said in its words.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { BarChart3, Download } from 'lucide-react';
+import { BarChart3 } from 'lucide-react';
 import { api } from '../../services/api';
 import { formatTokens } from '../../utils/rail';
 import { Button, Card, CardTitle, Field, Skeleton, inputStyle } from '../../components/ui';
 import AccountShell, { Refusal } from './AccountShell';
+import OrderReportTable from '../../components/OrderReportTable';
 import type { MerchantReport, ReportFigures } from '../../types';
 
 const errorText = (err: any, fallback: string): string => err?.message || fallback;
@@ -65,13 +67,15 @@ const ReportsBody: React.FC = () => {
   const [to, setTo] = useState('');
   const [report, setReport] = useState<MerchantReport | null>(null);
   const [loading, setLoading] = useState(true);
-  const [downloading, setDownloading] = useState(false);
   const [refusal, setRefusal] = useState('');
+  // The range the table shows: the one the figures were last built for.
+  const [shown, setShown] = useState({ from: '', to: '' });
 
   const load = useCallback(async (f: string, t: string) => {
     setLoading(true); setRefusal('');
     try {
       setReport(await api.getMerchantReport(f, t));
+      setShown({ from: f, to: t });
     } catch (err) {
       setRefusal(errorText(err, 'Could not build the report.'));
     } finally {
@@ -81,17 +85,6 @@ const ReportsBody: React.FC = () => {
 
   // The server's default range (the last seven IST days) on arrival.
   useEffect(() => { void load('', ''); }, [load]);
-
-  const download = async () => {
-    setDownloading(true); setRefusal('');
-    try {
-      await api.downloadMerchantReportCsv(from, to);
-    } catch (err) {
-      setRefusal(errorText(err, 'Could not build the export.'));
-    } finally {
-      setDownloading(false);
-    }
-  };
 
   return (
     <>
@@ -105,9 +98,6 @@ const ReportsBody: React.FC = () => {
             <input id="report-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} style={inputStyle} />
           </Field>
           <Button onClick={() => void load(from, to)} busy={loading}>Show report</Button>
-          <Button variant="outline" onClick={() => void download()} busy={downloading}>
-            <Download size={15} /> Download orders (CSV)
-          </Button>
         </div>
         <Refusal message={refusal} style={{ marginTop: 10 }} />
       </Card>
@@ -138,6 +128,7 @@ const ReportsBody: React.FC = () => {
           </div>
         </Card>
       )}
+      <OrderReportTable from={shown.from} to={shown.to} />
     </>
   );
 };

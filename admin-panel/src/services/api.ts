@@ -521,8 +521,9 @@ export const queueManager = {
   },
 
   
-  // Take an ASSIGNED order off its member and offer it to the next one. No
-  // body: the server routes it, and its message says whether anybody took it.
+  // Take a started order off its member and offer it to the next one, only
+  // while nobody can have paid on it (`canReassign`). No body: the server
+  // routes it, and its message says whether anybody took it.
   reassignOrder: async (orderId: string) => {
     const res = await api.post(`/api/admin/payment-orders/${orderId}/reassign`);
     return res.data;

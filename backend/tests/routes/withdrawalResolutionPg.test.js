@@ -137,12 +137,10 @@ describePg('ending a withdrawal, in every state its money can be in', () => {
     const { order } = await createWithdrawalOrder(player.userId, RUPEES);
     const orderId = order.orderId ?? order._id;
     const routed = await getOrderRecord(orderId);
-    expect(routed.status, 'the withdrawal was not routed to the member').toBe('ASSIGNED');
+    expect(routed.status, 'the withdrawal was not routed to the member').toBe('PROCESSING');
     expect(routed.merchantId).toBe(String(merchant.merchantId));
     expect(routed.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
 
-    const accepted = await as(merchantApp, merchant).post(`/accept/${orderId}`).send({});
-    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     if (held) {
       // Every sell is a bank transfer, so the member gives its UTR (2d).
       const confirmed = await as(merchantApp, merchant).post(`/confirm/${orderId}`)

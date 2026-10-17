@@ -166,11 +166,10 @@ describePg('what a player is told about a merchant', () => {
     carriesNoCredential(res.body.order, { bankBuy: true });
   });
 
-  it('shows nowhere to pay while the member may still decline, and nothing once the order has ended', async () => {
-    // ASSIGNED: the member has not accepted, and may decline or be moved. A
-    // transfer made now could reach a member the order then leaves.
+  it('shows nowhere to pay once the order has ended', async () => {
+    // A transfer made now would reach a member the order no longer has.
     const player = await actor({});
-    for (const state of ['ASSIGNED', 'COMPLETED', 'CANCELLED']) {
+    for (const state of ['COMPLETED', 'CANCELLED']) {
       const orderId = await assignedDeposit(player, { state });
       const res = await as(app, player).get(`/order/${orderId}`);
       expect(res.status).toBe(200);
@@ -196,7 +195,7 @@ describePg('what a player is told about a merchant', () => {
     const orderId = oid();
     await createOrderRecord({
       orderId, userId: player.userId, type: 'WITHDRAWAL',
-      tokenAmountRupees: 50_000, fiatAmountRupees: 50_000, state: 'ASSIGNED',
+      tokenAmountRupees: 50_000, fiatAmountRupees: 50_000, state: 'PROCESSING',
       userBankDetails: { accountNumber: '000111222333', ifscCode: 'ICIC0000001', bankName: 'ICICI Bank', accountHolderName: 'Asha Rao' },
     });
     await setOrderFields(orderId, { merchantSnapshot: SNAPSHOT });
@@ -240,21 +239,23 @@ describePg('what a player is told about a merchant', () => {
     expect(JSON.stringify(res.body)).not.toContain(MERCHANT_USDT_TRC20);
     withinTheAllowlist(res.body.order);
 
-    // Before the member accepts, not even their own chain's address: USDT sent
-    // to a member who then declines is not recoverable.
-    const waitingId = oid();
-    await createOrderRecord({
-      orderId: waitingId, userId: player.userId, type: 'DEPOSIT',
-      tokenAmountRupees: 50_000, fiatAmountRupees: 50_000,
-      state: 'ASSIGNED', currency: 'USDT', usdtChain: 'BEP20',
-    });
-    await setOrderFields(waitingId, {
-      merchantSnapshot: { ...SNAPSHOT, usdtChain: 'BEP20', usdtPayTo: MERCHANT_USDT_BEP20, usdtChainLabel: 'BNB Smart Chain (BEP-20)' },
-    });
-    const waiting = await as(app, player).get(`/order/${waitingId}`);
-    expect(waiting.status).toBe(200);
-    expect(waiting.body.order.payTo.usdtAddress).toBeUndefined();
-    expect(JSON.stringify(waiting.body)).not.toContain(MERCHANT_USDT_BEP20);
+    // Once the order has ended, not even their own chain's address: USDT sent
+    // to a member the order no longer has is not recoverable.
+    for (const state of ['COMPLETED', 'CANCELLED']) {
+      const endedId = oid();
+      await createOrderRecord({
+        orderId: endedId, userId: player.userId, type: 'DEPOSIT',
+        tokenAmountRupees: 50_000, fiatAmountRupees: 50_000,
+        state, currency: 'USDT', usdtChain: 'BEP20',
+      });
+      await setOrderFields(endedId, {
+        merchantSnapshot: { ...SNAPSHOT, usdtChain: 'BEP20', usdtPayTo: MERCHANT_USDT_BEP20, usdtChainLabel: 'BNB Smart Chain (BEP-20)' },
+      });
+      const ended = await as(app, player).get(`/order/${endedId}`);
+      expect(ended.status).toBe(200);
+      expect(ended.body.order.payTo?.usdtAddress).toBeUndefined();
+      expect(JSON.stringify(ended.body)).not.toContain(MERCHANT_USDT_BEP20);
+    }
   });
 
   it('keeps the snapshot ON THE ROW for the disputes desk', async () => {

@@ -11,12 +11,12 @@ import { doorRoute } from '../identity/loginDoors.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import {
-    tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete,
+    tryAssignMerchant, updateMerchantStatsOnComplete,
 } from '../payment/paymentProcessing.service.js';
 // The order state machine. Every status change is a guarded transition, and
 // where money moves the transition runs FIRST and gates it.
 import {
-  startOrder, markOrderPaid as markOrderPaidState, completeOrder,
+  markOrderPaid as markOrderPaidState, completeOrder,
   disputeOrder, rejectOrder as rejectOrderState, requeueOrder,
 } from '../payment/orderLifecycle.service.js';
 // Withdrawal settlement hold — confirm asserts payment, the worker settles it
@@ -37,7 +37,6 @@ import { postSystemMessage } from '#db/repositories/chat.js';
 // Every external payment reference — a UTR, a chain transaction hash — is
 // claimed through ONE registry, so the same payment cannot be presented twice.
 import { claimPaymentReference, referenceSpecFor } from '../payment/paymentReference.js';
-import cdnService from '../../services/cdn.service.js';
 import { respondError } from '../../shared/httpError.js';
 
 /** Is Postgres the source of truth for the merchant side of a settlement? */
@@ -47,15 +46,14 @@ import {
 } from './merchantCurrency.js';
 // The merchant's own view of their account, which sign-in answers with too.
 import { formatMerchant } from './merchantSelfView.js';
-import { toMerchantOrderView, toMerchantOrderViews } from './merchantOrderView.js';
+import { toMerchantOrderView, toMerchantOrderViews, toMerchantReportRows, merchantReportCsv } from './merchantOrderView.js';
 import {
-  railOf, routingSettings, merchantRoutingSettings, routedToMerchants, PAYMENT_MODES,
+  routedToMerchants, PAYMENT_MODES,
 } from '#db/repositories/teamRouting.js';
-import { listScopeFor, refuseWork, ownerOnly } from './merchantActor.js';
+import { listScopeFor, refuseWork, ownerOnly, merchantActorTag } from './merchantActor.js';
 // What a cash buy's ATM link may be (Step 2d).
 import { checkCashLink } from '../payment/cashLink.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
-import { getSystemConfig } from '#db/repositories/config.js';
 import { recordMerchantRefusal, REFUSAL } from './merchantRefusal.service.js';
 
 const router     = express.Router();
@@ -413,166 +411,48 @@ router.get('/orders', merchantAuth, async (req, res) => {
     }
 });
 
-router.post('/accept/:id', merchantAuth, async (req, res) => {
+// The order report (owner, 2026-10-16): every order this merchant was given
+// over a range of IST days, with the ✓ or ✗ pressed and who pressed it, and
+// totals over every matching row. For agents and merchant accounts alike; a
+// sub-member sees their own slice (`listScopeFor`, in the WHERE). The CSV is
+// the same rows, up to ORDER_REPORT_MAX_ROWS.
+async function loadOrderReport(req, { limit, offset }) {
+    const type = req.query.type || null;
+    if (type !== null && type !== 'DEPOSIT' && type !== 'WITHDRAWAL') {
+        throw Object.assign(new Error('type is DEPOSIT or WITHDRAWAL.'), { status: 400, code: 'UNKNOWN_ORDER_TYPE' });
+    }
+    const [report, direct] = await Promise.all([
+        db.merchantReports.orderReport(req.merchantId, {
+            range: { from: req.query.from || null, to: req.query.to || null },
+            scope: listScopeFor(req.merchantActor),
+            orderType: type, limit, offset,
+        }),
+        db.teams.directTeamOf(req.merchantId),
+    ]);
+    // A merchant account's own presses are its owner's; an agent's are their own.
+    return { ...report, rows: toMerchantReportRows(report.rows, { selfLabel: direct ? 'Owner' : 'You' }) };
+}
+
+router.get('/reports/orders', merchantAuth, async (req, res) => {
     try {
-        const order = await db.orders.getOrderRecord(req.params.id);
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
-
-        // ── An order is ASSIGNED, never CLAIMED ─────────────────────────────
-        // Every order, both directions, reaches a member through team routing
-        // (`db.teamRouting.assignToTeam`), which checked the rail, the chain,
-        // the member's cap and — on a buy — held the tokens in the team's pool
-        // in the same transaction. There is no open pool to claim from, so the
-        // only order a member may accept is one already theirs.
-        if (!order.merchantId || String(order.merchantId) !== String(req.merchantId)) {
-            return res.status(403).json({ success: false, message: 'This order is not assigned to you.' });
-        }
-        if (refuseWork(req, res, order)) return;
-        if (order.status !== 'ASSIGNED') {
-            return res.status(400).json({ success: false, message: `Order cannot be accepted in status: ${order.status}` });
-        }
-
-        const merchant = await db.merchants.getMerchant(req.merchantId);
-        if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found.' });
-        const merchantRail = order.currency || MERCHANT_CURRENCY.INR; // schema default: 'INR'
-
-        // The CHAIN, re-checked where the member takes it: routing required an
-        // address on the order's chain, but a member can remove one from their
-        // profile in between, and USDT sent to no address is gone.
-        if (merchantRail === MERCHANT_CURRENCY.USDT) {
-            const spec = USDT_CHAIN_SPEC[order.usdtChain];
-            if (!spec) {
-                return res.status(400).json({ success: false, message: 'This USDT order names no chain and cannot be served.' });
-            }
-            if (!usdtAddressFor(merchant, order.usdtChain)) {
-                return res.status(400).json({
-                    success: false,
-                    message: `This order pays on ${spec.label}. Add that address in Profile before taking it.`,
-                });
-            }
-        }
-
-        // The window is the order's own rail's (`teamRouting.processingWindowSeconds`),
-        // or on an order merchant accounts serve its direction's
-        // (`merchantRouting.processingWindowSeconds`, owner 2026-10-11).
-        const cfg = await getSystemConfig();
-        const windowSeconds = routedToMerchants(order)
-            ? merchantRoutingSettings(cfg).processingWindowSeconds[order.type]
-            : routingSettings(cfg).processingWindowSeconds[railOf(order)];
-        // The payment account routing chose for a merchant-account buy: the
-        // snapshot is rebuilt with it, never with the merchant's profile.
-        const payAccount = order.payAccountId
-            ? await db.merchantPaymentAccounts.getAccountById(order.payAccountId) : null;
-
-        const now        = new Date();
-        const expiresAt  = new Date(now.getTime() + windowSeconds * 1000); // the window starts on accept
-
-        // Build full immutable merchantSnapshot (GOVERNANCE §1: assigned at accept)
-        // via the Payment domain's single builder — this route used to re-implement
-        // it inline, which is how the USDT address would have been missed on the
-        // accept path while assignment carried it (GOVERNANCE §4).
-        //
-        // The response time — assignment to accept — is stamped on the ORDER
-        // with the move, so only the member who won the accept has one. It
-        // reaches the member's average once, when the order is confirmed, in
-        // `recordCompletedOrder` (the one writer of `avg_response_minutes`;
-        // routing orders members by it, CLAUDE.md §2). This route used to fold
-        // it into the average here too, a second writer with its own formula.
-        const responseMinutes = order.assignedAt ? (now - new Date(order.assignedAt)) / 60000 : null;
-
-        const accepted = await startOrder(order.orderId, {
-            expectMerchant: req.merchantId,
-            set: {
-                merchantId:       req.merchantId,
-                assignedAt:       order.assignedAt || now,
-                processingAt:     now,
-                expiresAt,
-                // What the player is shown to pay is built from this snapshot
-                // (`playerOrderView`): the member's bank account on a bank
-                // buy, the order's chain address on USDT. A cash buy's QR is
-                // not in it; the member scans that onto the order.
-                merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order, payAccount),
-                ...(responseMinutes === null ? {} : { merchantResponseMinutes: responseMinutes }),
-            },
-        });
-        if (!accepted.ok || accepted.idempotent) {
-            // A double-tap, or the order expired between the read and the move.
-            return res.status(409).json({
-                success: false,
-                message: accepted.reason === 'merchant_changed'
-                    ? NO_LONGER_YOURS : `Order is ${accepted.status ?? 'missing'} and cannot be accepted.`,
-            });
-        }
-        Object.assign(order, accepted.order);
-
-        // No counter to increment. The active order count is derived from the
-        // orders, so accepting one IS the increment.
-
-        const io = global.io;
-        const oid = order.orderId;
-        const isDeposit = order.type === 'DEPOSIT';
-        const bank = order.userBankDetails  || {};
-
-        // Both rails describe the same two steps; only the destination differs.
-        const isUsdtOrder = merchantRail === MERCHANT_CURRENCY.USDT;
-        const payAmount   = formatOrderFiat(order);
-
-        if (isDeposit) {
-            // The timeline is read by the player, so it names where to pay the
-            // way their screen does, never the member's UPI handle (usually
-            // their mobile number; owner, 2026-10-03).
-            const payTo = isUsdtOrder
-                ? `merchant USDT address on ${USDT_CHAIN_SPEC[order.usdtChain]?.label ?? 'the order chain'}: `
-                  + `${usdtAddressFor(merchant, order.usdtChain) || 'See payment details'}`
-                : order.paymentMode === PAYMENT_MODES.CASH_ATM
-                    ? 'the cash machine QR the member scans'
-                    : payAccount?.kind === 'UPI_QR'
-                        ? 'the UPI payment link shown on the order'
-                        : 'the member\'s bank account shown on the order, by bank transfer';
-            await sendSystemMessage(oid,
-                `✅ Order Accepted by Merchant\n` +
-                `📋 Order: ${order.orderId}\n` +
-                `💰 User must pay ${payAmount} to ${payTo}\n` +
-                `⏱ Payment window: ${Math.round(windowSeconds / 60)} minutes`,
-                io
-            );
-        } else if (isUsdtOrder) {
-            await sendSystemMessage(oid,
-                `✅ Withdrawal Order Accepted\n` +
-                `📋 Order: ${order.orderId}\n` +
-                `💸 Merchant must send ${payAmount} to the user's wallet:\n` +
-                `   🔗 TRC-20: ${order.userUsdtAddress || 'N/A'}`,
-                io
-            );
-        } else {
-            await sendSystemMessage(oid,
-                `✅ Withdrawal Order Accepted\n` +
-                `📋 Order: ${order.orderId}\n` +
-                `💸 Merchant must send ${payAmount} to user's bank:\n` +
-                `   🏦 ${bank.bankName || ''} | AC: ${bank.accountNumber || 'N/A'} | IFSC: ${bank.ifscCode || 'N/A'}\n` +
-                `   Account Holder: ${bank.accountHolderName || 'N/A'}`,
-                io
-            );
-        }
-
-        // Notify user of PROCESSING status with the payment link and the timer.
-        // This pushed the whole `merchantSnapshot` — the merchant's handle, their
-        // QR and their bank account — to the PLAYER's socket. `payTo` is the one
-        // shape a player receives: a link, an opaque reference, a deadline.
-        emitOrderUpdate(order.userId.toString(), 'order_update', {
-            orderId:          order.orderId,
-            _id:              order._id,
-            status:           'PROCESSING',
-            payTo:            toPlayerOrderView(order).payTo ?? null,
-            expiresAt:        order.expiresAt,
-            server_ts:        Date.now(),
-        });
-        emitAdminUpdate('queue_order_update', { orderId: order._id, status: 'PROCESSING', server_ts: Date.now() });
-
-        res.json({ success: true, order: toMerchantOrderView(order) });
+        const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
+        const skip = Math.max(parseInt(req.query.skip, 10) || 0, 0);
+        const report = await loadOrderReport(req, { limit, offset: skip });
+        res.json({ success: true, ...report, pagination: { total: report.totals.orders, limit, skip } });
     } catch (err) {
-        console.error('POST /merchant/accept/:id error:', err);
-        res.status(500).json({ success: false, message: 'Failed to accept order.' });
+        return respondError(res, err, 'GET /merchant/reports/orders', { message: 'Could not build the report.' });
+    }
+});
+
+router.get('/reports/orders.csv', merchantAuth, async (req, res) => {
+    try {
+        const report = await loadOrderReport(req, { limit: db.merchantReports.ORDER_REPORT_MAX_ROWS, offset: 0 });
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition',
+            `attachment; filename="merchant-orders-${report.range.from || 'last7'}-${report.range.to || 'today'}.csv"`);
+        res.send(merchantReportCsv(report.rows));
+    } catch (err) {
+        return respondError(res, err, 'GET /merchant/reports/orders.csv', { message: 'Could not build the export.' });
     }
 });
 
@@ -629,8 +509,8 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // pass their own tests, and it is the PAIR that was broken (§28).
         } else {
             // WITHDRAWAL confirm: must be in PROCESSING status
-            if (!['PROCESSING', 'ASSIGNED'].includes(order.status)) {
-                return res.status(400).json({ success: false, message: `Withdrawal can only be confirmed in PROCESSING/ASSIGNED status. Current: ${order.status}` });
+            if (order.status !== 'PROCESSING') {
+                return res.status(400).json({ success: false, message: `Withdrawal can only be confirmed in PROCESSING status. Current: ${order.status}` });
             }
         }
 
@@ -713,6 +593,15 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // at least an hour — the player's window to dispute (2c+).
         const holdFor = isDeposit ? 0 : await holdMinutes();
 
+        // ── How long the member took (routing ranks members by it, §2) ───────
+        // Orders start with no accept (owner, 2026-10-17), so the response is
+        // the member's own decisive move: on a buy, from the player's Paid to
+        // this confirm; on a sell, from the start to this Paid. Stamped on the
+        // order with the move, and fed to the average once, below.
+        const respondedFrom = isDeposit ? order.paidAt : order.processingAt;
+        const responseMinutes = respondedFrom ? (Date.now() - new Date(respondedFrom)) / 60000 : null;
+        const responseStamp = responseMinutes === null ? {} : { merchantResponseMinutes: responseMinutes };
+
         // ── DEPOSIT: the money moves BEFORE the status, through the one owner ──
         //
         // This route used to run `completeOrder` FIRST — "the transition is the
@@ -766,7 +655,8 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             moved = await completeOrder(order._id, {
                 expectFrom: 'PAID',
                 expectMerchant: req.merchantId,
-                set: { completedAt: new Date() },
+                actor: merchantActorTag(req),
+                set: { completedAt: new Date(), ...responseStamp },
             });
         } else {
             // ── Always a HOLD ───────────────────────────────────────────────────
@@ -774,8 +664,9 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // The window is now at least an hour (owner, 2026-10-02), so every
             // confirm holds and the sweep settles — money first, COMPLETED after.
             moved = await markOrderPaidState(order._id, {
-                expectFrom: ['PROCESSING', 'ASSIGNED'],
+                expectFrom: 'PROCESSING',
                 expectMerchant: req.merchantId,
+                actor: merchantActorTag(req),
                 within: paidFromAccountId === null ? null : (client) => db.merchantPaymentAccounts.stampPaidFromWithin(client, {
                     orderId: order.orderId, accountId: paidFromAccountId, allowedAccountIds: allowedPayFrom,
                 }),
@@ -784,6 +675,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                     merchantCreditStatus:    'HELD',
                     merchantCreditHoldUntil: new Date(Date.now() + holdFor * 60 * 1000),
                     escrowLocked:            true,
+                    ...responseStamp,
                 },
             });
         }
@@ -837,13 +729,13 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // counts, and passing neither meant every completed order was recorded
         // as a zero-value deposit — a merchant's volume never moved.
         //
-        // The response time stamped on the order at accept goes with them, so
-        // the average routing ranks members by moves once per confirmed order.
+        // The response time stamped with this move goes with them, so the
+        // average routing ranks members by moves once per confirmed order.
         await updateMerchantStatsOnComplete(req.merchantId, true, {
             direction: order.type,
             amountRupees: order.tokenAmount,
             earningsRupees: order.merchantProfit || 0,
-            responseMinutes: order.merchantResponseMinutes ?? null,
+            responseMinutes,
         }).catch(() => {});
 
         // Notify merchant of updated score (GOVERNANCE §11: merchant_score_update)
@@ -962,9 +854,22 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
         if (refuseWork(req, res, order)) return;
 
-        // Only allowed if ASSIGNED (before user has paid) -- per spec Section 2C
-        if (order.status !== 'ASSIGNED') {
-            return res.status(400).json({ success: false, message: `Order can only be rejected in ASSIGNED status. Current: ${order.status}` });
+        // ── A decline, only while nobody can have paid on it ────────────────
+        // Orders start the moment they are handed out (owner, 2026-10-17), so
+        // the member declines a STARTED order: a sell they have not paid, or a
+        // cash buy whose ATM QR is not scanned yet (`mayChangeHands`). A bank
+        // or USDT buy shows the player where to pay at once and is never
+        // handed on: the member answers it with "payment not received" once
+        // the player says they paid. Asked again under the row lock in the
+        // requeue below (`refuseIfPayableWithin`).
+        if (!db.orders.mayChangeHands(order)) {
+            return res.status(400).json({
+                success: false,
+                code: 'CANNOT_DECLINE',
+                message: order.type === 'DEPOSIT' && order.status === 'PROCESSING'
+                    ? 'The player has been shown where to pay, so this buy cannot be declined. If the payment does not arrive after they tap Paid, choose Payment not received.'
+                    : `This order cannot be declined now. It is ${order.status}.`,
+            });
         }
 
         // THE REQUEUE IS THE GATE, and it runs first.
@@ -972,9 +877,9 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         // This is the transition that made PENDING_QUEUE a state the rule table
         // has to be able to enter — see docs/ORDERS_REQUEUE_CYCLE.md. It also
         // has to be COMMITTED before tryAssignMerchant runs, not just set on the
-        // in-memory document: that function now performs its own guarded
-        // PENDING_QUEUE→ASSIGNED update, so an unsaved requeue would leave the
-        // database still reading ASSIGNED and the reassignment would match no
+        // in-memory document: that function performs its own guarded
+        // PENDING_QUEUE→PROCESSING update, so an unsaved requeue would leave the
+        // database still reading PROCESSING and the reassignment would match no
         // row. The old code relied on tryAssignMerchant's trailing save() to
         // persist both at once, which is also why a failed reassignment left the
         // order's requeue unsaved unless the else-branch happened to save it.
@@ -988,6 +893,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
             // a team's tokens, and the next assignment can hold afresh. The team
             // is cleared too: the next one is decided by routing.
             within: async (client) => {
+                await db.orders.refuseIfPayableWithin(client, order.orderId);
                 await db.teamPools.detachFromTeamWithin(client, order.orderId, {
                     actor: `merchant:${req.merchantId}`, reason: `Declined by the member: ${reason}`,
                 });
@@ -997,7 +903,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
             return res.status(409).json({
                 success: false,
                 message: requeued.reason === 'merchant_changed'
-                    ? NO_LONGER_YOURS : `Order can only be rejected in ASSIGNED status. Current: ${requeued.status ?? 'missing'}`,
+                    ? NO_LONGER_YOURS : `This order cannot be declined now. It is ${requeued.status ?? 'missing'}.`,
             });
         }
         Object.assign(order, requeued.order);
@@ -1072,8 +978,9 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
             { senderId: req.merchantId },
         );
     } catch (err) {
-        console.error('POST /merchant/reject/:id error:', err);
-        res.status(500).json({ success: false, message: 'Failed to reject order.' });
+        // A refusal with its own status (the player may already be paying,
+        // asked under the row lock) is said as it is; anything else is a 500.
+        return respondError(res, err, 'POST /merchant/reject/:id', { message: 'Failed to decline order.' });
     }
 });
 
@@ -1082,9 +989,10 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
 // A dispute is the PLAYER's instrument and nobody else's. A merchant has two
 // answers available to them and they are both already here:
 //
-//   POST /reject/:id        decline before payment — back to the queue
-//   POST /reject-paid/:id   the player says they paid and the money did not
-//                           arrive — reason of 10+ characters and a proof image
+//   POST /reject/:id        decline before anybody can have paid — back to
+//                           the queue (`mayChangeHands`)
+//   POST /orders/:id/reject the player says they paid and the money did not
+//                           arrive — a reason of 10+ characters
 //
 // Both say "this transaction failed, and here is why", which is the whole of
 // what a merchant is entitled to assert. Raising a DISPUTE is different: it is
@@ -1214,15 +1122,6 @@ router.post('/orders/:id/cash-link', merchantAuth, async (req, res) => {
         if (refuseWork(req, res, order)) return;
         if (order.type !== 'DEPOSIT' || order.paymentMode !== PAYMENT_MODES.CASH_ATM) {
             return res.status(400).json({ success: false, code: 'NOT_A_CASH_BUY', message: 'Only a cash buy is paid through a cash machine\'s QR.' });
-        }
-        if (order.status === 'ASSIGNED') {
-            // The player is shown the QR only once the member has accepted
-            // (`playerOrderView`), so the scan waits for the accept too.
-            return res.status(409).json({
-                success: false,
-                code: 'ACCEPT_FIRST',
-                message: 'Accept the order first, then scan the machine\'s QR.',
-            });
         }
         if (order.status !== 'PROCESSING') {
             return res.status(409).json({
@@ -1433,7 +1332,7 @@ router.get('/stats', merchantAuth, async (req, res) => {
 router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
     try {
         const { id }   = req.params;
-        const { reason, proofFileKey, proofCdnUrl } = req.body;
+        const { reason } = req.body;
 
         const order = await db.orders.getOrderRecord(id);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
@@ -1453,9 +1352,8 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         // PROCESSING buy too, and warned and flagged a player who had said
         // nothing yet. The member is told to wait for the tap (400).
         //
-        // Asked BEFORE the reason and the proof (§32 S34): a member must not
-        // write an accusation and upload evidence to be told it cannot be
-        // made yet. Asked AFTER ownership, so a stranger learns nothing about
+        // Asked BEFORE the reason (§32 S34): a member must not write an
+        // accusation to be told it cannot be made yet. Asked AFTER ownership, so a stranger learns nothing about
         // where somebody else's buy stands. A snapshot that only words the
         // answer: the rule is REJECTED's one edge in the state machine, from
         // PAID, in the transition's WHERE below (trap 18).
@@ -1464,40 +1362,17 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
             return res.status(refused.status).json({ success: false, code: refused.code, message: refused.message });
         }
 
-        // ── The accusation carries its evidence ──────────────────────────────
+        // ── The accusation carries its reason ────────────────────────────────
         // Rejecting a PAID order says the player's money never arrived. It
-        // warns and flags their account and puts them in front of an admin, so
-        // neither half is optional: `reason` used to fall back to "Rejected by
-        // merchant", which told the player, support and the admin console
-        // nothing about why they had been flagged.
+        // warns and flags their account and puts them in front of an admin,
+        // so the reason is required: it is what the player, support and the
+        // admin are shown. No proof image (owner, 2026-10-17: "reason only");
+        // the dispute that follows is where evidence is weighed.
         if (!reason || reason.trim().length < 10) {
             return res.status(400).json({
                 success: false,
                 message: 'A rejection reason of at least 10 characters is required — it is what the player is shown.',
             });
-        }
-        if (!proofFileKey?.trim()) {
-            return res.status(400).json({
-                success: false,
-                message: 'Proof is required: upload a screenshot or photo showing the payment did not arrive.',
-            });
-        }
-
-        // Bound to THIS merchant and THIS order. Without the check a merchant
-        // could name a key they never uploaded, or one staged against a
-        // different order, and the stored proof would point at somebody else's
-        // evidence.
-        let verifiedProof;
-        try {
-            verifiedProof = await cdnService.verifyUploadedObject({
-                fileKey: proofFileKey.trim(),
-                cdnUrl: proofCdnUrl || undefined,
-                expectedUserId: String(req.merchantId),
-                expectedOrderId: order.orderId,
-                expectedCategory: 'merchant-reject-proof',
-            });
-        } catch (e) {
-            return res.status(400).json({ success: false, message: `Proof could not be verified: ${e.message}` });
         }
 
         // ── Transition order to REJECTED, and open the player's window ────────
@@ -1524,11 +1399,11 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         const windowMinutes = await rejectedBuyDisputeMinutes();
         const rejected = await rejectOrderState(order.orderId, {
             expectMerchant: req.merchantId,
+            actor: merchantActorTag(req),
             set: {
                 rejectedBy:     req.merchantId,
                 rejectedAt:     new Date(),
                 rejectedReason: reason.trim(),
-                rejectionProofUrl: verifiedProof.cdnUrl,
                 // `updatedAt` was here and `setOrderFields` refuses it — the
                 // column is maintained by the write itself, not by callers — so
                 // this route threw on EVERY call and 500'd. No screen called it,

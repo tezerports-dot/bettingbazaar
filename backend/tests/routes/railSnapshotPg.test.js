@@ -122,13 +122,13 @@ describePg('the rail an order runs on', () => {
 
     // A UPI-sized buy goes to the UPI team.
     const big = await buy(50_000);
-    expect(big).toMatchObject({ status: 'ASSIGNED', merchantId: upiMember.merchantId, teamId: upiTeam.teamId });
+    expect(big).toMatchObject({ status: 'PROCESSING', merchantId: upiMember.merchantId, teamId: upiTeam.teamId });
     expect(await getPool(cashTeam.teamId)).toMatchObject({ availablePaise: 50_000_00, heldPaise: 0 });
 
     // A cash buy goes to the member at the machine, held in the CASH team's
     // pool, and their Ready switches itself off.
     const cash = await buy(5_000);
-    expect(cash).toMatchObject({ status: 'ASSIGNED', merchantId: cashMember.merchantId, teamId: cashTeam.teamId });
+    expect(cash).toMatchObject({ status: 'PROCESSING', merchantId: cashMember.merchantId, teamId: cashTeam.teamId });
     expect(await getPool(cashTeam.teamId)).toMatchObject({ availablePaise: 45_000_00, heldPaise: 5_000_00 });
     expect((await getMerchant(cashMember.merchantId)).cashReady).toBe(false);
 
@@ -146,7 +146,7 @@ describePg('the rail an order runs on', () => {
     expect(await setCashReady(other, true)).toEqual({ ok: true, ready: true });
     expect(await tryAssignMerchant(await getOrderRecord(waiting.orderId))).toBe(true);
     expect(await getOrderRecord(waiting.orderId)).toMatchObject({
-      status: 'ASSIGNED', merchantId: other, teamId: cashTeam.teamId,
+      status: 'PROCESSING', merchantId: other, teamId: cashTeam.teamId,
     });
   });
 });

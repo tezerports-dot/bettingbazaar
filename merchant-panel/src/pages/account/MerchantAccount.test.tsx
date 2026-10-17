@@ -38,7 +38,8 @@ const api = vi.hoisted(() => ({
   requestMerchantPool: vi.fn(),
   cancelMerchantPoolRequest: vi.fn(),
   getMerchantReport: vi.fn(),
-  downloadMerchantReportCsv: vi.fn(),
+  getOrderReport: vi.fn(),
+  downloadOrderReportCsv: vi.fn(),
   toggleOnlineStatus: vi.fn(),
 }));
 vi.mock('../../services/api', () => ({ api }));
@@ -274,7 +275,7 @@ describe('pool and reports', () => {
     await waitFor(() => expect(api.requestMerchantPool).toHaveBeenCalledWith('BUY', 2000, ''));
   });
 
-  it('the report shows the server\'s figures and the CSV downloads the same range', async () => {
+  it('the report shows the server\'s figures and the orders table and its CSV follow the same range', async () => {
     const zero = { orders: 0, completed: 0, completedPaise: 0, disputed: 0, disputesLost: 0 };
     api.getMerchantReport.mockResolvedValue({
       success: true, range: { from: null, to: null },
@@ -282,15 +283,32 @@ describe('pool and reports', () => {
       byAccount: [{ accountId: 'mpa_1', label: 'Shop HDFC', kind: 'BANK', status: 'ACTIVE', deposits: zero, withdrawals: zero }],
       bySubMember: [], unattributed: { deposits: zero, withdrawals: zero },
     });
-    api.downloadMerchantReportCsv.mockResolvedValue(undefined);
+    api.getOrderReport.mockResolvedValue({
+      success: true, range: { from: null, to: null },
+      rows: [{
+        orderId: 'DEP_1', type: 'DEPOSIT', userId: 'u_9', utr: '612345678901', tokenAmount: 1000,
+        state: 'COMPLETED', result: 'CONFIRMED', actedBy: { kind: 'STAFF', name: 'Desk 1' }, at: '2026-10-05T10:00:00Z',
+      }],
+      totals: { orders: 1, confirmed: 1, rejected: 0, confirmedBuyPaise: 100000, confirmedSellPaise: 0 },
+      pagination: { total: 1, limit: 50, skip: 0 },
+    });
+    api.downloadOrderReportCsv.mockResolvedValue(undefined);
     at(ROUTES.ACCOUNT_REPORTS, AUDITOR, <ReportsPage />);
     expect(await screen.findByText('The last seven days')).toBeInTheDocument();
     expect(screen.getByRole('table', { name: 'Totals' })).toHaveTextContent('7');
+    // The orders behind it, one row each, with who pressed ✓.
+    expect(await screen.findByText('DEP_1')).toBeInTheDocument();
+    expect(screen.getByText('612345678901')).toBeInTheDocument();
+    expect(screen.getByText('Desk 1')).toBeInTheDocument();
+    expect(screen.getByLabelText('Confirmed')).toHaveTextContent('✓');
     fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-10-01' } });
     fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-10-07' } });
-    fireEvent.click(screen.getByRole('button', { name: /Download orders/ }));
-    await waitFor(() => expect(api.downloadMerchantReportCsv).toHaveBeenCalledWith('2026-10-01', '2026-10-07'));
     fireEvent.click(screen.getByRole('button', { name: 'Show report' }));
     await waitFor(() => expect(api.getMerchantReport).toHaveBeenLastCalledWith('2026-10-01', '2026-10-07'));
+    // The table follows the range the figures were built for, and so does the CSV.
+    await waitFor(() => expect(api.getOrderReport).toHaveBeenLastCalledWith(
+      { from: '2026-10-01', to: '2026-10-07', type: '' }, { limit: 50, skip: 0 }));
+    fireEvent.click(screen.getByRole('button', { name: /Download CSV/ }));
+    await waitFor(() => expect(api.downloadOrderReportCsv).toHaveBeenCalledWith({ from: '2026-10-01', to: '2026-10-07', type: '' }));
   });
 });

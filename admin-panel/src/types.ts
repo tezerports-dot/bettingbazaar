@@ -373,7 +373,6 @@ export interface MerchantTransaction {
 
 export type OrderStatus =
   | 'PENDING_QUEUE'
-  | 'ASSIGNED'
   | 'PROCESSING'
   | 'PAID'
   | 'COMPLETED'
@@ -401,6 +400,8 @@ export interface PaymentOrder {
   /** The team serving it, once routed. */
   teamId?: string | null;
   status: OrderStatus;
+  /** May the queue manager move it to another member (`mayChangeHands`, orders.record.js). */
+  canReassign?: boolean;
   assignedBy?: string;
   assignedAt?: string;
   createdAt: string;

@@ -207,7 +207,7 @@ describe('an order already in flight', () => {
     // and showed no address at all.
     await open({
       orders: [{
-        orderId: 'ORD-USDT-1', _id: 'ORD-USDT-1', type: 'DEPOSIT', status: 'ASSIGNED', currency: 'USDT',
+        orderId: 'ORD-USDT-1', _id: 'ORD-USDT-1', type: 'DEPOSIT', status: 'PROCESSING', currency: 'USDT',
         paymentMode: 'P2P_UPI', tokenAmount: 50000, fiatAmount: 500, usdtChain: 'TRC20',
         createdAt: new Date().toISOString(),
         payTo: { usdtAddress: 'TXYZ', usdtChain: 'TRC20', usdtChainLabel: 'Tron (TRC-20)', merchantRef: 'Merchant #9' },
@@ -220,7 +220,7 @@ describe('an order already in flight', () => {
   it('renders an INR order by its OWN paymentMode — a cash order asks for the tap', async () => {
     await open({
       orders: [{
-        orderId: 'ORD-CASH-9', _id: 'ORD-CASH-9', type: 'DEPOSIT', status: 'ASSIGNED', currency: 'INR',
+        orderId: 'ORD-CASH-9', _id: 'ORD-CASH-9', type: 'DEPOSIT', status: 'PROCESSING', currency: 'INR',
         paymentMode: 'CASH_ATM', tokenAmount: 1000, fiatAmount: 1000,
         createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 600_000).toISOString(),
         payTo: { paymentLink: 'upi://pay?pa=m%40ok&am=1000.00', merchantRef: 'Merchant #9' },

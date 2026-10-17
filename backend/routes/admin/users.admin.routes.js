@@ -376,7 +376,7 @@ router.delete('/users/:userId', authenticate, hasPermission('canManageUsers'), a
     // common refusal.
     const open = await db.orders.findOrders({
       userId: req.params.userId,
-      states: ['ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED'],
+      states: ['PROCESSING', 'PAID', 'DISPUTED'],
       limit: 1,
     });
     if (open.total > 0) {

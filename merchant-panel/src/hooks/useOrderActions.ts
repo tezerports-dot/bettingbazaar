@@ -1,11 +1,12 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
-// The four things a merchant can do to an order, in one place so the card, the
+// The things a merchant can do to an order, in one place so the row, the
 // detail drawer and the dashboard all behave identically.
 //
-// Backend contract (backend/domains/merchant/merchant.routes.js):
-//   accept   POST /accept/:id            ASSIGNED → PROCESSING
-//   reject   POST /reject/:id  {reason}  ASSIGNED → back to the queue (a decline),
+// Backend contract (backend/domains/merchant/merchant.routes.js). There is no
+// accept: routing starts an order as it hands it out (owner, 2026-10-17).
+//   decline  POST /reject/:id  {reason}  PROCESSING → back to the queue, only
+//              while nobody can have paid (`canDecline` on the order);
 //              requires a reason
 //   confirm  POST /confirm/:id {utrNumber?}
 //              The reference sits on OPPOSITE sides of the two order types,
@@ -20,26 +21,25 @@
 //              `utrNumber` is theirs to give, and required on EVERY rail: a sell
 //              is paid by bank transfer whichever team serves it (Step 2d).
 //   redFlag  POST /orders/:id/red-flag {reason} → flagged + DISPUTED for review
-//   cashLink POST /orders/:id/cash-link {link}  a CASH buy, ASSIGNED|PROCESSING:
+//   cashLink POST /orders/:id/cash-link {link}  a CASH buy, PROCESSING:
 //              the cash machine's QR the member scanned, which the player pays
 //              (Step 2d). Replaceable until the player taps "I've paid".
 //   payment-not-received
-//            POST /orders/:id/reject {reason, proofFileKey, proofCdnUrl}
+//            POST /orders/:id/reject {reason}
 //              a PAID buy → REJECTED, the team's tokens held while the player
-//              may dispute. Different from `reject` above, which declines an
-//              order before payment. This one says the payment the player
-//              claimed never arrived: it warns and flags their account, so the
-//              route REQUIRES a reason of 10+ characters and a verified proof
-//              image, and refuses without either. Before the Paid tap there is
-//              no claim to deny: the card does not offer it, and the route and
-//              the proof upload answer 400 NOT_PAID_YET (owner, 2026-10-07).
+//              may dispute. Different from `decline` above. This one says the
+//              payment the player claimed never arrived: it warns and flags
+//              their account, so the route REQUIRES a reason of 10+ characters
+//              (no proof image: owner, 2026-10-17). Before the Paid tap there
+//              is no claim to deny: the row does not offer it, and the route
+//              answers 400 NOT_PAID_YET (owner, 2026-10-07).
 import { useCallback, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api } from '../services/api';
 import { railCopy, type MerchantRail } from '../utils/rail';
 import type { PaymentOrder } from '../types';
 import type { ConfirmRequest } from '../components/ui';
-import type { OrderActions } from '../components/OrderCard';
+import type { OrderActions } from '../components/OrderRow';
 
 /** The shortest string the backend will accept as a bank UTR. */
 export const MIN_UTR_LENGTH = 12;
@@ -85,21 +85,17 @@ export function useOrderActions(
   );
 
   const actions: OrderActions = useMemo(() => ({
-    onAccept: (order) => {
-      void run(() => api.acceptOrder(orderRef(order)), 'Order accepted — now processing');
-    },
-
     onPaymentNotReceived: (order) => setRejectTarget(order),
 
     onScanCashLink: (order) => setScanTarget(order),
 
-    onReject: (order) => setConfirmRequest({
-      title: 'Reject this order?',
-      body: 'It returns to the queue for reassignment. This cannot be undone.',
-      confirmLabel: 'Reject order',
+    onDecline: (order) => setConfirmRequest({
+      title: 'Decline this order?',
+      body: 'It goes to another member. It counts as a refusal, and this cannot be undone.',
+      confirmLabel: 'Decline order',
       tone: 'danger',
-      input: { label: 'Reason for rejection (required)', multiline: true },
-      onConfirm: (reason) => run(() => api.rejectOrder(orderRef(order), reason), 'Order rejected'),
+      input: { label: 'Why are you declining it? (required)', multiline: true },
+      onConfirm: (reason) => run(() => api.rejectOrder(orderRef(order), reason), 'Order declined'),
     }),
 
     onRelease: (order) => {
@@ -174,16 +170,14 @@ export function useOrderActions(
   /**
    * Send the rejection.
    *
-   * The dialog stays OPEN on failure, with what the merchant typed and the file
-   * they picked still in it: the backend refuses a short reason or an
-   * unverifiable proof, and closing the dialog would make them start again
-   * without saying which half was wrong.
+   * The dialog stays OPEN on failure, with what the merchant typed still in
+   * it, so a refusal does not make them start again.
    */
-  const submitPaymentNotReceived = useCallback(async (reason: string, proof: File) => {
+  const submitPaymentNotReceived = useCallback(async (reason: string) => {
     if (!rejectTarget) return;
     setRejectBusy(true);
     try {
-      await api.rejectPaidOrder(orderRef(rejectTarget), reason, proof);
+      await api.rejectPaidOrder(orderRef(rejectTarget), reason);
       toast.success('Order rejected — the player has been warned');
       setRejectTarget(null);
       setCloseDetail(true);

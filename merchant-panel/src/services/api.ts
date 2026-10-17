@@ -22,6 +22,7 @@ import {
   StaffRole,
   StaffDuty,
   MerchantReport,
+  OrderReport,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -303,13 +304,6 @@ export const getOrders = async (params?: {
   }
 };
 
-export const acceptOrder = async (orderId: string): Promise<PaymentOrder> => {
-  const data = await request<any>(ENDPOINTS.ORDERS.ACCEPT(orderId), {
-    method: 'POST',
-  });
-  return data.order || data;
-};
-
 /**
  * Confirm an order. Works for BOTH:
  *   DEPOSIT:    PAID → COMPLETED, releasing tokens to the player.
@@ -348,57 +342,18 @@ export const confirmPayment = async (
 };
 
 /**
- * PUT a file to a presigned storage URL, or throw a short reason: the storage's
- * own error code when it answers, or that it could not be reached (its CORS
- * rules or address) when it does not. Written for a person to pass on to
- * support, who fixes the storage setting it names.
- */
-async function putToStorage(uploadUrl: string, file: File): Promise<void> {
-  let put: Response;
-  try {
-    put = await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
-  } catch {
-    throw new Error('The file storage could not be reached (its upload rules or address are not set up for this site). Please tell support.');
-  }
-  if (put.ok) return;
-  const xml = await put.text().catch(() => '');
-  const code = /<Code>([^<]+)<\/Code>/.exec(xml)?.[1];
-  throw new Error(`The file storage refused the upload (HTTP ${put.status}${code ? `, ${code}` : ''}). Please tell support.`);
-}
-
-/**
  * Reject an order the player says they paid, because the money never arrived.
  *
- * Different from `rejectOrder` below, which declines an order BEFORE payment
- * and returns it to the queue. This one rejects a PAID buy (only a PAID one:
- * owner, 2026-10-07) and adds a warning and a flag to the player's account —
- * so the backend requires a reason of at least ten characters and a proof
- * image, and refuses without either.
- *
- * Three steps, in this order: ask for a presigned URL (which also checks the
- * order is this merchant's PAID buy, or answers 400 NOT_PAID_YET), PUT the
- * file, then send the reference. The proof is verified server-side against
- * THIS merchant and THIS order before it is stored, so a key from somewhere
- * else is refused.
+ * Different from `rejectOrder` below, which declines an order before anybody
+ * can have paid and returns it to the queue. This one rejects a PAID buy (only
+ * a PAID one: owner, 2026-10-07) and adds a warning and a flag to the player's
+ * account, so the backend requires a reason of at least ten characters. No
+ * proof image (owner, 2026-10-17: "reason only").
  */
-export const rejectPaidOrder = async (
-  orderId: string, reason: string, proof: File,
-): Promise<PaymentOrder> => {
-  const presigned = await request<any>(ENDPOINTS.ORDERS.REJECT_PROOF_UPLOAD_URL(orderId), {
-    method: 'POST',
-    body: JSON.stringify({ fileName: proof.name, contentType: proof.type, fileSize: proof.size }),
-  });
-  if (!presigned?.uploadUrl || !presigned?.fileKey) {
-    throw new Error('Could not prepare the proof upload');
-  }
-
-  await putToStorage(presigned.uploadUrl, proof);
-
+export const rejectPaidOrder = async (orderId: string, reason: string): Promise<PaymentOrder> => {
   const data = await request<any>(ENDPOINTS.ORDERS.REJECT_PAID(orderId), {
     method: 'POST',
-    body: JSON.stringify({
-      reason, proofFileKey: presigned.fileKey, proofCdnUrl: presigned.cdnUrl,
-    }),
+    body: JSON.stringify({ reason }),
   });
   return data.order || data;
 };
@@ -772,15 +727,31 @@ export const getMerchantReport = async (from: string, to: string): Promise<Merch
     method: ENDPOINTS.ACCOUNT.REPORTS.method,
   });
 
+/** Which orders a report covers: IST days (empty: the last seven) and a direction. */
+export interface OrderReportQuery { from: string; to: string; type?: '' | 'DEPOSIT' | 'WITHDRAWAL'; }
+
+const orderReportQuery = ({ from, to, type }: OrderReportQuery, page?: { limit: number; skip: number }): string => {
+  const q = new URLSearchParams();
+  if (from) q.append('from', from);
+  if (to) q.append('to', to);
+  if (type) q.append('type', type);
+  if (page) { q.append('limit', String(page.limit)); q.append('skip', String(page.skip)); }
+  return q.toString() ? `?${q.toString()}` : '';
+};
+
+/** One page of the order report, with totals over every row of the range. */
+export const getOrderReport = async (query: OrderReportQuery, page: { limit: number; skip: number }): Promise<OrderReport> =>
+  request<OrderReport>(`${ENDPOINTS.ORDER_REPORT.PAGE}${orderReportQuery(query, page)}`);
+
 /**
- * The orders behind a report, as a CSV file the browser saves. Fetched with
- * the session's token (a plain link would carry none), then handed to the
- * browser as a download. A refusal is thrown with the server's words.
+ * The order report as a CSV file the browser saves. Fetched with the
+ * session's token (a plain link would carry none), then handed to the browser
+ * as a download. A refusal is thrown with the server's words.
  */
-export const downloadMerchantReportCsv = async (from: string, to: string): Promise<void> => {
+export const downloadOrderReportCsv = async (query: OrderReportQuery): Promise<void> => {
   const token = getAuthToken();
-  const response = await fetch(`${BASE_URL}${ENDPOINTS.ACCOUNT.REPORTS_CSV.path()}${rangeQuery(from, to)}`, {
-    method: ENDPOINTS.ACCOUNT.REPORTS_CSV.method,
+  const response = await fetch(`${BASE_URL}${ENDPOINTS.ORDER_REPORT.CSV}${orderReportQuery(query)}`, {
+    method: 'GET',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     mode: 'cors',
     credentials: 'include',
@@ -797,7 +768,7 @@ export const downloadMerchantReportCsv = async (from: string, to: string): Promi
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `merchant-orders-${from || 'last7'}-${to || 'today'}.csv`;
+  link.download = `merchant-orders-${query.from || 'last7'}-${query.to || 'today'}.csv`;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -818,7 +789,6 @@ export const api = {
   
   // Orders
   getOrders,
-  acceptOrder,
   confirmPayment,
   rejectOrder,
   rejectPaidOrder,
@@ -852,7 +822,8 @@ export const api = {
   requestMerchantPool,
   cancelMerchantPoolRequest,
   getMerchantReport,
-  downloadMerchantReportCsv,
+  getOrderReport,
+  downloadOrderReportCsv,
 
   // Red Flag
   // Utilities

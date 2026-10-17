@@ -412,13 +412,12 @@ async function call(token, method, path, body) {
  * A fixture without the hold would test a decision that has nothing to move.
  *
  * So each buy goes through the routes a person uses: the player creates it
- * (`POST /api/payment/deposit/create`, the smallest UPI/bank size), the member
- * accepts it, the player marks it paid with a reference, and the player
+ * (`POST /api/payment/deposit/create`, the smallest UPI/bank size), routing
+ * starts it on the member (no Accept), the player marks it paid with a reference, and the player
  * disputes it. The one thing moved by hand is the CLOCK: the dispute route
  * makes a player wait ten minutes after Paid, so `paid_at` is put back past it
  * — the same step the e2e tier takes (s7). The member's rejection path is not
- * used because it needs a proof upload to object storage, which a local run
- * does not have.
+ * used because a dispute raised by the player is the case being driven.
  *
  * Routing has to reach THIS team's member and nobody else, so the team is
  * `exclusive` on the UPI/bank rail; the members that took offline are put
@@ -449,11 +448,10 @@ async function disputedBuys(n) {
       buys.push({ orderId, player });
       const placed = await orderRow(orderId);
       const { rows: [who] } = await pgQuery('SELECT merchant_id FROM order_states WHERE order_id = $1', [orderId]);
-      if (placed?.state !== 'ASSIGNED' || who?.merchant_id !== member.merchantId) {
+      if (placed?.state !== 'PROCESSING' || who?.merchant_id !== member.merchantId) {
         throw new Error(`${orderId} was not routed to this team's member (${placed?.state}, ${who?.merchant_id ?? 'nobody'})`);
       }
       const steps = [
-        ['the member accepts', await call(merchantToken(member), 'POST', `/api/merchant/accept/${orderId}`, {})],
         ['the player marks it paid', await call(pT, 'POST', `/api/payment/order/${orderId}/mark-paid`,
           { utrNumber: String(Date.now()).slice(-9) + String(Math.floor(Math.random() * 1000)).padStart(3, '0') })],
       ];
@@ -510,12 +508,12 @@ async function supervisorSession({ secondTeam = false } = {}) {
 /**
  * End whatever of these buys is still live, through the state machine and the
  * pool's one owner — never a DELETE: `order_transitions` is append-only and
- * holds an FK to the order (see `merchant/orders/accept-a-later-card`).
+ * holds an FK to the order (see `merchant/orders/confirm-a-later-row`).
  */
 async function endBuys(buys) {
   for (const { orderId } of buys) {
     await cancelOrderState(orderId, {
-      expectFrom: ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED'],
+      expectFrom: ['PENDING_QUEUE', 'PROCESSING', 'PAID', 'DISPUTED'],
       set: { cancelReason: 'HARNESS_CLEANUP', cancelledAt: new Date() },
       actor: 'drive-fixture', reason: 'harness cleanup',
     }).catch(() => {});
@@ -1955,20 +1953,19 @@ const CASES = [
   },
 
   {
-    id: 'merchant/orders/accept-a-later-card',
+    id: 'merchant/orders/confirm-a-later-row',
     panel: 'merchant-panel',
-    what: 'Accept an order from a card that is NOT the first — the merchant side of §23',
+    what: 'Confirm a paid order from a row that is NOT the first — the merchant side of §23',
     async run(page, cfg, base) {
-      // ── THREE ASSIGNED orders has to be a state the platform can produce ──
-      // So the platform produces them. Each is a real 20,000-token buy through
+      // ── THREE PAID orders has to be a state the platform can produce ─────
+      // So the platform produces them. Each is a real 50,000-token buy through
       // `POST /api/payment/deposit/create`, which routes it (Step 2c) to a
-      // member of a working UPI/bank team and HOLDS its tokens in that team's
-      // pool in the same transaction. `main()` put the drive merchant in such a
-      // team with a pool, as the only member online on the rail, and the rail's
-      // cap is three — so all three land on this merchant's queue, each with
-      // its hold, and none is a row assignment itself would never write
-      // (§32 S16). Inserting ASSIGNED rows and bolting a hold on afterwards was
-      // the old version, and it was the shape the cron sweeps shout about.
+      // member of a working UPI/bank team, starts it (no Accept, owner
+      // 2026-10-17) and HOLDS its tokens in that team's pool in the same
+      // transaction; the player then marks it paid with a reference. `main()`
+      // put the drive merchant in such a team with a pool, as the only member
+      // online on the rail, and the rail's cap is three — so all three land on
+      // this merchant's queue (§32 S16).
       //
       // Online is ESTABLISHED, not trusted (§32 S19): a case before this one
       // may have taken the merchant offline.
@@ -1977,96 +1974,75 @@ const CASES = [
       const refused = [];
       for (let i = 0; i < 3; i++) {
         const player = await seedPlayer({});
-        const res = await fetch(`${API}/api/payment/deposit/create`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${playerToken(player)}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tokenAmount: 50000 }), // the smallest UPI/bank size (2d)
-        });
-        const body = await res.json().catch(() => ({}));
-        if (body.order?.orderId) made.push(body.order.orderId);
-        else refused.push(`${res.status} ${String(body.message ?? '').slice(0, 80)}`);
+        const pT = playerToken(player);
+        const res = await call(pT, 'POST', '/api/payment/deposit/create', { tokenAmount: 50000 }); // the smallest UPI/bank size (2d)
+        const orderId = res.body?.order?.orderId;
+        if (!orderId) { refused.push(`${res.status} ${String(res.body?.message ?? '').slice(0, 80)}`); continue; }
+        made.push(orderId);
+        const paid = await call(pT, 'POST', `/api/payment/order/${orderId}/mark-paid`,
+          { utrNumber: String(Date.now()).slice(-9) + String(Math.floor(Math.random() * 1000)).padStart(3, '0') });
+        if (paid.status !== 200) refused.push(`mark-paid ${paid.status} ${String(paid.body?.message ?? '').slice(0, 80)}`);
       }
       const placed = (await pgQuery(
         'SELECT order_id, state, merchant_id FROM order_states WHERE order_id = ANY($1::text[])', [made],
       )).rows;
-      const notOurs = placed.filter((r) => r.state !== 'ASSIGNED' || r.merchant_id !== page.__bbMerchantId);
+      const notOurs = placed.filter((r) => r.state !== 'PAID' || r.merchant_id !== page.__bbMerchantId);
       try {
-        // Routing that did not reach this merchant means the fixture is not the
-        // state the case is about; driving on would test something else.
         if (refused.length || notOurs.length || placed.length !== 3) {
-          return ['NOT DRIVEN', `the three buys did not all reach the drive merchant — refused [${refused.join('; ')}],`
+          return ['NOT DRIVEN', `the three paid buys did not all reach the drive merchant — refused [${refused.join('; ')}],`
             + ` elsewhere [${notOurs.map((r) => `${r.order_id} ${r.state} ${r.merchant_id ?? 'nobody'}`).join('; ')}]`];
         }
         await go(page, cfg, base, '/orders');
         await settle(page, 8000);
 
-        // Where each of mine rendered, by the order id printed on its card.
-        const order = await page.evaluate((ids) => {
-          const text = document.body.innerText || '';
-          return ids.map((id) => text.indexOf(id));
-        }, made);
-        const present = order.filter((i) => i >= 0);
-        if (present.length < 2) {
-          return ['NOT DRIVEN', `only ${present.length} of the 3 seeded orders are on the queue`];
+        // One line per order; each row's open button names its order id.
+        const rows = page.getByTestId('order-row');
+        const ids = [];
+        for (let i = 0; i < await rows.count(); i++) {
+          const label = await rows.nth(i).getByRole('button').first().getAttribute('aria-label').catch(() => '');
+          const id = made.find((x) => (label ?? '').includes(x));
+          if (id) ids.push({ i, id });
         }
-        const first = Math.min(...present);
-        let at = -1; let target = null;
-        for (let i = 0; i < made.length; i++) {
-          if (order[i] > first && order[i] > at) { at = order[i]; target = made[i]; }
-        }
-        if (!target) return ['NOT DRIVEN', 'the seeded orders did not render as separate cards'];
-
-        // The card that HOLDS my order id, not merely an element mentioning it.
-        const card = page.locator('div', { hasText: target })
-          .filter({ has: page.getByRole('button', { name: /Accept order/i }) }).last();
-        if (await card.count() === 0) {
-          const n = await page.getByRole('button', { name: /Accept order/i }).count();
-          return ['NOT DRIVEN', `${target} has no card with an Accept among the ${n} on screen`];
-        }
-        const accept = card.getByRole('button', { name: /Accept order/i }).first();
-        // Read the ANSWER, not the toast — `run()` raises one and it fades.
+        if (ids.length < 2) return ['NOT DRIVEN', `only ${ids.length} of the 3 seeded orders are on the queue`];
+        const { i: at, id: target } = ids[ids.length - 1];
+        const confirm = rows.nth(at).getByRole('button', { name: /confirm and release/i });
+        if (await confirm.count() === 0) return ['NOT DRIVEN', `${target}'s row offers no ✓`];
         const answered = page.waitForResponse(
-          (r) => /accept/i.test(r.url()) && r.request().method() !== 'GET',
+          (r) => /\/confirm\//.test(r.url()) && r.request().method() !== 'GET',
           { timeout: 15000 },
         ).catch(() => null);
-        const hit = await clickThrough(accept, { timeout: 8000 });
-        if (!hit.ok) return ['NOT DRIVEN', `Accept could not be pressed: ${hit.why}`];
+        const hit = await clickThrough(confirm, { timeout: 8000 });
+        if (!hit.ok) return ['NOT DRIVEN', `✓ could not be pressed: ${hit.why}`];
+        await confirmWith(page, 'Confirm & release');
         const reply = await answered;
         await settle(page, 8000);
-        await confirmWith(page, 'Accept');
         const said = reply
           ? `${reply.status()} ${(await reply.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 140)}`
           : 'no request left the panel';
 
         const after = await Promise.all(made.map((id) => orderState(id)));
-        const moved = made.filter((id, i) => after[i] !== 'ASSIGNED');
-        if (moved.length === 0) {
-          return ['FAILED', `pressed Accept on a later card and every order is still ASSIGNED — ${said}`];
-        }
-        if (moved.length > 1) {
-          return ['FAILED', `ONE Accept and ${moved.length} orders moved: ${moved.join(', ')}`];
-        }
+        const moved = made.filter((id, i) => after[i] !== 'PAID');
+        if (moved.length === 0) return ['FAILED', `pressed ✓ on a later row and every order is still PAID — ${said}`];
+        if (moved.length > 1) return ['FAILED', `ONE ✓ and ${moved.length} orders moved: ${moved.join(', ')}`];
         if (moved[0] !== target) {
-          return ['FAILED', `pressed Accept on ${target}'s card and ${moved[0]} was accepted instead (§23)`
-            + ' — a merchant would have taken on an order they did not choose'];
+          return ['FAILED', `pressed ✓ on ${target}'s row and ${moved[0]} was confirmed instead (§23)`
+            + ' — a merchant would have released tokens for a payment they did not check'];
         }
-        return ['DROVE', `a later card accepted ${target} (now ${after[made.indexOf(target)]}) and left the other 2 ASSIGNED`];
+        return ['DROVE', `a later row confirmed ${target} (now ${after[made.indexOf(target)]}) and left the other 2 PAID`];
       } finally {
         // ── Putting these back is not a DELETE, and that is the point ──────
-        // `order_transitions` is append-only, enforced by `bb_forbid_change()`,
-        // and it holds a plain FK to `order_states` — so these orders, which
-        // every one MOVED (created, then assigned), can never be deleted. Each
-        // still-live one is taken to CANCELLED through the state machine, and
-        // its pool hold released through the pool's one owner, so no sweep is
-        // left holding it and the team's tokens come back.
+        // `order_transitions` is append-only and holds a plain FK to
+        // `order_states`, so these orders can never be deleted. Each still-live
+        // one is taken to CANCELLED through the state machine and its pool hold
+        // released through the pool's one owner.
         for (const id of made) {
           await cancelOrderState(id, {
-            expectFrom: ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING'],
+            expectFrom: ['PENDING_QUEUE', 'PROCESSING', 'PAID'],
             set: { cancelReason: 'HARNESS_CLEANUP', cancelledAt: new Date() },
             actor: 'drive-fixture', reason: 'harness cleanup',
-          }).catch((e) => console.error(`   ! could not cancel ${id}:`, e.message));
+          }).catch(() => {});
           await db.teamPools.releaseBuyHold(id, { actor: 'drive-fixture', reason: 'harness cleanup' })
-            .catch((e) => console.error(`   ! could not release ${id}:`, e.message));
+            .catch(() => {});
         }
       }
     },
@@ -2639,7 +2615,7 @@ async function main() {
     // A MEMBER of a working UPI/bank team with tokens in its pool, and the
     // only member online on that rail (`seedTeam`'s `exclusive`), so its
     // screens render their working state and a buy created during the run is
-    // routed to it — `merchant/orders/accept-a-later-card` depends on exactly
+    // routed to it — `merchant/orders/confirm-a-later-row` depends on exactly
     // that. Since Step 2c a merchant outside a team is served no orders at all.
     driveMerchant = await seedMerchant({ currency: 'INR' });
     await seedTeam({ rail: 'UPI_BANK', poolTokens: 200000, include: [driveMerchant], online: [driveMerchant] });

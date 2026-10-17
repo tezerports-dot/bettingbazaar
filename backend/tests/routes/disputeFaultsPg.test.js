@@ -25,7 +25,7 @@
  * paid with a reference, rejected on the member's route and disputed on the
  * player's (§32 S16). A sell is accepted and confirmed on the member's routes.
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery, withTransaction } from '#db/client.js';
 import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
 import { getUser, updateUser } from '#db/repositories/users.js';
@@ -45,17 +45,8 @@ const payoutUtr = () => `UTRDF${String(Date.now()).slice(-7)}${String(++payoutSe
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
-const cdn = vi.hoisted(() => ({ verify: vi.fn() }));
-vi.mock('../../services/cdn.service.js', async (importOriginal) => {
-  const actual = await importOriginal();
-  return { ...actual, default: { ...actual.default, verifyUploadedObject: cdn.verify } };
-});
-
 const TOKENS = 20_000;
-const REJECT = {
-  reason: 'No credit against this UTR in my statement',
-  proofFileKey: 'merchant-reject-proof/x.jpg', proofCdnUrl: 'https://cdn.test/x.jpg',
-};
+const REJECT = { reason: 'No credit against this UTR in my statement' };
 
 describePg('a decided dispute suspends whoever was wrong', () => {
   let merchantApp; let playerApp; let disputeApp; let pccApp; let usersApp; let merchantsApp;
@@ -74,7 +65,6 @@ describePg('a decided dispute suspends whoever was wrong', () => {
     pccApp = mountRouter((await import('../../domains/payment/paymentOrder.routes.js')).default);
     usersApp = mountRouter((await import('../../routes/admin/users.admin.routes.js')).default);
     merchantsApp = mountRouter((await import('../../domains/merchant/merchant.admin.routes.js')).default);
-    cdn.verify.mockResolvedValue({ cdnUrl: REJECT.proofCdnUrl, fileKey: REJECT.proofFileKey });
     admin = await actor({ isAdmin: true });
     subAdmin = await actor({ isSubAdmin: true, permissions: { canManageUsers: true, canManageMerchants: true, canResolveDisputes: true } });
   }, 60_000);
@@ -123,7 +113,6 @@ describePg('a decided dispute suspends whoever was wrong', () => {
     const { orderId } = (await createWithdrawalOrder(player.userId, 1000)).order;
     made.push(orderId);
     expect((await getOrderRecord(orderId)).merchantId).toBe(member.merchantId);
-    expect((await as(merchantApp, member).post(`/accept/${orderId}`)).status).toBe(200);
     expect((await as(merchantApp, member).post(`/confirm/${orderId}`).send({ utrNumber: payoutUtr() })).status).toBe(200);
     // Ten minutes after Paid, the player says nothing arrived.
     await pgQuery(`UPDATE order_states SET paid_at = now() - interval '11 minutes' WHERE order_id = $1`, [orderId]);

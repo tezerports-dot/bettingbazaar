@@ -36,16 +36,13 @@ export const ENDPOINTS = {
   },
   ORDERS: {
     LIST: '/api/merchant/orders',
-    ACCEPT: (id: string) => `/api/merchant/accept/${id}`,
     CONFIRM: (id: string) => `/api/merchant/confirm/${id}`,
     REJECT: (id: string) => `/api/merchant/reject/${id}`,
     // A DIFFERENT action from REJECT above. That one declines an order before
-    // the player has paid and returns it to the queue. This one is for an order
-    // the player says they HAVE paid, where the money never arrived: it cancels
-    // the order, warns the player and can auto-block them — so it requires a
-    // reason and a proof image.
+    // anybody can have paid and returns it to the queue. This one is for an
+    // order the player says they HAVE paid, where the money never arrived: it
+    // warns and flags the player, so it requires a reason.
     REJECT_PAID: (id: string) => `/api/merchant/orders/${id}/reject`,
-    REJECT_PROOF_UPLOAD_URL: (id: string) => `/api/merchant/order-reject-proof/${id}/upload-url`,
   },
   EARNINGS: {
     GET:    '/api/merchant/earnings',
@@ -97,7 +94,13 @@ export const ENDPOINTS = {
     REQUEST_POOL:      { method: 'POST',   path: () => '/api/merchant/account/pool-requests' },
     CANCEL_POOL:       { method: 'DELETE', path: (requestId: string) => `/api/merchant/account/pool-requests/${requestId}` },
     REPORTS:           { method: 'GET',    path: () => '/api/merchant/account/reports' },
-    REPORTS_CSV:       { method: 'GET',    path: () => '/api/merchant/account/reports/orders.csv' },
+  },
+  // The order report, every merchant's (owner, 2026-10-16): a row per order
+  // with ✓/✗ and who pressed it; the CSV is the same rows. Backend:
+  // GET /reports/orders(.csv) in backend/domains/merchant/merchant.routes.js.
+  ORDER_REPORT: {
+    PAGE: '/api/merchant/reports/orders',
+    CSV:  '/api/merchant/reports/orders.csv',
   },
 };
 
@@ -187,7 +190,6 @@ export const ERROR_MESSAGES = {
 };
 
 export const SUCCESS_MESSAGES = {
-  ORDER_ACCEPTED: 'Order accepted successfully',
   ORDER_REJECTED: 'Order rejected',
   PAYMENT_CONFIRMED: 'Payment confirmed successfully',
   PROFILE_UPDATED: 'Profile updated successfully',

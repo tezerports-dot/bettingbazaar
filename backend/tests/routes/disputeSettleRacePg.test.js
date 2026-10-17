@@ -113,7 +113,6 @@ describePg('a dispute that lands while the hold is being settled', () => {
     const { orderId } = (await createWithdrawalOrder(who.userId, 1000)).order;
     made.push(orderId);
     expect((await getOrderRecord(orderId)).merchantId, 'routed to somebody else').toBe(m.merchantId);
-    expect((await as(merchantApp, m).post(`/accept/${orderId}`)).status).toBe(200);
     const confirmed = await as(merchantApp, m).post(`/confirm/${orderId}`).send({ utrNumber: payoutUtr() });
     expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
     // The window passes.

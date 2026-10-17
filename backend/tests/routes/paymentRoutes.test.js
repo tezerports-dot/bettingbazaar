@@ -91,7 +91,8 @@ describePg('payment routes', () => {
    * makes one:
    *
    *   PENDING_QUEUE  created, and offered while nobody was free
-   *   ASSIGNED       created, and routed to a member — the pool holds its tokens
+   *   PROCESSING     created, and routed to a member, which starts it (no
+   *                  Accept, owner 2026-10-17) — the pool holds its tokens
    *   PAID           routed, and the player marked it paid with their reference,
    *                  which the registry claimed against it (§27). `mark-paid`
    *                  stamps `paidAt` now; `paidMinutesAgo` moves that clock
@@ -118,7 +119,7 @@ describePg('payment routes', () => {
     const queued = state === 'PENDING_QUEUE';
     await teams.onlyOnline(queued ? [] : team.members);
     expect(await tryAssignMerchant(order), `the buy was ${queued ? '' : 'not '}routed`).toBe(!queued);
-    // Accepted by its member: from then on the player has somewhere to pay.
+    // Started by routing: from then on the player has somewhere to pay.
     if (state === 'PROCESSING' || state === 'PAID') await readyToPay(orderId);
     let utrNumber = null;
     if (state === 'PAID') {
@@ -304,41 +305,18 @@ describePg('payment routes', () => {
     return o;
   };
 
-  // ── Cancelling before a member accepts ────────────────────────────────────
-  // The "Finding a merchant" screen covers the queue AND an assignment the
-  // member has not accepted yet; Cancel worked only in the first, so a player
-  // whose buy had just been routed was stuck until it expired.
+  // ── Cancelling a started bank buy ─────────────────────────────────────────
+  // Routing starts a buy as it hands it out, and a bank buy shows the member's
+  // account at once, so the player may already be paying: no cancel, the hold
+  // stays. (A queued buy and a cash buy before its QR may be cancelled:
+  // cashLinkPg.test.js, oneWithdrawalPg.test.js.)
   const poolOf = async (teamId) => {
     const { rows } = await withTransaction((c) => c.query(
       'SELECT available_paise, held_paise FROM team_pools WHERE team_id = $1', [teamId]));
     return { available: Number(rows[0].available_paise), held: Number(rows[0].held_paise) };
   };
 
-  it('lets a player cancel a buy a member has not accepted yet, and gives the pool its hold back', async () => {
-    const before = await poolOf(team.teamId);
-    const { orderId, who } = await depositOrder({ state: 'ASSIGNED' });
-    const assigned = await getOrderRecord(orderId);
-    expect(assigned.poolHeldPaise).toBe(TOKENS * 100);
-    expect(await poolOf(team.teamId)).toEqual({ available: before.available - TOKENS * 100, held: before.held + TOKENS * 100 });
-    // The screens read the offer from the server, never their own list.
-    const status = await as(app, who).get(`/order/${orderId}/status`);
-    expect(status.body.canCancel).toBe(true);
-
-    const res = await as(app, who).post('/order/cancel').send({ orderId });
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    const row = await getOrderRecord(orderId);
-    expect(row.state).toBe('CANCELLED');
-    expect(row.cancelReason).toBe('USER_CANCELLED');
-    expect(row.poolHeldPaise).toBe(0);
-    // Both halves of the pool: the held tokens leave `held` AND land in `available`.
-    expect(await poolOf(team.teamId)).toEqual(before);
-    expect((await as(app, who).get(`/order/${orderId}/status`)).body.canCancel).toBe(false);
-    // A second tap is the same answer, and moves nothing twice.
-    expect((await as(app, who).post('/order/cancel').send({ orderId })).status).toBe(200);
-    expect(await poolOf(team.teamId)).toEqual(before);
-  });
-
-  it('refuses a cancel once the member has accepted, and keeps the hold', async () => {
+  it('refuses a cancel once a bank buy is started, and keeps the hold', async () => {
     const { orderId, who } = await depositOrder({ state: 'PROCESSING' });
     const held = await poolOf(team.teamId);
     expect((await as(app, who).get(`/order/${orderId}/status`)).body.canCancel).toBe(false);
@@ -354,7 +332,7 @@ describePg('payment routes', () => {
     const { getTeam } = await import('#db/repositories/teams.js');
     const { memberExposure } = await import('#db/repositories/teamPools.js');
     const before = await getTeam(team.teamId);
-    const open = await depositOrder({ state: 'ASSIGNED' });
+    const open = await depositOrder({ state: 'PROCESSING' });
     // Past the ten-minute wait before a buy may be disputed.
     const disputed = await depositOrder({ state: 'PAID', paidMinutesAgo: 11 });
     expect((await as(app, disputed.who).post(`/order/${disputed.orderId}/dispute`)
@@ -376,15 +354,15 @@ describePg('payment routes', () => {
     expect(mine.heldOpenPaise).toBeGreaterThanOrEqual(TOKENS * 100);
     const { rows } = await withTransaction((c) => c.query(
       `SELECT COALESCE(sum(pool_held_paise), 0) AS held FROM order_states
-        WHERE merchant_id = $1 AND state IN ('ASSIGNED','PROCESSING','PAID')`, [holder]));
+        WHERE merchant_id = $1 AND state IN ('PROCESSING','PROCESSING','PAID')`, [holder]));
     expect(mine.heldOpenPaise).toBe(Number(rows[0].held));
   });
 
   it("refuses a cancel of somebody else's order", async () => {
-    const { orderId } = await depositOrder({ state: 'ASSIGNED' });
+    const { orderId } = await depositOrder({ state: 'PROCESSING' });
     const stranger = await player();
     expect((await as(app, stranger).post('/order/cancel').send({ orderId })).status).toBe(403);
-    expect((await getOrderRecord(orderId)).state).toBe('ASSIGNED');
+    expect((await getOrderRecord(orderId)).state).toBe('PROCESSING');
   });
 
   it('shows a player only their OWN orders', async () => {

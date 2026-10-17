@@ -81,10 +81,10 @@ describePg('an order stays on the rail it was born on', () => {
     const orderId = await seed('P2P_UPI');
     // A UTR is globally unique (order_states_utr_unique), so a literal here
     // collides with any other suite that happened to use the same digits.
-    await pgQuery("UPDATE order_states SET state = 'ASSIGNED', utr = $1 WHERE order_id = $2",
+    await pgQuery("UPDATE order_states SET state = 'PROCESSING', utr = $1 WHERE order_id = $2",
       [uniqueUtr(), orderId]);
     const row = await modeOf(orderId);
-    expect(row.state).toBe('ASSIGNED');
+    expect(row.state).toBe('PROCESSING');
     expect(row.payment_mode).toBe('P2P_UPI');
   });
 

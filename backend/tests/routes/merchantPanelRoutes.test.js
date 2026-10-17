@@ -189,11 +189,10 @@ describePg('merchant panel routes', () => {
     return b;
   };
 
-  /** A routed buy its member has accepted: PROCESSING, the player's window running. */
+  /** A routed buy: routing starts it (no Accept, owner 2026-10-17), the player's window running. */
   const acceptedBuy = async (opts) => {
     const b = await buy(opts);
-    const res = await as(app, opts.to).post(`/accept/${b.orderId}`).send({});
-    expect(res.status, res.body.message).toBe(200);
+    expect((await getOrderRecord(b.orderId)).state).toBe('PROCESSING');
     return b;
   };
 
@@ -223,7 +222,6 @@ describePg('merchant panel routes', () => {
     for (const call of [
       () => request(app).get('/profile'),
       () => request(app).get('/orders'),
-      () => request(app).post('/accept/x').send({}),
       () => request(app).post('/confirm/x').send({}),
     ]) {
       expect((await call()).status).toBe(401);
@@ -268,28 +266,22 @@ describePg('merchant panel routes', () => {
     expect((await as(app, m).get('/profile')).body.merchant.assignmentPausedAt).toBeNull();
   });
 
-  // ── Accepting an order ────────────────────────────────────────────────────
-  it('404s an order that does not exist', async () => {
+  // ── Starting an order ─────────────────────────────────────────────────────
+  // There is no Accept: routing starts an order as it hands it out, writing
+  // the snapshot the player is shown in the same transition.
+  it('starts a routed order and writes the snapshot WITH the transition', async () => {
     const m = await member();
-    expect((await as(app, m).post(`/accept/NOSUCH-${RUN}`).send({})).status).toBe(404);
-  });
-
-  it('refuses an order already held by a different merchant', async () => {
-    const holder = await member();
-    const other = await member();
-    const { orderId } = await buy({ to: holder });
-
-    const res = await as(app, other).post(`/accept/${orderId}`).send({});
-    expect(res.status).toBe(403);
-    expect((await getOrderRecord(orderId)).merchantId).toBe(String(holder.merchantId));
-  });
-
-  it('refuses an order that is past the point of being taken', async () => {
-    const m = await member();
-    const { orderId } = await paidBuy({ to: m });
-    const res = await as(app, m).post(`/accept/${orderId}`).send({});
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/cannot be accepted in status: PAID/i);
+    const { orderId } = await buy({ to: m });
+    const row = await getOrderRecord(orderId);
+    expect(row.state).toBe('PROCESSING');
+    expect(row.merchantId).toBe(String(m.merchantId));
+    expect(row.merchantSnapshot, 'started with no merchant snapshot').toBeTruthy();
+    // The member's bank account, which a UPI_BANK buy is paid into, and no UPI
+    // handle: a member keeps none (§2 "How each rail is paid", §24).
+    expect(row.merchantSnapshot.accountNo, 'the member’s account is not on the snapshot').toBeTruthy();
+    expect(row.merchantSnapshot).not.toHaveProperty('upiId');
+    expect(row.expiresAt, 'started with no payment window').toBeTruthy();
+    expect(new Date(row.expiresAt).getTime()).toBeGreaterThan(Date.now());
   });
 
   // ── The member's two switches, "Accept deposit orders" / "…withdrawal…" ────
@@ -317,7 +309,7 @@ describePg('merchant panel routes', () => {
 
     // The other direction is untouched by it.
     const s = await sell({ to: m });
-    expect(s.row.state, 'switching buys off stopped their sells too').toBe('ASSIGNED');
+    expect(s.row.state, 'switching buys off stopped their sells too').toBe('PROCESSING');
     expect(s.row.merchantId).toBe(String(m.merchantId));
 
     // And switched back on, the waiting buy reaches them on the next offer.
@@ -345,99 +337,22 @@ describePg('merchant panel routes', () => {
     expect((await getOrderRecord(s.orderId)).merchantId).toBe(String(m.merchantId));
   });
 
-  // ── The USDT chain, re-checked where the member takes the order ───────────
-  // Routing required an address on the order's chain; a member can remove one
-  // from Profile between being routed the order and taking it. USDT sent to a
-  // chain the address is not on is gone (§25), so the accept refuses and names
-  // the chain. Profile keeps at least one address, so the state is reached the
-  // way a member reaches it: holding both, clearing the order's.
-  it('refuses a USDT member who no longer holds an address on the order’s chain (Tron)', async () => {
-    const usdt = await member('USDT');
-    const { orderId } = await buy({ to: usdt, tokens: USDT_TOKENS, currency: 'USDT', usdtChain: 'TRC20' });
-    const cleared = await as(app, usdt).put('/profile').send({ usdtAddressTrc20: '' });
-    expect(cleared.status, cleared.body.message).toBe(200);
-
-    const res = await as(app, usdt).post(`/accept/${orderId}`).send({});
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/Tron \(TRC-20\)/i);
-    expect((await getOrderRecord(orderId)).state).toBe('ASSIGNED');
-  });
-
-  it('refuses a USDT member who holds only the OTHER chain’s address', async () => {
-    // The sharp case, and the reason there are two columns. This member is on
-    // the USDT rail and has an address — on Tron. The order is being paid on
-    // BNB Smart Chain. Sending there would put the tokens on a network the
-    // address does not exist on, and they would be gone.
+  // ── The USDT chain ────────────────────────────────────────────────────────
+  // Routing requires an address on the order's chain and freezes it on the
+  // order as it starts it; the player is shown that one address. A member who
+  // clears it from Profile afterwards does not change where this order is
+  // paid (§25: address and network travel together).
+  it('starts a USDT buy with the address on its own chain, frozen on the order', async () => {
     const usdt = await member('USDT');
     const { orderId } = await buy({ to: usdt, tokens: USDT_TOKENS, currency: 'USDT', usdtChain: 'BEP20' });
-    const cleared = await as(app, usdt).put('/profile').send({ usdtAddressBep20: '' });
-    expect(cleared.status, cleared.body.message).toBe(200);
-    expect((await getMerchant(usdt.merchantId)).usdtAddressTrc20, 'the Tron address went too').toBeTruthy();
-
-    const res = await as(app, usdt).post(`/accept/${orderId}`).send({});
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/BNB Smart Chain/i);
-  });
-
-  it('lets a USDT member take an order on a chain they DO hold', async () => {
-    // The other half: the refusals above pass just as happily if no USDT
-    // member can ever accept anything.
-    const usdt = await member('USDT');
-    const { orderId } = await buy({ to: usdt, tokens: USDT_TOKENS, currency: 'USDT', usdtChain: 'BEP20' });
-    const res = await as(app, usdt).post(`/accept/${orderId}`).send({});
-    expect(res.status, res.body.message).toBe(200);
-    expect((await getOrderRecord(orderId)).state).toBe('PROCESSING');
-  });
-
-  it('accepts an order and writes the snapshot WITH the transition', async () => {
-    // An order cannot be found PROCESSING without the merchant details the
-    // player is about to be shown.
-    const m = await member();
-    const { orderId } = await buy({ to: m });
-    const res = await as(app, m).post(`/accept/${orderId}`).send({});
-    expect(res.status, res.body.message).toBe(200);
-
+    const held = await getMerchant(usdt.merchantId);
     const row = await getOrderRecord(orderId);
     expect(row.state).toBe('PROCESSING');
-    expect(row.merchantId).toBe(String(m.merchantId));
-    expect(row.merchantSnapshot, 'accepted with no merchant snapshot').toBeTruthy();
-    // The member's bank account, which a UPI_BANK buy is paid into, and no UPI
-    // handle: a member keeps none (§2 "How each rail is paid", §24).
-    expect(row.merchantSnapshot.accountNo, 'the member’s account is not on the snapshot').toBeTruthy();
-    expect(row.merchantSnapshot).not.toHaveProperty('upiId');
-    expect(row.expiresAt, 'accepted with no payment window').toBeTruthy();
-    expect(new Date(row.expiresAt).getTime()).toBeGreaterThan(Date.now());
-  });
+    expect(row.merchantSnapshot.usdtPayTo).toBe(held.usdtAddressBep20);
+    expect(row.merchantSnapshot.usdtPayTo).not.toBe(held.usdtAddressTrc20);
 
-  it('a QUEUED order cannot be claimed at all, in either direction — orders are routed, never fought over', async () => {
-    // ── This replaces a test that proved the race was fair ────────────────
-    // It used to fire four merchants at one PENDING_QUEUE buy and assert that
-    // exactly one won. That the race was fair was true; that there was a race
-    // was the defect. An order reaches a member through the router, which
-    // checks the rail, the cap and — on a buy — holds the pool's tokens. A
-    // handler that admitted an unrouted order would let anyone holding its id
-    // claim it first-come, which rewards whoever polls hardest and skips every
-    // one of those checks. 2c took the SELL's open pool away too, so both
-    // directions are asserted here.
-    const contenders = [];
-    for (let i = 0; i < 4; i += 1) contenders.push(await member());
-    const queuedBuy = await buy({ to: null });
-    expect(queuedBuy.routed, 'nobody was online, and the buy was routed anyway').toBe(false);
-    const queuedSell = await sell({ to: null });
-    expect(queuedSell.row.state).toBe('PENDING_QUEUE');
-
-    for (const orderId of [queuedBuy.orderId, queuedSell.orderId]) {
-      const results = await Promise.all(
-        contenders.map((m) => as(app, m).post(`/accept/${orderId}`).send({})),
-      );
-      expect(results.filter((r) => r.status === 200), 'a queued order was claimable').toHaveLength(0);
-      expect(results.every((r) => r.status === 403), results.map((r) => r.status).join(',')).toBe(true);
-
-      // Untouched, and still there for the assignment sweep to hand out properly.
-      const row = await getOrderRecord(orderId);
-      expect(row.state).toBe('PENDING_QUEUE');
-      expect(row.merchantId ?? null).toBeNull();
-    }
+    expect((await as(app, usdt).put('/profile').send({ usdtAddressBep20: '' })).status).toBe(200);
+    expect((await getOrderRecord(orderId)).merchantSnapshot.usdtPayTo).toBe(held.usdtAddressBep20);
   });
 
   it('DERIVES a member’s open-order count from the orders, not from a counter', async () => {
@@ -462,45 +377,37 @@ describePg('merchant panel routes', () => {
     expect((await getOrderRecord(waiting.orderId)).merchantId).toBe(String(m.merchantId));
   });
 
-  it('lets a member accept a cash order routed to them, at the cash limit of one', async () => {
-    // The open-order count includes ASSIGNED orders, and the order being
-    // accepted was assigned to this member — so at a limit of 1 it was once the
-    // one order blocking its own acceptance. Accepting moves it from ASSIGNED
-    // to PROCESSING; it does not add to the plate.
+  it('starts a cash order routed to a Ready member, at the cash limit of one', async () => {
     const m = await member('CASH');
     const ready = await as(app, m).put('/cash-ready').send({ ready: true });
     expect(ready.status, ready.body.message).toBe(200);
     const { orderId } = await buy({ to: m, tokens: CASH_TOKENS });
-    expect((await getOrderRecord(orderId)).paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
-
-    const res = await as(app, m).post(`/accept/${orderId}`).send({});
-    expect(res.status, res.body.message).toBe(200);
-    expect((await getOrderRecord(orderId)).state).toBe('PROCESSING');
+    const row = await getOrderRecord(orderId);
+    expect(row.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
+    expect(row.state).toBe('PROCESSING');
+    expect(row.merchantId).toBe(String(m.merchantId));
   });
 
   it('records a response time only for the merchant who WON, once, when the order completes', async () => {
-    // Stamped on the ORDER at accept, so a merchant who did not get the order
-    // has none. It reaches the average once, through `recordCompletedOrder`
-    // (the one writer of `avg_response_minutes`; routing ranks by it), when
-    // the order is confirmed — never at accept as well.
+    // With no Accept, a buy's response time runs from the player's Paid tap to
+    // the member's confirm, stamped on the ORDER at the confirm, so a merchant
+    // who did not get the order has none. It reaches the average once, through
+    // `recordCompletedOrder` (the one writer of `avg_response_minutes`;
+    // routing ranks by it).
     const winner = await member();
     const loser = await member();
     const before = (await getMerchant(winner.merchantId)).avgResponseMinutes;
     const { orderId, who } = await buy({ to: winner });
-    // Three minutes on the clock since the router assigned it.
-    await setOrderFields(orderId, { assignedAt: new Date(Date.now() - 3 * 60 * 1000) });
-
-    expect((await as(app, winner).post(`/accept/${orderId}`).send({})).status).toBe(200);
-    expect((await as(app, loser).post(`/accept/${orderId}`).send({})).status).toBe(403);
-
-    expect((await getOrderRecord(orderId)).merchantResponseMinutes).toBeGreaterThanOrEqual(3);
-    // Accepting alone does not move the average: there is one writer.
-    expect((await getMerchant(winner.merchantId)).avgResponseMinutes).toBe(before);
-
     expect((await markOrderPaid(who.userId, orderId, utr())).status).toBe('PAID');
+    // Three minutes on the clock since the player tapped Paid.
+    await setOrderFields(orderId, { paidAt: new Date(Date.now() - 3 * 60 * 1000) });
+
+    expect((await as(app, loser).post(`/confirm/${orderId}`)).status).toBe(404);
+    expect((await getOrderRecord(orderId)).merchantResponseMinutes ?? null).toBeNull();
+
     const done = await as(app, winner).post(`/confirm/${orderId}`);
     expect(done.status, done.body.message).toBe(200);
-
+    expect((await getOrderRecord(orderId)).merchantResponseMinutes).toBeGreaterThanOrEqual(3);
     expect((await getMerchant(winner.merchantId)).avgResponseMinutes).toBeGreaterThan(before);
     expect((await getMerchant(loser.merchantId)).avgResponseMinutes ?? 2).toBe(2);
   });
@@ -645,20 +552,19 @@ describePg('merchant panel routes', () => {
   });
 
   it('will not confirm a withdrawal that is not in flight', async () => {
-    // A cash sell, routed, accepted and confirmed — PAID, the credit HELD.
+    // A cash sell, routed (started) and confirmed — PAID, the credit HELD.
     // Confirming it again is a withdrawal no longer in flight.
     const m = await member('CASH');
     const s = await sell({ to: m, tokens: CASH_TOKENS });
-    expect(s.row.state).toBe('ASSIGNED');
+    expect(s.row.state).toBe('PROCESSING');
     expect(s.row.merchantId).toBe(String(m.merchantId));
-    expect((await as(app, m).post(`/accept/${s.orderId}`).send({})).status).toBe(200);
     const first = await as(app, m).post(`/confirm/${s.orderId}`).send({ utrNumber: payoutUtr() });
     expect(first.status, first.body.message).toBe(200);
     expect((await getOrderRecord(s.orderId)).state).toBe('PAID');
 
     const res = await as(app, m).post(`/confirm/${s.orderId}`).send({});
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/PROCESSING\/ASSIGNED/i);
+    expect(res.body.message).toMatch(/only be confirmed in PROCESSING/i);
   });
 
   // ── The merchant's own queue ──────────────────────────────────────────────

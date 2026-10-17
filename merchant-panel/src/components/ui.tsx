@@ -46,7 +46,6 @@ interface StatusMeta { label: string; color: string; bg: string; }
 
 const STATUS_META: Record<string, StatusMeta> = {
   [OrderStatus.PENDING_QUEUE]: { label: 'In queue',        color: 'var(--muted)',   bg: 'var(--surface-2)' },
-  [OrderStatus.ASSIGNED]:      { label: 'Assigned',        color: 'var(--info)',    bg: 'var(--info-bg)' },
   [OrderStatus.PROCESSING]:    { label: 'Processing',      color: 'var(--warn)',    bg: 'var(--warn-bg)' },
   [OrderStatus.PAID]:          { label: 'Payment claimed', color: 'var(--dep)',     bg: 'var(--dep-bg)' },
   [OrderStatus.COMPLETED]:     { label: 'Completed',       color: 'var(--ok)',      bg: 'var(--ok-bg)' },

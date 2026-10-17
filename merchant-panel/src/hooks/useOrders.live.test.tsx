@@ -52,7 +52,7 @@ describe('the merchant order list, live', () => {
     vi.stubGlobal('EventSource', FakeEventSource);
     localStorage.setItem('merchantToken', 'merchant-session');
     api.getOrders.mockResolvedValue({
-      orders: [{ _id: 'ord-1', orderId: 'ord-1', type: 'DEPOSIT', status: 'ASSIGNED', expiresAt: '2026-10-01T10:00:00.000Z', createdAt: '2026-10-01T09:30:00.000Z' }],
+      orders: [{ _id: 'ord-1', orderId: 'ord-1', type: 'DEPOSIT', status: 'PROCESSING', expiresAt: '2026-10-01T10:00:00.000Z', createdAt: '2026-10-01T09:30:00.000Z' }],
     });
   });
   afterEach(() => {
@@ -69,7 +69,7 @@ describe('the merchant order list, live', () => {
       return <ul>{orders.map((o: any) => <li key={o._id}>{`${o._id} ${o.status} ${o.type} ${o.expiresAt}`}</li>)}</ul>;
     };
     render(<Probe />);
-    await screen.findByText(/ord-1 ASSIGNED/);
+    await screen.findByText(/ord-1 PROCESSING/);
     sseService.connect();
     return merchantStream();
   };
@@ -85,7 +85,7 @@ describe('the merchant order list, live', () => {
   it('takes a moved deadline on order_update, keeping the order\'s own type', async () => {
     const stream = await mount();
     act(() => stream.dispatch('order_update', { orderId: 'ord-1', expiresAt: '2026-10-01T10:15:00.000Z' }));
-    await waitFor(() => expect(screen.getByText('ord-1 ASSIGNED DEPOSIT 2026-10-01T10:15:00.000Z')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('ord-1 PROCESSING DEPOSIT 2026-10-01T10:15:00.000Z')).toBeInTheDocument());
   });
 
   it('registers every name the order list subscribes to on the merchant stream', async () => {

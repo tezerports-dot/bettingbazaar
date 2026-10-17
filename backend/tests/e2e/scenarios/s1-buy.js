@@ -46,15 +46,13 @@ export default async function run() {
   // ── §24: the player is told where to pay and nothing else about who ───────
   // A bank-transfer buy is paid into the member's bank account, so the player
   // is shown that account (owner, 2026-10-03), and never the member's mobile,
-  // UPI handle or anything else from their profile. Not before the member has
-  // ACCEPTED the order: until then an admin may still move it to another
-  // member, and a player who paid the first would have paid the wrong account.
+  // UPI handle or anything else from their profile. Routing starts the order
+  // as it hands it out (no Accept, owner 2026-10-17), so the account is shown
+  // at once, and the order never changes hands after that.
   const forbidden = ['accountNumber', 'upiId', '@upi', 'upi://', 'usdtAddress', 'merchantSnapshot', 'mobile', m.mobile, m2.mobile];
   const leaks = (body) => forbidden.filter(k => JSON.stringify(body).includes(k));
   check(A, 'player', 'buy response carries no mobile, UPI handle or merchant profile', 'none of ' + forbidden.join(', '),
     leaks(order).join(', ') || 'none present', leaks(order).length === 0);
-  check(A, 'player', 'before the member accepts, the player is shown no account to pay', 'payTo with no bankAccount',
-    JSON.stringify(order.payTo ?? null), !!order.payTo && !order.payTo.bankAccount && !order.payTo.paymentLink);
 
   // ── The assigned merchant sees it; the other merchant does not ────────────
   const assignedId = (await db.orders?.getOrderRecord?.(oid).catch(() => null))?.merchantId
@@ -101,20 +99,21 @@ export default async function run() {
   const idor = await GET(oT, `/api/payment/order/${oid}`);
   check(A, 'other player', 'reading somebody else\'s order', '404', String(idor.status), idor.status === 404);
 
-  // ── Nothing is paid before the member accepts ────────────────────────────
+  // ── Started at once; it never changes hands once the player can pay ──────
   const utr = String(Date.now()).slice(-12).padStart(12, '7');
-  const unaccepted = await POST(pT, `/api/payment/order/${oid}/mark-paid`, { utrNumber: utr });
-  check(A, 'player', 'mark paid before the member accepts', '409 NOT_ACCEPTED_YET',
-    `${unaccepted.status} ${unaccepted.body.code ?? ''}`, unaccepted.status === 409 && unaccepted.body.code === 'NOT_ACCEPTED_YET');
-  const stranger = await POST(strangerT, `/api/merchant/accept/${oid}`, {});
-  check(A, 'merchant', 'a member it is not assigned to accepts it', '4xx', String(stranger.status), stranger.status >= 400 && stranger.status < 500);
-  const accepted = await POST(assignedT, `/api/merchant/accept/${oid}`, {});
-  check(A, 'merchant', 'the assigned member accepts the buy', '200', `${accepted.status} ${accepted.body.message ?? ''}`, accepted.status === 200);
+  const startedState = (await pgQuery('SELECT state FROM order_states WHERE order_id = $1', [oid], 'e2e')).rows[0]?.state;
+  check(A, 'system', 'the buy is started as it is routed: there is no Accept', 'PROCESSING', startedState ?? 'none', startedState === 'PROCESSING');
+  const stranger = await POST(strangerT, `/api/merchant/reject/${oid}`, { reason: 'Not mine' });
+  check(A, 'merchant', 'a member it is not assigned to declines it', '4xx', String(stranger.status), stranger.status >= 400 && stranger.status < 500);
+  const declined = await POST(assignedT, `/api/merchant/reject/${oid}`, { reason: 'Busy right now' });
+  check(A, 'merchant', 'its member declines a started bank buy', '400 CANNOT_DECLINE',
+    `${declined.status} ${declined.body.code ?? ''}`, declined.status === 400 && declined.body.code === 'CANNOT_DECLINE',
+    'the player has been shown where to pay, so the buy stays with this member');
 
   const shown = (await GET(pT, `/api/payment/order/${oid}`)).body.order ?? {};
   const account = shown.payTo?.bankAccount ?? {};
   const payee = [m, m2].find(x => x.bankDetails?.accountNo === account.accountNo);
-  check(A, 'player', 'once accepted, the order names the bank account to transfer to', 'the ACCEPTING member\'s account no, IFSC and holder',
+  check(A, 'player', 'the started order names the bank account to transfer to', 'the assigned member\'s account no, IFSC and holder',
     account.accountNo ? `${account.accountNo} ${account.ifsc} ${account.accountHolder}` : 'no account',
     !!payee && payee.merchantId === assignedId && account.ifsc === payee.bankDetails.ifsc && !!account.accountHolder);
   check(A, 'player', 'and still no mobile, UPI handle or merchant profile', 'none of ' + forbidden.join(', '),
@@ -128,17 +127,12 @@ export default async function run() {
   const dupPlayer = await seedPlayer({});
   const dupT = playerToken(dupPlayer);
   const dup = await POST(dupT, '/api/payment/deposit/create', { tokenAmount: 50000 });
-  // Only an ACCEPTED order can be marked paid at all; a refusal of an order
-  // nobody accepted would pass this check for the wrong reason.
-  if (dup.body.order?.orderId) {
-    const dupMember = (await pgQuery('SELECT merchant_id FROM order_states WHERE order_id = $1', [dup.body.order.orderId], 'e2e')).rows[0]?.merchant_id;
-    const dupT2 = dupMember === m.merchantId ? mT : dupMember === m2.merchantId ? m2T : null;
-    if (dupT2) await POST(dupT2, `/api/merchant/accept/${dup.body.order.orderId}`, {});
-  }
+  // Only a started order can be marked paid at all; a refusal of a queued
+  // order would pass this check for the wrong reason.
   const dupState = dup.body.order?.orderId
     ? (await pgQuery('SELECT state FROM order_states WHERE order_id = $1', [dup.body.order.orderId], 'e2e')).rows[0]?.state
     : null;
-  check(A, 'system', 'the second buy is accepted, so only the UTR can refuse it', 'PROCESSING',
+  check(A, 'system', 'the second buy is started, so only the UTR can refuse it', 'PROCESSING',
     dupState ?? `no order: ${dup.status} ${JSON.stringify(dup.body).slice(0, 120)}`, dupState === 'PROCESSING');
   if (dup.body.order?.orderId) {
     const reuse = await POST(dupT, `/api/payment/order/${dup.body.order.orderId}/mark-paid`, { utrNumber: utr });

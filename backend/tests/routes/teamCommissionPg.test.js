@@ -161,7 +161,6 @@ describePg('team commission', () => {
     const { order } = await createWithdrawalOrder(who.userId, tokens);
     const orderId = order.orderId ?? order._id;
     expect((await getOrderRecord(orderId)).merchantId, 'the sell was not routed').toBe(String(m.merchantId));
-    expect((await as(panel, m).post(`/accept/${orderId}`).send({})).status).toBe(200);
     const paid = await as(panel, m).post(`/confirm/${orderId}`).send({ utrNumber: utr() });
     expect(paid.status, paid.body.message).toBe(200);
     // The hold sweep's own settler, for this order: the sell completes there.

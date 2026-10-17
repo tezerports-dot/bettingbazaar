@@ -16,7 +16,6 @@ export type LoadState = 'loading' | 'ready' | 'error';
 
 /** Queue order for the Orders screen: what needs attention first. */
 const SORT_RANK: Record<string, number> = {
-  [OrderStatus.ASSIGNED]: 0,
   [OrderStatus.PAID]: 1,
   [OrderStatus.PROCESSING]: 2,
   [OrderStatus.PENDING_QUEUE]: 3,
@@ -31,11 +30,13 @@ const orderKey = (order: PaymentOrder): string => String(order._id || order.id |
 
 /**
  * needsAction — the merchant has something to do on this order right now:
- * accept a new assignment, verify a claimed deposit payment, or send a payout.
- * This drives the nav badge and the dashboard's "needs action" tile.
+ * scan a cash buy's machine QR, verify a claimed deposit payment, or send a
+ * payout. There is no accept (owner, 2026-10-17). This drives the nav badge
+ * and the dashboard's "needs action" tile.
  */
 export function needsAction(order: PaymentOrder): boolean {
-  if (order.status === OrderStatus.ASSIGNED || order.status === OrderStatus.PENDING_QUEUE) return true;
+  if (order.status === OrderStatus.PROCESSING && order.type === 'DEPOSIT'
+    && order.paymentMode === 'CASH_ATM' && !order.cashLink) return true;
   if (order.status === OrderStatus.PAID && order.type === 'DEPOSIT') return true;
   if (order.status === OrderStatus.PROCESSING && order.type === 'WITHDRAWAL') return true;
   return false;
@@ -113,7 +114,6 @@ export function useOrders() {
   );
 
   const counts = useMemo(() => ({
-    assigned:   orders.filter((o) => o.status === OrderStatus.ASSIGNED || o.status === OrderStatus.PENDING_QUEUE).length,
     processing: orders.filter((o) => o.status === OrderStatus.PROCESSING).length,
     paid:       orders.filter((o) => o.status === OrderStatus.PAID).length,
     disputed:   orders.filter((o) => o.status === OrderStatus.DISPUTED).length,

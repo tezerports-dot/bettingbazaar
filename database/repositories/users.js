@@ -791,13 +791,12 @@ export async function listFlaggedPlayers({ limit = 100 } = {}) {
     `SELECT ${prefixed},
             r.order_id           AS reject_order_id,
             r.rejected_reason    AS reject_reason,
-            r.rejection_proof_url AS reject_proof_url,
             r.rejected_at        AS reject_at,
             r.rejected_by        AS reject_merchant_id,
             r.token_amount_paise AS reject_amount_paise
        FROM users u
        LEFT JOIN LATERAL (
-         SELECT order_id, rejected_reason, rejection_proof_url,
+         SELECT order_id, rejected_reason,
                 rejected_at, rejected_by, token_amount_paise
            FROM order_states
           WHERE user_id = u.user_id AND cancel_reason = 'MERCHANT_REJECTED'
@@ -817,7 +816,6 @@ export async function listFlaggedPlayers({ limit = 100 } = {}) {
     lastRejection: row.reject_order_id ? {
       orderId:      row.reject_order_id,
       reason:       row.reject_reason,
-      proofUrl:     row.reject_proof_url,
       rejectedAt:   row.reject_at,
       merchantId:   row.reject_merchant_id,
       amountPaise:  toInt(row.reject_amount_paise),

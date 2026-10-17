@@ -135,7 +135,6 @@ describePg('team oversight', () => {
     const { order } = await createWithdrawalOrder(who.userId, 50_000);
     const orderId = order.orderId ?? order._id;
     expect((await getOrderRecord(orderId)).merchantId, 'the sell was not routed').toBe(String(m.merchantId));
-    expect((await as(panel, m).post(`/accept/${orderId}`).send({})).status).toBe(200);
     const paid = await as(panel, m).post(`/confirm/${orderId}`).send({ utrNumber: payoutUtr() });
     expect(paid.status, paid.body.message).toBe(200);
     return orderId;

@@ -111,7 +111,7 @@ export async function getPool(teamId) {
 // hold taken at assignment is still the only check a buy passes.
 
 /** Live states in which a buy's tokens sit held in its team's pool. */
-export const POOL_HOLD_OPEN_STATES = Object.freeze(['ASSIGNED', 'PROCESSING', 'PAID']);
+export const POOL_HOLD_OPEN_STATES = Object.freeze(['PROCESSING', 'PAID']);
 /** States in which a buy's hold waits on a dispute (or the window to raise one). */
 export const POOL_HOLD_DISPUTE_STATES = Object.freeze(['DISPUTED', 'REJECTED']);
 
