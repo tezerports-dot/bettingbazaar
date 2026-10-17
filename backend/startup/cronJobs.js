@@ -275,6 +275,22 @@ export function registerCronJobs(rebuildLeaderboard) {
   });
 
 
+  // ── Round history: 1,440 per board and audience — runs hourly ─────────────
+  // Rounds past the window, once settled with nothing PENDING, are summed into
+  // their day's summary and deleted, in one transaction; the bets and the
+  // ledger stay (owner, 2026-10-17; cycleHistoryRetention.js).
+  registerRecurring('cycle-history-retention', 60 * 60 * 1000, async () => {
+    try {
+      let total = 0;
+      for (let i = 0; i < 50; i += 1) {
+        const { pruned } = await db.cycleHistoryRetention.pruneCycleHistory();
+        total += pruned;
+        if (!pruned) break;
+      }
+      if (total > 0) console.log(`[retention] Summarised and removed ${total} old round(s)`);
+    } catch (e) { console.error('[retention] round history error:', e.message); }
+  });
+
   // ── Payment proof retention — runs hourly ──────────────────────────────────
   // Keeps the ORDER — it is the financial record — while dropping the
   // high-volume proof screenshot once its retention window has passed. One
