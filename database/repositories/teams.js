@@ -284,7 +284,7 @@ export async function addMember({ teamId, supervisorId, merchantRef, actor }) {
   try {
     return await withTransaction(async (client) => {
       const { rows: t } = await client.query(
-        'SELECT team_id FROM teams WHERE team_id = $1 AND supervisor_id = $2 FOR UPDATE',
+        'SELECT team_id FROM teams WHERE team_id = $1 AND supervisor_id = $2',
         [String(teamId), String(supervisorId)]);
       if (!t[0]) return { ok: false, reason: 'team_not_found' };
       const { rows: m } = await client.query(
