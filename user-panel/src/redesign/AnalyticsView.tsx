@@ -29,7 +29,7 @@ import { analyticsFor, MIN_SAMPLE, Side } from './analytics';
 import { analyticsWindowFor } from '../constants';
 import { useDemoResults, withDemoResults, DEMO_STYLE } from './DemoResults';
 import { fmt } from './format';
-import RunsAndGaps, { box, heading } from './RunsAndGaps';
+import RunsAndGaps, { box, heading, LATEST_RING, LatestTag } from './RunsAndGaps';
 import { Board, CycleType } from '../types';
 
 interface Props {
@@ -80,13 +80,6 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
   );
   const A = useMemo(() => analyticsFor(filled.winners, board), [filled, board]);
 
-  // The big road and the strips slide sideways; they open on the newest end.
-  const roadRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const el = roadRef.current;
-    if (el) el.scrollLeft = el.scrollWidth;
-  }, [A.total, active]);
-
   // Share of wins. With no results at all, say nothing rather than 0% / 100%.
   const aDPct = A.total ? Math.round((A.delhiWins / A.total) * 100) : 0;
   const aBPct = A.total ? 100 - aDPct : 0;
@@ -117,8 +110,9 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
   const favorSide = probDelhi >= probBombay ? 'DELHI' : 'BOMBAY';
   const favorColor = favorSide === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)';
 
-  // Every result in the window, oldest left; index i newest-first is demo from `filled.real`.
-  const aBeads = A.seq.map((sd, i) => ({ ...bead(sd), demo: i >= filled.real })).reverse();
+  // Every result in the window, newest first from the top left (owner,
+  // 2026-10-17); index i is demo from `filled.real`.
+  const aBeads = A.seq.map((sd, i) => ({ ...bead(sd), demo: i >= filled.real }));
   const recent = A.seq.slice(0, 12);
 
   const empty = A.sample === 0;
@@ -150,25 +144,29 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
           <>
             <div style={box}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <span style={heading}>Big road · all {fmt(A.total)} · newest right, slide for older</span>
+                <span style={heading}>Big road · all {fmt(A.total)} · newest top left, slide right for older</span>
                 {!empty && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--gold-ink)' }}>Current: {cur.side} ×{cur.len}</span>}
               </div>
               {empty ? (
                 <div style={{ fontSize: 11, color: 'var(--text3)', padding: '14px 0', textAlign: 'center' }}>No results on this board yet.</div>
               ) : (
-                <div ref={roadRef} data-testid="big-road" style={{ display: 'grid', gridAutoFlow: 'column', gridTemplateRows: 'repeat(6,20px)', gridAutoColumns: '20px', gap: 4, overflowX: 'auto', paddingBottom: 6, scrollSnapType: 'x proximity', WebkitOverflowScrolling: 'touch' }}>
-                  {aBeads.map((b, i) => (
-                    <span key={i} data-demo={b.demo ? '' : undefined} style={{ width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', ...(b.demo ? DEMO_STYLE : null) }}>{b.ch}</span>
-                  ))}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                  <LatestTag />
+                  <div data-testid="big-road" style={{ flex: 1, minWidth: 0, display: 'grid', gridAutoFlow: 'column', gridTemplateRows: 'repeat(6,20px)', gridAutoColumns: '20px', gap: 4, overflowX: 'auto', padding: '3px 3px 6px', scrollSnapType: 'x proximity', WebkitOverflowScrolling: 'touch' }}>
+                    {aBeads.map((b, i) => (
+                      <span key={i} data-demo={b.demo ? '' : undefined} data-latest={i === 0 ? '' : undefined} style={{ width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', ...(b.demo ? DEMO_STYLE : null), ...(i === 0 ? LATEST_RING : null) }}>{b.ch}</span>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
             {!empty && (
               <div style={{ ...box, marginTop: 10 }}>
-                <span style={heading}>Last {recent.length} results · newest first</span>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                <span style={heading}>Last {recent.length} results · newest first, left to right</span>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10, alignItems: 'center' }}>
+                  <LatestTag />
                   {recent.map((sd, i) => (
-                    <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 9px 4px 4px', borderRadius: 999, background: 'var(--surface)', border: '1px solid var(--line)', fontSize: 10, fontWeight: 800, color: 'var(--text2)' }}>
+                    <span key={i} data-latest={i === 0 ? '' : undefined} style={{ ...(i === 0 ? LATEST_RING : null), display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 9px 4px 4px', borderRadius: 999, background: 'var(--surface)', border: '1px solid var(--line)', fontSize: 10, fontWeight: 800, color: 'var(--text2)' }}>
                       <span style={{ width: 16, height: 16, borderRadius: '50%', background: bead(sd).bg, color: '#fff', fontSize: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{bead(sd).ch}</span>
                       {sd === 'DELHI' ? 'Delhi' : 'Bombay'}
                     </span>

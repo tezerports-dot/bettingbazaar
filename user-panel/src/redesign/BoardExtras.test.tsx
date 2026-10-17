@@ -77,11 +77,12 @@ describe('ResultCelebration', () => {
     expect(await screen.findByText('₹396', {}, { timeout: 3000 })).toBeInTheDocument();
   });
 
-  it('says a losing round once, with the stake, and no YOU WON', () => {
+  it('says a losing round once, with how much was lost, and no YOU WON', () => {
     render(<ResultCelebration cycleId="30MIN_5" result={{ cycleId: '30MIN_5', winner: 'BOMBAY' }} />);
     expect(round('30MIN_5', 300, 0, 'BOMBAY')).toBe(true);
-    expect(screen.getByText('NOT THIS ROUND')).toBeInTheDocument();
-    expect(screen.getByText(/Your ₹300 bet did not win/)).toBeInTheDocument();
+    expect(screen.getByText('YOU LOST')).toBeInTheDocument();
+    expect(screen.getByText('−₹300')).toBeInTheDocument();
+    expect(screen.queryByText(/did not win/)).toBeNull();
     expect(screen.queryByText('YOU WON')).toBeNull();
   });
 
