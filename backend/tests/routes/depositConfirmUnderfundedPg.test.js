@@ -111,9 +111,9 @@ describePg('a buy the team pool cannot cover', () => {
 
     const { orderId, view } = await buy();
 
-    expect(view.status).toBe('ASSIGNED');
+    expect(view.status).toBe('PROCESSING');
     expect(await getOrderRecord(orderId)).toMatchObject({
-      status: 'ASSIGNED', merchantId: member.merchantId, teamId: team.teamId, poolHeldPaise: BUY_PAISE,
+      status: 'PROCESSING', merchantId: member.merchantId, teamId: team.teamId, poolHeldPaise: BUY_PAISE,
     });
     expect(await getPool(team.teamId)).toMatchObject({ availablePaise: 0, heldPaise: BUY_PAISE });
     // A hold moves tokens inside the pool, not out of it: the books are unchanged.
@@ -127,7 +127,7 @@ describePg('a buy the team pool cannot cover', () => {
     const [a, b] = await Promise.all([buy(), buy()]);
 
     const rows = await Promise.all([getOrderRecord(a.orderId), getOrderRecord(b.orderId)]);
-    expect(rows.map((r) => r.status).sort()).toEqual(['ASSIGNED', 'PENDING_QUEUE']);
+    expect(rows.map((r) => r.status).sort()).toEqual(['PENDING_QUEUE', 'PROCESSING']);
     const waiting = rows.find((r) => r.status === 'PENDING_QUEUE');
     expect(waiting.poolHeldPaise).toBe(0);
     expect(waiting.teamId).toBeNull();
@@ -148,7 +148,7 @@ describePg('a buy the team pool cannot cover', () => {
     // called here: another suite's leftover would be held in this pool.)
     expect(await tryAssignMerchant(await getOrderRecord(orderId))).toBe(true);
     expect(await getOrderRecord(orderId)).toMatchObject({
-      status: 'ASSIGNED', merchantId: member.merchantId, teamId: team.teamId, poolHeldPaise: BUY_PAISE,
+      status: 'PROCESSING', merchantId: member.merchantId, teamId: team.teamId, poolHeldPaise: BUY_PAISE,
     });
     expect(await getPool(team.teamId)).toMatchObject({ availablePaise: 0, heldPaise: BUY_PAISE });
   });

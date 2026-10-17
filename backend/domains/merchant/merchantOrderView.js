@@ -36,6 +36,8 @@
  * Top-level fields a merchant may see. Anything absent here does not reach
  * them, whatever `toOrder` maps or `order_states` grows.
  */
+import { mayChangeHands } from '#db/repositories/orders.record.js';
+
 export const MERCHANT_ORDER_FIELDS = Object.freeze([
   // Identity and routing.
   'orderId', '_id', 'id', 'userId', 'merchantId',
@@ -61,7 +63,7 @@ export const MERCHANT_ORDER_FIELDS = Object.freeze([
   // for this and the panel must read that name — it read `rejectionReason`,
   // which no responder has ever sent, so every rejection rendered its generic
   // fallback and the merchant never saw the reason.
-  'rejectedReason', 'rejectionProofUrl', 'cancelReason',
+  'rejectedReason', 'cancelReason',
 
   // The dispute, from the side the merchant is a party to.
   'disputeReason', 'disputeRaisedAt', 'disputeRaisedBy',
@@ -96,6 +98,10 @@ export const MERCHANT_ORDER_FIELDS = Object.freeze([
   'paidAt', 'completedAt', 'expiresAt',
 
   'createdAt', 'updatedAt',
+
+  // Whether the member may still decline it (`mayChangeHands`): derived below,
+  // so the panel keeps no copy of the rule.
+  'canDecline',
 ]);
 
 /**
@@ -156,6 +162,10 @@ export function toMerchantOrderView(order) {
     const bank = bankDetailsFor(plain);
     if (bank) view.userBankDetails = bank;
   }
+
+  // Orders start with no accept (owner, 2026-10-17); a started one may go back
+  // to the queue only while nobody can have paid on it.
+  view.canDecline = mayChangeHands({ ...plain, type });
 
   return view;
 }

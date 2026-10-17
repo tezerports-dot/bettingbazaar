@@ -43,7 +43,7 @@ describePg('flagged players — the admin review queue', () => {
   afterAll(async () => { await closePg(); });
 
   /** A player flagged by a real merchant rejection, evidence and all. */
-  const flaggedPlayer = async ({ reason = 'No credit against UTR 999888777666', proof = 'https://cdn.test/proof.jpg', times = 1 } = {}) => {
+  const flaggedPlayer = async ({ reason = 'No credit against UTR 999888777666', times = 1 } = {}) => {
     const player = await actor({});
     let orderId;
     for (let i = 0; i < times; i += 1) {
@@ -53,7 +53,7 @@ describePg('flagged players — the admin review queue', () => {
         tokenAmountRupees: 500, fiatAmountRupees: 500, state: 'PAID',
       });
       await setOrderFields(orderId, {
-        rejectedReason: reason, rejectionProofUrl: proof,
+        rejectedReason: reason,
         rejectedAt: new Date(), rejectedBy: 'mrc-1',
         cancelReason: 'MERCHANT_REJECTED',
       });
@@ -80,7 +80,7 @@ describePg('flagged players — the admin review queue', () => {
     expect(res.body).not.toHaveProperty('user');
   });
 
-  it('returns the flagged player with the merchant reason and the proof image', async () => {
+  it('returns the flagged player with the merchant reason, and no proof field (reason only, owner 2026-10-17)', async () => {
     const { player, orderId } = await flaggedPlayer();
     const body = await listFlagged();
 
@@ -92,7 +92,7 @@ describePg('flagged players — the admin review queue', () => {
     expect(row.lastRejection).toBeTruthy();
     expect(row.lastRejection.orderId).toBe(orderId);
     expect(row.lastRejection.reason).toBe('No credit against UTR 999888777666');
-    expect(row.lastRejection.proofUrl).toBe('https://cdn.test/proof.jpg');
+    expect(row.lastRejection).not.toHaveProperty('proofUrl');
     // BIGINT arrives as a string from node-postgres; cast at the boundary or
     // every comparison downstream is a string comparison (Trap 5).
     expect(typeof row.lastRejection.amountPaise).toBe('number');
@@ -113,7 +113,7 @@ describePg('flagged players — the admin review queue', () => {
         tokenAmountRupees: 500, fiatAmountRupees: 500, state: 'PAID',
       });
       await setOrderFields(orderId, {
-        rejectedReason: reason, rejectionProofUrl: 'https://cdn.test/p.jpg',
+        rejectedReason: reason,
         rejectedAt: when, rejectedBy: 'mrc-1', cancelReason: 'MERCHANT_REJECTED',
       });
       await flagPaymentWarning(player.userId, { reason, maxWarnings: 0 });

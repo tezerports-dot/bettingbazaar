@@ -98,9 +98,9 @@ describePg('a retry, and the queue that serves it first', () => {
   afterEach(async () => {
     for (const orderId of created.splice(0)) {
       const row = await getOrderRecord(orderId);
-      if (!['PENDING_QUEUE', 'ASSIGNED'].includes(row?.status)) continue;
+      if (!['PENDING_QUEUE', 'PROCESSING'].includes(row?.status)) continue;
       await cancelState(orderId, {
-        expectFrom: ['PENDING_QUEUE', 'ASSIGNED'],
+        expectFrom: ['PENDING_QUEUE', 'PROCESSING'],
         set: { cancelReason: 'TEST_CLEANUP', cancelledAt: new Date() },
       }).catch(() => { /* already moved on; nothing to tidy */ });
       await releaseBuyHold(orderId, { actor: 'test-cleanup', reason: 'suite cleanup' });
@@ -154,7 +154,7 @@ describePg('a retry, and the queue that serves it first', () => {
     // feels unfair until you remember the retrier already waited once and got
     // nothing — and the older first-time order still waits.
     const served = await getOrderRecord(retried);
-    expect(served.status).toBe('ASSIGNED');
+    expect(served.status).toBe('PROCESSING');
     expect(served.merchantId).toBe(String(member));
     expect((await getOrderRecord(older)).status).toBe('PENDING_QUEUE');
     // And the buy is backed by the team's pool from the moment it is assigned.
@@ -180,7 +180,7 @@ describePg('a retry, and the queue that serves it first', () => {
 
     expect((await setCashReady(member, true)).ok).toBe(true);
     await assignQueuedOrders();
-    expect((await getOrderRecord(earlier)).status).toBe('ASSIGNED');
+    expect((await getOrderRecord(earlier)).status).toBe('PROCESSING');
     expect((await getOrderRecord(later)).status).toBe('PENDING_QUEUE');
   });
 
@@ -195,7 +195,7 @@ describePg('a retry, and the queue that serves it first', () => {
     // so one assigns and the other finds the order already moved.
     await Promise.all([assignQueuedOrders(), assignQueuedOrders()]);
 
-    expect((await getOrderRecord(orderId)).status).toBe('ASSIGNED');
+    expect((await getOrderRecord(orderId)).status).toBe('PROCESSING');
     const poolAfter = await getPool(team.teamId);
     expect(poolAfter.heldPaise - poolBefore.heldPaise).toBe(DENOM_RUPEES * 100);
     expect(poolBefore.availablePaise - poolAfter.availablePaise).toBe(DENOM_RUPEES * 100);

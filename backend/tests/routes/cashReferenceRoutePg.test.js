@@ -81,7 +81,7 @@ describePg('a cash player submits the payment reference after Paid', () => {
     const { order } = await createDepositOrder(p.userId, 1000);
     const orderId = order.orderId ?? order._id;
     const routed = await getOrderRecord(orderId);
-    expect(routed.status, 'the cash buy was not routed to the ready member').toBe('ASSIGNED');
+    expect(routed.status, 'the cash buy was not routed to the ready member').toBe('PROCESSING');
     expect(routed.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
     await readyToPay(orderId);
     await markOrderPaid(p.userId, orderId, undefined);

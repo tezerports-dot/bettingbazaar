@@ -730,7 +730,7 @@ export async function deleteMerchant(merchantId) {
         AND NOT EXISTS (
           SELECT 1 FROM order_states o
            WHERE o.merchant_id = m.merchant_id
-             AND o.state IN ('ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED'))
+             AND o.state IN ('PROCESSING', 'PAID', 'DISPUTED'))
       RETURNING merchant_id`,
     [String(merchantId)], 'merchant_delete',
   );

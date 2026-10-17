@@ -211,7 +211,7 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
 
     const order = await db.orders.getOrderRecord(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (!['DISPUTED', 'PROCESSING', 'PAID', 'ASSIGNED'].includes(order.status)) {
+    if (!['DISPUTED', 'PROCESSING', 'PAID'].includes(order.status)) {
       return res.status(400).json({ success: false, message: `Cannot resolve order in status: ${order.status}` });
     }
 

@@ -303,13 +303,6 @@ export const getOrders = async (params?: {
   }
 };
 
-export const acceptOrder = async (orderId: string): Promise<PaymentOrder> => {
-  const data = await request<any>(ENDPOINTS.ORDERS.ACCEPT(orderId), {
-    method: 'POST',
-  });
-  return data.order || data;
-};
-
 /**
  * Confirm an order. Works for BOTH:
  *   DEPOSIT:    PAID → COMPLETED, releasing tokens to the player.
@@ -348,57 +341,18 @@ export const confirmPayment = async (
 };
 
 /**
- * PUT a file to a presigned storage URL, or throw a short reason: the storage's
- * own error code when it answers, or that it could not be reached (its CORS
- * rules or address) when it does not. Written for a person to pass on to
- * support, who fixes the storage setting it names.
- */
-async function putToStorage(uploadUrl: string, file: File): Promise<void> {
-  let put: Response;
-  try {
-    put = await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
-  } catch {
-    throw new Error('The file storage could not be reached (its upload rules or address are not set up for this site). Please tell support.');
-  }
-  if (put.ok) return;
-  const xml = await put.text().catch(() => '');
-  const code = /<Code>([^<]+)<\/Code>/.exec(xml)?.[1];
-  throw new Error(`The file storage refused the upload (HTTP ${put.status}${code ? `, ${code}` : ''}). Please tell support.`);
-}
-
-/**
  * Reject an order the player says they paid, because the money never arrived.
  *
- * Different from `rejectOrder` below, which declines an order BEFORE payment
- * and returns it to the queue. This one rejects a PAID buy (only a PAID one:
- * owner, 2026-10-07) and adds a warning and a flag to the player's account —
- * so the backend requires a reason of at least ten characters and a proof
- * image, and refuses without either.
- *
- * Three steps, in this order: ask for a presigned URL (which also checks the
- * order is this merchant's PAID buy, or answers 400 NOT_PAID_YET), PUT the
- * file, then send the reference. The proof is verified server-side against
- * THIS merchant and THIS order before it is stored, so a key from somewhere
- * else is refused.
+ * Different from `rejectOrder` below, which declines an order before anybody
+ * can have paid and returns it to the queue. This one rejects a PAID buy (only
+ * a PAID one: owner, 2026-10-07) and adds a warning and a flag to the player's
+ * account, so the backend requires a reason of at least ten characters. No
+ * proof image (owner, 2026-10-17: "reason only").
  */
-export const rejectPaidOrder = async (
-  orderId: string, reason: string, proof: File,
-): Promise<PaymentOrder> => {
-  const presigned = await request<any>(ENDPOINTS.ORDERS.REJECT_PROOF_UPLOAD_URL(orderId), {
-    method: 'POST',
-    body: JSON.stringify({ fileName: proof.name, contentType: proof.type, fileSize: proof.size }),
-  });
-  if (!presigned?.uploadUrl || !presigned?.fileKey) {
-    throw new Error('Could not prepare the proof upload');
-  }
-
-  await putToStorage(presigned.uploadUrl, proof);
-
+export const rejectPaidOrder = async (orderId: string, reason: string): Promise<PaymentOrder> => {
   const data = await request<any>(ENDPOINTS.ORDERS.REJECT_PAID(orderId), {
     method: 'POST',
-    body: JSON.stringify({
-      reason, proofFileKey: presigned.fileKey, proofCdnUrl: presigned.cdnUrl,
-    }),
+    body: JSON.stringify({ reason }),
   });
   return data.order || data;
 };
@@ -818,7 +772,6 @@ export const api = {
   
   // Orders
   getOrders,
-  acceptOrder,
   confirmPayment,
   rejectOrder,
   rejectPaidOrder,

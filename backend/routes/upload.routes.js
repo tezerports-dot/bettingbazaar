@@ -5,9 +5,6 @@ import express from 'express';
 import { db } from '#db';
 import cdnService from '../services/cdn.service.js';
 import { authenticatePlayer } from '../domains/identity/auth.middleware.js';
-import { merchantAuth } from '../middleware/merchantAuth.js';
-import { refuseWork } from '../domains/merchant/merchantActor.js';
-import { unpaidRejectRefusal } from '../domains/payment/rejectedBuyWindow.service.js';
 import { serverError, callerError, respondError } from '../shared/httpError.js';
 // Order chat. An attachment that is not recorded is an upload nobody can find.
 
@@ -29,61 +26,11 @@ function hasValidUploadInput(fileName, contentType, fileSize) {
 
 // by the merchant panel and does a participant check).
 // ═══════════════════════════════════════════════════════════════════════
-// 🧾 MERCHANT ORDER-REJECTION PROOF
+// 🧾 MERCHANT ORDER-REJECTION PROOF — REMOVED (owner, 2026-10-17)
 //
-// A merchant rejecting a PAID order is saying the player's money never
-// arrived. That warns and flags the player's account and puts them in an
-// admin's review queue, so the accusation carries evidence: a bank statement
-// screenshot or a photo showing no such credit. The admin decides from this
-// image, so an unverifiable one is a decision made blind.
-//
-// The order must be the merchant's own and must be in a state where the claim
-// makes sense. Issuing a URL for somebody else's order would let a merchant
-// stage proof against an order they have nothing to do with.
+// A member's "payment not received" carries a reason only; no image is
+// collected for it. The dispute that follows is where evidence is weighed.
 // ═══════════════════════════════════════════════════════════════════════
-router.post('/merchant/order-reject-proof/:orderId/upload-url', merchantAuth, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const { fileName, contentType, fileSize } = req.body;
-
-    if (!hasValidUploadInput(fileName, contentType, fileSize)) {
-      return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
-    }
-    if (fileSize > 10 * 1024 * 1024) {
-      return res.status(400).json({ success: false, message: 'Maximum file size is 10 MB' });
-    }
-
-    // Ownership in the WHERE clause — `getMerchantOrder` matches the order id
-    // AND the merchant id, so an order that is not theirs is simply not found.
-    const order = await db.orders.getMerchantOrder(orderId, req.merchantId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    // The reject's own role question (owner, 2026-10-11): a sub-member stages
-    // proof only for an order they may work.
-    if (refuseWork(req, res, order)) return;
-    // The same question the reject asks, from the same function (§32 S3): a
-    // buy the player has tapped Paid on (owner, 2026-10-07). This admitted
-    // PROCESSING, and any order type, so evidence could be staged for an
-    // accusation that cannot be made.
-    const refused = unpaidRejectRefusal(order);
-    if (refused) {
-      return res.status(refused.status).json({ success: false, code: refused.code, message: refused.message });
-    }
-
-    // Images only — the category falls through to the image allowlist, and the
-    // extension blocklist independently refuses SVG and HTML, which served from
-    // the panels' own origin would be stored XSS.
-    const uploadData = await cdnService.generatePresignedUploadUrl({
-      fileName, contentType, fileSize,
-      category: 'merchant-reject-proof',
-      userId: String(req.merchantId),
-      orderId,
-    });
-    res.json({ success: true, ...uploadData });
-  } catch (error) {
-    console.error('❌ Merchant reject-proof upload URL error:', error);
-    return respondError(res, error, 'POST /upload/merchant/order-reject-proof/:orderId/upload-url', { message: 'Failed to generate upload URL' });
-  }
-});
 
 // ═══════════════════════════════════════════════════════════════════════
 // 💬 ORDER CHAT ATTACHMENTS — REMOVED

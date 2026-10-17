@@ -275,7 +275,6 @@ export interface SystemConfigData {
 
 export type PaymentOrderStatus =
   | 'PENDING_QUEUE'
-  | 'ASSIGNED'
   | 'PROCESSING'
   | 'PAID'
   | 'COMPLETED'

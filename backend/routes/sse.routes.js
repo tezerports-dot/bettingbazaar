@@ -236,7 +236,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
             // silently skips an order the merchant is meant to work.
             const page = await db.orders.findOrders({
                 merchantId,
-                states: ['ASSIGNED', 'PROCESSING', 'PAID', 'PENDING_QUEUE'],
+                states: ['PROCESSING', 'PAID', 'PENDING_QUEUE'],
                 limit,
                 cursor: decodeOrderCursor(req.query.cursor),
             });

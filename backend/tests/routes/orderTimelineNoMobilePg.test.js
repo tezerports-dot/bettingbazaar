@@ -24,19 +24,17 @@ import { listMessages } from '#db/repositories/chat.js';
 import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js';
 import { createDepositOrder, createWithdrawalOrder } from '../../domains/payment/paymentProcessing.service.js';
 import { teamFixture } from '../teamFixture.js';
-import { mountRouter, actor, merchantActor, as } from './_harness.js';
+import { actor, merchantActor } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
 describePg('the order timeline names nobody\'s mobile or UPI handle', () => {
-  let merchantApp;
   const RUN = Math.random().toString(36).slice(2, 8);
   const teams = teamFixture();
   const made = [];
 
   beforeAll(async () => {
     await applySchema();
-    merchantApp = mountRouter((await import('../../domains/merchant/merchant.routes.js')).default);
   }, 60_000);
 
   afterAll(async () => {
@@ -69,11 +67,9 @@ describePg('the order timeline names nobody\'s mobile or UPI handle', () => {
     made.push(orderId);
     expect((await getOrderRecord(orderId)).merchantId, 'the buy was not routed').toBe(String(member.merchantId));
 
-    const res = await as(merchantApp, member).post(`/accept/${orderId}`).send({});
-    expect(res.status, res.body.message).toBe(200);
-
+    // Routing starts it and writes the note as it hands it out (no Accept).
     const text = await thread(orderId);
-    expect(text, 'the accept message was not written').toMatch(/Order Accepted/);
+    expect(text, 'the start note was not written').toMatch(/Order started/);
     expect(text).toMatch(/bank account shown on the order/);
     expect(text).not.toContain(member.mobile);
     expect(text).not.toMatch(/@ybl|UPI ID/i);
@@ -99,11 +95,8 @@ describePg('the order timeline names nobody\'s mobile or UPI handle', () => {
     // message is built from that copy and must still not print it.
     await setOrderFields(orderId, { userBankDetails: { ...row.userBankDetails, upiId: `${player.mobile}@okaxis` } });
 
-    const res = await as(merchantApp, member).post(`/accept/${orderId}`).send({});
-    expect(res.status, res.body.message).toBe(200);
-
     const text = await thread(orderId);
-    expect(text, 'the accept message was not written').toMatch(/Accepted/);
+    expect(text, 'the start note was not written').toMatch(/Withdrawal started/);
     expect(text).not.toContain(player.mobile);
     expect(text).not.toContain(member.mobile);
     expect(text).not.toMatch(/@okaxis|@ybl|UPI ID/i);

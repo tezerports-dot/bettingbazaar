@@ -8,10 +8,9 @@
  * wrong thing, and on this screen the wrong thing is an admin blocking a player
  * without the evidence in front of them.
  *
- * The two facts that actually matter here are both rendering facts:
- *   1. the merchant's proof image is on screen before either button is usable;
- *   2. a rejection with NO proof says so, loudly, instead of looking identical
- *      to one that has evidence.
+ * The fact that matters here is a rendering fact: the merchant's reason and
+ * the order it is about are on screen before either button is usable. A
+ * rejection carries a reason only (owner, 2026-10-17), so no image is shown.
  *
  * A route test cannot assert either.
  */
@@ -30,23 +29,22 @@ vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() 
 
 import { FlaggedPlayers } from './FlaggedPlayers';
 
-const WITH_PROOF = {
+const FIRST = {
   userId: 'u-1', username: 'ravi', mobile: '9000000001',
   warningCount: 4, paymentFlagCount: 4, paymentFlagReason: 'No credit',
   paymentFlaggedAt: '2026-09-01T00:00:00.000Z', isBlocked: false,
   overWarningThreshold: true,
   lastRejection: {
     orderId: 'BB-1001', reason: 'No credit against UTR 999888777666',
-    proofUrl: 'https://cdn.test/statement.jpg',
     rejectedAt: '2026-09-01T00:00:00.000Z', merchantId: 'mrc-1', amountPaise: 50000,
   },
 };
 
-const WITHOUT_PROOF = {
-  ...WITH_PROOF, userId: 'u-2', username: 'sunil', mobile: '9000000002',
+const SECOND = {
+  ...FIRST, userId: 'u-2', username: 'sunil', mobile: '9000000002',
   warningCount: 1, overWarningThreshold: false,
   lastRejection: {
-    ...WITH_PROOF.lastRejection, orderId: 'BB-1002', proofUrl: null,
+    ...FIRST.lastRejection, orderId: 'BB-1002',
     reason: 'Wrong amount credited, short by 200',
   },
 };
@@ -54,27 +52,19 @@ const WITHOUT_PROOF = {
 beforeEach(() => {
   getFlagged.mockReset(); blockUser.mockReset(); clearFlag.mockReset();
   getFlagged.mockResolvedValue({
-    success: true, warningThreshold: 3, players: [WITH_PROOF, WITHOUT_PROOF],
+    success: true, warningThreshold: 3, players: [FIRST, SECOND],
   });
   blockUser.mockResolvedValue({ success: true });
   clearFlag.mockResolvedValue({ success: true });
 });
 
 describe('FlaggedPlayers', () => {
-  it("shows the merchant's reason and the proof image", async () => {
+  it("shows the merchant's reason and the order it is about, and no image", async () => {
     render(<FlaggedPlayers />);
     await waitFor(() => expect(screen.getByText('ravi')).toBeInTheDocument());
-
     expect(screen.getByText(/No credit against UTR 999888777666/)).toBeInTheDocument();
-    const proof = screen.getByAltText("Merchant's proof") as HTMLImageElement;
-    expect(proof.src).toBe('https://cdn.test/statement.jpg');
-  });
-
-  it('says so when a complaint has no proof behind it', async () => {
-    // Hidden, this reads exactly like a complaint that came with evidence.
-    render(<FlaggedPlayers />);
-    await waitFor(() => expect(screen.getByText('sunil')).toBeInTheDocument());
-    expect(screen.getByText(/No proof image on this rejection/i)).toBeInTheDocument();
+    expect(screen.getByText(/Order BB-1001/)).toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: /proof/i })).toBeNull();
   });
 
   it('will not submit a block without a reason of real length', async () => {
@@ -129,7 +119,7 @@ describe('FlaggedPlayers', () => {
   it('reports the threshold it was given rather than assuming one', async () => {
     // The number comes from the admin's own risk rules. Hard-coding 3 here
     // would show an operator who changed it a figure the server disagrees with.
-    getFlagged.mockResolvedValue({ success: true, warningThreshold: 7, players: [WITH_PROOF] });
+    getFlagged.mockResolvedValue({ success: true, warningThreshold: 7, players: [FIRST] });
     render(<FlaggedPlayers />);
     await waitFor(() => expect(screen.getByText('7')).toBeInTheDocument());
     expect(screen.getByText('4 / 7')).toBeInTheDocument();
@@ -138,7 +128,7 @@ describe('FlaggedPlayers', () => {
   it('does not offer to block a player who is already blocked', async () => {
     getFlagged.mockResolvedValue({
       success: true, warningThreshold: 3,
-      players: [{ ...WITH_PROOF, isBlocked: true }],
+      players: [{ ...FIRST, isBlocked: true }],
     });
     render(<FlaggedPlayers />);
     const btn = await screen.findByText(/Already blocked/);

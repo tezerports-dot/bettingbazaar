@@ -136,17 +136,12 @@ async function drivePricedRail() {
     rateFrozen ? 'refused' : 'RE-PRICED', rateFrozen);
 
   // ── §24: the player is told where to pay and nothing about who ───────────
-  // Not before the member accepts: until then an admin may still move the
-  // order, and USDT sent to the first member's address is not recoverable.
-  check(A, 'player', 'before the member accepts, the player is given no address', 'no payTo.usdtAddress',
-    order.payTo?.usdtAddress ?? 'none', !order.payTo?.usdtAddress);
-  if (r.merchant_id === tron.merchantId) {
-    const accepted = await POST(merchantToken(tron), `/api/merchant/accept/${oid}`, {});
-    check(A, 'merchant', 'the TRC-20 member accepts the USDT buy', '200', `${accepted.status} ${accepted.body.message ?? ''}`, accepted.status === 200);
-  }
+  // Routing starts the order as it hands it out (no Accept, owner
+  // 2026-10-17), and a started USDT buy never changes hands, so the address
+  // shown is the one the order keeps.
   const shown = (await GET(pT, `/api/payment/order/${oid}`)).body.order ?? {};
   const tronAddress = (await pgQuery('SELECT usdt_address_trc20 FROM merchants WHERE merchant_id = $1', [tron.merchantId], 'e2e')).rows[0]?.usdt_address_trc20;
-  check(A, 'player', 'once accepted, the player is given the member\'s TRC-20 address', tronAddress ?? 'the seeded address',
+  check(A, 'player', 'the started order gives the player the member\'s TRC-20 address', tronAddress ?? 'the seeded address',
     shown.payTo?.usdtAddress ?? 'none', !!tronAddress && shown.payTo?.usdtAddress === tronAddress);
   const view = JSON.stringify(shown);
   check(A, 'player', 'the player is given an address AND its network together', 'both present',
@@ -154,8 +149,8 @@ async function drivePricedRail() {
     '§25: an address on its own is the mistake');
 
   // ── A member with no address on THAT chain is not a candidate ────────────
-  const bnbClaim = await POST(merchantToken(bnb), `/api/merchant/accept/${oid}`, {});
-  check(A, 'merchant', 'a BEP-20-only teammate cannot take this order', '4xx',
+  const bnbClaim = await POST(merchantToken(bnb), `/api/merchant/reject/${oid}`, { reason: 'Not on my chain' });
+  check(A, 'merchant', 'a BEP-20-only teammate cannot act on this order', '4xx',
     `${bnbClaim.status} ${bnbClaim.body.message ?? ''}`, bnbClaim.status >= 400,
     'NOTE: once the order is assigned, ANY other member is refused, so this '
     + 'does not on its own prove the CHAIN guard. §25 puts that guard in the '

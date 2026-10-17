@@ -127,7 +127,6 @@ export const PLAYER_FORBIDDEN_ORDER_FIELDS = Object.freeze([
   // The merchant's own evidence upload when they reject. `rejectedReason` is
   // the player's answer; the image behind it is the merchant's document and can
   // be a bank statement with their name on it.
-  'rejectionProofUrl',
 
   // ── The platform's economics ──────────────────────────────────────────────
   'merchantProfit', 'merchantFee', 'platformFeeRate', 'depositPolicySnapshot',
@@ -182,25 +181,37 @@ export const PLAYER_PAY_TO_BANK_FIELDS = Object.freeze([
  * The reference is `Merchant #<publicRef>`, a label that names nobody, so a
  * player and support can talk about the same order.
  *
- * Where to pay is sent only once the member has ACCEPTED (`PAY_DETAIL_STATES`).
- * While an order is ASSIGNED the member may still decline it and an admin may
- * still move it, so a destination shown then could take the player's money to
- * a member the order then leaves. And not after the order has ended: a
- * finished order's history does not keep handing out a member's account.
+ * Where to pay is sent once the order has STARTED (`PAY_DETAIL_STATES`):
+ * routing starts it as it hands it to a member, with no accept step (owner,
+ * 2026-10-17). From then on a buy never changes hands unless nothing could
+ * have been paid (`mayChangeHands`, orders.record.js). Not after the order
+ * has ended: a finished order's history does not keep handing out a member's
+ * account.
  */
 /** The states in which the player is shown where to pay, and may have paid. */
 export const PAY_DETAIL_STATES = Object.freeze(['PROCESSING', 'PAID', 'REJECTED', 'DISPUTED']);
 
 /**
- * The states in which the player may still cancel their own order: waiting in
- * the queue, or assigned to a member who has not yet accepted. Nobody has been
- * shown where to pay or been paid, so nothing is owed by either side and the
- * hold (a buy) or the stake (a sell) simply comes back. Once the member accepts
- * (PROCESSING) the order runs to its deadline instead. `cancelOrder`
- * (paymentProcessing.service.js) refuses any other state in the UPDATE's WHERE;
- * the player's screens read `canCancel` and keep no copy of this list.
+ * The states a player may cancel their own order from: waiting in the queue,
+ * and on a CASH buy also started while no ATM QR is scanned yet (there is
+ * nothing to pay to). Nothing is owed by either side and the hold (a buy) or
+ * the stake (a sell) simply comes back. A started sell is not cancelled (the
+ * member may be paying), and a started bank or USDT buy shows where to pay at
+ * once, so it runs to its deadline. `cancelOrder` (paymentProcessing.service.js)
+ * moves only from these, with the QR asked under the row lock
+ * (`refuseIfPayableWithin`); the player's screens read `canCancel` and keep no
+ * copy of this rule.
  */
-export const PLAYER_CANCEL_STATES = Object.freeze(['PENDING_QUEUE', 'ASSIGNED']);
+export function playerCancelFrom(order) {
+  return order?.type === 'DEPOSIT' && order?.paymentMode === PAYMENT_MODES.CASH_ATM
+    ? ['PENDING_QUEUE', 'PROCESSING'] : ['PENDING_QUEUE'];
+}
+
+/** Whether the player is offered Cancel on this order now. */
+export function playerMayCancel(order) {
+  if (!playerCancelFrom(order).includes(order?.status)) return false;
+  return order.status !== 'PROCESSING' || !order.cashLink;
+}
 
 function counterpartyFor(order) {
   const snapshot = order?.merchantSnapshot;
@@ -261,9 +272,9 @@ export function toPlayerOrderView(order) {
   const until = disputeDeadline(plain);
   if (until) view.disputeUntil = until;
 
-  // Whether the Cancel button is offered, from the one list the cancel route
+  // Whether the Cancel button is offered, from the one rule the cancel route
   // enforces, so no screen keeps its own idea of when an order can be dropped.
-  view.canCancel = PLAYER_CANCEL_STATES.includes(plain.status);
+  view.canCancel = playerMayCancel(plain);
 
   return view;
 }

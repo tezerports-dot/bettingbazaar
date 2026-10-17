@@ -263,7 +263,7 @@ router.get('/merchants/:merchantId/earnings', authenticate, hasPermission('canMa
     const earnings = await db.stats.merchantEarnings(merchant.merchantId);
     const totalOrders     = merchant.totalOrdersAll;
     const completedOrders = merchant.totalOrdersCompleted;
-    const pendingOrders   = counts.pending + counts.assigned + counts.processing;
+    const pendingOrders   = counts.pending + counts.processing;
     const totalVolume     = earnings.lifetime.totalVolume;
 
     res.json({ success: true, earnings: {

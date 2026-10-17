@@ -11,7 +11,6 @@ export type MerchantRail = 'INR' | 'USDT';
 
 export enum OrderStatus {
   PENDING_QUEUE = 'PENDING_QUEUE',
-  ASSIGNED = 'ASSIGNED',
   PROCESSING = 'PROCESSING',
   PAID = 'PAID',
   COMPLETED = 'COMPLETED',
@@ -166,6 +165,11 @@ export interface PaymentOrder {
   inrRouting?: 'AGENTS' | 'MERCHANTS' | null;
   payAccountId?: string | null;
   paidFromAccountId?: string | null;
+  /**
+   * Whether this member may still decline it: a started order nobody can have
+   * paid on yet (merchantOrderView.js `canDecline`, from `mayChangeHands`).
+   */
+  canDecline?: boolean;
 }
 
 export interface MerchantProfile {

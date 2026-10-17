@@ -2,58 +2,38 @@
 /**
  * "The player says they paid and the money never arrived."
  *
- * ── Why this is not the ordinary Reject ─────────────────────────────────────
- * Declining an order BEFORE payment simply returns it to the queue; nobody is
- * accused of anything. This one rejects a buy the player has tapped Paid on
- * (only then: owner, 2026-10-07; the card offers it on a PAID buy alone), adds
- * a warning to their account and flags them for an admin. The buy waits in
- * REJECTED, the team's tokens held, while the player may dispute it. It never
- * blocks them: that is an admin's decision (owner, 2026-09-07).
+ * ── Why this is not the ordinary Decline ────────────────────────────────────
+ * Declining an order before anybody can have paid simply returns it to the
+ * queue; nobody is accused of anything. This one rejects a buy the player has
+ * tapped Paid on (only then: owner, 2026-10-07), adds a warning to their
+ * account and flags them for an admin. The buy waits in REJECTED, the team's
+ * tokens held, while the player may dispute it. It never blocks them: that is
+ * an admin's decision (owner, 2026-09-07).
  *
- * So it asks for what an accusation needs: a reason the player will be shown,
- * and a picture of the evidence. The backend refuses without both, and verifies
- * the image belongs to this merchant and this order before storing it. The
- * fields here are not politeness — they are the same requirement, stated early
- * enough that the merchant is not told "rejected" and then refused.
+ * So it asks for a reason the player will be shown, of at least ten
+ * characters, which the backend also requires. No proof image (owner,
+ * 2026-10-17: "reason only"); the dispute that may follow is where evidence
+ * is weighed.
  */
-import React, { useRef, useState } from 'react';
+import React, { useState } from 'react';
 
 interface Props {
   open: boolean;
   orderRef: string;
   busy: boolean;
   onCancel: () => void;
-  onSubmit: (reason: string, proof: File) => void;
+  onSubmit: (reason: string) => void;
 }
 
 const MIN_REASON = 10;
-const MAX_BYTES = 10 * 1024 * 1024;
-const ALLOWED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
 
 export const PaymentNotReceivedDialog: React.FC<Props> = ({ open, orderRef, busy, onCancel, onSubmit }) => {
   const [reason, setReason] = useState('');
-  const [proof, setProof] = useState<File | null>(null);
-  const [error, setError] = useState('');
-  const fileInput = useRef<HTMLInputElement>(null);
 
   if (!open) return null;
 
-  const pick = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    // Checked here as well as server-side: a merchant who picks a 40MB photo
-    // should be told before the upload, not after it fails.
-    if (!ALLOWED.includes(file.type)) {
-      setError('Use a JPEG, PNG, WebP or GIF image.'); setProof(null); return;
-    }
-    if (file.size > MAX_BYTES) {
-      setError('That image is over 10 MB.'); setProof(null); return;
-    }
-    setError(''); setProof(file);
-  };
-
   const short = reason.trim().length < MIN_REASON;
-  const ready = !short && !!proof && !busy;
+  const ready = !short && !busy;
 
   return (
     <div role="dialog" aria-label="Payment not received"
@@ -63,7 +43,7 @@ export const PaymentNotReceivedDialog: React.FC<Props> = ({ open, orderRef, busy
         <p style={{ margin: '8px 0 0', fontSize: 12.5, lineHeight: 1.5, color: 'var(--muted, #9AA3B2)' }}>
           The player says they paid order <b>{orderRef}</b>. Rejecting it puts a warning on their
           account and flags them for an admin; they can dispute it until the window closes, and the
-          team&apos;s tokens stay held until then. So this needs evidence.
+          team&apos;s tokens stay held until then.
         </p>
 
         <label style={{ display: 'block', marginTop: 16, fontSize: 10, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase', color: 'var(--muted, #9AA3B2)' }} htmlFor="what-happened-the-player-sees-this">
@@ -77,25 +57,10 @@ export const PaymentNotReceivedDialog: React.FC<Props> = ({ open, orderRef, busy
           style={{ width: '100%', marginTop: 6, padding: 10, borderRadius: 10, resize: 'none', background: 'var(--surface2, #0F131B)', border: '1px solid var(--line, rgba(255,255,255,.12))', color: 'inherit', fontSize: 13 }}
         />
         {reason.length > 0 && short && (
-          <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--danger, #EF4444)' }}>
+          <span role="status" style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--danger, #EF4444)' }}>
             {MIN_REASON - reason.trim().length} more characters needed
           </span>
         )}
-
-        <label style={{ display: 'block', marginTop: 14, fontSize: 10, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase', color: 'var(--muted, #9AA3B2)' }}>
-          Proof (screenshot or photo)
-        </label>
-        <button
-          type="button"
-          onClick={() => fileInput.current?.click()}
-          style={{ width: '100%', marginTop: 6, padding: 12, borderRadius: 10, cursor: 'pointer', textAlign: 'left', background: 'var(--surface2, #0F131B)', border: `1px dashed ${proof ? 'var(--ok, #22C55E)' : 'var(--line, rgba(255,255,255,.18))'}`, color: 'inherit', fontSize: 12.5 }}
-        >
-          {proof ? `📎 ${proof.name}` : 'Choose a bank statement screenshot or photo'}
-        </button>
-        <input ref={fileInput} type="file" accept="image/*" style={{ display: 'none' }}
-          onChange={pick} aria-label="Proof image" />
-
-        {error && <p style={{ margin: '10px 0 0', fontSize: 11.5, color: 'var(--danger, #EF4444)' }}>{error}</p>}
 
         <div style={{ display: 'flex', gap: 9, marginTop: 18 }}>
           <button onClick={onCancel} disabled={busy}
@@ -103,7 +68,7 @@ export const PaymentNotReceivedDialog: React.FC<Props> = ({ open, orderRef, busy
             Cancel
           </button>
           <button
-            onClick={() => proof && onSubmit(reason.trim(), proof)}
+            onClick={() => onSubmit(reason.trim())}
             disabled={!ready}
             style={{ flex: 1, padding: 11, borderRadius: 10, border: 0, cursor: ready ? 'pointer' : 'not-allowed', background: ready ? 'var(--danger, #EF4444)' : 'var(--surface2, #0F131B)', color: ready ? '#fff' : 'var(--muted, #9AA3B2)', fontSize: 13, fontWeight: 800 }}>
             {busy ? 'Sending…' : 'Reject order'}

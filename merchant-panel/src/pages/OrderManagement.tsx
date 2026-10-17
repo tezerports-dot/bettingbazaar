@@ -1,12 +1,12 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Orders — the merchant's live queue. Design handoff "BB Merchant Panel.dc.html":
-// four status tiles that double as filters, a search + type filter row, then the
-// order cards, with the detail drawer/sheet over them.
+// four status tiles that double as filters, a search + type filter row, then
+// one line per order, with the detail drawer/sheet over them.
 import React, { useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Search } from 'lucide-react';
 import { useAuth } from '../services/AuthContext';
-import { useOrders } from '../hooks/useOrders';
+import { needsAction, useOrders } from '../hooks/useOrders';
 import { useOrderActions } from '../hooks/useOrderActions';
 import PaymentNotReceivedDialog from '../components/PaymentNotReceivedDialog';
 import CashLinkScanner from '../components/CashLinkScanner';
@@ -16,14 +16,14 @@ import { isMerchantAccountSession } from '../utils/actor';
 import { useNow } from '../hooks/useCountdown';
 import { useViewport } from '../hooks/useViewport';
 import { railOf } from '../utils/rail';
-import { OrderStatus, type PaymentOrder } from '../types';
-import OrderCard from '../components/OrderCard';
+import type { PaymentOrder } from '../types';
+import OrderRow from '../components/OrderRow';
 import OrderDetail from '../components/OrderDetail';
 import {
   Button, ConfirmDialog, EmptyState, ErrorState, SegmentedControl, Skeleton, inputStyle,
 } from '../components/ui';
 
-type StatusFilter = 'ALL' | 'ASSIGNED' | 'PROCESSING' | 'PAID' | 'DISPUTED';
+type StatusFilter = 'ALL' | 'ACTION' | 'PROCESSING' | 'PAID' | 'DISPUTED';
 type TypeFilter = 'ALL' | 'DEPOSIT' | 'WITHDRAWAL';
 
 const orderKey = (order: PaymentOrder): string => String(order._id || order.id || order.orderId);
@@ -32,7 +32,7 @@ const OrderManagement: React.FC = () => {
   const { merchant } = useAuth();
   const { orders, state, counts, reload } = useOrders();
   const now = useNow();
-  const { isMobile, isDesktop } = useViewport();
+  const { isMobile } = useViewport();
   const rail = railOf(merchant);
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
@@ -65,8 +65,8 @@ const OrderManagement: React.FC = () => {
     const query = search.trim().toLowerCase();
     return orders.filter((order) => {
       if (typeFilter !== 'ALL' && order.type !== typeFilter) return false;
-      if (statusFilter === 'ASSIGNED' && !(order.status === OrderStatus.ASSIGNED || order.status === OrderStatus.PENDING_QUEUE)) return false;
-      if (statusFilter !== 'ALL' && statusFilter !== 'ASSIGNED' && order.status !== statusFilter) return false;
+      if (statusFilter === 'ACTION' && !needsAction(order)) return false;
+      if (statusFilter !== 'ALL' && statusFilter !== 'ACTION' && order.status !== statusFilter) return false;
       if (query) {
         const haystack = [order.orderId, order._id]
           .filter(Boolean).join(' ').toLowerCase();
@@ -83,13 +83,11 @@ const OrderManagement: React.FC = () => {
   const cardActions = { ...actions, onOpen: (order: PaymentOrder) => setSelectedId(orderKey(order)) };
 
   const tiles: Array<{ key: StatusFilter; label: string; count: number; color: string; bg: string }> = [
-    { key: 'ASSIGNED',   label: 'Assigned',   count: counts.assigned,   color: 'var(--info)',    bg: 'var(--info-bg)' },
+    { key: 'ACTION',     label: 'Needs you',  count: counts.actionable, color: 'var(--info)',    bg: 'var(--info-bg)' },
     { key: 'PROCESSING', label: 'Processing', count: counts.processing, color: 'var(--warn)',    bg: 'var(--warn-bg)' },
     { key: 'PAID',       label: 'Paid',       count: counts.paid,       color: 'var(--dep)',     bg: 'var(--dep-bg)' },
     { key: 'DISPUTED',   label: 'Disputed',   count: counts.disputed,   color: 'var(--dispute)', bg: 'var(--dispute-bg)' },
   ];
-
-  const columns = isDesktop ? 'repeat(2, minmax(0, 1fr))' : isMobile ? '1fr' : 'repeat(2, minmax(0, 1fr))';
 
   return (
     <div style={{ maxWidth: 1120, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: isMobile ? 14 : 16 }}>
@@ -157,8 +155,8 @@ const OrderManagement: React.FC = () => {
       )}
 
       {state === 'loading' && (
-        <div style={{ display: 'grid', gridTemplateColumns: columns, gap: 14 }}>
-          {[0, 1, 2, 3].map((i) => <Skeleton key={i} height={250} />)}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {[0, 1, 2, 3, 4, 5].map((i) => <Skeleton key={i} height={50} />)}
         </div>
       )}
 
@@ -183,9 +181,10 @@ const OrderManagement: React.FC = () => {
       )}
 
       {state === 'ready' && visible.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: columns, gap: 14, alignItems: 'start' }}>
+        // One line per order (owner, 2026-10-17); a tap opens the details.
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {visible.map((order) => (
-            <OrderCard key={orderKey(order)} order={order} merchant={merchant} now={now} actions={cardActions} paymentAccounts={paymentAccounts} />
+            <OrderRow key={orderKey(order)} order={order} merchant={merchant} now={now} actions={cardActions} />
           ))}
         </div>
       )}

@@ -16,11 +16,14 @@
  *
  * ── The state machine ───────────────────────────────────────────────────────
  *
- *   PENDING_QUEUE ─▶ ASSIGNED ─▶ PROCESSING ─▶ PAID ─▶ COMPLETED
- *         │              │            │          │
- *         └──────────────┴────────────┴──────────┴──▶ CANCELLED / FAILED /
- *                                                     DISPUTED
+ *   PENDING_QUEUE ─▶ PROCESSING ─▶ PAID ─▶ COMPLETED
+ *         ▲  │             │  │        │
+ *         └──┼─────────────┘  │        │   the member declines, or an admin moves it
+ *            └────────────────┴────────┴──▶ CANCELLED / FAILED / DISPUTED
  *                          PAID ─▶ REJECTED   the member's "payment not received"
+ *
+ * There is no "assigned, waiting to be accepted" state: routing hands an order
+ * to a member already started (owner, 2026-10-17: "no merchant approval").
  *
  * ALLOWED_FROM is the whole rule, as data. Every transition names the states it
  * accepts and the guard lives in the UPDATE's WHERE clause, so a caller
@@ -45,7 +48,6 @@ import { EVENT_TYPES } from '../../backend/domains/revenue/chartOfAccounts.js';
 
 export const ORDER_STATES = Object.freeze({
   PENDING_QUEUE: 'PENDING_QUEUE',
-  ASSIGNED:      'ASSIGNED',
   PROCESSING:    'PROCESSING',
   PAID:          'PAID',
   COMPLETED:     'COMPLETED',
@@ -72,7 +74,7 @@ export const ORDER_TYPES = Object.freeze({ DEPOSIT: 'DEPOSIT', WITHDRAWAL: 'WITH
  * ── PENDING_QUEUE is re-enterable, and used not to be ───────────────────────
  * This table said "nothing transitions INTO PENDING_QUEUE; that is where an
  * order is opened", and two tests asserted it. The live code disagreed:
- * merchant.routes.js's reject handler sets an ASSIGNED order back to
+ * merchant.routes.js's reject handler sets a started order back to
  * PENDING_QUEUE and immediately looks for another merchant. That is the whole
  * point of rejecting — the order returns to the queue.
  *
@@ -82,15 +84,15 @@ export const ORDER_TYPES = Object.freeze({ DEPOSIT: 'DEPOSIT', WITHDRAWAL: 'WITH
  * unguarded. See docs/ORDERS_REQUEUE_CYCLE.md for the consequence it exposed.
  */
 export const ALLOWED_FROM = Object.freeze({
-  // The requeue edge. An ASSIGNED order whose merchant declines goes back to
-  // the queue to be offered to someone else.
-  [ORDER_STATES.PENDING_QUEUE]: [ORDER_STATES.ASSIGNED],
-  [ORDER_STATES.ASSIGNED]:   [ORDER_STATES.PENDING_QUEUE],
-  // From ASSIGNED only: every order reaches a member through team routing, so
-  // nothing is taken straight out of the queue (§3.10, 2c). The open sell pool
-  // that once made PENDING_QUEUE an entry here is gone.
-  [ORDER_STATES.PROCESSING]: [ORDER_STATES.ASSIGNED],
-  [ORDER_STATES.PAID]:       [ORDER_STATES.PROCESSING, ORDER_STATES.ASSIGNED],
+  // The requeue edge. A started order its member declines, or an admin moves,
+  // before anybody could have paid goes back to the queue to be offered to
+  // someone else (`mayChangeHands`, orders.record.js).
+  [ORDER_STATES.PENDING_QUEUE]: [ORDER_STATES.PROCESSING],
+  // Routing starts the order as it hands it to a member: the member's row
+  // locked, the pool held, in one transaction (teamRouting.js). There is no
+  // accept step (owner, 2026-10-17).
+  [ORDER_STATES.PROCESSING]: [ORDER_STATES.PENDING_QUEUE],
+  [ORDER_STATES.PAID]:       [ORDER_STATES.PROCESSING],
   // DISPUTED is here because resolving a dispute IS this transition. Without
   // it, DISPUTED had no outgoing edges at all and every admin resolution
   // refused itself: the resolve routes confirm the order is DISPUTED and then
@@ -116,13 +118,13 @@ export const ALLOWED_FROM = Object.freeze({
   // DISPUTED, for the same reason as COMPLETED above: a dispute resolved in the
   // payer's favour cancels the order and refunds it.
   // REJECTED, when its dispute window closes with no dispute raised.
-  [ORDER_STATES.CANCELLED]:  [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.DISPUTED, ORDER_STATES.REJECTED],
-  [ORDER_STATES.FAILED]:     [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID],
+  [ORDER_STATES.CANCELLED]:  [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.DISPUTED, ORDER_STATES.REJECTED],
+  [ORDER_STATES.FAILED]:     [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.PROCESSING, ORDER_STATES.PAID],
   // PAID, and only PAID: the member says the payment the player CLAIMED never
   // arrived (owner, 2026-10-07). Before the Paid tap there is no claim to deny,
   // so there is no edge: an unpaid buy expires instead, and whose lapse that is
-  // is `playerCouldPay`'s question. This listed PENDING_QUEUE, ASSIGNED and
-  // PROCESSING too, so a member's "payment not received" on an accepted buy
+  // is `playerCouldPay`'s question. This once listed the queued and started
+  // states too, so a member's "payment not received" on an accepted buy
   // went through and warned and flagged a player who had said nothing yet.
   // The buy waits here, its pool hold intact, until the player disputes or the
   // window closes (`rejectedBuyWindow.service.js`).
@@ -144,14 +146,14 @@ export const ALLOWED_FROM = Object.freeze({
  *
  * Measured, not assumed: with the requeue edge added and no explicit key, the
  * second assignment of a rejected order collided on
- * `ord_<order>_ASSIGNED`, was reported `{ok: true, idempotent: true}` — the
+ * `ord_<order>_<state>`, was reported `{ok: true, idempotent: true}` — the
  * "someone already did this" answer — and the order stayed in PENDING_QUEUE
  * still carrying the FIRST merchant's id. A rejected order would never be
  * reassigned, and nothing would raise an error.
  *
  * ── The decision ────────────────────────────────────────────────────────────
  * The idempotency key must describe THE EVENT, not the destination. Only the
- * caller knows whether two arrivals at ASSIGNED are one merchant's double-click
+ * caller knows whether two arrivals at PROCESSING are one merchant's double-click
  * or two different merchants being offered the order in turn — that difference
  * is not visible from (order, state).
  *
@@ -182,7 +184,7 @@ export const REVISITABLE = Object.freeze(
  *
  * Only COMPLETED moves money out of the platform's perspective: a deposit means
  * fiat arrived and the user's liability grew; a withdrawal means the reverse.
- * ASSIGNED and PROCESSING move workflow, not value, and posting an event for
+ * PENDING_QUEUE and PROCESSING move workflow, not value, and posting an event for
  * them would put entries in the ledger describing nothing that happened.
  */
 const LEDGER_EVENT = Object.freeze({
@@ -478,96 +480,6 @@ export async function transition({
 }
 
 // ── Named transitions, so call sites read as intent rather than as strings ───
-/**
- * Hand a LIVE order to a different merchant.
- *
- * ── Why this is not `transition` ────────────────────────────────────────────
- * Admin reassignment accepts an order that is ASSIGNED *or* PROCESSING and
- * leaves it ASSIGNED to someone else. Neither is a lifecycle move:
- * ASSIGNED→ASSIGNED does not change the state at all, and ALLOWED_FROM only
- * admits ASSIGNED from PENDING_QUEUE.
- *
- * Widening ALLOWED_FROM to accept ASSIGNED from ASSIGNED would also let the
- * ORDINARY assignment path silently re-assign an order a merchant is already
- * working. Splitting it into requeue-then-assign is worse: between the two
- * writes the order sits in PENDING_QUEUE with nothing holding it, and the
- * automatic assigner will hand it to a third merchant.
- *
- * So it is what it actually is — a guarded change of assignee that happens to
- * normalise the state — and it keeps the property that matters: the acceptable
- * states are in the UPDATE's WHERE clause, so two admins reassigning the same
- * order produce one winner rather than a last-write-wins overwrite.
- *
- * The transition row is recorded with an explicit key including the new
- * merchant, because an order may legitimately be reassigned several times and a
- * key derived from the state alone would collide on the second.
- */
-export async function reassign({
-  orderId, merchantId, actor = null, reason = null,
-  from = [ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING],
-}) {
-  if (!merchantId) throw new Error('reassign requires a merchantId');
-
-  return withOrderLock(orderId, async ({ client, oid, order }) => {
-    if (!order) return { commit: false, value: { ok: false, reason: 'not_found' } };
-    if (!from.includes(order.state)) {
-      return {
-        commit: false,
-        value: { ok: false, reason: 'invalid_transition', state: order.state, allowedFrom: from },
-      };
-    }
-    // A buy an admin is approving from PROCESSING has had its tokens paid out
-    // already; handing it to someone else would strand it (see `transition`).
-    if (order.poolPaidAt) {
-      return { commit: false, value: { ok: false, reason: 'pool_paid', state: order.state, allowedFrom: [] } };
-    }
-    // Reassigning to the merchant who already holds it is a no-op, not an
-    // error: an admin double-clicking must not produce a 409.
-    if (String(order.merchantId) === String(merchantId)) {
-      return { commit: false, value: { ok: true, idempotent: true, order } };
-    }
-
-    const moved = await client.query(
-      `UPDATE order_states
-          SET merchant_id = $2, state = $3, updated_at = now()
-        WHERE order_id = $1 AND state = ANY($4) AND pool_paid_at IS NULL
-        RETURNING *`,
-      [oid, String(merchantId), ORDER_STATES.ASSIGNED, from],
-    );
-    if (!moved.rowCount) {
-      return {
-        commit: false,
-        value: { ok: false, reason: 'invalid_transition', state: order.state, allowedFrom: from },
-      };
-    }
-
-    // ── Recorded only when the STATE actually moved ─────────────────────────
-    // `order_transitions_moves` refuses a row whose from and to are the same,
-    // and it is right to: a transition that does not transition is not one. A
-    // reassignment from ASSIGNED to ASSIGNED changes the assignee and nothing
-    // else, so it has no place in the lifecycle history — the change lives on
-    // the order row (`merchant_id`, and `assigned_by`/`assigned_at` written by
-    // the caller), and WHO did it belongs in the admin audit log, which is
-    // where every other operator action is already recorded.
-    //
-    // A reassignment from PROCESSING IS a state move, and gets its row. The key
-    // carries the destination merchant so repeated reassignments each get their
-    // own rather than colliding on the second and being reported as a replay.
-    if (order.state !== ORDER_STATES.ASSIGNED) {
-      await client.query(
-        `INSERT INTO order_transitions (tx_id, order_id, from_state, to_state, actor, reason)
-         VALUES ($1,$2,$3,$4,$5,$6)
-         ON CONFLICT (tx_id) DO NOTHING`,
-        [`ord_${oid}_reassign_${merchantId}`, oid, order.state, ORDER_STATES.ASSIGNED,
-          actor, reason ?? `Reassigned to merchant ${merchantId}`],
-      );
-    }
-
-    return { commit: true, value: { ok: true, idempotent: false, order: rowToOrder(moved.rows[0]) } };
-  });
-}
-
-export const assignOrder   = (a) => transition({ ...a, to: ORDER_STATES.ASSIGNED });
 export const startOrder    = (a) => transition({ ...a, to: ORDER_STATES.PROCESSING });
 export const markPaid      = (a) => transition({ ...a, to: ORDER_STATES.PAID });
 export const completeOrder = (a) => transition({ ...a, to: ORDER_STATES.COMPLETED });

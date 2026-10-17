@@ -3448,6 +3448,14 @@ may decline (`/reject`, ASSIGNED only) and an admin may reassign (ASSIGNED only)
   (`acceptBeforePayPg`, `cashLinkPg`, a held row lock); the opposite case, an
   accepted buy that lapses unpaid, still counts on the player.
 - **Mutation-proved:** M372–M377, with M353, M356, M357 repointed.
+- **Re-shaped 2026-10-17 (owner: no Accept step).** Routing now starts the
+  order, so "where to pay" is shown on assignment. The invariant is kept the
+  other way round: once the player can pay, the order cannot change hands.
+  `mayChangeHands` (a started sell, or a cash buy with no QR) is re-asked under
+  the order lock inside every decline and reassignment
+  (`refuseIfPayableWithin`, 409 `PLAYER_MAY_BE_PAYING`); a bank or USDT buy
+  cannot be declined at all (`CANNOT_DECLINE`). Proof: `startedOnAssignmentPg`
+  (6, including the scan-vs-decline race), MAA1–MAA4 KILLED.
 
 ### F-053 — a wallet could gain or lose tokens with nothing moving the other way
 `FIXED` · high (tokens created or destroyed; `USER_FLOAT` drifting from the wallets it describes) · owner decision, token conservation · 2026-10-07
@@ -3540,7 +3548,7 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 313 |
+| Route declarations in `backend/**` | 311 |
 | Reachable with **no auth middleware** | 42 |
 | Staff routes carrying an **area** (permission key) | 171 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 8 |
@@ -3612,8 +3620,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 474 |
-| Parameters only (safe by construction) | 307 |
+| `pgQuery` call sites | 473 |
+| Parameters only (safe by construction) | 306 |
 | Interpolating into statement text (each needs a reading) | 160 |
 | Statement text built elsewhere and passed in (each needs a reading) | 7 |
 

@@ -57,7 +57,7 @@ describePg('order access guard', () => {
   afterAll(async () => { await closePg(); });
 
   /** A deposit belonging to `player`, assigned to `merchant`. */
-  const deposit = async (player, merchant, { state = 'ASSIGNED' } = {}) => {
+  const deposit = async (player, merchant, { state = 'PROCESSING' } = {}) => {
     const orderId = oid('gd');
     await createOrderRecord({
       orderId, userId: player.userId, type: 'DEPOSIT',
@@ -84,7 +84,7 @@ describePg('order access guard', () => {
     const alice = await actor({});
     const orderId = await deposit(alice, null);
     const res = await as(app, alice).get(`/order/${orderId}`);
-    expect(res.body.order.status).toBe('ASSIGNED');
+    expect(res.body.order.status).toBe('PROCESSING');
     expect(Number(res.body.order.tokenAmount)).toBe(500);
     expect(Number(res.body.order.depositAllocation)).toBe(300);
     expect(Number(res.body.order.reserveAllocation)).toBe(200);

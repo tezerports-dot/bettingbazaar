@@ -16,8 +16,8 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg, getPool } from '../client.js';
 import {
   ORDER_STATES, ORDER_TYPES, REVISITABLE, transition, getOrder, getOrderHistory,
-  assignOrder, startOrder, markPaid, completeOrder, disputeOrder, cancelOrder, failOrder,
-  reassign, findOrdersMissingLedgerEvents, findLedgerEventsMissingOrders,
+  startOrder, markPaid, completeOrder, disputeOrder, cancelOrder, failOrder,
+  findOrdersMissingLedgerEvents, findLedgerEventsMissingOrders,
 } from '../repositories/orders.core.js';
 import { createOrderRecord } from '../repositories/orders.record.js';
 import { trialBalance, accountBalancePaise, getEvent } from '../repositories/ledger.core.js';
@@ -45,10 +45,11 @@ const open = async (id, type = ORDER_TYPES.DEPOSIT, paise = 100_000, { merchantI
 /** Walk an order to PAID, the usual pre-completion position. */
 async function toPaid(id, type = ORDER_TYPES.DEPOSIT, paise = 100_000) {
   await open(id, type, paise);
-  // ASSIGNED is revisitable (an order can be requeued and offered again), so it
-  // takes an explicit key rather than the default ord_<order>_ASSIGNED.
-  await assignOrder({ orderId: id, txId: `${id}_assign_1` });
-  await startOrder({ orderId: id });
+  // PROCESSING is revisitable (a started order can be requeued and offered
+  // again), so it takes an explicit key rather than the default
+  // ord_<order>_PROCESSING. Routing starts an order as it hands it out: there
+  // is no ASSIGNED step and no Accept (owner, 2026-10-17).
+  await startOrder({ orderId: id, txId: `${id}_start_1` });
   await markPaid({ orderId: id });
 }
 
@@ -68,8 +69,7 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
       expect((await getOrder('o1')).state).toBe(ORDER_STATES.COMPLETED);
 
       expect((await getOrderHistory('o1')).map((h) => [h.from, h.to])).toEqual([
-        ['PENDING_QUEUE', 'ASSIGNED'],
-        ['ASSIGNED', 'PROCESSING'],
+        ['PENDING_QUEUE', 'PROCESSING'],
         ['PROCESSING', 'PAID'],
         ['PAID', 'COMPLETED'],
       ]);
@@ -121,10 +121,10 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
       expect(rows.map((r) => r.order_id)).toEqual(['split-none', 'split-ok']);
     });
 
-    it('records the merchant on assignment', async () => {
+    it('records the merchant when the order is started', async () => {
       await open('o3', ORDER_TYPES.DEPOSIT, 50_000, { merchantId: null });
       expect((await getOrder('o3')).merchantId).toBeNull();
-      await assignOrder({ orderId: 'o3', merchantId: 'm9', txId: 'o3_assign_1' });
+      await startOrder({ orderId: 'o3', merchantId: 'm9', txId: 'o3_start_1' });
       expect((await getOrder('o3')).merchantId).toBe('m9');
     });
   });
@@ -153,7 +153,7 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
     it('keeps the tag the order was created with across a transition', async () => {
       process.env.ORDER_HMAC_SECRET = 'test-order-secret';
       const { order } = await open('ORD-HMAC-2');
-      await transition({ orderId: 'ORD-HMAC-2', to: 'ASSIGNED', txId: 'tx-hmac-2' });
+      await transition({ orderId: 'ORD-HMAC-2', to: 'PROCESSING', txId: 'tx-hmac-2' });
       const after = await getOrder('ORD-HMAC-2');
       // A re-signed order is exactly what the tag exists to detect, so nothing
       // in the lifecycle may rewrite it.
@@ -211,53 +211,53 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
     });
 
     // ── The requeue cycle ────────────────────────────────────────────────────
-    // A merchant declining an ASSIGNED order sends it back to the queue to be
-    // offered to someone else (merchant.routes.js reject handler). That makes
-    // PENDING_QUEUE and ASSIGNED the only two states an order can occupy twice,
+    // A member declining a started order nobody can have paid on sends it back
+    // to the queue to be offered to someone else (merchant.routes.js decline).
+    // That makes PENDING_QUEUE and PROCESSING states an order can occupy twice,
     // which is what the default ord_<order>_<state> key cannot express.
     describe('requeue', () => {
       it('names exactly the states an order can reach more than once', () => {
-        // Two cycles produce these four: PENDING_QUEUE↔ASSIGNED (a merchant
+        // Two cycles produce these four: PENDING_QUEUE↔PROCESSING (a member
         // declines and the order is offered to someone else) and
         // COMPLETED↔DISPUTED (a completed order is disputed and the dispute is
         // resolved back in the merchant's favour).
-        expect([...REVISITABLE].sort()).toEqual(['ASSIGNED', 'COMPLETED', 'DISPUTED', 'PENDING_QUEUE']);
+        expect([...REVISITABLE].sort()).toEqual(['COMPLETED', 'DISPUTED', 'PENDING_QUEUE', 'PROCESSING']);
       });
 
       it('lets a FIRST visit use the default key, and refuses a repeat without one', async () => {
         await open('rq0');
         // First arrival: nothing to collide with, so no key is demanded. The
         // check is about the key already being taken, not about the state.
-        await expect(transition({ orderId: 'rq0', to: ORDER_STATES.ASSIGNED }))
+        await expect(transition({ orderId: 'rq0', to: ORDER_STATES.PROCESSING }))
           .resolves.toMatchObject({ ok: true, idempotent: false });
         await transition({ orderId: 'rq0', to: ORDER_STATES.PENDING_QUEUE, txId: 'rq0_requeue_1' });
 
-        // Second arrival at ASSIGNED: loud, not silent. Colliding with the
+        // Second arrival at PROCESSING: loud, not silent. Colliding with the
         // first visit's key would be reported as "already done".
-        await expect(transition({ orderId: 'rq0', to: ORDER_STATES.ASSIGNED }))
+        await expect(transition({ orderId: 'rq0', to: ORDER_STATES.PROCESSING }))
           .rejects.toThrow(/requires an explicit txId/);
         expect((await getOrder('rq0')).state).toBe(ORDER_STATES.PENDING_QUEUE);
       });
 
       it('reassigns a rejected order to a different merchant', async () => {
         await open('rq1', ORDER_TYPES.DEPOSIT, 50_000, { merchantId: null });
-        await assignOrder({ orderId: 'rq1', merchantId: 'm1', txId: 'rq1_assign_1' });
+        await startOrder({ orderId: 'rq1', merchantId: 'm1', txId: 'rq1_assign_1' });
         await transition({ orderId: 'rq1', to: ORDER_STATES.PENDING_QUEUE, txId: 'rq1_requeue_1', reason: 'declined' });
         expect((await getOrder('rq1')).state).toBe(ORDER_STATES.PENDING_QUEUE);
 
-        const second = await assignOrder({ orderId: 'rq1', merchantId: 'm2', txId: 'rq1_assign_2' });
+        const second = await startOrder({ orderId: 'rq1', merchantId: 'm2', txId: 'rq1_assign_2' });
         // Before the key carried the occurrence, this came back
         // { ok: true, idempotent: true } and the order stayed in PENDING_QUEUE
         // still holding m1 — a rejected order was never reassigned, silently.
         expect(second).toMatchObject({ ok: true, idempotent: false });
         const order = await getOrder('rq1');
-        expect(order.state).toBe(ORDER_STATES.ASSIGNED);
+        expect(order.state).toBe(ORDER_STATES.PROCESSING);
         expect(order.merchantId).toBe('m2');
 
         expect((await getOrderHistory('rq1')).map((h) => [h.from, h.to])).toEqual([
-          ['PENDING_QUEUE', 'ASSIGNED'],
-          ['ASSIGNED', 'PENDING_QUEUE'],
-          ['PENDING_QUEUE', 'ASSIGNED'],
+          ['PENDING_QUEUE', 'PROCESSING'],
+          ['PROCESSING', 'PENDING_QUEUE'],
+          ['PENDING_QUEUE', 'PROCESSING'],
         ]);
       });
 
@@ -297,47 +297,47 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
 
       it('refuses a stale assignment replay that the state guard would re-admit', async () => {
         await open('rq4', ORDER_TYPES.DEPOSIT, 50_000, { merchantId: null });
-        await assignOrder({ orderId: 'rq4', merchantId: 'm1', txId: 'rq4_assign_1' });
+        await startOrder({ orderId: 'rq4', merchantId: 'm1', txId: 'rq4_assign_1' });
         await transition({ orderId: 'rq4', to: ORDER_STATES.PENDING_QUEUE, txId: 'rq4_requeue_1' });
-        await assignOrder({ orderId: 'rq4', merchantId: 'm2', txId: 'rq4_assign_2' });
+        await startOrder({ orderId: 'rq4', merchantId: 'm2', txId: 'rq4_assign_2' });
         await transition({ orderId: 'rq4', to: ORDER_STATES.PENDING_QUEUE, txId: 'rq4_requeue_2' });
         expect((await getOrder('rq4')).state).toBe(ORDER_STATES.PENDING_QUEUE);
 
-        // PENDING_QUEUE → ASSIGNED is legal right now, so ALLOWED_FROM permits
+        // PENDING_QUEUE → PROCESSING is legal right now, so ALLOWED_FROM permits
         // it and the state is not the target — both earlier gates pass.
-        const stale = await assignOrder({ orderId: 'rq4', merchantId: 'm2', txId: 'rq4_assign_2' });
+        const stale = await startOrder({ orderId: 'rq4', merchantId: 'm2', txId: 'rq4_assign_2' });
         expect(stale).toMatchObject({ ok: true, idempotent: true });
         expect((await getOrder('rq4')).state).toBe(ORDER_STATES.PENDING_QUEUE);
         const { rows } = await pgQuery(
-          `SELECT COUNT(*)::int n FROM order_transitions WHERE order_id='rq4' AND to_state='ASSIGNED'`);
+          `SELECT COUNT(*)::int n FROM order_transitions WHERE order_id='rq4' AND to_state='PROCESSING'`);
         expect(rows[0].n).toBe(2);
       });
 
       it('still collapses a genuine replay of the same assignment', async () => {
         await open('rq2', ORDER_TYPES.DEPOSIT, 50_000, { merchantId: null });
-        await assignOrder({ orderId: 'rq2', merchantId: 'm1', txId: 'rq2_assign_1' });
+        await startOrder({ orderId: 'rq2', merchantId: 'm1', txId: 'rq2_assign_1' });
         await transition({ orderId: 'rq2', to: ORDER_STATES.PENDING_QUEUE, txId: 'rq2_requeue_1' });
-        await assignOrder({ orderId: 'rq2', merchantId: 'm2', txId: 'rq2_assign_2' });
+        await startOrder({ orderId: 'rq2', merchantId: 'm2', txId: 'rq2_assign_2' });
         // Same event delivered twice — the retry protection the explicit key
         // exists to preserve.
-        const replay = await assignOrder({ orderId: 'rq2', merchantId: 'm2', txId: 'rq2_assign_2' });
+        const replay = await startOrder({ orderId: 'rq2', merchantId: 'm2', txId: 'rq2_assign_2' });
         expect(replay).toMatchObject({ ok: true, idempotent: true });
         const { rows } = await pgQuery(
-          `SELECT COUNT(*)::int n FROM order_transitions WHERE order_id='rq2' AND to_state='ASSIGNED'`);
+          `SELECT COUNT(*)::int n FROM order_transitions WHERE order_id='rq2' AND to_state='PROCESSING'`);
         expect(rows[0].n).toBe(2); // two real assignments, not three
       });
 
       it('survives a storm of one reassignment, applying it once', async () => {
         await open('rq3', ORDER_TYPES.DEPOSIT, 50_000, { merchantId: null });
-        await assignOrder({ orderId: 'rq3', merchantId: 'm1', txId: 'rq3_assign_1' });
+        await startOrder({ orderId: 'rq3', merchantId: 'm1', txId: 'rq3_assign_1' });
         await transition({ orderId: 'rq3', to: ORDER_STATES.PENDING_QUEUE, txId: 'rq3_requeue_1' });
 
         const results = await Promise.all(Array.from({ length: 50 }, () =>
-          assignOrder({ orderId: 'rq3', merchantId: 'm2', txId: 'rq3_assign_2' })));
+          startOrder({ orderId: 'rq3', merchantId: 'm2', txId: 'rq3_assign_2' })));
         expect(results.every((r) => r.ok)).toBe(true);
         expect(results.filter((r) => !r.idempotent)).toHaveLength(1);
         const { rows } = await pgQuery(
-          `SELECT COUNT(*)::int n FROM order_transitions WHERE order_id='rq3' AND to_state='ASSIGNED'`);
+          `SELECT COUNT(*)::int n FROM order_transitions WHERE order_id='rq3' AND to_state='PROCESSING'`);
         expect(rows[0].n).toBe(2);
       });
     });
@@ -346,112 +346,6 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
       await open('g5');
       await expect(pgQuery(`UPDATE order_states SET state = 'HALFWAY' WHERE order_id = 'g5'`))
         .rejects.toThrow(/order_states_known/);
-    });
-  });
-
-  // ── Money moves with the state ─────────────────────────────────────────────
-  describe('reassignment', () => {
-    // ── This wrote to the wrong store, with the wrong kind of id ────────────
-    // `reassignOrder` was the one function the migration never moved. It called
-    // `findOneAndUpdate({_id: orderId})` against the document store with an
-    // order id like `WD_9f3a…` where an ObjectId was expected — so admin
-    // reassignment threw a cast error, and had it not, it would have written
-    // where nothing reads and reported success while the order kept its old
-    // merchant.
-    it('hands an assigned order to a different merchant', async () => {
-      await open('r1');
-      await assignOrder({ orderId: 'r1', txId: 'r1_assign_1' });
-      expect((await getOrder('r1')).merchantId).toBe('m1');
-
-      const moved = await reassign({ orderId: 'r1', merchantId: 'm2', actor: 'admin-3' });
-      expect(moved).toMatchObject({ ok: true, idempotent: false });
-      expect((await getOrder('r1')).merchantId).toBe('m2');
-      // Still ASSIGNED — a change of assignee is not a lifecycle move.
-      expect((await getOrder('r1')).state).toBe(ORDER_STATES.ASSIGNED);
-    });
-
-    it('normalises a PROCESSING order back to ASSIGNED', async () => {
-      await open('r2');
-      await assignOrder({ orderId: 'r2', txId: 'r2_assign_1' });
-      await startOrder({ orderId: 'r2' });
-
-      const moved = await reassign({ orderId: 'r2', merchantId: 'm2' });
-      expect(moved.ok).toBe(true);
-      expect((await getOrder('r2')).state).toBe(ORDER_STATES.ASSIGNED);
-      expect((await getOrder('r2')).merchantId).toBe('m2');
-    });
-
-    it('records a reassignment that MOVED the state, and nothing when it did not', async () => {
-      // `order_transitions_moves` refuses a row whose from and to are equal,
-      // and it is right to: a transition that does not transition is not one.
-      // ASSIGNED → ASSIGNED changes the assignee and nothing else, so it leaves
-      // no lifecycle row — the change is on the order, and who did it goes in
-      // the admin audit log with every other operator action.
-      await open('r3');
-      await assignOrder({ orderId: 'r3', txId: 'r3_assign_1' });
-      const before = (await getOrderHistory('r3')).length;
-      await reassign({ orderId: 'r3', merchantId: 'm2', actor: 'admin-3', reason: 'merchant offline' });
-      expect(await getOrderHistory('r3')).toHaveLength(before);
-
-      // From PROCESSING it IS a state move, and gets its row.
-      await open('r3b');
-      await assignOrder({ orderId: 'r3b', txId: 'r3b_assign_1' });
-      await startOrder({ orderId: 'r3b' });
-      await reassign({ orderId: 'r3b', merchantId: 'm2', actor: 'admin-3', reason: 'merchant offline' });
-
-      const row = (await getOrderHistory('r3b')).find((h) => h.actor === 'admin-3');
-      expect(row).toBeTruthy();
-      expect(row.reason).toBe('merchant offline');
-      expect(row.to).toBe(ORDER_STATES.ASSIGNED);
-      expect(row.from).toBe(ORDER_STATES.PROCESSING);
-    });
-
-    it('treats reassigning to the same merchant as a no-op, not a conflict', async () => {
-      await open('r4');
-      await assignOrder({ orderId: 'r4', txId: 'r4_assign_1' });
-      // An admin double-clicking must not get a 409.
-      expect(await reassign({ orderId: 'r4', merchantId: 'm1' }))
-        .toMatchObject({ ok: true, idempotent: true });
-    });
-
-    it('refuses an order that is not assigned to anyone', async () => {
-      await open('r5');
-      expect(await reassign({ orderId: 'r5', merchantId: 'm2' }))
-        .toMatchObject({ ok: false, reason: 'invalid_transition', state: ORDER_STATES.PENDING_QUEUE });
-    });
-
-    it('refuses an order that has already completed', async () => {
-      await toPaid('r6');
-      await completeOrder({ orderId: 'r6' });
-      expect(await reassign({ orderId: 'r6', merchantId: 'm2' })).toMatchObject({ ok: false });
-      expect((await getOrder('r6')).merchantId).toBe('m1');
-    });
-
-    it('lets exactly ONE of two admins reassigning at once win', async () => {
-      await open('r7');
-      await assignOrder({ orderId: 'r7', txId: 'r7_assign_1' });
-
-      const results = await Promise.all([
-        reassign({ orderId: 'r7', merchantId: 'm2', actor: 'admin-a' }),
-        reassign({ orderId: 'r7', merchantId: 'm3', actor: 'admin-b' }),
-      ]);
-      // Both may report ok — they serialise on the row lock, so the second
-      // reassigns from the first's result. What must NOT happen is the order
-      // ending up with a merchant neither admin chose, or with two.
-      expect(results.every((r) => r.ok)).toBe(true);
-      expect(['m2', 'm3']).toContain((await getOrder('r7')).merchantId);
-    });
-
-    it('reassigns repeatedly without colliding on its own transition key', async () => {
-      await open('r8');
-      await assignOrder({ orderId: 'r8', txId: 'r8_assign_1' });
-      // A key derived from the state alone would collide on the second move and
-      // be reported as an idempotent replay — the order would silently stop
-      // moving. The key carries the destination.
-      expect((await reassign({ orderId: 'r8', merchantId: 'm2' })).ok).toBe(true);
-      expect((await reassign({ orderId: 'r8', merchantId: 'm3' })).ok).toBe(true);
-      expect((await reassign({ orderId: 'r8', merchantId: 'm2' })).ok).toBe(true);
-      expect((await getOrder('r8')).merchantId).toBe('m2');
     });
   });
 
@@ -645,11 +539,22 @@ describePg('the payment queue an operator works', () => {
       `INSERT INTO merchants (merchant_id, name, public_ref, mobile, accepted_currencies)
        VALUES ('m1','Ravi Payments','MER-1','9990002222', ARRAY['INR'])`, [],
     );
-    await order('o-1', 'ASSIGNED', { userId: 'u1', merchantId: 'm1' });
+    await order('o-1', 'PROCESSING', { userId: 'u1', merchantId: 'm1' });
 
     const [row] = (await paymentQueue({})).orders;
     expect(row.user.username).toBe('Asha');
     expect(row.merchant.name).toBe('Ravi Payments');
+  });
+
+  it('says which started orders may still change hands, by the rule the reassign route asks', async () => {
+    // A sell may (its member has paid nothing yet); a started bank buy may not
+    // (the player was shown where to pay at once); a queued order is not
+    // started, so there is nobody to take it from.
+    await order('o-sell', 'PROCESSING', { type: 'WITHDRAWAL', merchantId: 'm1' });
+    await order('o-bank', 'PROCESSING', { type: 'DEPOSIT', merchantId: 'm1' });
+    await order('o-queued', 'PENDING_QUEUE', { type: 'WITHDRAWAL' });
+    const byId = Object.fromEntries((await paymentQueue({})).orders.map((o) => [o.orderId, o.canReassign]));
+    expect(byId).toEqual({ 'o-sell': true, 'o-bank': false, 'o-queued': false });
   });
 
   it('keeps an order whose party rows are gone', async () => {

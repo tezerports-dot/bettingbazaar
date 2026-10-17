@@ -254,14 +254,20 @@ CREATE TABLE IF NOT EXISTS order_states (
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT order_states_type_known CHECK (order_type IN ('DEPOSIT', 'WITHDRAWAL')),
   CONSTRAINT order_states_amount_positive CHECK (token_amount_paise > 0),
-  -- Nine states, and the CHECK is what makes them the only nine. A state the
+  -- Eight states, and the CHECK is what makes them the only nine. A state the
   -- constraint does not name cannot be written, so "what can an order be?" is
   -- answered here rather than by reading every writer.
   CONSTRAINT order_states_known CHECK (state IN (
-    'PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID', 'COMPLETED',
+    'PENDING_QUEUE', 'PROCESSING', 'PAID', 'COMPLETED',
     'DISPUTED', 'CANCELLED', 'FAILED', 'REJECTED'
   ))
 );
+-- Eight states: there is no "assigned, waiting to be accepted" (owner,
+-- 2026-10-17). Re-added so an existing database converges (§32 S31).
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_known;
+ALTER TABLE order_states ADD CONSTRAINT order_states_known CHECK (state IN (
+  'PENDING_QUEUE', 'PROCESSING', 'PAID', 'COMPLETED',
+  'DISPUTED', 'CANCELLED', 'FAILED', 'REJECTED'));
 CREATE INDEX IF NOT EXISTS order_states_user_idx     ON order_states (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS order_states_merchant_idx ON order_states (merchant_id, state);
 CREATE INDEX IF NOT EXISTS order_states_state_idx    ON order_states (state, created_at);
@@ -278,7 +284,7 @@ CREATE TABLE IF NOT EXISTS order_transitions (
   actor       TEXT,
   reason      TEXT,
   -- The ledger event this transition produced, when it produced one. Null for
-  -- transitions that move workflow without moving money (ASSIGNED, PROCESSING).
+  -- transitions that move workflow without moving money (PENDING_QUEUE, PROCESSING).
   -- Having it here is what lets an auditor walk from an order to its accounting
   -- entry without guessing at a key format.
   ledger_key  TEXT,
@@ -2418,11 +2424,9 @@ ALTER TABLE order_states DROP COLUMN IF EXISTS reviewed_at;
 ALTER TABLE order_states DROP COLUMN IF EXISTS review_action;
 ALTER TABLE order_states DROP COLUMN IF EXISTS review_notes;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rejected_reason TEXT;
--- The merchant's evidence for rejecting a PAID order — a bank statement
--- screenshot or a photo showing the credit never arrived. Rejecting a PAID
--- order accuses the player of not paying, adds a warning to their account and
--- can auto-block them, so the accusation carries its proof.
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rejection_proof_url TEXT;
+-- `rejection_proof_url` is gone: a "payment not received" carries a reason
+-- only (owner, 2026-10-17).
+ALTER TABLE order_states DROP COLUMN IF EXISTS rejection_proof_url;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_reason TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_raised_at TIMESTAMPTZ;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_raised_by TEXT;
@@ -2505,8 +2509,9 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- carrying two.
 CREATE UNIQUE INDEX IF NOT EXISTS order_states_utr_unique
   ON order_states (utr) WHERE utr IS NOT NULL;
-CREATE INDEX IF NOT EXISTS order_states_expiring_idx ON order_states (expires_at)
-  WHERE expires_at IS NOT NULL AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING');
+DROP INDEX IF EXISTS order_states_expiring_idx;
+CREATE INDEX order_states_expiring_idx ON order_states (expires_at)
+  WHERE expires_at IS NOT NULL AND state IN ('PENDING_QUEUE', 'PROCESSING');
 CREATE INDEX IF NOT EXISTS order_states_disputes_idx ON order_states (dispute_raised_at DESC)
   WHERE state = 'DISPUTED';
 
@@ -3725,8 +3730,9 @@ ALTER TABLE order_states ADD CONSTRAINT order_states_pool_held_nonneg CHECK (poo
 -- A hold names the team it is held in.
 ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_pool_hold_has_team;
 ALTER TABLE order_states ADD CONSTRAINT order_states_pool_hold_has_team CHECK (pool_held_paise = 0 OR team_id IS NOT NULL);
-CREATE INDEX IF NOT EXISTS order_states_team_open_idx ON order_states (team_id)
-  WHERE state IN ('ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED');
+DROP INDEX IF EXISTS order_states_team_open_idx;
+CREATE INDEX order_states_team_open_idx ON order_states (team_id)
+  WHERE state IN ('PROCESSING', 'PAID', 'DISPUTED');
 
 -- Ready: a CASH member at the machine. Cleared by the assignment it attracts.
 ALTER TABLE merchants ADD COLUMN IF NOT EXISTS cash_ready BOOLEAN NOT NULL DEFAULT FALSE;
@@ -3850,7 +3856,7 @@ ALTER TABLE order_states ADD CONSTRAINT order_states_cash_link_shape CHECK (
   )
 );
 
--- The link is the machine the ASSIGNED member is standing at. When the order
+-- The link is the machine the order's member is standing at. When the order
 -- changes hands (reassignment, requeue, an admin move) the next member is at a
 -- different machine, so the old link is cleared in the same UPDATE, whichever
 -- path made it. A player is never shown a QR for cash somebody else collects.

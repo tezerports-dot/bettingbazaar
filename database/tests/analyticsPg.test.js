@@ -181,7 +181,7 @@ describe('admin analytics', () => {
 
   it('separates queued orders from ones a merchant already holds', async () => {
     await order({ id: 'o1', user: 'u1', type: 'DEPOSIT', state: 'PENDING_QUEUE', fiat: 10_00, tokens: 10_00 });
-    await order({ id: 'o2', user: 'u1', type: 'DEPOSIT', state: 'ASSIGNED',      fiat: 10_00, tokens: 10_00 });
+    await order({ id: 'o2', user: 'u1', type: 'DEPOSIT', state: 'PROCESSING',      fiat: 10_00, tokens: 10_00 });
     await order({ id: 'o3', user: 'u1', type: 'DEPOSIT', state: 'DISPUTED',      fiat: 10_00, tokens: 10_00 });
 
     const { queue } = await cycleAndQueueCounts({});

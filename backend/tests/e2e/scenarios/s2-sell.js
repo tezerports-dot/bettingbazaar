@@ -2,8 +2,8 @@
 // ── Scenario 2: the SELL rail (player withdraws; the MERCHANT pays and gives
 //    the UTR for their own transfer — §27, the reference follows the money) ───
 //
-// Since Step 2c a sell is ASSIGNED to a member of a working team on its rail,
-// exactly like a buy — there is no open pool to claim from — and when it
+// Since Step 2c a sell is routed to a member of a working team on its rail,
+// which starts it (no Accept, owner 2026-10-17), exactly like a buy — there is no open pool to claim from — and when it
 // settles the player's tokens join that team's POOL. The size names the rail
 // (Step 2d, `denominations.js`), so this sell is 50,000 tokens: UPI/bank.
 import { pgQuery } from '#db/client.js';
@@ -74,22 +74,19 @@ export default async function run() {
   const idor = await GET(oT, `/api/payment/order/${oid}`);
   check(A, 'other player', 'reading somebody else\'s payout', '404', String(idor.status), idor.status === 404);
 
-  // ── A sell is ASSIGNED to a team member, never claimed from an open pool ──
+  // ── A sell is started on a team member, never claimed from an open pool ──
   const row = await pgQuery('SELECT merchant_id, team_id, state FROM order_states WHERE order_id=$1', [oid], 'e2e');
   const r0 = row.rows[0] ?? {};
-  check(A, 'system', 'the sell is ASSIGNED to the online team member', `ASSIGNED to ${m.merchantId} in ${team.teamId}`,
-    `${r0.state} to ${r0.merchant_id ?? 'nobody'} in ${r0.team_id ?? 'no team'}`,
-    r0.state === 'ASSIGNED' && r0.merchant_id === m.merchantId && r0.team_id === team.teamId);
+  check(A, 'system', 'the sell is started on the online team member (no Accept)', `PROCESSING with ${m.merchantId} in ${team.teamId}`,
+    `${r0.state} with ${r0.merchant_id ?? 'nobody'} in ${r0.team_id ?? 'no team'}`,
+    r0.state === 'PROCESSING' && r0.merchant_id === m.merchantId && r0.team_id === team.teamId);
   if (r0.merchant_id !== m.merchantId) return;
   const payerT = mT;
 
-  // The only order a member may accept is one already theirs (§2c).
-  const stranger = await POST(m2T, `/api/merchant/accept/${oid}`, {});
-  check(A, 'merchant', 'a teammate who is not the assignee cannot take the sell', '403',
-    `${stranger.status} ${stranger.body.message ?? ''}`, stranger.status === 403);
-  const accept = await POST(mT, `/api/merchant/accept/${oid}`, {});
-  check(A, 'merchant', 'the assignee accepts the sell', '200',
-    `${accept.status} ${accept.body.message ?? ''}`, accept.status === 200);
+  // The only member who may act on it is the one it was handed to (§2c).
+  const stranger = await POST(m2T, `/api/merchant/confirm/${oid}`, { utrNumber: '999988887777' });
+  check(A, 'merchant', 'a teammate who is not the assignee cannot pay out the sell', '4xx',
+    `${stranger.status} ${stranger.body.message ?? ''}`, stranger.status >= 400 && stranger.status < 500);
 
   // ── §24: the merchant is told WHERE to pay, and nothing else about the player
   const mine = await GET(payerT, '/api/merchant/orders');

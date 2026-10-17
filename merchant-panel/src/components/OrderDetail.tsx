@@ -1,17 +1,17 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Order detail — a right drawer on desktop, a bottom sheet on mobile (design
-// handoff "BB Merchant Panel.dc.html"). Everything on the card, plus the full
-// payment rows, the user's submitted proof, and the same actions pinned to the
-// footer so they stay reachable while reading.
+// handoff "BB Merchant Panel.dc.html"). Everything on the one-line row, plus
+// the full payment rows, the account holder, and the same actions (and Flag)
+// pinned to the footer so they stay reachable while reading.
 import React from 'react';
-import { ArrowDownLeft, ArrowUpRight, Check, ShieldCheck } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Check, QrCode, ShieldCheck, X } from 'lucide-react';
 import { OrderStatus, type MerchantProfile, type PaymentAccount, type PaymentOrder } from '../types';
 import { mayWorkOrder } from '../utils/actor';
 import { counterpartyOf, formatMoney, railCopy, railOf, receivingAddressFor, tokenColumn } from '../utils/rail';
 import { formatCountdown, secondsLeft, URGENT_SECONDS } from '../hooks/useCountdown';
 import { Banner, Button, CopyInline, Panel, StatusPill } from './ui';
-import { accountNamed, viewOnlyReason, type OrderActions } from './OrderCard';
+import { accountNamed, viewOnlyReason, type OrderActions } from './OrderRow';
 
 const sectionLabel: React.CSSProperties = {
   fontSize: 11, fontWeight: 800, color: 'var(--muted)',
@@ -39,7 +39,7 @@ export const OrderDetail: React.FC<{
   const counterparty = counterpartyOf(order);
 
   const remaining = secondsLeft(order.expiresAt, now);
-  const openStatus = [OrderStatus.PENDING_QUEUE, OrderStatus.ASSIGNED, OrderStatus.PROCESSING, OrderStatus.PAID].includes(
+  const openStatus = [OrderStatus.PENDING_QUEUE, OrderStatus.PROCESSING, OrderStatus.PAID].includes(
     order.status as OrderStatus
   );
   const showTimer = remaining !== null && openStatus;
@@ -48,7 +48,10 @@ export const OrderDetail: React.FC<{
   // What this person may do to it (a merchant account's sub-member by role and
   // assigned accounts; owner, 2026-10-11). Controls they cannot use are not offered.
   const workable = mayWorkOrder(merchant, order);
-  const canAccept = workable && (order.status === OrderStatus.ASSIGNED || order.status === OrderStatus.PENDING_QUEUE);
+  // No accept: routing starts an order as it hands it out (owner, 2026-10-17).
+  // A started order may be declined only while nobody can have paid on it.
+  const canDecline = workable && order.canDecline === true;
+  const canScan = workable && isDeposit && order.paymentMode === 'CASH_ATM' && order.status === OrderStatus.PROCESSING;
   /**
    * PAID, but not yet evidenced.
    *
@@ -154,19 +157,15 @@ export const OrderDetail: React.FC<{
       The player has reported paying. Waiting for their payment reference —
       you can release as soon as it arrives.
     </div>
-  ) : canAccept ? (
-    <>
-      <Button onClick={() => actions.onAccept(order)} style={{ flex: 1, padding: 14, fontSize: 14 }}>Accept order</Button>
-      <Button variant="outline" tone="danger" onClick={() => actions.onReject(order)} style={{ padding: '14px 18px', fontSize: 14 }}>
-        Reject
-      </Button>
-    </>
   ) : canRelease ? (
     <>
       <Button tone="ok" onClick={() => actions.onRelease(order)} style={{ flex: 1, padding: 14, fontSize: 14 }}>
         <ShieldCheck size={16} /> Confirm &amp; release
       </Button>
-      <Button variant="outline" tone="dispute" onClick={() => actions.onRedFlag(order)} style={{ padding: '14px 18px', fontSize: 14 }}>
+      <Button variant="outline" tone="danger" onClick={() => actions.onPaymentNotReceived(order)} style={{ padding: '14px 14px', fontSize: 14 }}>
+        <X size={16} /> Not received
+      </Button>
+      <Button variant="outline" tone="dispute" onClick={() => actions.onRedFlag(order)} style={{ padding: '14px 14px', fontSize: 14 }}>
         Flag
       </Button>
     </>
@@ -175,9 +174,25 @@ export const OrderDetail: React.FC<{
       <Button tone="ok" onClick={() => actions.onPayout(order)} style={{ flex: 1, padding: 14, fontSize: 14 }}>
         <Check size={16} /> Mark payout sent
       </Button>
-      <Button variant="outline" tone="dispute" onClick={() => actions.onRedFlag(order)} style={{ padding: '14px 18px', fontSize: 14 }}>
+      {canDecline && (
+        <Button variant="outline" tone="danger" onClick={() => actions.onDecline(order)} style={{ padding: '14px 14px', fontSize: 14 }}>
+          <X size={16} /> Decline
+        </Button>
+      )}
+      <Button variant="outline" tone="dispute" onClick={() => actions.onRedFlag(order)} style={{ padding: '14px 14px', fontSize: 14 }}>
         Flag
       </Button>
+    </>
+  ) : canScan ? (
+    <>
+      <Button onClick={() => actions.onScanCashLink(order)} style={{ flex: 1, padding: 14, fontSize: 14 }}>
+        <QrCode size={16} /> {order.cashLink ? 'Scan again' : 'Scan the machine\'s QR'}
+      </Button>
+      {canDecline && (
+        <Button variant="outline" tone="danger" onClick={() => actions.onDecline(order)} style={{ padding: '14px 14px', fontSize: 14 }}>
+          <X size={16} /> Decline
+        </Button>
+      )}
     </>
   ) : undefined;
 

@@ -423,9 +423,9 @@ const MUTATIONS = [
     id: 'M90', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
     test: 'backend/tests/routes/merchantOrderPrivacyRoutes.test.js',
     why: 'the allowlist admits the player phone number, which the panel then made searchable',
-    from: `  'createdAt', 'updatedAt',
+    from: `  'canDecline',
 ]);`,
-    to: `  'createdAt', 'updatedAt', 'userPhone',
+    to: `  'canDecline', 'userPhone',
 ]);`,
   },
   {
@@ -586,8 +586,8 @@ const MUTATIONS = [
     test: 'backend/tests/routes/utrGracePg.test.js',
     why: 'the grace becomes repeatable, so a player taps every fifty seconds and holds a merchant\'s capacity open indefinitely — a denial of service against the queue wearing the shape of a courtesy',
     from: `        AND utr_grace_at IS NULL
-        AND state IN ('ASSIGNED', 'PROCESSING')`,
-    to: `        AND state IN ('ASSIGNED', 'PROCESSING')`,
+        AND state = 'PROCESSING'`,
+    to: `        AND state = 'PROCESSING'`,
   },
   {
     id: 'M123', file: 'database/repositories/orders.record.js', config: PG,
@@ -727,13 +727,6 @@ const MUTATIONS = [
     to: `  if (accepted && isBuy && (snapshot.usdtAddressTrc20 || snapshot.usdtAddressBep20)) {
     view.usdtAddress = snapshot.usdtAddressTrc20 || snapshot.usdtAddressBep20;
     view.usdtAddressBep20 = snapshot.usdtAddressBep20;`,
-  },
-  {
-    id: 'M151', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/merchantPanelRoutes.test.js',
-    why: 'a merchant may accept a USDT order on a chain they hold no address for, so the player is shown nothing to send to, or the other chain\'s address',
-    from: `            if (!usdtAddressFor(merchant, order.usdtChain)) {`,
-    to: `            if (false) {`,
   },
   {
     id: 'M152', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
@@ -1750,8 +1743,8 @@ const MUTATIONS = [
     id: 'M462', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
     test: 'backend/tests/routes/merchantPanelRoutes.test.js',
     why: "a confirmed order's response time never reaches the member's average, so routing ranks every member by the default",
-    from: '            responseMinutes: order.merchantResponseMinutes ?? null,',
-    to: '            responseMinutes: null,',
+    from: '            responseMinutes,\n',
+    to: '            responseMinutes: null,\n',
   },
   {
     id: 'M296', file: 'database/repositories/teamRouting.js', config: PG,
@@ -2168,8 +2161,8 @@ const MUTATIONS = [
     id: 'M357', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/cashLinkPg.test.js',
     why: 'a player who was never given a QR is counted as not paying, and locked out after three',
-    from: "            playerCouldPay: !neverAccepted && !noCashLink,\n",
-    to: "            playerCouldPay: !neverAccepted,\n",
+    from: "            playerCouldPay: !noCashLink,\n",
+    to: "            playerCouldPay: true,\n",
   },
   {
     id: 'M358', file: 'backend/domains/payment/playerPaymentFailure.service.js', config: PG,
@@ -2270,32 +2263,11 @@ const MUTATIONS = [
     to: "  if (isBuy && snapshot.usdtPayTo && snapshot.usdtChain) {\n",
   },
   {
-    id: 'M374', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/acceptBeforePayPg.test.js',
-    why: '"I\'ve paid" on a buy nobody accepted spends the player\'s reference on an order that cannot move',
-    from: "  if (order.status === 'ASSIGNED') {\n    throw Object.assign(\n      new Error('The member has not accepted",
-    to: "  if (false) {\n    throw Object.assign(\n      new Error('The member has not accepted",
-  },
-  {
     id: 'M375', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/acceptBeforePayPg.test.js',
+    test: 'backend/tests/routes/startedOnAssignmentPg.test.js',
     why: 'a bank buy changes hands while the tap waits, and reads PAID to the new member for money sent to the old one',
     from: "  const sameMember = order.merchantId;\n",
     to: "  const sameMember = isCashRail ? order.merchantId : undefined;\n",
-  },
-  {
-    id: 'M376', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/acceptBeforePayPg.test.js',
-    why: 'a player is counted as not paying a buy that was never accepted, when there was nothing to pay',
-    from: "          const neverAccepted = order.status === 'ASSIGNED';\n",
-    to: "          const neverAccepted = false;\n",
-  },
-  {
-    id: 'M377', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/cashLinkPg.test.js',
-    why: 'a member who has not accepted is told the order is closed, not to accept it first',
-    from: "        if (order.status === 'ASSIGNED') {\n            // The player is shown the QR only",
-    to: "        if (false) {\n            // The player is shown the QR only",
   },
   {
     id: 'M378', file: 'backend/domains/payment/cashLink.js', config: UNIT,
@@ -2640,13 +2612,6 @@ const MUTATIONS = [
     why: 'the reject asks for the reason and verifies the proof before asking whether the buy was paid at all (§32 S34)',
     from: '        const refused = unpaidRejectRefusal(order);\n',
     to: '        const refused = null;\n',
-  },
-  {
-    id: 'M429', file: 'backend/routes/upload.routes.js', config: PG,
-    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
-    why: 'the proof upload admits a buy the player has not paid, so evidence is staged for an accusation that cannot be made (§32 S3)',
-    from: '    const refused = unpaidRejectRefusal(order);\n',
-    to: '    const refused = null;\n',
   },
   {
     id: 'M430', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
@@ -3684,6 +3649,35 @@ const MUTATIONS = [
     why: 'a USDT order is stamped with the INR routing mode, so a switch re-rails it away from the agents',
     from: `  return String(currency ?? 'INR').toUpperCase() === 'USDT' ? null : mode;`,
     to: `  return mode;`,
+  },
+  // ── Orders start as they are routed; no Accept (owner, 2026-10-17) ───────
+  {
+    id: 'MAA1', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/startedOnAssignmentPg.test.js',
+    why: 'a cash buy whose QR was scanned while the decline waited goes back to the queue, with the player holding a QR to pay',
+    from: `                await db.orders.refuseIfPayableWithin(client, order.orderId);\n`,
+    to: ``,
+  },
+  {
+    id: 'MAA2', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'database/tests/orderPg.test.js',
+    why: 'a started bank buy, its account already shown to the player, may be declined or reassigned to another member',
+    from: `  return order.paymentMode === 'CASH_ATM' && !order.cashLink;`,
+    to: `  return order.paymentMode === 'CASH_ATM' || !order.cashLink;`,
+  },
+  {
+    id: 'MAA3', file: 'backend/domains/payment/playerOrderView.js', config: PG,
+    test: 'backend/tests/routes/cashLinkPg.test.js',
+    why: 'a player is offered Cancel on a cash buy whose QR they may already be paying',
+    from: `  return order.status !== 'PROCESSING' || !order.cashLink;`,
+    to: `  return true;`,
+  },
+  {
+    id: 'MAA4', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantPanelRoutes.test.js',
+    why: 'a buy\'s response time runs from the routing, not from the player\'s Paid tap, so every member reads as slow by however long players take to pay',
+    from: `        const respondedFrom = isDeposit ? order.paidAt : order.processingAt;`,
+    to: `        const respondedFrom = order.processingAt;`,
   },
 ];
 
