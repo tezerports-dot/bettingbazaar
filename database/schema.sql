@@ -3751,7 +3751,7 @@ ALTER TABLE admin_token_considerations ADD COLUMN IF NOT EXISTS team_id TEXT;
 ALTER TABLE team_pool_entries DROP CONSTRAINT IF EXISTS team_pool_entries_kind_known;
 ALTER TABLE team_pool_entries ADD CONSTRAINT team_pool_entries_kind_known CHECK (kind IN (
   'ADMIN_SALE', 'ADMIN_BUYBACK', 'BUY_HOLD', 'BUY_RELEASE', 'BUY_PAID', 'SELL_SETTLED', 'SELL_REVERSED',
-  'COMMISSION'));
+  'COMMISSION', 'DISPUTE_COMPENSATION'));
 -- An order's pool movements name the order; an admin trade names its request.
 CREATE INDEX IF NOT EXISTS team_pool_entries_ref_idx ON team_pool_entries (ref_id);
 
@@ -3841,6 +3841,13 @@ CREATE TABLE IF NOT EXISTS dispute_faults (
     (party = 'PLAYER' AND user_id IS NOT NULL) OR (party = 'MERCHANT' AND merchant_id IS NOT NULL)),
   CONSTRAINT dispute_faults_count_positive CHECK (lost_count >= 1)
 );
+-- The compensation the decision awarded, in percent of the order (owner,
+-- 2026-10-17: 0, 5 or 10), written once with the loser. The payment pays only
+-- this percent, so a retry after a short pool cannot pay a different one.
+ALTER TABLE dispute_faults ADD COLUMN IF NOT EXISTS compensation_percent INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE dispute_faults DROP CONSTRAINT IF EXISTS dispute_faults_compensation_known;
+ALTER TABLE dispute_faults ADD CONSTRAINT dispute_faults_compensation_known CHECK (
+  compensation_percent IN (0, 5, 10) AND (compensation_percent = 0 OR party = 'MERCHANT'));
 CREATE INDEX IF NOT EXISTS dispute_faults_user_idx ON dispute_faults (user_id) WHERE user_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS dispute_faults_merchant_idx ON dispute_faults (merchant_id) WHERE merchant_id IS NOT NULL;
 
@@ -5062,3 +5069,30 @@ ALTER TABLE cycles DROP CONSTRAINT IF EXISTS cycles_house_bet_shape;
 ALTER TABLE cycles ADD CONSTRAINT cycles_house_bet_shape CHECK (
   (house_bet_side IS NULL AND house_bet_paise = 0 AND house_bet_reserved_paise = 0)
   OR (house_bet_side IN ('DELHI', 'BOMBAY') AND house_bet_paise > 0 AND house_bet_reserved_paise >= 0));
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- DISPUTE COMPENSATION (owner, 2026-10-17)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- A dispute decided against the member (or merchant account) may pay the
+-- player 5% or 10% of the order's tokens out of that team's own pool, as the
+-- Dispute Manager chooses. One per order, written only by
+-- `teamPools.payDisputeCompensation` in the transaction that moves the pool,
+-- the wallet and TEAM_FLOAT -> USER_FLOAT.
+CREATE TABLE IF NOT EXISTS dispute_compensations (
+  order_id      TEXT PRIMARY KEY REFERENCES order_states (order_id),
+  team_id       TEXT NOT NULL REFERENCES teams (team_id),
+  user_id       TEXT NOT NULL,
+  merchant_id   TEXT NOT NULL,
+  percent       INTEGER NOT NULL,
+  order_paise   BIGINT NOT NULL,
+  amount_paise  BIGINT NOT NULL,
+  decided_by    TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE dispute_compensations DROP CONSTRAINT IF EXISTS dispute_compensations_rule;
+ALTER TABLE dispute_compensations ADD CONSTRAINT dispute_compensations_rule CHECK (
+  percent IN (5, 10) AND order_paise > 0 AND amount_paise > 0
+  AND amount_paise = (order_paise * percent) / 100);
+CREATE INDEX IF NOT EXISTS dispute_compensations_merchant_idx ON dispute_compensations (merchant_id, created_at DESC);
+CREATE OR REPLACE TRIGGER dispute_compensations_append_only
+  BEFORE UPDATE OR DELETE ON dispute_compensations FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();

@@ -98,6 +98,12 @@ export const EVENT_TYPES = Object.freeze({
   // owes the player (owner, 2026-10-17).
   PROMO_BONUS_PAID: 'PROMO_BONUS_PAID',
 
+  // A dispute's compensation to the player, paid out of the losing team's
+  // pool (`dispute_compensations`, owner 2026-10-17). The team bought those
+  // tokens with money that entered at the boundary, as a buy's do, so it is
+  // booked as one: the player is owed more and nothing is platform revenue.
+  DISPUTE_COMPENSATION: 'DISPUTE_COMPENSATION',
+
   // Manual admin correction — always a NEW balancing entry, never an edit of
   // history (append-only ledger; corrections are reversing entries).
   ADJUSTMENT: 'ADJUSTMENT',

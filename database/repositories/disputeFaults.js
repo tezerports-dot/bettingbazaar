@@ -24,7 +24,7 @@
  * merchant id has no foreign key), the whole thing rolls back and says so —
  * a record naming nobody is worse than none.
  */
-import { withTransaction } from '../client.js';
+import { withTransaction, pgQuery } from '../client.js';
 import { getSystemConfig } from './config.js';
 import { recordProblemWithin, flagThresholdOf, PROBLEM_KINDS } from './merchantProblems.js';
 
@@ -51,19 +51,19 @@ class Refused extends Error {
  * @returns {Promise<{ok: true, already?: boolean, party, lostCount, highRisk, newlyHighRisk?}
  *   | {ok: false, reason: string}>}
  */
-export async function recordDisputeFault({ orderId, party, userId = null, merchantId = null, decision, decidedBy = null }) {
+export async function recordDisputeFault({ orderId, party, userId = null, merchantId = null, decision, decidedBy = null, compensationPercent = 0 }) {
   if (!Object.values(FAULT_PARTIES).includes(party)) throw new Error(`recordDisputeFault: unknown party '${party}'`);
   const oid = String(orderId);
   const reason = `Lost a payment dispute (order ${oid}). A staff member must review and lift this suspension.`;
   try {
     return await withTransaction(async (client) => {
       const { rows: fresh } = await client.query(
-        `INSERT INTO dispute_faults (order_id, party, user_id, merchant_id, decision, decided_by, lost_count)
-         VALUES ($1, $2, $3, $4, $5, $6, 1)
+        `INSERT INTO dispute_faults (order_id, party, user_id, merchant_id, decision, decided_by, lost_count, compensation_percent)
+         VALUES ($1, $2, $3, $4, $5, $6, 1, $7)
          ON CONFLICT (order_id) DO NOTHING
          RETURNING order_id`,
         [oid, party, userId ? String(userId) : null, merchantId ? String(merchantId) : null,
-          String(decision), decidedBy ? String(decidedBy) : null]);
+          String(decision), decidedBy ? String(decidedBy) : null, Number(compensationPercent) || 0]);
       if (!fresh[0]) {
         const { rows } = await client.query(
           'SELECT party, lost_count, high_risk FROM dispute_faults WHERE order_id = $1', [oid]);
@@ -134,4 +134,64 @@ export async function recordDisputeFault({ orderId, party, userId = null, mercha
     if (e instanceof Refused) return { ok: false, reason: e.reason };
     throw e;
   }
+}
+
+/** How far back the Dispute Manager's offence record counts recent events. */
+export const OFFENCE_RECORD_DAYS = 30;
+
+/**
+ * The member's (or merchant account owner's) offence record, for the Dispute
+ * Manager deciding a dispute against them (owner, 2026-10-17: "the dispute
+ * manager can see if the merchant or member is a repeat offender or
+ * flagged"). Read only, each figure from its owner: the merchant row's status
+ * and counters, lost disputes (`dispute_faults`), refusals (`order_rejections`),
+ * low-activity red flags (`team_red_flags`), a merchant account's problems and
+ * daily flags (`merchant_problems`, `merchant_flags`) and compensations its
+ * team already paid (`dispute_compensations`). Recent = the last
+ * `OFFENCE_RECORD_DAYS` days.
+ */
+export async function merchantOffenceRecord(merchantId) {
+  if (!merchantId) return null;
+  const { rows } = await pgQuery(
+    `SELECT m.merchant_id, m.name, m.status, m.suspension_reason,
+            m.lost_disputes, m.high_risk_at, m.consecutive_rejections, m.consecutive_expiries,
+            m.assignment_paused_at,
+            (SELECT COUNT(*) FROM dispute_faults f WHERE f.merchant_id = m.merchant_id AND f.party = 'MERCHANT')::int AS disputes_lost,
+            (SELECT COUNT(*) FROM order_rejections r WHERE r.merchant_id = m.merchant_id
+               AND r.rejected_at > now() - make_interval(days => $2))::int AS recent_refusals,
+            (SELECT COUNT(*) FROM team_red_flags t WHERE t.merchant_id = m.merchant_id
+               AND t.created_at > now() - make_interval(days => $2))::int AS recent_red_flags,
+            (SELECT COUNT(*) FROM merchant_problems p WHERE p.merchant_id = m.merchant_id
+               AND p.created_at > now() - make_interval(days => $2))::int AS recent_problems,
+            (SELECT COUNT(*) FROM merchant_flags g WHERE g.merchant_id = m.merchant_id
+               AND g.created_at > now() - make_interval(days => $2))::int AS recent_flags,
+            (SELECT COUNT(*) FROM dispute_compensations c WHERE c.merchant_id = m.merchant_id)::int AS compensations_paid,
+            (SELECT COALESCE(SUM(amount_paise), 0) FROM dispute_compensations c WHERE c.merchant_id = m.merchant_id) AS compensated_paise
+       FROM merchants m WHERE m.merchant_id = $1`,
+    [String(merchantId), OFFENCE_RECORD_DAYS], 'dispute_merchant_offence_record');
+  const r = rows[0];
+  if (!r) return null;
+  const disputesLost = Number(r.disputes_lost);
+  return {
+    merchantId: r.merchant_id,
+    name: r.name,
+    status: r.status,
+    suspensionReason: r.suspension_reason ?? null,
+    highRisk: r.high_risk_at != null,
+    assignmentPaused: r.assignment_paused_at != null,
+    disputesLost,
+    refusalStreak: Number(r.consecutive_rejections),
+    unpaidBuyStreak: Number(r.consecutive_expiries),
+    recentDays: OFFENCE_RECORD_DAYS,
+    recentRefusals: Number(r.recent_refusals),
+    recentRedFlags: Number(r.recent_red_flags),
+    recentProblems: Number(r.recent_problems),
+    recentFlags: Number(r.recent_flags),
+    compensationsPaid: Number(r.compensations_paid),
+    compensatedPaise: Number(r.compensated_paise),
+    // One line the screen can lead with: anyone who lost before, is flagged or
+    // is on a streak is a repeat offender.
+    repeatOffender: disputesLost > 0 || r.high_risk_at != null || Number(r.recent_flags) > 0
+      || Number(r.recent_red_flags) > 0 || Number(r.consecutive_rejections) > 1,
+  };
 }

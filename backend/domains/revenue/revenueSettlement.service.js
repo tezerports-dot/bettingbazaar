@@ -31,7 +31,7 @@ import { createHash } from 'node:crypto';
 import {
   recordEventOnPostgres, trialBalanceOnPostgres,
   accountBalanceOnPostgres, getLedgerOnPostgres, recordSpendCoveredOnPostgres,
-  findCasinoRoundsUnbooked, findPromoGrantsUnbooked,
+  findCasinoRoundsUnbooked, findPromoGrantsUnbooked, findCompensationsUnbooked,
 } from '#db/repositories/ledger.js';
 import { ACCOUNTS, ACCOUNT_CODES, EVENT_TYPES, toMinor } from './chartOfAccounts.js';
 import { INR_TOKEN_RATE } from '../configuration/tokenRates.js';
@@ -494,6 +494,36 @@ export async function reconcilePromoGrants(limit = 200) {
       results.push({ refId: g.grantId, recorded: !res.idempotent });
     } catch (e) {
       results.push({ refId: g.grantId, recorded: false, error: e.message });
+    }
+  }
+  return results;
+}
+
+/**
+ * Book each dispute compensation (`dispute_compensations`) not yet in the
+ * ledger: EXTERNAL_FIAT +amount, USER_FUNDS -amount, as a buy is booked, so
+ * USER_FUNDS keeps describing the wallets. Keyed by the order, once.
+ */
+export async function reconcileCompensations(limit = 200) {
+  const due = await findCompensationsUnbooked({ limit });
+  const results = [];
+  for (const c of due) {
+    try {
+      const res = await recordAccountingEvent({
+        eventType: EVENT_TYPES.DISPUTE_COMPENSATION,
+        idempotencyKey: `acct_dispute_comp_${c.orderId}`,
+        postings: [
+          { account: ACCOUNTS.EXTERNAL_FIAT.code, amountMinor: c.amountPaise },
+          { account: ACCOUNTS.USER_FUNDS.code,    amountMinor: -c.amountPaise },
+        ],
+        refModel: 'DisputeCompensation',
+        refId: c.orderId,
+        occurredAt: c.createdAt ? new Date(c.createdAt) : new Date(),
+        description: `${c.percent}% dispute compensation ₹${(c.amountPaise / 100).toFixed(2)} paid from the team's pool`,
+      });
+      results.push({ refId: c.orderId, recorded: !res.idempotent });
+    } catch (e) {
+      results.push({ refId: c.orderId, recorded: false, error: e.message });
     }
   }
   return results;

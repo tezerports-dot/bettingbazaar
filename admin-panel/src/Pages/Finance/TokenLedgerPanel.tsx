@@ -34,6 +34,7 @@ const KIND_LABEL: Record<string, string> = {
   ADJUSTMENT: 'Admin balance adjustments',
   POOL_TRADE: 'Tokens sold to / bought back from team pools (exchange, not profit)',
   PLAYER_TRADE: 'Player buys and sells through pools (zero for the platform)',
+  COMPENSATION: 'Dispute compensation paid by teams to players (zero for the platform)',
   INTERNAL: 'Between platform accounts (zero)',
   UNCLASSIFIED: 'Not classified',
 };

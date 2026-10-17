@@ -233,7 +233,9 @@ export function registerCronJobs(rebuildLeaderboard) {
   // backfill automatically across the first passes (200 per source per pass).
   registerRecurring('ledger-reconcile', 60 * 1000, async () => {
     try {
-      const { reconcileCompletedOrders, reconcileSettledCycles, reconcileCasinoRounds, reconcilePromoGrants } =
+      const {
+        reconcileCompletedOrders, reconcileSettledCycles, reconcileCasinoRounds, reconcilePromoGrants, reconcileCompensations,
+      } =
         await import('../domains/revenue/revenueSettlement.service.js');
 
       const orderResults = await reconcileCompletedOrders();
@@ -255,7 +257,11 @@ export function registerCronJobs(rebuildLeaderboard) {
       for (const r of promoResults) {
         if (r.error) console.error(`[ledger-reconcile] PromoGrant ${r.refId} failed:`, r.error);
       }
-      const all = [...orderResults, ...cycleResults, ...casinoResults, ...promoResults];
+      const compensationResults = await reconcileCompensations();
+      for (const r of compensationResults) {
+        if (r.error) console.error(`[ledger-reconcile] DisputeCompensation ${r.refId} failed:`, r.error);
+      }
+      const all = [...orderResults, ...cycleResults, ...casinoResults, ...promoResults, ...compensationResults];
 
       const failures = all.filter(r => r.error);
       if (failures.length > 0) {
