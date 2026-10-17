@@ -284,7 +284,7 @@ export function toPlayerOrderView(order) {
  * escrow (2c+), or null when no window is running.
  *
  *   a BUY the member rejected as unpaid   the rejected-buy window
- *   a SELL the member marked paid         the hold, at least an hour
+ *   a SELL the member marked paid         the hold (0 to 10,080 minutes)
  *
  * DERIVED, and only the instant: the hold is the merchant's credit standing
  * (`merchantCreditHoldUntil`, forbidden above), and the player is told when
