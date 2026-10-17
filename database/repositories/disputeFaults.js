@@ -51,19 +51,19 @@ class Refused extends Error {
  * @returns {Promise<{ok: true, already?: boolean, party, lostCount, highRisk, newlyHighRisk?}
  *   | {ok: false, reason: string}>}
  */
-export async function recordDisputeFault({ orderId, party, userId = null, merchantId = null, decision, decidedBy = null }) {
+export async function recordDisputeFault({ orderId, party, userId = null, merchantId = null, decision, decidedBy = null, compensationPercent = 0 }) {
   if (!Object.values(FAULT_PARTIES).includes(party)) throw new Error(`recordDisputeFault: unknown party '${party}'`);
   const oid = String(orderId);
   const reason = `Lost a payment dispute (order ${oid}). A staff member must review and lift this suspension.`;
   try {
     return await withTransaction(async (client) => {
       const { rows: fresh } = await client.query(
-        `INSERT INTO dispute_faults (order_id, party, user_id, merchant_id, decision, decided_by, lost_count)
-         VALUES ($1, $2, $3, $4, $5, $6, 1)
+        `INSERT INTO dispute_faults (order_id, party, user_id, merchant_id, decision, decided_by, lost_count, compensation_percent)
+         VALUES ($1, $2, $3, $4, $5, $6, 1, $7)
          ON CONFLICT (order_id) DO NOTHING
          RETURNING order_id`,
         [oid, party, userId ? String(userId) : null, merchantId ? String(merchantId) : null,
-          String(decision), decidedBy ? String(decidedBy) : null]);
+          String(decision), decidedBy ? String(decidedBy) : null, Number(compensationPercent) || 0]);
       if (!fresh[0]) {
         const { rows } = await client.query(
           'SELECT party, lost_count, high_risk FROM dispute_faults WHERE order_id = $1', [oid]);

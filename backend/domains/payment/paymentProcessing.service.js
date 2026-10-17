@@ -69,6 +69,7 @@ import { toPlayerOrderView, playerCancelFrom } from './playerOrderView.js';
 // The mirror of it, pointing the other way: the one shape a MERCHANT receives.
 // This service pushes to both parties, so it needs both projections.
 import { toMerchantOrderView } from '../merchant/merchantOrderView.js';
+import { sendAlert } from '../../services/alerting.service.js';
 
 // ─── Shared admin SSE payload ─────────────────────────────────────────────────
 function adminOrderPayload(order, user) {
@@ -1416,12 +1417,19 @@ async function disputeUnpaidSell(order) {
     direction: order.type, amountRupees: order.tokenAmount,
   }).catch(() => {});
   const { recordMerchantRefusal, REFUSAL } = await import('../merchant/merchantRefusal.service.js');
+  // After the DISPUTED move committed (§21): a failure here is alerted, never
+  // thrown, since the sweep will not see this order again.
   await recordMerchantRefusal({
     orderId: order.orderId,
     merchantId: order.merchantId,
     userId: String(order.userId),
     reason: 'The sell was not paid within its paying window.',
     kind: REFUSAL.EXPIRED,
+  }).catch((err) => {
+    console.error(`[unpaid-sell] ${order.orderId}: expiry not counted on the member:`, err.message);
+    sendAlert('unpaid-sell-expiry-not-counted', 'An unpaid sell went to dispute but its expiry was not counted', {
+      orderId: order.orderId, merchantId: order.merchantId, error: err.message,
+    }).catch(() => {});
   });
 
   const { notify } = await import('../communication/communication.service.js');

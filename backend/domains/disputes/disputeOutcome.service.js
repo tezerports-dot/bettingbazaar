@@ -94,7 +94,7 @@ export function faultPreview(order, disputedFrom) {
  *   only a dispute if it was DISPUTED when the decision was taken
  * @param {{completed: boolean, decision: string, by: string|null}} decided
  */
-export async function recordDisputeLoser(order, { completed, decision, by = null }) {
+export async function recordDisputeLoser(order, { completed, decision, by = null, compensationPercent = 0 }) {
   if (!order || order.status !== 'DISPUTED') return { ok: false, reason: 'not_a_dispute' };
   const disputedFrom = await db.orders.disputedFromState(order.orderId);
   const party = partyAtFault(order, { completed, disputedFrom });
@@ -111,6 +111,8 @@ export async function recordDisputeLoser(order, { completed, decision, by = null
     userId: order.userId ? String(order.userId) : null,
     merchantId: order.merchantId ? String(order.merchantId) : null,
     decision, decidedBy: by,
+    // Only a decision against the member awards one (`dispute_faults_compensation_known`).
+    compensationPercent: party === FAULT_PARTIES.MERCHANT ? compensationPercent : 0,
   });
   if (!recorded.ok) {
     sendAlert('dispute-fault-not-recorded', 'A dispute was decided but the party at fault could not be suspended', {

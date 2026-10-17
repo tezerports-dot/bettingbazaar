@@ -295,7 +295,7 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
     // A withdrawal's money step is keyed end to end: replaying it repairs a
     // first click that failed part-way and moves nothing when it succeeded.
     const withdrawalDecision = releasesToMerchant ? 'RELEASE' : 'REFUND';
-    const outcome = { completed: newStatus === 'COMPLETED', decision, by: req.user.userId };
+    const outcome = { completed: newStatus === 'COMPLETED', decision, by: req.user.userId, compensationPercent };
     if (moved.idempotent) {
       if (order.type === 'WITHDRAWAL') {
         await endWithdrawal(order.orderId, withdrawalDecision, { reason: resolution, by: req.user.userId });
@@ -303,8 +303,9 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
       // Keyed by the order: repairs a first decision whose suspension did not
       // land, and records nothing twice.
       await recordDisputeLoser(asDecided, outcome);
+      // The percent paid is the one the first decision recorded.
       const compensation = compensationPercent > 0
-        ? await payCompensation(order, compensationPercent, req.user.userId) : null;
+        ? await payCompensation(order, req.user.userId) : null;
       return res.json({ success: true, message: 'Dispute already resolved', order: moved.order ?? order, compensation });
     }
 
@@ -407,7 +408,7 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
     }
     // After the loser is recorded, because the payment asks for that record.
     const compensation = compensationPercent > 0
-      ? await payCompensation(order, compensationPercent, req.user.userId) : null;
+      ? await payCompensation(order, req.user.userId) : null;
     if (compensation?.ok) {
       systemMessage += `\n💰 The player is compensated ${compensation.percent}% of the order: `
         + `${compensation.amountPaise / 100} tokens to their winnings, from the team's pool.`;
@@ -458,8 +459,8 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
  * the screen says what the pool has, and the same request can be sent again
  * from the dispute once the team's pool is topped up.
  */
-async function payCompensation(order, percent, by) {
-  const paid = await db.teamPools.payDisputeCompensation(order.orderId, { percent, actor: `admin:${by}` });
+async function payCompensation(order, by) {
+  const paid = await db.teamPools.payDisputeCompensation(order.orderId, { actor: `admin:${by}` });
   if (paid.ok) {
     if (!paid.already) {
       await db.audit.recordDetailed({
@@ -475,27 +476,24 @@ async function payCompensation(order, percent, by) {
   const message = {
     pool_short: `The team's pool has only ${(paid.availablePaise ?? 0) / 100} tokens available, so nothing was paid. Pay it again once the pool is topped up.`,
     not_merchant_fault: 'This dispute was not decided against the member or merchant, so no compensation is paid.',
+    none_decided: 'This decision awarded no compensation (0%), so there is nothing to pay.',
     no_team: 'This order has no team, so there is no pool to pay from.',
   }[paid.reason] ?? `The compensation was not paid (${paid.reason}).`;
   sendAlert('dispute-compensation-not-paid', 'A dispute compensation was not paid', {
-    orderId: order.orderId, percent, reason: paid.reason,
+    orderId: order.orderId, reason: paid.reason,
   }).catch(() => {});
   return { ok: false, reason: paid.reason, message, availablePaise: paid.availablePaise ?? null };
 }
 
 // ── POST /api/admin/dispute-orders/:orderId/compensation ─────────────────────
 // Pays (or repays, once) the compensation of a dispute already decided against
-// the member: the Dispute Manager's retry after a short pool.
+// the member: the Dispute Manager's retry after a short pool. It pays the
+// percent the decision recorded, never one sent with the retry.
 router.post('/dispute-orders/:orderId/compensation', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
-    const percent = Number(req.body?.percent);
-    if (!DISPUTE_COMPENSATION_PERCENTS.includes(percent) || percent === 0) {
-      return res.status(400).json({ success: false, code: 'UNKNOWN_COMPENSATION',
-        message: `Compensation is ${DISPUTE_COMPENSATION_PERCENTS.filter(Boolean).join(' or ')} percent.` });
-    }
     const order = await db.orders.getOrderRecord(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    const compensation = await payCompensation(order, percent, req.user.userId);
+    const compensation = await payCompensation(order, req.user.userId);
     if (!compensation.ok) {
       return res.status(409).json({ success: false, code: compensation.reason.toUpperCase(), message: compensation.message, compensation });
     }

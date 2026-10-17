@@ -715,29 +715,25 @@ export async function reverseSellFromPool(orderId, { actor = 'system', reason = 
 export const DISPUTE_COMPENSATION_PERCENTS = Object.freeze([0, 5, 10]);
 
 /**
- * Pay the player of a decided dispute `percent` of the order's tokens out of
+ * Pay the player of a decided dispute the percent of the order's tokens that
+ * the decision recorded (`dispute_faults.compensation_percent`) out of
  * the losing team's own pool, in ONE transaction: the compensation row, the
  * pool entry, the wallet credit and TEAM_FLOAT → USER_FLOAT commit together or
  * not at all (§19). Every guard is asked here, under the order's lock:
- *   - the order's dispute was decided (it is no longer DISPUTED) and its
- *     recorded loser is the MERCHANT side (`dispute_faults`);
+ *   - the order's dispute was decided against the MERCHANT side and awarded
+ *     5 or 10 percent (`dispute_faults`, written only by the decision);
  *   - once per order (the row's PK; a repeat answers `already`);
  *   - the pool's AVAILABLE tokens cover it whole (in the UPDATE's WHERE), or
  *     nothing moves and the answer is `pool_short` with what is there.
  * Held tokens are other orders' and are never taken.
  */
-export async function payDisputeCompensation(orderId, { percent, actor = 'system' }) {
+export async function payDisputeCompensation(orderId, { actor = 'system' } = {}) {
   const oid = String(orderId);
-  const pct = Number(percent);
-  if (!DISPUTE_COMPENSATION_PERCENTS.includes(pct) || pct === 0) {
-    throw Object.assign(new Error(`Compensation is ${DISPUTE_COMPENSATION_PERCENTS.filter(Boolean).join(' or ')} percent.`),
-      { status: 400, code: 'UNKNOWN_COMPENSATION' });
-  }
   try {
     return await withTransaction(async (client) => {
       const { rows: o } = await client.query(
         `SELECT o.order_id, o.team_id, o.user_id, o.state, o.token_amount_paise,
-                f.party, f.merchant_id
+                f.party, f.merchant_id, f.compensation_percent
            FROM order_states o
            LEFT JOIN dispute_faults f ON f.order_id = o.order_id
           WHERE o.order_id = $1
@@ -745,6 +741,8 @@ export async function payDisputeCompensation(orderId, { percent, actor = 'system
       const order = o[0];
       if (!order) throw new Refused('not_found');
       if (order.party !== 'MERCHANT') throw new Refused('not_merchant_fault');
+      const pct = Number(order.compensation_percent);
+      if (!DISPUTE_COMPENSATION_PERCENTS.includes(pct) || pct === 0) throw new Refused('none_decided');
       if (!order.team_id) throw new Refused('no_team');
       const orderPaise = toNum(order.token_amount_paise);
       const amount = Math.floor((orderPaise * pct) / 100);

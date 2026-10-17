@@ -255,7 +255,8 @@ export const DisputeManager: React.FC = () => {
     if (!selected || !compRefused) return;
     setIsSaving(true);
     try {
-      const res = await api.post<any>(`/api/admin/dispute-orders/${selected._id}/compensation`, { percent: compPercent });
+      // The server pays the percent the decision recorded; the retry names none.
+      const res = await api.post<any>(`/api/admin/dispute-orders/${selected._id}/compensation`, {});
       toast.success(`${res.data?.compensation?.percent ?? compPercent}% compensation paid`);
       setSelected(null);
       load();

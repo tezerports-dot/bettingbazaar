@@ -188,15 +188,36 @@ describePg('unpaid sells go to dispute; the losing team compensates the player',
     expect(await compensationFor(s.orderId)).toBeNull();
     const walletShort = await getBalancesPaise(s.player.userId);
 
-    const stillShort = await adminPost(`/dispute-orders/${s.orderId}/compensation`, { percent: 5 });
+    const stillShort = await adminPost(`/dispute-orders/${s.orderId}/compensation`, {});
     expect(stillShort.status).toBe(409);
     expect(stillShort.body.code).toBe('POOL_SHORT');
 
     await teams.fund(team, 100);
-    const paid = await adminPost(`/dispute-orders/${s.orderId}/compensation`, { percent: 5 });
+    // A retry pays the decided 5%, whatever percent it is sent with.
+    const paid = await adminPost(`/dispute-orders/${s.orderId}/compensation`, { percent: 10 });
     expect(paid.status, JSON.stringify(paid.body)).toBe(200);
     expect(paid.body.compensation).toMatchObject({ ok: true, percent: 5, amountPaise: A / 20 });
     expect((await getBalancesPaise(s.player.userId)).winningsBalance - walletShort.winningsBalance).toBe(A / 20);
     expect((await getPool(team.teamId)).availablePaise).toBe(110 * 100 - A / 20);
+  });
+
+  it('a decision against the member at 0% pays nothing later, whatever a retry asks for', async () => {
+    const { member, team } = await teamOf(5_000);
+    const s = await unpaidSell(member);
+    await expireOrders();
+    const res = await adminPost(`/dispute-orders/${s.orderId}/resolve`,
+      { decision: 'RELEASE_TO_USER', resolution: 'member never paid', compensationPercent: 0 });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const { rows: f } = await pgQuery('SELECT party, compensation_percent FROM dispute_faults WHERE order_id = $1', [s.orderId]);
+    expect(f[0]).toMatchObject({ party: 'MERCHANT', compensation_percent: 0 });
+    const poolBefore = await getPool(team.teamId);
+    const walletBefore = await getBalancesPaise(s.player.userId);
+
+    const retry = await adminPost(`/dispute-orders/${s.orderId}/compensation`, { percent: 10 });
+    expect(retry.status).toBe(409);
+    expect(retry.body.code).toBe('NONE_DECIDED');
+    expect((await getPool(team.teamId)).availablePaise).toBe(poolBefore.availablePaise);
+    expect((await getBalancesPaise(s.player.userId)).winningsBalance).toBe(walletBefore.winningsBalance);
+    expect(await compensationFor(s.orderId)).toBeNull();
   });
 });

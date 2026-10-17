@@ -3841,6 +3841,13 @@ CREATE TABLE IF NOT EXISTS dispute_faults (
     (party = 'PLAYER' AND user_id IS NOT NULL) OR (party = 'MERCHANT' AND merchant_id IS NOT NULL)),
   CONSTRAINT dispute_faults_count_positive CHECK (lost_count >= 1)
 );
+-- The compensation the decision awarded, in percent of the order (owner,
+-- 2026-10-17: 0, 5 or 10), written once with the loser. The payment pays only
+-- this percent, so a retry after a short pool cannot pay a different one.
+ALTER TABLE dispute_faults ADD COLUMN IF NOT EXISTS compensation_percent INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE dispute_faults DROP CONSTRAINT IF EXISTS dispute_faults_compensation_known;
+ALTER TABLE dispute_faults ADD CONSTRAINT dispute_faults_compensation_known CHECK (
+  compensation_percent IN (0, 5, 10) AND (compensation_percent = 0 OR party = 'MERCHANT'));
 CREATE INDEX IF NOT EXISTS dispute_faults_user_idx ON dispute_faults (user_id) WHERE user_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS dispute_faults_merchant_idx ON dispute_faults (merchant_id) WHERE merchant_id IS NOT NULL;
 
