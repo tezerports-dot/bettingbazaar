@@ -2258,7 +2258,7 @@ const MUTATIONS = [
   {
     id: 'M373', file: 'backend/domains/payment/playerOrderView.js', config: PG,
     test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
-    why: 'USDT is sent to a member who has not accepted, and declines: a chain payment nobody can reverse',
+    why: 'an ended USDT buy still shows the chain address: a payment to a member the order no longer has, which nobody can reverse',
     from: "  if (accepted && isBuy && snapshot.usdtPayTo && snapshot.usdtChain) {\n",
     to: "  if (isBuy && snapshot.usdtPayTo && snapshot.usdtChain) {\n",
   },

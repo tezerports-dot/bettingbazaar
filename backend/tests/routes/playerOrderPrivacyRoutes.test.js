@@ -239,6 +239,23 @@ describePg('what a player is told about a merchant', () => {
     expect(JSON.stringify(res.body)).not.toContain(MERCHANT_USDT_TRC20);
     withinTheAllowlist(res.body.order);
 
+    // Once the order has ended, not even their own chain's address: USDT sent
+    // to a member the order no longer has is not recoverable.
+    for (const state of ['COMPLETED', 'CANCELLED']) {
+      const endedId = oid();
+      await createOrderRecord({
+        orderId: endedId, userId: player.userId, type: 'DEPOSIT',
+        tokenAmountRupees: 50_000, fiatAmountRupees: 50_000,
+        state, currency: 'USDT', usdtChain: 'BEP20',
+      });
+      await setOrderFields(endedId, {
+        merchantSnapshot: { ...SNAPSHOT, usdtChain: 'BEP20', usdtPayTo: MERCHANT_USDT_BEP20, usdtChainLabel: 'BNB Smart Chain (BEP-20)' },
+      });
+      const ended = await as(app, player).get(`/order/${endedId}`);
+      expect(ended.status).toBe(200);
+      expect(ended.body.order.payTo?.usdtAddress).toBeUndefined();
+      expect(JSON.stringify(ended.body)).not.toContain(MERCHANT_USDT_BEP20);
+    }
   });
 
   it('keeps the snapshot ON THE ROW for the disputes desk', async () => {
