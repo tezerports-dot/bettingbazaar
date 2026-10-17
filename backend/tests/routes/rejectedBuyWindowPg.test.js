@@ -491,10 +491,14 @@ describePg('the window after a member rejects a buy as unpaid', () => {
     }
   });
 
-  it('keeps the sell hold at an hour or more: "at least 1 hour" is the owner\'s floor', async () => {
+  it('takes any whole number of minutes from 0 to 10,080 for the sell escrow (owner, 2026-10-17)', async () => {
     try {
-      await expect(applyConfig({ scope: 'system', actor: 'test', patch: { withdrawalHoldMinutes: 59 } })).rejects.toThrow(/withdrawalHoldMinutes/);
-      await expect(applyConfig({ scope: 'system', actor: 'test', patch: { withdrawalHoldMinutes: 0 } })).rejects.toThrow(/withdrawalHoldMinutes/);
+      await expect(applyConfig({ scope: 'system', actor: 'test', patch: { withdrawalHoldMinutes: -1 } })).rejects.toThrow(/withdrawalHoldMinutes/);
+      await expect(applyConfig({ scope: 'system', actor: 'test', patch: { withdrawalHoldMinutes: 10081 } })).rejects.toThrow(/withdrawalHoldMinutes/);
+      await applyConfig({ scope: 'system', actor: 'test', patch: { withdrawalHoldMinutes: 0 } });
+      expect((await getSystemConfig({ fresh: true })).withdrawalHoldMinutes).toBe(0);
+      await applyConfig({ scope: 'system', actor: 'test', patch: { withdrawalHoldMinutes: 129 } });
+      expect((await getSystemConfig({ fresh: true })).withdrawalHoldMinutes).toBe(129);
       await expect(applyConfig({ scope: 'system', actor: 'test', patch: { withdrawalHoldMinutes: 90.5 } })).rejects.toThrow(/withdrawalHoldMinutes' must be a whole number/);
       await applyConfig({ scope: 'system', actor: 'test', patch: { withdrawalHoldMinutes: 60 } });
       expect((await getSystemConfig()).withdrawalHoldMinutes).toBe(60);

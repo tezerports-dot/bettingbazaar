@@ -6,6 +6,7 @@ import api, { downloadCsv, cleanParams } from '../../services/api';
 import { Download } from 'lucide-react';
 import type { FinancialStats } from '../../types';
 import toast from 'react-hot-toast';
+import { TokenLedgerPanel } from './TokenLedgerPanel';
 
 const fmt = (n: number) => formatters.currency(n);
 type Preset = 'today' | 'week' | 'month' | 'year' | 'all' | 'custom';
@@ -163,6 +164,8 @@ export const ProfitLoss: React.FC = () => {
               </div>
             </div>
           )}
+
+          <TokenLedgerPanel start={range().start} end={range().end} />
 
           <div className="card bg-linear-to-r from-gold-500/10 to-gold-600/10 border-gold-500/30">
             <div className="grid grid-cols-3 gap-6 text-center">

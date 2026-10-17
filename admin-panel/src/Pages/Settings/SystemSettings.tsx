@@ -260,7 +260,7 @@ export const SystemSettings: React.FC = () => {
     // Demo results in the analytics (owner, 2026-10-15); schema default: true.
     demoResultsOn: true,
     // How long a sell stays in escrow after the member marks it paid.
-    withdrawalHoldMinutes: 60,  // schema default: 60 (also the floor)
+    withdrawalHoldMinutes: 60,  // schema default: 60
     // How long a player has to dispute a buy the member rejected as unpaid.
     rejectedBuyDisputeMinutes: 15,  // schema default: 15
     // The daily red flag on team members (Step 2f): low activity.
@@ -1211,19 +1211,19 @@ export const SystemSettings: React.FC = () => {
           of saving — nothing here needs a restart.
         </p>
 
-        {/* Both escrow windows (owner, 2026-10-02). Bounds are the spec's
-            (database/spec/config.spec.js): 60–1440 and 5–1440. The hold may
-            not go below an hour: it is the player's chance to dispute a sell
-            the member says they paid. */}
+        {/* Both escrow windows. Bounds are the spec's
+            (database/spec/config.spec.js): 0–10080 and 5–1440 (owner,
+            2026-10-17: the sell escrow is fully editable, 0 included). */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="label" htmlFor="withdrawal-hold-minutes">Sell escrow after "paid" (minutes)</label>
             <input id="withdrawal-hold-minutes"
-              type="number" min={60} max={1440} step={1}
+              type="number" min={0} max={10080} step={1}
               value={formData.withdrawalHoldMinutes}
               onChange={(e) => setFormData({
                 ...formData,
-                withdrawalHoldMinutes: Math.min(1440, Math.max(60, Math.floor(Number(e.target.value) || 60))),
+                // §11: display clamp mirroring the spec's 0–10080; the server validates.
+                withdrawalHoldMinutes: Math.min(10080, Math.max(0, Math.floor(Number(e.target.value) || 0))),
               })}
               className="input"
             />

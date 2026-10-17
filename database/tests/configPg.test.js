@@ -97,7 +97,7 @@ describePg('the configuration store', () => {
       [{ betReservePercent: 101 }, /'betReservePercent' must be <= 100/],
       [{ winningsFeePercent: -5 }, /'winningsFeePercent' must be >= 0/],
       [{ payoutMultiplier: 0 }, /'payoutMultiplier' must be >= 1/],
-      [{ withdrawalHoldMinutes: 100000 }, /'withdrawalHoldMinutes' must be <= 1440/],
+      [{ withdrawalHoldMinutes: 100000 }, /'withdrawalHoldMinutes' must be <= 10080/],
       // A member always carries at least one order on their team's rail.
       [{ teamRouting: { concurrency: { UPI_BANK: 0 } } },
         /'teamRouting\.concurrency\.UPI_BANK' must be >= 1/],
