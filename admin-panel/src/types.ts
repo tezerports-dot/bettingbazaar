@@ -566,15 +566,24 @@ export interface DashboardStats {
   queue: { pendingOrders: number; avgWaitTime: number };
 }
 
+/** `GET /api/admin/analytics/financials` `data` (`stats.profitAndLoss` + `providerRevenue`). Rupees. */
 export interface FinancialStats {
-  totalRevenue: number;
-  totalExpenses: number;
+  revenue: {
+    boardGames: { amount: number; settledStakes: number; payouts: number; bets: number; wins: number };
+    winningsFees: number;
+    casino: number;
+    total: number;
+  };
+  costs: {
+    referralBonuses: { amount: number; count: number };
+    firstDepositBonuses: { amount: number; count: number };
+    teamCommission: { amount: number; count: number };
+    total: number;
+  };
   netProfit: number;
-  profitMargin: number;
-  deposits: { count: number; amount: number };
-  withdrawals: { count: number; amount: number };
-  bets: { count: number; amount: number };
-  payouts: { count: number; amount: number };
+  openStakes: number;
+  moneyFlow: { deposits: { amount: number; count: number }; withdrawals: { amount: number; count: number } };
+  byProvider: { key: string; bets: number; betCount: number; wins: number; winCount: number; refunds: number; ggr: number }[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

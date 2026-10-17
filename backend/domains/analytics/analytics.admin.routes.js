@@ -13,7 +13,8 @@ import {
 import { db } from '#db';
 // Analytics Platform trends (Phase 012 — Enterprise Services tier)
 import { growthTrend, businessTrend, revenueTrend, riskTrend } from './analyticsPlatform.service.js';
-import { serverError } from '../../shared/httpError.js';
+import { serverError, respondError, refusal } from '../../shared/httpError.js';
+import { toCsv } from '../reporting/csv.util.js';
 import { paiseToRupees } from '../../shared/money.js';
 
 const router = express.Router();
@@ -118,45 +119,122 @@ router.get('/analytics/dashboard', authenticate, hasPermission('canViewAnalytics
   }
 });
 
+/** `YYYY-MM-DD` (an IST calendar day) or null; anything else is a 400. */
+function istDay(v, name) {
+  if (v == null || v === '') return null;
+  const s = String(v);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(Date.parse(`${s}T00:00:00Z`))) {
+    throw refusal(400, 'BAD_DATE', `${name} must be a date (YYYY-MM-DD).`);
+  }
+  return s;
+}
+
+const pnlWindow = (q) => ({ from: istDay(q.startDate, 'startDate'), to: istDay(q.endDate, 'endDate') });
+
 /**
- * Financial analytics over an optional date window.
- *
- * `profitMargin` divides by deposits, and deposits of zero would make it
- * Infinity — the guard is kept from the original. The rest is derived from the
- * order and bet rows rather than from the abandoned transaction collection.
+ * Profit & Loss over the IST days startDate..endDate, both inclusive
+ * (`stats.profitAndLoss`): revenue is what the house kept (board games and
+ * casino), costs are bonuses and team commission, and deposits and
+ * withdrawals are shown apart as money flow, never as revenue.
  */
 router.get('/analytics/financials', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
-    const from = startDate ? new Date(startDate) : null;
-    const to   = endDate   ? new Date(endDate)   : null;
-    if ((from && Number.isNaN(from.getTime())) || (to && Number.isNaN(to.getTime()))) {
-      return res.status(400).json({ success: false, message: 'startDate and endDate must be dates' });
-    }
-
-    const [finance, byProvider] = await Promise.all([
-      db.stats.platformFinance({ from, to }),
-      db.stats.providerRevenue({ from, to }),
+    const window = pnlWindow(req.query);
+    const [pnl, byProvider] = await Promise.all([
+      db.stats.profitAndLoss(window),
+      db.stats.providerRevenue({
+        from: window.from ? new Date(`${window.from}T00:00:00+05:30`) : null,
+        to: window.to ? new Date(new Date(`${window.to}T00:00:00+05:30`).getTime() + 86_400_000 - 1) : null,
+      }),
     ]);
+    res.json({ success: true, data: { ...pnl, byProvider } });
+  } catch (error) {
+    respondError(res, error, 'GET /admin/analytics/financials', { message: 'Failed to fetch financial data' });
+  }
+});
 
+/** The same P&L as CSV, one line per item. */
+router.get('/analytics/financials.csv', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
+  try {
+    const window = pnlWindow(req.query);
+    const p = await db.stats.profitAndLoss(window);
+    const line = (section, item, amount, count = '') => ({ section, item, amount, count });
+    const csv = toCsv([
+      line('Revenue', 'Board games: settled stakes', p.revenue.boardGames.settledStakes, p.revenue.boardGames.bets),
+      line('Revenue', 'Board games: paid to winners', -p.revenue.boardGames.payouts, p.revenue.boardGames.wins),
+      line('Revenue', 'Board games: kept', p.revenue.boardGames.amount),
+      line('Revenue', 'of which winnings fee', p.revenue.winningsFees),
+      line('Revenue', 'Casino games: kept', p.revenue.casino),
+      line('Revenue', 'Total revenue', p.revenue.total),
+      line('Costs', 'Referral bonuses', p.costs.referralBonuses.amount, p.costs.referralBonuses.count),
+      line('Costs', 'First deposit bonuses', p.costs.firstDepositBonuses.amount, p.costs.firstDepositBonuses.count),
+      line('Costs', 'Team commission', p.costs.teamCommission.amount, p.costs.teamCommission.count),
+      line('Costs', 'Total costs', p.costs.total),
+      line('Result', 'Net profit', p.netProfit),
+      line('Not yet earned', 'Stakes still riding', p.openStakes),
+      line('Money flow (not revenue)', 'Deposits', p.moneyFlow.deposits.amount, p.moneyFlow.deposits.count),
+      line('Money flow (not revenue)', 'Withdrawals', p.moneyFlow.withdrawals.amount, p.moneyFlow.withdrawals.count),
+    ]);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition',
+      `attachment; filename="profit-loss-${window.from || 'start'}-${window.to || 'now'}.csv"`);
+    res.send(csv);
+  } catch (error) {
+    respondError(res, error, 'GET /admin/analytics/financials.csv', { message: 'Could not build the export.' });
+  }
+});
+
+/**
+ * The token supply (20 billion) and how much of it each kind of holder has
+ * (`tokenHolders`): totals only, no individual account, so analytics is
+ * enough to read it.
+ */
+router.get('/analytics/token-supply', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
+  try {
+    const t = await db.tokenHolders.tokenHolders({ limit: 1 });
+    res.json({ success: true, supply: t.supply, accounted: t.accounted, accountedFor: t.accountedFor, kinds: t.kinds });
+  } catch (error) {
+    respondError(res, error, 'GET /admin/analytics/token-supply', { message: 'Could not read the token supply.' });
+  }
+});
+
+/**
+ * Every holder, largest first, with the same totals. Names each player and
+ * their balance, so it asks the players area (canManageUsers), as the users
+ * list does.
+ */
+router.get('/analytics/token-holders', authenticate, hasPermission('canManageUsers'), async (req, res) => {
+  try {
+    const { kind, search, page = 1, limit = 50 } = req.query;
+    const t = await db.tokenHolders.tokenHolders({ kind, search, page, limit });
     res.json({
-      success: true,
-      data: {
-        totalRevenue:  finance.deposits.amount + finance.bets.amount,
-        totalExpenses: finance.withdrawals.amount + finance.payouts.amount,
-        netProfit:     finance.netProfit,
-        profitMargin:  finance.deposits.amount > 0
-          ? (finance.netProfit / finance.deposits.amount) * 100 : 0,
-        deposits:    finance.deposits,
-        withdrawals: finance.withdrawals,
-        bets:        finance.bets,
-        payouts:     finance.payouts,
-        byProvider,
-      },
+      success: true, ...t,
+      pagination: { total: t.total, page: t.page, limit: t.limit, pages: Math.max(Math.ceil(t.total / t.limit), 1) },
     });
   } catch (error) {
-    console.error('Financial data error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch financial data' });
+    respondError(res, error, 'GET /admin/analytics/token-holders', { message: 'Could not read the token holders.' });
+  }
+});
+
+router.get('/analytics/token-holders.csv', authenticate, hasPermission('canManageUsers'), async (req, res) => {
+  try {
+    const { kind, search } = req.query;
+    const t = await db.tokenHolders.tokenHolders({ kind, search, exportAll: true });
+    const csv = toCsv(t.holders.map((h) => ({
+      kind: h.kind,
+      holder_id: h.holderId,
+      name: h.name,
+      supervisor_or_owner: h.owner || '',
+      approved_members: h.members ?? '',
+      tokens: h.tokens,
+      held_or_riding: h.held,
+      share_of_supply_percent: h.sharePercent,
+    })));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="token-holders-${kind || 'all'}.csv"`);
+    res.send(csv);
+  } catch (error) {
+    respondError(res, error, 'GET /admin/analytics/token-holders.csv', { message: 'Could not build the export.' });
   }
 });
 

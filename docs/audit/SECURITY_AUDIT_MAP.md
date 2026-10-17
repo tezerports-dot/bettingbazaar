@@ -3540,9 +3540,9 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 314 |
+| Route declarations in `backend/**` | 318 |
 | Reachable with **no auth middleware** | 42 |
-| Staff routes carrying an **area** (permission key) | 172 |
+| Staff routes carrying an **area** (permission key) | 176 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 8 |
 
 A count moving is not by itself a defect — it is a prompt to read the
@@ -3612,9 +3612,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 474 |
+| `pgQuery` call sites | 476 |
 | Parameters only (safe by construction) | 307 |
-| Interpolating into statement text (each needs a reading) | 160 |
+| Interpolating into statement text (each needs a reading) | 162 |
 | Statement text built elsewhere and passed in (each needs a reading) | 7 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
@@ -3633,7 +3633,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 153 | 0 | 0 |
-| `admin-panel` | 138 | 0 | 0 |
+| `admin-panel` | 140 | 0 | 0 |
 | `merchant-panel` | 63 | 0 | 0 |
 
 <!-- END GENERATED -->
