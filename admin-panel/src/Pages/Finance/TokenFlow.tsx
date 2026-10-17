@@ -27,6 +27,7 @@ import React, { useEffect, useState } from 'react';
 import { ArrowDownCircle, ArrowUpCircle, Landmark, RefreshCw, TrendingUp } from 'lucide-react';
 import { formatters } from '../../utils/formatters';
 import api from '../../services/api';
+import { TokenSupplyPanel } from './TokenSupplyPanel';
 import toast from 'react-hot-toast';
 
 interface DailyPoint { date: string; tokens: number; count: number; }
@@ -169,6 +170,8 @@ export const TokenFlow: React.FC = () => {
           </button>
         </div>
       </div>
+
+      <TokenSupplyPanel />
 
       <Section
         icon={<ArrowDownCircle size={18} className="text-green-400" />}

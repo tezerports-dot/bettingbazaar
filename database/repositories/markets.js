@@ -26,6 +26,7 @@ import { pgQuery, withTransaction } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 import { PLAY_PROFILES } from './promo.js';
 import { recordRoundWithin } from './rtp.js';
+import { istDay } from '../../backend/shared/istDay.js';
 
 
 export const SIDES = Object.freeze(['DELHI', 'BOMBAY']);
@@ -401,36 +402,82 @@ export async function setCycleStatus(cycleId, to, { from = [] } = {}) {
   return rows[0] ? { ok: true, cycle: toCycle(rows[0]) } : { ok: false, reason: 'NOT_IN_EXPECTED_STATE' };
 }
 
+/** How many rows one CSV export of the admin's cycle history may carry. */
+export const CYCLE_HISTORY_EXPORT_MAX = 20_000;
+
 /**
- * Finished cycles, a page at a time, with the count of everything that matched.
+ * Finished cycles, a page at a time, with the totals of everything that matched.
  *
- * `COUNT(*) OVER ()` so the page and its total describe one instant. The two
+ * Filters: board (`cycleType`), profile (`audience`), part of the cycle id
+ * (`search`) and the IST calendar days the round ended on (`from`, `to`, both
+ * inclusive). The page, its count and its totals come from ONE statement, so
+ * the figures above the table describe the same rows as the table: the two
  * concurrent reads this replaced could report 51 cycles across 2 pages while
- * the page in front of the admin held rows from a third.
+ * the page in front of the admin held rows from a third, and the totals cards
+ * once added up only the page on screen.
+ *
+ * `totals` is one entry per board and profile among the matches (count, net
+ * profit and net paid out, in rupees); `exportAll` returns every match up to
+ * CYCLE_HISTORY_EXPORT_MAX instead of a page, for the CSV.
  */
-export async function cycleHistory({ cycleType = null, audience = null, page = 1, limit = 50 } = {}) {
+export async function cycleHistory({
+  cycleType = null, audience = null, search = null, from = null, to = null,
+  page = 1, limit = 50, exportAll = false,
+} = {}) {
   const params = [['RESULT_DECLARED', 'COMPLETED', 'CANCELLED']];
   const where = ['c.status = ANY($1::text[])'];
   if (cycleType) { params.push(String(cycleType)); where.push(`c.cycle_type = $${params.length}`); }
   if (audience) { params.push(audienceOf(audience)); where.push(`c.audience = $${params.length}`); }
+  const needle = search == null ? '' : String(search).trim();
+  if (needle) {
+    params.push(`%${needle.replace(/[\\%_]/g, (m) => `\\${m}`)}%`);
+    where.push(`c.cycle_id ILIKE $${params.length}`);
+  }
+  const fromDay = istDay(from, 'from');
+  const toDay = istDay(to, 'to');
+  if (fromDay) { params.push(fromDay); where.push(`c.end_time >= ($${params.length}::date)::timestamp AT TIME ZONE 'Asia/Kolkata'`); }
+  if (toDay) { params.push(toDay); where.push(`c.end_time < ($${params.length}::date + 1)::timestamp AT TIME ZONE 'Asia/Kolkata'`); }
 
-  const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
-  const wanted = Math.max(Number(page) || 1, 1);
+  const size = exportAll ? CYCLE_HISTORY_EXPORT_MAX : Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const wanted = exportAll ? 1 : Math.max(Number(page) || 1, 1);
   params.push(size, (wanted - 1) * size);
 
+  // `t` always yields one row, so the totals arrive even for a page past the
+  // end; the page's own columns are then NULL and dropped below.
   const { rows } = await pgQuery(
-    `SELECT ${qualified('c')},
-            p.real_delhi_paise, p.real_bombay_paise, p.delhi_bets, p.bombay_bets,
-            COUNT(*) OVER () AS total_matching
-       FROM cycles c ${POOL_JOIN}
-      WHERE ${where.join(' AND ')}
-      ORDER BY c.end_time DESC
-      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    `WITH f AS MATERIALIZED (
+       SELECT c.cycle_id, c.cycle_type, c.audience, c.end_time,
+              c.net_profit_paise, c.total_paid_out_paise
+         FROM cycles c
+        WHERE ${where.join(' AND ')}
+     ), t AS (
+       SELECT COALESCE(json_agg(x), '[]'::json) AS totals
+         FROM (SELECT cycle_type AS type, audience, COUNT(*)::int AS cycles,
+                      COALESCE(SUM(net_profit_paise), 0)::text AS net_profit_paise,
+                      COALESCE(SUM(total_paid_out_paise), 0)::text AS paid_out_paise
+                 FROM f GROUP BY cycle_type, audience) x
+     )
+     SELECT t.totals, pg.*
+       FROM t
+       LEFT JOIN LATERAL (
+         SELECT ${qualified('c')},
+                p.real_delhi_paise, p.real_bombay_paise, p.delhi_bets, p.bombay_bets
+           FROM f JOIN cycles c USING (cycle_id) ${POOL_JOIN}
+          ORDER BY c.end_time DESC, c.cycle_id DESC
+          LIMIT $${params.length - 1} OFFSET $${params.length}
+       ) pg ON TRUE
+      ORDER BY pg.end_time DESC NULLS LAST, pg.cycle_id DESC`,
     params, 'cycle_history',
   );
-  const total = rows.length ? Number(rows[0].total_matching) : 0;
+  const totals = (rows[0]?.totals || []).map((x) => ({
+    type: x.type, audience: x.audience, cycles: Number(x.cycles),
+    netProfit: paiseToRupees(num(x.net_profit_paise)),
+    paidOut: paiseToRupees(num(x.paid_out_paise)),
+  }));
+  const total = totals.reduce((n, x) => n + x.cycles, 0);
   return {
-    cycles: rows.map(withPools),
+    cycles: rows.filter((r) => r.cycle_id != null).map(withPools),
+    totals,
     total, page: wanted, limit: size,
     pages: Math.max(Math.ceil(total / size), 1),
   };

@@ -83,7 +83,12 @@ function orderBy(sorts, sort, dir, fallback, idColumn) {
   return `ORDER BY ${column} ${direction} NULLS LAST, ${idColumn} ${direction}`;
 }
 
-function page(limit, pageNo) {
+/** How many rows one CSV export of a directory table may carry. */
+export const DIRECTORY_EXPORT_MAX = 200_000;
+
+/** A page of at most 200 rows, or with `exportAll` every row up to DIRECTORY_EXPORT_MAX (the CSV). */
+function page(limit, pageNo, exportAll = false) {
+  if (exportAll) return { size: DIRECTORY_EXPORT_MAX, offset: 0 };
   const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const offset = (Math.max(Number(pageNo) || 1, 1) - 1) * size;
   return { size, offset };
@@ -159,7 +164,7 @@ function toPlayerRow(r) {
  * have their own tables.
  */
 export async function listPlayers({
-  search = null, status = null, sort = 'joined', dir = 'desc', limit = 50, page: pageNo = 1,
+  search = null, status = null, sort = 'joined', dir = 'desc', limit = 50, page: pageNo = 1, exportAll = false,
 } = {}) {
   const order = orderBy(PLAYER_SORTS, sort, dir, 'joined', 'user_id');
   const where = ["u.account_type = 'PLAYER'"];
@@ -172,7 +177,7 @@ export async function listPlayers({
     where.push(`(u.username ILIKE $${params.length} || '%' OR u.mobile LIKE $${params.length} || '%'
                  OR u.user_id = $${params.length})`);
   }
-  const { size, offset } = page(limit, pageNo);
+  const { size, offset } = page(limit, pageNo, exportAll);
   params.push(size, offset);
   const { rows } = await pgQuery(
     `SELECT d.*, COUNT(*) OVER () AS total_count FROM (${PLAYER_SQL}
@@ -277,7 +282,7 @@ function toMerchantRow(r) {
  */
 export async function listMerchants({
   search = null, role = null, approval = null, status = null,
-  sort = 'joined', dir = 'desc', limit = 50, page: pageNo = 1,
+  sort = 'joined', dir = 'desc', limit = 50, page: pageNo = 1, exportAll = false,
 } = {}) {
   const order = orderBy(MERCHANT_SORTS, sort, dir, 'joined', 'merchant_id');
   if (role && !MERCHANT_ROLES[role]) {
@@ -294,7 +299,7 @@ export async function listMerchants({
                  OR mobile ILIKE $${params.length} OR merchant_id = $${params.length + 1})`);
     params.push(String(search));
   }
-  const { size, offset } = page(limit, pageNo);
+  const { size, offset } = page(limit, pageNo, exportAll);
   params.push(size, offset);
   const { rows } = await pgQuery(
     `SELECT d.*, COUNT(*) OVER () AS total_count FROM (${MERCHANT_SQL}) d
@@ -370,7 +375,7 @@ function toStaffRow(r) {
  * `role` narrows to one STAFF_ROLES key; an unknown one is a 400.
  */
 export async function listStaff({
-  search = null, role = null, sort = 'joined', dir = 'desc', limit = 50, page: pageNo = 1,
+  search = null, role = null, sort = 'joined', dir = 'desc', limit = 50, page: pageNo = 1, exportAll = false,
 } = {}) {
   const order = orderBy(STAFF_SORTS, sort, dir, 'joined', 'user_id');
   const where = ["u.account_type = 'STAFF'", "u.status <> 'DELETED'"];
@@ -385,7 +390,7 @@ export async function listStaff({
     where.push(`(u.username ILIKE $${params.length} || '%' OR u.mobile LIKE $${params.length} || '%'
                  OR u.user_id = $${params.length})`);
   }
-  const { size, offset } = page(limit, pageNo);
+  const { size, offset } = page(limit, pageNo, exportAll);
   params.push(size, offset);
   const { rows } = await pgQuery(
     `SELECT d.*, COUNT(*) OVER () AS total_count FROM (${STAFF_SQL}

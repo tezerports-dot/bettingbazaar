@@ -20,7 +20,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 
 const { get } = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock('../../services/api', () => ({ default: { get } }));
+vi.mock('../../services/api', () => ({ default: { get }, downloadCsv: vi.fn(), cleanParams: (o: object) => o }));
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
 import { TokenFlow } from './TokenFlow';
@@ -68,9 +68,13 @@ beforeEach(() => {
 const called = (fragment: string) => get.mock.calls.some(([u]) => String(u).includes(fragment));
 
 describe('Token Flow reaches every endpoint it exists for', () => {
-  it('calls all four on mount', async () => {
+  it('calls all four, and the token supply, on mount', async () => {
     render(<TokenFlow />);
-    await waitFor(() => expect(get).toHaveBeenCalledTimes(4));
+    // Four flows plus the supply (token-supply); the holder list asks the
+    // players area, which no account holds here.
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(5));
+    expect(called('/api/admin/analytics/token-supply')).toBe(true);
+    expect(called('/api/admin/analytics/token-holders')).toBe(false);
     for (const fragment of [
       '/api/admin/analytics/deposit-dashboard',
       '/api/admin/analytics/withdrawal-dashboard',

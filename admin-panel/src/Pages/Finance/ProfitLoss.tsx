@@ -2,7 +2,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { formatters } from '../../utils/formatters';
 import { Kpis, Toolbar } from '../../components/design';
-import api from '../../services/api';
+import api, { downloadCsv, cleanParams } from '../../services/api';
+import { Download } from 'lucide-react';
+import type { FinancialStats } from '../../types';
 import toast from 'react-hot-toast';
 
 const fmt = (n: number) => formatters.currency(n);
@@ -28,8 +30,15 @@ const PRESETS: { key: Preset; label: string }[] = [
   { key: 'custom',label: 'Custom' },
 ];
 
+const Line: React.FC<{ label: string; val: number; note?: string; tone: string }> = ({ label, val, note, tone }) => (
+  <div className="flex justify-between items-center p-3 bg-dark-700 rounded-lg">
+    <span className="text-sm text-gray-400">{label}</span>
+    <div className="text-right"><p className={`font-semibold ${tone}`}>{fmt(val)}</p>{note && <p className="text-xs text-gray-500">{note}</p>}</div>
+  </div>
+);
+
 export const ProfitLoss: React.FC = () => {
-  const [stats, setStats]     = useState<any>(null);
+  const [stats, setStats]     = useState<FinancialStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(false);
   const [preset, setPreset]   = useState<Preset>('month');
@@ -59,12 +68,24 @@ export const ProfitLoss: React.FC = () => {
     </div>
   );
 
-  const profitMargin = stats?.totalRevenue > 0 ? (stats.netProfit / stats.totalRevenue) * 100 : 0;
+  // Margin on what the house kept, never on deposits: a deposit is the
+  // player's money, not revenue (`stats.profitAndLoss`).
+  const revenue = stats?.revenue?.total || 0;
+  const profitMargin = revenue > 0 ? ((stats?.netProfit ?? 0) / revenue) * 100 : 0;
   const netPos = (stats?.netProfit || 0) >= 0;
-
+  const range = () => (preset === 'custom' ? { start: startDate, end: endDate } : presetDates(preset));
+  const exportCsv = async () => {
+    const { start, end } = range();
+    try {
+      await downloadCsv('/api/admin/analytics/financials.csv', cleanParams({ startDate: start, endDate: end }), 'profit-loss.csv');
+    } catch { toast.error('Export failed'); }
+  };
   return (
     <div className="om-fade space-y-6">
-      <Toolbar tabs={PRESETS.map((p) => ({ label: p.label, active: preset === p.key, onClick: () => changePreset(p.key) }))} />
+      <Toolbar
+        tabs={PRESETS.map((p) => ({ label: p.label, active: preset === p.key, onClick: () => changePreset(p.key) }))}
+        actions={[{ label: 'Download CSV', icon: Download, onClick: exportCsv }]}
+      />
       {preset === 'custom' && (
         <div className="flex items-end gap-3">
           <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="from">From</label><input id="from" type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="input" style={{ width: 175 }} /></div>
@@ -80,39 +101,41 @@ export const ProfitLoss: React.FC = () => {
       ) : stats && (
         <>
           <Kpis items={[
-            { label: 'Total Revenue', value: fmt(stats.totalRevenue), tone: 'var(--success)' },
-            { label: 'Total Expenses', value: fmt(stats.totalExpenses), tone: 'var(--danger)' },
+            { label: 'Revenue (kept)', value: fmt(revenue), tone: 'var(--success)' },
+            { label: 'Costs', value: fmt(stats.costs?.total || 0), tone: 'var(--danger)' },
             { label: 'Net Profit', value: fmt(stats.netProfit), tone: netPos ? 'var(--gold-ink)' : 'var(--danger)' },
             { label: 'Profit Margin', value: `${profitMargin >= 0 ? '+' : ''}${profitMargin.toFixed(1)}%`, tone: profitMargin >= 0 ? 'var(--text)' : 'var(--danger)' },
           ]} />
-
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="card">
-              <h3 className="text-base font-semibold mb-3">Revenue</h3>
+              <h3 className="text-base font-semibold mb-1">Revenue</h3>
+              <p className="text-xs text-gray-500 mb-3">What the house kept from settled games. Phantom bets are never counted.</p>
               <div className="space-y-2">
-                {[{ label: 'Deposits', val: stats.deposits?.amount||0, count: stats.deposits?.count, color: 'text-green-500' },
-                  { label: 'Bets Placed', val: stats.bets?.amount||0, count: stats.bets?.count, color: 'text-blue-500' }].map(r => (
-                  <div key={r.label} className="flex justify-between items-center p-3 bg-dark-700 rounded-lg">
-                    <span className="text-sm text-gray-400">{r.label}</span>
-                    <div className="text-right"><p className={`font-semibold ${r.color}`}>{fmt(r.val)}</p><p className="text-xs text-gray-500">{(r.count||0).toLocaleString()} txns</p></div>
-                  </div>
-                ))}
+                <Line label="Board games: settled stakes" val={stats.revenue.boardGames.settledStakes} note={`${stats.revenue.boardGames.bets.toLocaleString()} bets`} tone="text-blue-500" />
+                <Line label="Board games: paid to winners" val={-stats.revenue.boardGames.payouts} note={`${stats.revenue.boardGames.wins.toLocaleString()} wins`} tone="text-orange-500" />
+                <Line label="Board games: kept" val={stats.revenue.boardGames.amount} note={`includes ${fmt(stats.revenue.winningsFees)} winnings fee`} tone="text-green-500" />
+                <Line label="Casino games: kept" val={stats.revenue.casino} tone="text-green-500" />
               </div>
             </div>
             <div className="card">
-              <h3 className="text-base font-semibold mb-3">Expenses</h3>
+              <h3 className="text-base font-semibold mb-1">Costs</h3>
+              <p className="text-xs text-gray-500 mb-3">Paid out of the platform's own tokens.</p>
               <div className="space-y-2">
-                {[{ label: 'Withdrawals', val: stats.withdrawals?.amount||0, count: stats.withdrawals?.count, color: 'text-red-500' },
-                  { label: 'Bet Payouts', val: stats.payouts?.amount||0, count: stats.payouts?.count, color: 'text-orange-500' }].map(r => (
-                  <div key={r.label} className="flex justify-between items-center p-3 bg-dark-700 rounded-lg">
-                    <span className="text-sm text-gray-400">{r.label}</span>
-                    <div className="text-right"><p className={`font-semibold ${r.color}`}>{fmt(r.val)}</p><p className="text-xs text-gray-500">{(r.count||0).toLocaleString()} txns</p></div>
-                  </div>
-                ))}
+                <Line label="Referral bonuses" val={stats.costs.referralBonuses.amount} note={`${stats.costs.referralBonuses.count} paid`} tone="text-red-500" />
+                <Line label="First deposit bonuses" val={stats.costs.firstDepositBonuses.amount} note={`${stats.costs.firstDepositBonuses.count} paid`} tone="text-red-500" />
+                <Line label="Team commission" val={stats.costs.teamCommission.amount} note={`${stats.costs.teamCommission.count} payments`} tone="text-red-500" />
               </div>
             </div>
           </div>
-
+          <div className="card">
+            <h3 className="text-base font-semibold mb-1">Money flow (not revenue)</h3>
+            <p className="text-xs text-gray-500 mb-3">Players' own money moving in and out, and stakes on rounds not yet settled.</p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <Line label="Deposits" val={stats.moneyFlow.deposits.amount} note={`${stats.moneyFlow.deposits.count} orders`} tone="text-gray-200" />
+              <Line label="Withdrawals" val={stats.moneyFlow.withdrawals.amount} note={`${stats.moneyFlow.withdrawals.count} orders`} tone="text-gray-200" />
+              <Line label="Stakes still riding" val={stats.openStakes} tone="text-gray-200" />
+            </div>
+          </div>
           {stats.byProvider?.length > 0 && (
             <div className="card">
               <h3 className="text-base font-semibold mb-3">Revenue by Game Provider</h3>
@@ -126,7 +149,7 @@ export const ProfitLoss: React.FC = () => {
                     <th className="pb-2 font-medium text-right">Rounds</th>
                   </tr></thead>
                   <tbody className="divide-y divide-dark-700">
-                    {stats.byProvider.map((p: any) => (
+                    {stats.byProvider.map((p) => (
                       <tr key={p.key} className="hover:bg-dark-700/50">
                         <td className="py-2.5 font-medium capitalize">{p.key}</td>
                         <td className="py-2.5 text-right text-blue-400">{fmt(p.bets)}</td>
@@ -143,8 +166,8 @@ export const ProfitLoss: React.FC = () => {
 
           <div className="card bg-linear-to-r from-gold-500/10 to-gold-600/10 border-gold-500/30">
             <div className="grid grid-cols-3 gap-6 text-center">
-              <div><p className="text-xs text-gray-400 mb-1">Total In</p><p className="text-xl font-bold text-green-500">{fmt((stats.deposits?.amount||0)+(stats.bets?.amount||0))}</p></div>
-              <div><p className="text-xs text-gray-400 mb-1">Total Out</p><p className="text-xl font-bold text-red-500">{fmt((stats.withdrawals?.amount||0)+(stats.payouts?.amount||0))}</p></div>
+              <div><p className="text-xs text-gray-400 mb-1">Revenue</p><p className="text-xl font-bold text-green-500">{fmt(revenue)}</p></div>
+              <div><p className="text-xs text-gray-400 mb-1">Costs</p><p className="text-xl font-bold text-red-500">{fmt(stats.costs.total)}</p></div>
               <div><p className="text-xs text-gray-400 mb-1">Net Profit</p><p className={`text-2xl font-bold ${netPos ? 'text-gold-500' : 'text-red-400'}`}>{fmt(stats.netProfit)}</p></div>
             </div>
           </div>

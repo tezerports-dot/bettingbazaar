@@ -3540,10 +3540,10 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 316 |
+| Route declarations in `backend/**` | 325 |
 | Reachable with **no auth middleware** | 42 |
-| Staff routes carrying an **area** (permission key) | 172 |
-| Staff routes a sub-admin can **never** be given (full admin only) | 8 |
+| Staff routes carrying an **area** (permission key) | 180 |
+| Staff routes a sub-admin can **never** be given (full admin only) | 9 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.
@@ -3600,6 +3600,7 @@ new route and decide. Each of the three questions is defined in §2.
 - `DELETE /sub-admins/:subAdminId  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff-permissions  (backend/routes/admin/subadmins.admin.routes.js)`
+- `GET /staff.csv  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff/:userId  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /staff/:userId/reset-authenticator  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
@@ -3612,9 +3613,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 477 |
+| `pgQuery` call sites | 479 |
 | Parameters only (safe by construction) | 311 |
-| Interpolating into statement text (each needs a reading) | 158 |
+| Interpolating into statement text (each needs a reading) | 160 |
 | Statement text built elsewhere and passed in (each needs a reading) | 8 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
@@ -3634,7 +3635,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 153 | 0 | 0 |
-| `admin-panel` | 139 | 0 | 0 |
+| `admin-panel` | 141 | 0 | 0 |
 | `merchant-panel` | 65 | 0 | 0 |
 
 <!-- END GENERATED -->

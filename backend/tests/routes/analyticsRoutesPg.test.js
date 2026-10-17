@@ -79,13 +79,13 @@ describePg('admin analytics routes', () => {
     expect(d1.finance.today.payouts - d0.finance.today.payouts).toBeCloseTo(95, 2);
     expect(d1.finance.today.netProfit - d0.finance.today.netProfit).toBeCloseTo(78, 2);
 
-    // Profit & Loss.
-    expect(f1.bets.amount - f0.bets.amount).toBeCloseTo(173, 2);
-    expect(f1.bets.count - f0.bets.count).toBe(2);
-    expect(f1.payouts.amount - f0.payouts.amount).toBeCloseTo(95, 2);
-    expect(f1.netProfit - f0.netProfit).toBeCloseTo(78, 2);
-    expect(f1.totalRevenue - f0.totalRevenue).toBeCloseTo(173, 2);
-    expect(f1.totalExpenses - f0.totalExpenses).toBeCloseTo(95, 2);
+    // Profit & Loss: only SETTLED bets count, the pending ₹123 is still riding.
+    // p2 staked 50 and was paid 95, so the house kept −45 on the board.
+    expect(f1.revenue.boardGames.settledStakes - f0.revenue.boardGames.settledStakes).toBeCloseTo(50, 2);
+    expect(f1.revenue.boardGames.payouts - f0.revenue.boardGames.payouts).toBeCloseTo(95, 2);
+    expect(f1.revenue.boardGames.amount - f0.revenue.boardGames.amount).toBeCloseTo(-45, 2);
+    expect(f1.openStakes - f0.openStakes).toBeCloseTo(123, 2);
+    expect(f1.netProfit - f0.netProfit).toBeCloseTo(-45, 2);
   });
 
   it('refuses a sub-admin who was not given analytics (the opposite case)', async () => {

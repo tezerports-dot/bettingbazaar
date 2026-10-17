@@ -905,6 +905,95 @@ export async function platformFinance({ from = null, to = null } = {}) {
 }
 
 /**
+ * The platform's profit and loss over the IST days `from`..`to` (both
+ * `YYYY-MM-DD`, inclusive; either may be null), in one statement.
+ *
+ * Revenue is what the house KEPT, not money that passed through it:
+ *   board games  settled player stakes (WON or LOST) minus what winners were
+ *                paid (`payout_paise` is net of the winnings fee, so the fee
+ *                is inside this figure; `winningsFees` shows it apart);
+ *   casino       bets minus wins minus refunds (`game_transactions`).
+ * Costs are what the platform paid out of its own holding:
+ *   referral and first-deposit bonuses (`promo_grants`), and team commission
+ *   (`team_commissions`, paid from MERCHANT_BONUS_POOL into team pools).
+ * Deposits and withdrawals are money moving in and out, shown beside it and
+ * never counted as revenue: the screen this feeds once called deposits revenue.
+ *
+ * Settled bets count on the day they settled; a stake still riding is not yet
+ * earned and is reported apart as `openStakes`.
+ */
+export async function profitAndLoss({ from = null, to = null } = {}) {
+  const params = [from, to];
+  const inWindow = (col) => `($1::date IS NULL OR ${col} >= ($1::date)::timestamp AT TIME ZONE 'Asia/Kolkata')
+      AND ($2::date IS NULL OR ${col} < ($2::date + 1)::timestamp AT TIME ZONE 'Asia/Kolkata')`;
+  const { rows } = await pgQuery(
+    `SELECT
+       (SELECT COALESCE(SUM(stake_paise), 0) FROM bets
+         WHERE NOT is_phantom AND status IN ('WON', 'LOST') AND ${inWindow('settled_at')}) AS settled_stakes,
+       (SELECT COUNT(*) FROM bets
+         WHERE NOT is_phantom AND status IN ('WON', 'LOST') AND ${inWindow('settled_at')}) AS settled_bets,
+       (SELECT COALESCE(SUM(payout_paise), 0) FROM bets
+         WHERE NOT is_phantom AND status = 'WON' AND ${inWindow('settled_at')}) AS payouts,
+       (SELECT COUNT(*) FROM bets
+         WHERE NOT is_phantom AND status = 'WON' AND ${inWindow('settled_at')}) AS wins,
+       (SELECT COALESCE(SUM(platform_fee_paise), 0) FROM bets
+         WHERE NOT is_phantom AND status = 'WON' AND ${inWindow('settled_at')}) AS winnings_fees,
+       (SELECT COALESCE(SUM(stake_paise), 0) FROM bets
+         WHERE NOT is_phantom AND status = 'PENDING' AND ${inWindow('placed_at')}) AS open_stakes,
+       (SELECT COALESCE(SUM(CASE WHEN tx_type = 'BET' THEN amount_paise
+                                 WHEN tx_type IN ('WIN', 'REFUND', 'ROLLBACK') THEN -amount_paise
+                                 ELSE 0 END), 0)
+          FROM game_transactions WHERE ${inWindow('created_at')}) AS casino_ggr,
+       (SELECT COALESCE(SUM(amount_paise), 0) FROM promo_grants
+         WHERE source = 'REFERRAL' AND ${inWindow('created_at')}) AS referral_bonuses,
+       (SELECT COUNT(*) FROM promo_grants
+         WHERE source = 'REFERRAL' AND ${inWindow('created_at')}) AS referral_count,
+       (SELECT COALESCE(SUM(amount_paise), 0) FROM promo_grants
+         WHERE source = 'FIRST_DEPOSIT' AND ${inWindow('created_at')}) AS first_deposit_bonuses,
+       (SELECT COUNT(*) FROM promo_grants
+         WHERE source = 'FIRST_DEPOSIT' AND ${inWindow('created_at')}) AS first_deposit_count,
+       (SELECT COALESCE(SUM(commission_paise), 0) FROM team_commissions
+         WHERE ${inWindow('created_at')}) AS team_commission,
+       (SELECT COUNT(*) FROM team_commissions WHERE ${inWindow('created_at')}) AS commission_count,
+       -- TOKENS, across rails (trap 15).
+       (SELECT COALESCE(SUM(token_amount_paise), 0) FROM order_states
+         WHERE order_type = 'DEPOSIT' AND state = 'COMPLETED' AND ${inWindow('completed_at')}) AS deposits,
+       (SELECT COUNT(*) FROM order_states
+         WHERE order_type = 'DEPOSIT' AND state = 'COMPLETED' AND ${inWindow('completed_at')}) AS deposit_count,
+       (SELECT COALESCE(SUM(token_amount_paise), 0) FROM order_states
+         WHERE order_type = 'WITHDRAWAL' AND state = 'COMPLETED' AND ${inWindow('completed_at')}) AS withdrawals,
+       (SELECT COUNT(*) FROM order_states
+         WHERE order_type = 'WITHDRAWAL' AND state = 'COMPLETED' AND ${inWindow('completed_at')}) AS withdrawal_count`,
+    params, 'stats_profit_and_loss',
+  );
+  const r = rows[0];
+  const boardGgr = Number(r.settled_stakes) - Number(r.payouts);
+  const revenue = boardGgr + Number(r.casino_ggr);
+  const costs = Number(r.referral_bonuses) + Number(r.first_deposit_bonuses) + Number(r.team_commission);
+  return {
+    revenue: {
+      boardGames: { amount: rupees(boardGgr), settledStakes: rupees(r.settled_stakes), payouts: rupees(r.payouts),
+                    bets: int(r.settled_bets), wins: int(r.wins) },
+      winningsFees: rupees(r.winnings_fees),
+      casino: rupees(r.casino_ggr),
+      total: rupees(revenue),
+    },
+    costs: {
+      referralBonuses: { amount: rupees(r.referral_bonuses), count: int(r.referral_count) },
+      firstDepositBonuses: { amount: rupees(r.first_deposit_bonuses), count: int(r.first_deposit_count) },
+      teamCommission: { amount: rupees(r.team_commission), count: int(r.commission_count) },
+      total: rupees(costs),
+    },
+    netProfit: rupees(revenue - costs),
+    openStakes: rupees(r.open_stakes),
+    moneyFlow: {
+      deposits: { amount: rupees(r.deposits), count: int(r.deposit_count) },
+      withdrawals: { amount: rupees(r.withdrawals), count: int(r.withdrawal_count) },
+    },
+  };
+}
+
+/**
  * Staked, paid out and deposited per IST day, with no gaps.
  *
  * `generate_series` supplies every day in the window and the totals LEFT JOIN

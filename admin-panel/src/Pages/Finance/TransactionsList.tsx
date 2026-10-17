@@ -5,7 +5,8 @@ import { Kpis, Toolbar, AvatarCell } from '../../components/design';
 import { DateRangePicker } from '../../components/DateRangePicker';
 import { usePagination } from '../../hooks/usePagination';
 import { formatters } from '../../utils/formatters';
-import api from '../../services/api';
+import api, { downloadCsv, cleanParams } from '../../services/api';
+import { Download } from 'lucide-react';
 import type { Transaction } from '../../types';
 import toast from 'react-hot-toast';
 
@@ -42,6 +43,17 @@ export const TransactionsList: React.FC = () => {
       setIsLoading(false);
     }
   }, [page, limit, typeFilter, fieldFilter, startDate, endDate]);
+
+  // The same filtered ledger rows, every page (`GET /api/admin/transactions.csv`).
+  const exportCsv = async () => {
+    try {
+      await downloadCsv('/api/admin/transactions.csv', cleanParams({
+        type: typeFilter === 'ALL' ? undefined : typeFilter,
+        field: fieldFilter === 'ALL' ? undefined : fieldFilter,
+        startDate, endDate,
+      }), 'transactions.csv');
+    } catch { toast.error('Export failed'); }
+  };
 
   useEffect(() => { loadTransactions(); }, [loadTransactions]);
 
@@ -185,6 +197,9 @@ export const TransactionsList: React.FC = () => {
           <option value="tokenBalance">Tokens</option>
         </select>
         <DateRangePicker filters="transactions" startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
+        <button type="button" onClick={() => void exportCsv()} className="btn-secondary text-sm flex items-center gap-1.5">
+          <Download size={14} />Download CSV
+        </button>
       </div>
 
       {/* Table */}
