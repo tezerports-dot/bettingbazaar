@@ -55,7 +55,7 @@ const OddsButton: React.FC<{ option: CricketOption; poll: CricketPoll; onPick: (
         flex: '1 1 92px', minWidth: 0, padding: '8px 6px', borderRadius: 10, cursor: open ? 'pointer' : 'default',
         border: `1px solid ${won ? 'var(--green)' : 'var(--line2)'}`,
         background: won ? 'color-mix(in srgb,var(--green) 18%,var(--surface2))' : 'var(--surface2)',
-        opacity: open || won ? 1 : 0.55, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+        opacity: open || won ? 1 : 0.55, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'space-between', gap: 2,
       }}>
       <span style={{ fontSize: 11, lineHeight: 1.25, color: 'var(--text2)', textAlign: 'center', overflowWrap: 'anywhere', maxWidth: '100%' }}>{option.label}</span>
       <span style={{ fontSize: 15, fontWeight: 800, color: won ? 'var(--green)' : 'var(--gold-ink)' }}>{open ? odds(option.oddsX100) : won ? 'Won' : '—'}</span>
@@ -74,14 +74,37 @@ const PollCard: React.FC<{ poll: CricketPoll | null; tag: string; placeholder?: 
         <>
           {poll.status === 'VOID' && <p style={{ margin: '0 0 6px', fontSize: 11, color: 'var(--text3)' }}>Void: {poll.voidReason}. Stakes returned.</p>}
           {poll.status === 'CLOSED' && <p style={{ margin: '0 0 6px', fontSize: 11, color: 'var(--text3)' }}>Bets closed. The result settles it.</p>}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {poll.options.map((o) => <OddsButton key={o.key} option={o} poll={poll} onPick={onPick} />)}
-          </div>
+          {PLAYER_KINDS.has(poll.kind)
+            ? byTeam(poll.options).map(([team, options]) => (
+              <div key={team} style={{ marginBottom: 8 }}>
+                <div style={{ ...capLabel, fontSize: 10, margin: '2px 0 6px' }}>{team}</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(96px,1fr))', gap: 6 }}>
+                  {options.map((o) => <OddsButton key={o.key} option={o} poll={poll} onPick={onPick} />)}
+                </div>
+              </div>
+            ))
+            : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {poll.options.map((o) => <OddsButton key={o.key} option={o} poll={poll} onPick={onPick} />)}
+              </div>
+            )}
         </>
       )
       : <p style={{ margin: 0, fontSize: 12, color: 'var(--text3)' }}>Opens when the live one is decided.</p>}
   </div>
 );
+
+/** The polls with one option per player, labelled "Name (Team)" by the server: drawn by team, name only. */
+const PLAYER_KINDS = new Set(['MOM', 'TOP_BATSMAN', 'TOP_BOWLER']);
+function byTeam(options: CricketOption[]): [string, CricketOption[]][] {
+  const groups = new Map<string, CricketOption[]>();
+  for (const o of options) {
+    const m = /^(.*) \(([^()]*)\)$/.exec(o.label);
+    const team = m ? m[2] : '';
+    groups.set(team, [...(groups.get(team) ?? []), m ? { ...o, label: m[1] } : o]);
+  }
+  return [...groups.entries()];
+}
 
 /** For next ball and overs: the last settled, the live one and the next (owner, 2026-10-18). */
 function threeOf(polls: CricketPoll[], kind: 'BALL' | 'OVER') {
@@ -244,14 +267,15 @@ const Positions: React.FC<{ match: CricketMatch; bets: CricketBet[]; onClaimed: 
         <div>
           <div style={capLabel}>Your positions on this match</div>
           {claimableRows.length > 0 && (
-            <div style={{ fontSize: 20, fontWeight: 800, color: net >= 0 ? 'var(--green)' : 'var(--red)' }} aria-live="polite">
-              {net >= 0 ? '+' : ''}{tokens(net)} <span style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 600 }}>if you claim now (live estimate)</span>
+            <div aria-live="polite">
+              <div style={{ fontSize: 20, fontWeight: 800, color: net >= 0 ? 'var(--green)' : 'var(--red)' }}>{net >= 0 ? '+' : ''}{tokens(net)}</div>
+              <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 600 }}>profit or loss if you claim everything now (live estimate)</div>
             </div>
           )}
         </div>
         {claimableRows.length > 0 && !quote && (
           <button type="button" onClick={() => getQuote()} disabled={busy !== null}
-            style={{ ...goldButton, width: 'auto', padding: '10px 16px', fontSize: 13 }}>{busy === 'quote' ? 'Checking…' : 'Claim all'}</button>
+            style={{ ...goldButton, width: 'auto', padding: '10px 16px', fontSize: 13, whiteSpace: 'nowrap', flexShrink: 0 }}>{busy === 'quote' ? 'Checking…' : 'Claim all'}</button>
         )}
       </div>
       {quote && (
@@ -278,7 +302,7 @@ const Positions: React.FC<{ match: CricketMatch; bets: CricketBet[]; onClaimed: 
       <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
         {groups.map(({ pollId, title, items }) => {
           const claimIds = items.filter((b) => rows.find((r) => r.b.betId === b.betId)?.claimable).map((b) => b.betId);
-          const groupNet = rows.filter((r) => r.claimable && r.b.pollId === pollId).reduce((t, r) => t + (r.value ?? 0) - r.b.stakePaise, 0);
+          const groupValue = rows.filter((r) => r.claimable && r.b.pollId === pollId).reduce((t, r) => t + (r.value ?? 0), 0);
           return (
             <div key={pollId} style={{ borderTop: '1px solid var(--line)', paddingTop: 8 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 4 }}>
@@ -286,7 +310,7 @@ const Positions: React.FC<{ match: CricketMatch; bets: CricketBet[]; onClaimed: 
                 {claimIds.length > 0 && !quote && (
                   <button type="button" onClick={() => getQuote(claimIds)} disabled={busy !== null} aria-label={`Claim ${title}`}
                     style={{ padding: '5px 12px', borderRadius: 999, border: '1px solid var(--gold)', background: 'transparent', color: 'var(--gold-ink)', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                    Claim {groupNet >= 0 ? '+' : ''}{tokens(groupNet)}
+                    Claim {tokens(groupValue)}
                   </button>
                 )}
               </div>
@@ -354,7 +378,7 @@ const MatchHeader: React.FC<{ m: CricketMatch; onClick?: () => void }> = ({ m, o
 const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
   <section style={{ marginBottom: 16 }}>
     <h2 style={{ ...capLabel, margin: '0 0 8px' }}>{title}</h2>
-    <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,300px),1fr))' }}>{children}</div>
+    <div style={{ display: 'grid', gap: 8, alignItems: 'start', gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,300px),1fr))' }}>{children}</div>
   </section>
 );
 
@@ -492,7 +516,7 @@ const ComingSoon: React.FC = () => {
   );
   if (imageUrl && !broken) {
     return (
-      <div role="dialog" aria-label="Cricket is coming soon" style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'var(--bg)' }}>
+      <div role="dialog" aria-label="Cricket is coming soon" style={{ position: 'fixed', inset: 0, zIndex: 110, background: 'var(--bg)' }}>
         {back}
         <img src={imageUrl} alt="Cricket is coming soon" onError={() => setBroken(true)}
           style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
@@ -502,10 +526,10 @@ const ComingSoon: React.FC = () => {
   // No picture set: the same full screen, drawn in the site's own theme.
   return (
     <div role="dialog" aria-label="Cricket is coming soon"
-      style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'var(--app-bg)', backgroundColor: 'var(--bg)', overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '72px 20px 32px' }}>
+      style={{ position: 'fixed', inset: 0, zIndex: 110, background: 'var(--app-bg)', backgroundColor: 'var(--bg)', overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '72px 20px 32px' }}>
       {back}
       <div style={{ width: '100%', maxWidth: 420, textAlign: 'center' }}>
-        <img src={headerLogo} alt="" style={{ height: 44, maxWidth: '80%', objectFit: 'contain', marginBottom: 28 }} onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+        <img src={headerLogo} alt="" style={{ display: 'block', height: 44, maxWidth: '80%', objectFit: 'contain', margin: '0 auto 28px' }} onError={(e) => { e.currentTarget.style.display = 'none'; }} />
         <div aria-hidden style={{ width: 132, height: 132, margin: '0 auto', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 64,
           background: 'radial-gradient(circle at 50% 40%, rgba(var(--brand-primary-rgb), .28), rgba(var(--brand-primary-rgb), .04) 70%)',
           border: '1px solid var(--line2)', boxShadow: '0 0 60px -10px var(--glow)' }}>🏏</div>
