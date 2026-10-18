@@ -25,7 +25,7 @@ import toast from 'react-hot-toast';
 
 interface Choices { routingPriority: { MIN: number; MAX: number; DEFAULT: number }; supervisorRails: SupervisorRail[] }
 
-/** UI names for the server's supervisor rails (teams.js SUPERVISOR_RAILS). §11. */
+/** UI names for the server's supervisor rails (teams.js SUPERVISOR_RAILS; USDT only on an old team). §11. */
 const RAIL_LABEL: Record<string, string> = { CASH: 'Cash (ATM QR)', UPI_BANK: 'UPI / bank', USDT: 'USDT' };
 
 const errorOf = (e: any, fallback: string) => e?.response?.data?.message || fallback;

@@ -113,7 +113,7 @@ export function merchantDisplayRef(merchant) {
  *
  * The PLAYER does not. `playerOrderView.js` is the only shape that reaches them
  * and it chooses what they need from here, once the member has accepted: the
- * member's bank account on a UPI_BANK buy, the order chain's address on USDT,
+ * member's bank account on a UPI_BANK buy (a USDT buy has no merchant at all),
  * an opaque reference and the deadline (a cash buy is paid through the ATM QR
  * on the order, never through this row). Before that projection existed this
  * whole object was sent as-is, so every deposit handed the player the
@@ -121,7 +121,7 @@ export function merchantDisplayRef(merchant) {
  * account-holder name. The screen rendered the handle in a copy-to-clipboard
  * row.
  */
-function buildMerchantSnapshot(merchant, expiresAt, order = null, payAccount = null) {
+function buildMerchantSnapshot(merchant, expiresAt, payAccount = null) {
   const merchantRef = merchantDisplayRef(merchant);
   // ── A merchant-account buy (owner, 2026-10-11) ──────────────────────────
   // The player pays the payment account routing chose for this order
@@ -279,7 +279,7 @@ async function assignToMerchantAccount(order, cfg, barredMerchantIds) {
         assignedAt: now,
         processingAt: now,
         expiresAt,
-        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order, payAccount),
+        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, payAccount),
       };
     },
   });
@@ -303,7 +303,7 @@ async function assignToAgents(order, cfg, barredMerchantIds) {
         assignedAt: now,
         processingAt: now,
         expiresAt,
-        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order),
+        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt),
       };
     },
   });

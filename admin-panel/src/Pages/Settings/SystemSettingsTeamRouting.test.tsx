@@ -44,11 +44,12 @@ const served = {
     maxConsecutiveMerchantExpiries: 4,
   },
   teamRouting: {
-    concurrency: { CASH: 2, UPI_BANK: 5, USDT: 4 },
+    concurrency: { CASH: 2, UPI_BANK: 5 },
     assignmentWaitSeconds: 1200,
-    processingWindowSeconds: { CASH: 600, UPI_BANK: 1200, USDT: 1800 },
+    processingWindowSeconds: { CASH: 600, UPI_BANK: 1200 },
     utrSubmitSeconds: 90,
   },
+  usdtDeposits: { paymentWindowMinutes: 45, confirmations: 20, lateWatchHours: 96 },
 };
 
 const field = (id: string) => document.getElementById(id) as HTMLInputElement;
@@ -67,12 +68,27 @@ describe('System Settings — team routing', () => {
   it('shows the served per-rail caps and windows', async () => {
     await paint();
     expect(field('tr-conc-CASH').value).toBe('2');
-    expect(field('tr-conc-USDT').value).toBe('4');
+    // USDT buys go to the platform, never to a team (owner, 2026-10-18).
+    expect(field('tr-conc-USDT')).toBeNull();
+    expect(field('tr-proc-USDT')).toBeNull();
     expect(field('tr-proc-CASH').value).toBe('600');
-    expect(field('tr-proc-USDT').value).toBe('1800');
     expect(field('tr-assignmentWaitSeconds').value).toBe('1200');
     expect(field('tr-utrSubmitSeconds').value).toBe('90');
     expect(field('mol-utrAfterPaidMinutes').value).toBe('16');
+  });
+
+  it('shows and sends the served USDT deposit settings, and refuses one out of range', async () => {
+    await paint();
+    expect(field('usdt-deposits-paymentWindowMinutes').value).toBe('45');
+    expect(field('usdt-deposits-confirmations').value).toBe('20');
+    expect(field('usdt-deposits-lateWatchHours').value).toBe('96');
+    fireEvent.change(field('usdt-deposits-confirmations'), { target: { value: '2' } });
+    expect(saveButton()).toBeDisabled();
+    fireEvent.change(field('usdt-deposits-confirmations'), { target: { value: '30' } });
+    updateConfig.mockResolvedValue({ success: true });
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(updateConfig).toHaveBeenCalled());
+    expect(updateConfig.mock.calls[0][0].usdtDeposits).toEqual({ paymentWindowMinutes: 45, confirmations: 30, lateWatchHours: 96 });
   });
 
   it('offers none of the removed settings and no per-rail dispute window', async () => {
@@ -98,7 +114,7 @@ describe('System Settings — team routing', () => {
     fireEvent.click(saveButton());
     await waitFor(() => expect(updateConfig).toHaveBeenCalled());
     const body = updateConfig.mock.calls[0][0];
-    expect(body.teamRouting).toEqual({ ...served.teamRouting, concurrency: { CASH: 2, UPI_BANK: 7, USDT: 4 } });
+    expect(body.teamRouting).toEqual({ ...served.teamRouting, concurrency: { CASH: 2, UPI_BANK: 7 } });
     expect(body.teamRouting).not.toHaveProperty('disputeWindowSeconds');
     expect(body.withdrawalHoldMinutes).toBe(90);
     expect(body.rejectedBuyDisputeMinutes).toBe(20);

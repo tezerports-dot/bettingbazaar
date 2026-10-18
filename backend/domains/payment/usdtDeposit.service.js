@@ -14,7 +14,7 @@
 import { db } from '#db';
 import { getSystemConfig } from '#db/repositories/config.js';
 import {
-  configuredAccountKey, keyIdOf, deriveDepositAddress, latestBlock, usdtTransfersTo, MICRO_PER_USDT,
+  configuredAccountKey, keyIdOf, deriveDepositAddress, latestBlock, usdtTransfersTo, usdtDepositsConfigured, MICRO_PER_USDT,
 } from './usdtBsc.js';
 import { completeUsdtBuy } from '../wallet/walletAuthority.service.js';
 import { emitOrderUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
@@ -125,8 +125,7 @@ async function reportLateTransfer(orderId, transfer, state) {
  * after the head was read, which this tick does not reach; the next one does.
  */
 export async function watchUsdtDeposits() {
-  try { configuredAccountKey(); } catch { return { skipped: 'not_configured' }; }
-  if (!String(process.env.BSC_RPC_URL ?? '').trim()) return { skipped: 'not_configured' };
+  if (!usdtDepositsConfigured()) return { skipped: 'not_configured' };
 
   const { confirmations, lateWatchHours } = usdtDepositSettings(await getSystemConfig());
   const touched = new Set();
@@ -186,11 +185,8 @@ export async function watchUsdtDeposits() {
 /** The watcher's health for the admin page: the cursor and how far behind it is. */
 export async function watcherStatus() {
   const cursor = await db.usdtDeposits.readCursor();
-  let configured = true;
-  try { configuredAccountKey(); } catch { configured = false; }
-  if (!String(process.env.BSC_RPC_URL ?? '').trim()) configured = false;
   return {
-    configured,
+    configured: usdtDepositsConfigured(),
     nextBlock: cursor?.nextBlock ?? null,
     headBlock: cursor?.headBlock ?? null,
     lastOkAt: cursor?.lastOkAt ?? null,

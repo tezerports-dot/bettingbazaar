@@ -3540,7 +3540,7 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 330 |
+| Route declarations in `backend/**` | 336 |
 | Reachable with **no auth middleware** | 42 |
 | Staff routes carrying an **area** (permission key) | 184 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 9 |
@@ -3613,9 +3613,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 488 |
-| Parameters only (safe by construction) | 317 |
-| Interpolating into statement text (each needs a reading) | 163 |
+| `pgQuery` call sites | 503 |
+| Parameters only (safe by construction) | 330 |
+| Interpolating into statement text (each needs a reading) | 165 |
 | Statement text built elsewhere and passed in (each needs a reading) | 8 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
@@ -3635,7 +3635,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 155 | 0 | 0 |
-| `admin-panel` | 142 | 0 | 0 |
+| `admin-panel` | 144 | 0 | 0 |
 | `merchant-panel` | 65 | 0 | 0 |
 
 <!-- END GENERATED -->

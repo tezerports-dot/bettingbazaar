@@ -371,7 +371,7 @@ async function assertBuyIsLegal({ userId, tokenAmount, usdtAmount, currency, cfg
   if (open > 0) {
     throw Object.assign(
       new Error(currency === MERCHANT_CURRENCY.USDT
-        ? 'You already have a USDT purchase in progress. Finish or cancel it before starting another.'
+        ? 'You already have a USDT purchase in progress. Pay it, or wait for it to expire, before starting another.'
         : 'You already have a purchase in progress. Finish or cancel it before starting another.'),
       { status: 409, code: 'BUY_ALREADY_OPEN' },
     );

@@ -1217,6 +1217,39 @@ admin-editable), and the tokens follow from the frozen rate; before 2d it was
 one of three token sizes and the USDT figure followed, so a player could not
 ask for a round USDT amount.
 
+**Paid to the platform, BSC only (owner, 2026-10-18).** Everything above about
+merchants holding addresses per chain, the player picking a network and the
+merchant checking a transaction id described the agent rail, which is gone. The
+owner asked first for "payment addresses with pre filled amount and auto verify
+once the payment arrives", chose platform-held addresses over agents, then "BSC
+only thus we will no longer need to pay high fees and we can do per order
+sweep". So:
+
+- **One address per order**, derived from an account xpub the server holds. A
+  per-order address is what makes auto-verification possible without asking the
+  player for anything: the address names the order, so a transfer arriving
+  there needs no hash typed, no memo and no amount matching between players.
+- **No private key on a server.** The xpub can only watch; a breach leaks which
+  addresses are ours, never the coins. The recovery phrase lives on the owner's
+  machine, used only by `scripts/usdt-sweep.mjs`, which derives each address
+  again and refuses a line whose address does not match its index.
+- **BSC, not Tron.** A sweep costs gas paid from the platform's own BNB (the
+  player pays only their own send). On BSC that is a fraction of a cent per
+  transfer; on Tron an empty address costs several TRX of energy per sweep,
+  which per-order sweeping would have paid every time.
+- **Flash USDT and fake tokens.** Only Transfer logs of the real contract count,
+  only once they are `confirmations` deep (a removed log is dropped), only the
+  sum at the order's own address, and each hash is claimed once (§27). A wallet
+  screenshot, a hash the player sends, a token named USDT from another contract,
+  or a "flash" balance that never moved on chain credits nothing. The residual
+  trust is the BSC node behind `BSC_RPC_URL`.
+- **Late or wrong amounts go to a person, never back to the player by code.**
+  Refunding on chain needs the key the server does not have, and an automatic
+  credit after the window would sell tokens at a rate the platform no longer
+  offers.
+- **No commission and no concurrency cap.** No team serves the order, so no team
+  is paid for it and no member's load limits it; one open USDT buy per player.
+
 ---
 
 ## 26. Team commission

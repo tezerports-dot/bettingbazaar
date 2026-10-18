@@ -209,9 +209,9 @@ gone: every order reaches a member through routing.</p>
 <thead><tr><th></th><th>CASH (<code>CASH_ATM</code>)</th><th>UPI_BANK (<code>P2P_UPI</code>)</th><th>USDT</th></tr></thead>
 <tbody>
 <tr><td>Sizes</td><td>500 · 1,000 · 5,000 · 10,000</td><td>50,000 · 1,00,000 · 5,00,000</td><td>100–10,000 USDT, step 100</td></tr>
-<tr><td>Player buys by</td><td>one <em>Pay ₹amount</em> button from the ATM QR the member scanned</td><td>bank transfer into the member's own account</td><td>sending to the member's address on the chosen chain</td></tr>
+<tr><td>Player buys by</td><td>one <em>Pay ₹amount</em> button from the ATM QR the member scanned</td><td>bank transfer into the member's own account</td><td>sending to an address the platform made for the order, on BNB Smart Chain (no member)</td></tr>
 <tr><td>Player sells by</td><td colspan="2">the member transfers to the player's bank account and gives the UTR</td><td>— no USDT sell</td></tr>
-<tr><td>Concurrency per member</td><td>1, and no sell while holding a buy</td><td>3</td><td>3</td></tr>
+<tr><td>Concurrency per member</td><td>1, and no sell while holding a buy</td><td>3</td><td>— not routed; credited by the watcher</td></tr>
 </tbody>
 </table></div>
 <p class="danger">There is <strong>no rail switch</strong>. <code>payment_mode_policies</code>,
@@ -233,7 +233,7 @@ every 30 seconds for whatever is still queued.</p>
 <li>the member ACTIVE, approved, online, not assignment-paused, switched on for this direction</li>
 <li>under the rail's cap (<code>SystemConfig.teamRouting.concurrency</code>)</li>
 <li>not barred from this order or this player (<code>order_rejections</code>)</li>
-<li>USDT: an address on <em>this</em> chain · UPI_BANK buy: holder, account number and IFSC on file</li>
+<li>UPI_BANK buy: holder, account number and IFSC on file (a USDT buy is never routed)</li>
 <li>a CASH buy: pressed <strong>Ready</strong> · a CASH sell: no open buy</li>
 <li>a buy: <strong>the team's pool covers it, proved by taking the hold, not by reading a balance</strong></li>
 </ul>
@@ -504,8 +504,7 @@ supervisor.</p>
 <div class="tablewrap"><table>
 <thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
 <tbody>
-<tr><td>Bank details on a USDT account</td><td>400</td><td>This is a USDT merchant account — bank details do not apply. Update the USDT wallet addresses instead.</td></tr>
-<tr><td>USDT address on an INR account</td><td>400</td><td>This is an INR merchant account — a USDT wallet address does not apply. Update the bank details instead.</td></tr>
+<tr><td>Bank details on an old USDT account</td><td>400</td><td>refused until an admin moves the account to INR (a merchant holds no USDT address since 2026-10-18)</td></tr>
 <tr><td>Nothing valid in the body</td><td>400</td><td>No valid profile fields provided.</td></tr>
 <tr><td>Malformed details</td><td>400</td><td>Those payment details are not in a valid format.</td></tr>
 <tr><td><strong>A mobile as the account number, a payments-bank IFSC, or a mobile in a name</strong></td><td>400</td><td>Those bank details contain a mobile number: … The other side of an order sees these details, so they cannot be used. Use an account at a regular bank, and the name as the bank has it.</td></tr>
@@ -695,7 +694,7 @@ account's own audience bot and grants choosing a password, never a session.</p>
 
 <h3>4.2 Buy tokens — <code>/wallet</code></h3>
 <p><code>WalletPage.tsx</code> with <code>OrderSizePicker.tsx</code> (INR) and
-<code>UsdtBuyPanel.tsx</code> (USDT, network first).
+<code>UsdtBuyPanel.tsx</code> (USDT on BNB Smart Chain: the order's own address, a QR, a countdown; nothing to submit).
 <code>POST /api/payment/deposit/create</code> and <code>/usdt/deposit/create</code>, each
 <code>authenticatePlayer</code> → <code>requireChannelMembership</code> → its limiter.</p>
 <div class="tablewrap"><table>
@@ -703,7 +702,8 @@ account's own audience bot and grants choosing a password, never a session.</p>
 <tbody>
 <tr><td>Not in the channel</td><td>403</td><td>the gate, with a join link</td></tr>
 <tr><td>Three buys in a row expired unpaid</td><td>429</td><td>Three of your orders in a row expired without payment, so new orders are paused until 14:35. Paying for an order clears this straight away. (<code>ORDER_COOL_OFF</code>)</td></tr>
-<tr><td>USDT with no network chosen</td><td>400</td><td>Choose the network you will send USDT on: TRC20 or BEP20. (<code>USDT_CHAIN_REQUIRED</code>)</td></tr>
+<tr><td>USDT on another network</td><td>400</td><td>USDT can only be sent on BNB Smart Chain (BEP-20). (<code>USDT_CHAIN_UNSUPPORTED</code>)</td></tr>
+<tr><td>USDT not set up on this server</td><td>503</td><td>USDT deposits are not available right now. Please try again later. (<code>USDT_DEPOSITS_UNAVAILABLE</code>)</td></tr>
 <tr><td>USDT off the step or bounds</td><td>400</td><td>A USDT purchase is 100 to 10,000 USDT, in steps of 100. (<code>NOT_A_USDT_AMOUNT</code>)</td></tr>
 <tr><td>Not an offered size</td><td>400</td><td>… tokens is not on offer to buy (or sell) right now. Choose one of … tokens. (<code>NOT_AN_ORDER_SIZE</code>, with the sizes)</td></tr>
 <tr><td>A buy already open</td><td>409</td><td>You already have a purchase in progress. Finish or cancel it before starting another. (<code>BUY_ALREADY_OPEN</code>)</td></tr>
@@ -715,15 +715,18 @@ account's own audience bot and grants choosing a password, never a session.</p>
 <div class="factbox">
 <p><strong>The quote is the contract.</strong> A USDT buy's tokens follow from the admin's
 rate at creation; <code>rate_used</code>, <code>fiat_amount_paise</code> and
-<code>usdt_chain</code> are frozen by trigger. The address and its network always travel
-together: USDT sent on the wrong chain is the one unrecoverable mistake here.</p>
+<code>usdt_chain</code> are frozen by trigger, and so is the order's own address. The address
+and its network always travel together: USDT sent on the wrong chain is the one
+unrecoverable mistake here. The order is credited by itself once the full amount is 15
+blocks deep (Admin › Settings › USDT Deposits); late or wrong amounts go to Admin › USDT
+Deposits, never back to the player by code.</p>
 </div>
 
 <h3>4.3 Paying for a buy</h3>
 <p>Until the member accepts, the card says <em>"Waiting for the member to accept…"</em>
 and shows nothing to pay. Then: the member's bank account with Copy buttons (UPI_BANK),
-one <em>Pay ₹amount</em> button once the member has scanned the ATM (CASH), or the address
-on the chosen chain (USDT).</p>
+one <em>Pay ₹amount</em> button once the member has scanned the ATM (CASH). A USDT buy
+shows its address at once and has no <em>I've paid</em> button: the chain is the proof.</p>
 <div class="tablewrap"><table>
 <thead><tr><th>Button</th><th>Route</th><th>Refusals</th></tr></thead>
 <tbody>
