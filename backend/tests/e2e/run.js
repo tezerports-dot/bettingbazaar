@@ -94,6 +94,17 @@ try {
   }
 } catch { /* nothing there, which is what this run needs */ }
 
+// ── A stand-in BNB Smart Chain node for the USDT watcher (s3) ─────────────
+// The server derives each USDT buy's address from a test xpub (BIP-39 vector
+// "abandon … about", which holds nothing) and reads the chain from this stub.
+// The stub's head starts past the watcher cursor the database already holds.
+const { pgQuery } = await import('#db/client.js');
+const cursor = await pgQuery(`SELECT next_block FROM usdt_chain_cursors WHERE chain = 'BEP20'`, [], 'e2e')
+  .then((r) => Number(r.rows[0]?.next_block ?? 0)).catch(() => 0);
+const bsc = await (await import('./bscStub.js')).startBscStub({ startBlock: cursor + 1 });
+process.env.USDT_BEP20_XPUB ||= 'xpub6DCoCpSuQZB2jawqnGMEPS63ePKWkwWPH4TU45Q7LPXWuNd8TMtVxRrgjtEshuqpK3mdhaWHPFsBngh5GFZaM6si3yZdUsT8ddYM3PwnATt';
+process.env.BSC_RPC_URL = bsc.url;
+
 const server = spawn(process.execPath, [join(ROOT, 'backend', 'server.js')], {
   cwd: ROOT,
   // BB_RATE_LIMIT_RELAX is pinned OFF: the pen-test scenario asserts the login
@@ -124,7 +135,7 @@ server.stdout.on('data', (d) => serverLog.push(String(d)));
 server.stderr.on('data', (d) => serverLog.push(String(d)));
 
 // The server is a child process; an exception here must not orphan it.
-const stop = () => { try { server.kill('SIGTERM'); } catch { /* already gone */ } };
+const stop = () => { try { server.kill('SIGTERM'); } catch { /* already gone */ } bsc.close(); };
 process.on('exit', stop);
 process.on('SIGINT', () => { stop(); process.exit(130); });
 
@@ -195,6 +206,7 @@ try {
     console.log(`\nWorkflow table: ${out}`);
   }
 } finally {
+  if (process.env.E2E_SERVER_LOG) console.log(serverLog.join('').split('\n').filter((l) => l.includes(process.env.E2E_SERVER_LOG)).join('\n'));
   stop();
 }
 process.exit(failed > 0 ? 1 : 0);

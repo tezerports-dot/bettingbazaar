@@ -27,7 +27,7 @@ import { pauseAssignment, suspendMerchant } from '#db/repositories/merchants.js'
 import { updateUser } from '#db/repositories/users.js';
 import { normaliseGrant, PERMISSION_KEYS } from '../../domains/identity/staffPermissions.js';
 import { hashPassword } from '../../domains/identity/password.util.js';
-import { seedPlayer, seedMerchant, seedTeam, seedAdmin, trc20, bep20 } from '../e2e/seed.js';
+import { seedPlayer, seedMerchant, seedTeam, seedAdmin } from '../e2e/seed.js';
 import { playerToken, merchantToken, adminToken } from '../e2e/harness.js';
 
 /** The admin panel caches what `/me` returned; a returning operator has it before first paint. */
@@ -149,10 +149,6 @@ export const PROFILES = {
   'merchant-upi': {
     what: 'an INR merchant in a working UPI/bank team',
     ...merchant({}, null, undefined, 'UPI_BANK'),
-  },
-  'merchant-usdt': {
-    what: 'a USDT merchant in a working USDT team, with an address on both chains',
-    ...merchant({ currency: 'USDT', usdtAddressTrc20: trc20(), usdtAddressBep20: bep20() }, null, undefined, 'USDT'),
   },
   'merchant-offline': {
     what: 'a cash-team merchant who is offline',

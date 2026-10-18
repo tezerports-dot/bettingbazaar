@@ -81,8 +81,9 @@ router.post('/deposit/create', authenticatePlayer, depositCreateLimiter, async (
  *
  * ── Why this is a separate route from `/deposit/create` ────────────────────
  * It is a different rail with different rules — priced in whole steps of 100
- * USDT, and a chain the player must choose — and the two are not
- * interchangeable. One route
+ * USDT, paid to an address the platform derives for the order on BNB Smart
+ * Chain and credited when the USDT arrives (owner, 2026-10-18) — and the two
+ * are not interchangeable. One route
  * branching on a body field would make "which rail am I on" a question every
  * reader of the handler has to answer, and the failure mode is a request that
  * silently lands on the wrong one.
@@ -101,11 +102,12 @@ router.post('/usdt/deposit/create',
         // In whole USDT — what the player sends (Step 2d). The tokens are the
         // server's to work out from the admin's rate, never the client's.
         usdtAmount: Number(req.body.usdtAmount),
-        usdtChain: req.body.usdtChain,
+        // Optional: BNB Smart Chain when absent, refused by name when another.
+        usdtChain: req.body.usdtChain ?? undefined,
         provider: 'USDT',
       });
       const profile = await switchToVip(req.user.userId);
-      res.json({ success: true, message: 'USDT purchase created. Waiting for a merchant.', ...result, profile });
+      res.json({ success: true, message: 'USDT purchase created. Send the USDT to the address shown.', ...result, profile });
     } catch (err) {
       return respondError(res, err, 'POST /payment/usdt/deposit/create');
     }

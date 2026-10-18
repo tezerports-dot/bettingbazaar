@@ -1,13 +1,14 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // ── Scenario 3: the USDT rail ───────────────────────────────────────────────
-// §25. A player buys PLATFORM TOKENS by sending USDT to a USDT merchant's own
-// wallet. The USDT never touches the platform: what the platform moves is the
-// token side of that trade, out of the serving TEAM's pool (Step 2c — a member
-// of a working team on the USDT rail serves it, and holds an address on the
-// order's chain).
+// §25. A player buys PLATFORM TOKENS by sending USDT on BNB Smart Chain to an
+// address the platform derived for that order alone (owner, 2026-10-18). No
+// merchant and no transaction hash: the server's chain watcher sees the
+// transfer (here on the stand-in node, `bscStub.js`) and credits the order.
 import { pgQuery } from '#db/client.js';
-import { seedPlayer, seedMerchant, seedTeam, seedAdmin, trc20, bep20, orderPoolTrail } from '../seed.js';
-import { playerToken, merchantToken, adminToken, GET, POST, PUT, check, note } from '../harness.js';
+import { seedPlayer, seedAdmin } from '../seed.js';
+import { playerToken, adminToken, GET, POST, PUT, check } from '../harness.js';
+import { sendUsdt } from '../bscStub.js';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const A = 'USDT';
 export default async function run() {
@@ -60,74 +61,51 @@ async function drivePricedRail() {
     String(rate), Number(rate) === 90,
     '§25: there is no fallback — 0 prices nothing and 1 sells 500 tokens for 500 USDT');
 
-  // Two members of one USDT team, each holding an address on ONE chain: `tron`
-  // on TRC-20, `bnb` on BEP-20. They are the only members online on the rail
-  // (`exclusive`), and the pool can cover the buy.
-  const tron = await seedMerchant({ currency: 'USDT', usdtAddressTrc20: trc20() });
-  const bnb  = await seedMerchant({ currency: 'USDT', usdtAddressBep20: bep20() });
-  const team = await seedTeam({ rail: 'USDT', poolTokens: 100000, include: [tron, bnb], online: [tron, bnb] });
-  // Routing's tie-break is least recently assigned, never-assigned first. So
-  // `tron` is marked as just assigned: if the chain guard were missing, `bnb`
-  // would be the member chosen, and the check below would catch it.
-  await pgQuery('UPDATE merchants SET last_assigned_at = now() WHERE merchant_id = $1', [tron.merchantId], 'e2e');
-  await pgQuery('UPDATE merchants SET last_assigned_at = NULL WHERE merchant_id = $1', [bnb.merchantId], 'e2e');
   const player = await seedPlayer({});
   const pT = playerToken(player);
 
   // ── A USDT buy is whole steps of 100 USDT, inside the bounds (Step 2d) ──
-  const odd = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 150, usdtChain: 'TRC20' });
+  const odd = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 150 });
   check(A, 'player', 'a USDT amount that is not a step of 100', '400 NOT_A_USDT_AMOUNT',
     `${odd.status} ${odd.body.code ?? ''} ${odd.body.message ?? ''}`,
     odd.status === 400 && odd.body.code === 'NOT_A_USDT_AMOUNT');
 
-  // ── The chain is required, and must be one that exists ───────────────────
-  const noChain = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 500 });
-  check(A, 'player', 'no chain named', '4xx', `${noChain.status} ${noChain.body.message ?? ''}`,
-    noChain.status >= 400 && noChain.status < 500,
-    '§25: USDT sent to the wrong chain is the one unrecoverable mistake this platform can make');
-
-  const badChain = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 500, usdtChain: 'ERC20' });
-  check(A, 'player', 'a chain the platform does not run', '4xx',
-    `${badChain.status} ${badChain.body.message ?? ''}`, badChain.status >= 400 && badChain.status < 500);
+  // ── One network, and any other is refused by name ────────────────────────
+  const tron = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 500, usdtChain: 'TRC20' });
+  check(A, 'player', 'a buy on Tron, which the platform no longer takes', '400 USDT_CHAIN_UNSUPPORTED',
+    `${tron.status} ${tron.body.code ?? ''}`, tron.status === 400 && tron.body.code === 'USDT_CHAIN_UNSUPPORTED',
+    '§25: USDT sent on the wrong network is the one unrecoverable mistake this platform can make');
 
   // ── A real USDT buy ──────────────────────────────────────────────────────
-  const created = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 500, usdtChain: 'TRC20' });
+  const created = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 500 });
   const order = created.body.order;
-  check(A, 'player', 'create a 500 USDT buy on TRC-20 (45,000 tokens at 90)', '200 with an order',
-    `${created.status} ${order?.orderId ?? JSON.stringify(created.body).slice(0,160)}`,
+  check(A, 'player', 'create a 500 USDT buy (45,000 tokens at 90)', '200 with an order',
+    `${created.status} ${order?.orderId ?? JSON.stringify(created.body).slice(0, 160)}`,
     created.status === 200 && !!order?.orderId);
   if (!order?.orderId) return;
   const oid = order.orderId;
+  const address = order.payTo?.usdtAddress;
+  check(A, 'player', 'the player is shown an address of its own AND its network', '0x… on BEP20',
+    `${address ?? 'none'} on ${order.payTo?.usdtChain ?? 'none'}`,
+    /^0x[0-9a-f]{40}$/.test(address ?? '') && order.payTo?.usdtChain === 'BEP20');
 
   // ── The quote is the contract, frozen on the row (§25) ───────────────────
-  const row = await pgQuery(
-    `SELECT currency, usdt_chain, rate_used, fiat_amount_paise, token_amount_paise, merchant_id
-       FROM order_states WHERE order_id = $1`, [oid], 'e2e');
-  const r = row.rows[0] ?? {};
-  check(A, 'system', 'the order is USDT on the chain the player picked', 'USDT / TRC20',
-    `${r.currency} / ${r.usdt_chain}`, r.currency === 'USDT' && r.usdt_chain === 'TRC20');
-  check(A, 'system', 'the rate is written WITH the order', 'a stored rate',
-    String(r.rate_used ?? 'NULL'), r.rate_used != null,
-    '§25: assignment may not re-price — an admin edit in between must not change an agreed purchase');
-
-  // Trap 15: `fiat_amount_paise` is in the ORDER's currency. On a USDT order it
-  // holds USDT, and `token_amount_paise` is what the ledger and any aggregate
-  // must use.
+  const r = (await pgQuery(
+    `SELECT state, currency, usdt_chain, usdt_pay_address, rate_used, fiat_amount_paise, token_amount_paise, merchant_id
+       FROM order_states WHERE order_id = $1`, [oid], 'e2e')).rows[0] ?? {};
+  check(A, 'system', 'the order is started at once, served by nobody', 'PROCESSING, no merchant',
+    `${r.state}, ${r.merchant_id ?? 'no merchant'}`, r.state === 'PROCESSING' && !r.merchant_id);
   check(A, 'system', 'the token amount is recorded separately from the USDT figure', '45,000 tokens',
     `tokens ${Number(r.token_amount_paise) / 100}, fiat ${Number(r.fiat_amount_paise) / 100}`,
     Number(r.token_amount_paise) === 4500000 && Number(r.fiat_amount_paise) === 50000,
     'trap 15: a 45,000-token USDT deposit must never be aggregated as ₹500');
 
-  // ── The chain is FROZEN by trigger ───────────────────────────────────────
-  let frozen = false; let why = '';
+  let frozen = false;
   try {
-    await pgQuery(`UPDATE order_states SET usdt_chain = 'BEP20' WHERE order_id = $1`, [oid], 'e2e');
-  } catch (e) { frozen = true; why = e.message.slice(0, 90); }
-  check(A, 'system', 'the chain cannot be changed after the order exists', 'the trigger refuses it',
-    frozen ? why : 'CHANGED — the snapshot now names the wrong chain', frozen,
-    '§25: the snapshot carries the address for that chain alone');
-
-  // ── And so is the quote ──────────────────────────────────────────────────
+    await pgQuery(`UPDATE order_states SET usdt_pay_address = $2 WHERE order_id = $1`, [oid, `0x${'1'.repeat(40)}`], 'e2e');
+  } catch { frozen = true; }
+  check(A, 'system', 'the address cannot be changed after the order exists', 'the trigger refuses it',
+    frozen ? 'refused' : 'CHANGED', frozen);
   let rateFrozen = false;
   try {
     await pgQuery(`UPDATE order_states SET rate_used = 1 WHERE order_id = $1`, [oid], 'e2e');
@@ -135,73 +113,35 @@ async function drivePricedRail() {
   check(A, 'system', 'the quote cannot be re-priced after the order exists', 'the trigger refuses it',
     rateFrozen ? 'refused' : 'RE-PRICED', rateFrozen);
 
-  // ── §24: the player is told where to pay and nothing about who ───────────
-  // Routing starts the order as it hands it out (no Accept, owner
-  // 2026-10-17), and a started USDT buy never changes hands, so the address
-  // shown is the one the order keeps.
-  const shown = (await GET(pT, `/api/payment/order/${oid}`)).body.order ?? {};
-  const tronAddress = (await pgQuery('SELECT usdt_address_trc20 FROM merchants WHERE merchant_id = $1', [tron.merchantId], 'e2e')).rows[0]?.usdt_address_trc20;
-  check(A, 'player', 'the started order gives the player the member\'s TRC-20 address', tronAddress ?? 'the seeded address',
-    shown.payTo?.usdtAddress ?? 'none', !!tronAddress && shown.payTo?.usdtAddress === tronAddress);
-  const view = JSON.stringify(shown);
-  check(A, 'player', 'the player is given an address AND its network together', 'both present',
-    /TRC20|Tron/i.test(view) ? 'chain named' : 'CHAIN MISSING', /TRC20|Tron/i.test(view),
-    '§25: an address on its own is the mistake');
+  // ── Nothing to submit ────────────────────────────────────────────────────
+  const hash = `0x${'a'.repeat(64)}`;
+  const submitted = await POST(pT, `/api/payment/order/${oid}/mark-paid`, { utrNumber: hash });
+  check(A, 'player', 'a transaction hash is not asked for, and is refused', '400 USDT_CONFIRMED_ON_CHAIN',
+    `${submitted.status} ${submitted.body.code ?? ''}`,
+    submitted.status === 400 && submitted.body.code === 'USDT_CONFIRMED_ON_CHAIN');
 
-  // ── A member with no address on THAT chain is not a candidate ────────────
-  const bnbClaim = await POST(merchantToken(bnb), `/api/merchant/reject/${oid}`, { reason: 'Not on my chain' });
-  check(A, 'merchant', 'a BEP-20-only teammate cannot act on this order', '4xx',
-    `${bnbClaim.status} ${bnbClaim.body.message ?? ''}`, bnbClaim.status >= 400,
-    'NOTE: once the order is assigned, ANY other member is refused, so this '
-    + 'does not on its own prove the CHAIN guard. §25 puts that guard in the '
-    + 'routing query (a row cannot see which chain an order asked for); the '
-    + 'assignment below landing on the TRC-20 holder is the evidence for it.');
-
-  // ── The team's pool holds TOKENS, not USDT (owner correction; trap 15) ───
-  // The USDT goes to the member's own wallet; the platform holds the 45,000
-  // TOKENS the player is buying in the team's pool, at assignment.
-  const hold = (await orderPoolTrail(oid)).entries.filter(e => e.kind === 'BUY_HOLD');
-  check(A, 'system', 'the team pool holds the TOKENS bought, not the USDT figure', `BUY_HOLD held +4500000 in ${team.teamId}`,
-    hold.map(e => `${e.kind} avail ${e.available}, held ${e.held}, team ${e.teamId}`).join('; ') || 'NO HOLD',
-    hold.length === 1 && hold[0].teamId === team.teamId && hold[0].held === 4500000 && hold[0].available === -4500000,
-    'trap 15: 45,000 tokens is 4,500,000 paise; the order\'s USDT figure is a different unit');
-
-  // The real proof of the chain guard: whoever the platform CHOSE holds an
-  // address on the order's chain. A merchant with only a BEP-20 address must
-  // never be selected for a TRC-20 order — the money would be unrecoverable.
-  check(A, 'system', 'the TRC-20 member is chosen over the BEP-20 one routing would otherwise prefer', tron.merchantId,
-    r.merchant_id ?? 'nobody', r.merchant_id === tron.merchantId);
-  if (r.merchant_id) {
-    const who = await pgQuery(
-      `SELECT usdt_address_trc20, usdt_address_bep20 FROM merchants WHERE merchant_id = $1`,
-      [r.merchant_id], 'e2e');
-    const w = who.rows[0] ?? {};
-    check(A, 'system', 'the chosen merchant holds an address on the ORDER\'s chain', 'a TRC-20 address',
-      w.usdt_address_trc20 ? 'TRC-20 address held' : 'NO TRC-20 ADDRESS',
-      !!w.usdt_address_trc20,
-      '§25: the one unrecoverable mistake is USDT sent to the wrong chain');
+  // ── The USDT arrives, in two transfers, and the watcher credits it ───────
+  const tokensHeld = async () => Number((await pgQuery(
+    `SELECT COALESCE(deposit_paise + reserve_paise + promo_paise, 0) AS p FROM wallets WHERE user_id = $1`,
+    [player.userId], 'e2e')).rows[0]?.p ?? 0) / 100;
+  const before = await tokensHeld();
+  sendUsdt(address, 200);
+  sendUsdt(address, 300);
+  let state = null; let received = null;
+  for (let i = 0; i < 40 && state !== 'COMPLETED'; i += 1) {
+    await sleep(1500);
+    const st = (await GET(pT, `/api/payment/order/${oid}`)).body.order ?? {};
+    state = st.status; received = st.usdtReceived ?? received;
   }
-
-  // ── A tx hash is claimed exactly once (§27) ──────────────────────────────
-  // A TRON hash is 64 hex characters with NO `0x` — that prefix is an EVM
-  // convention and belongs to BEP-20. The route refuses the wrong shape BY
-  // NAME ("Enter the Tron (TRC-20) transaction ID — 64 hexadecimal
-  // characters"), which is §25's rule that a refusal names that rail's own
-  // choices; my first attempt sent an 0x-prefixed hash and was correctly told.
-  const hash = Array.from({ length: 64 }, () => '0123456789abcdef'[Math.floor(Math.random()*16)]).join('');
-  const assigned = r.merchant_id;
-  if (!assigned) {
-    note(A, 'system', 'the USDT buy reached a merchant', 'assigned', 'still queued',
-      'no USDT member was free — the hash-claim half of this scenario needs an assigned order');
-    return;
-  }
-  const paid = await POST(pT, `/api/payment/order/${oid}/mark-paid`, { utrNumber: hash });
-  check(A, 'player', 'submit the chain transaction id', '200',
-    `${paid.status} ${paid.body.message ?? ''}`, paid.status === 200);
-
-  const claim = await pgQuery(`SELECT order_id FROM utr_registry WHERE utr = $1`, [hash.toUpperCase()], 'e2e');
-  check(A, 'system', 'the tx hash is claimed, uppercased, against this order', `one row for ${oid}`,
-    claim.rows.length ? claim.rows[0].order_id : 'NOT CLAIMED',
-    claim.rows.length === 1 && claim.rows[0].order_id === oid,
-    '§27: 0xAB… and 0xab… are ONE transaction and must collide on the key');
+  check(A, 'system', 'the watcher sees both transfers and completes the buy', 'COMPLETED',
+    String(state), state === 'COMPLETED',
+    'the server reads the stand-in node every 20 seconds; nobody confirms anything');
+  const gained = (await tokensHeld()) - before;
+  check(A, 'player', 'the 45,000 tokens are in the wallet', '+45,000 (betting + reserve, and any first-buy bonus)',
+    String(gained), gained >= 45000);
+  const movement = (await pgQuery(
+    `SELECT account, amount_paise FROM treasury_entries WHERE movement_id = $1`, [`usdt_buy_${oid}`], 'e2e')).rows;
+  check(A, 'system', 'the tokens leave supply and enter the players\' float, once', 'TOKEN_SUPPLY −4,500,000 / USER_FLOAT +4,500,000',
+    movement.map((m) => `${m.account} ${m.amount_paise}`).join(', ') || 'NO MOVEMENT',
+    movement.length === 2 && movement.reduce((a, m) => a + Number(m.amount_paise), 0) === 0);
 }

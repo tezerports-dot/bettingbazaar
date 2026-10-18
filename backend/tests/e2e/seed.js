@@ -13,12 +13,6 @@ import crypto from 'node:crypto';
 
 const mob = () => String(6000000000 + Math.floor(Math.random() * 3999999999));
 
-// `merchants_usdt_trc20_unique` / `..._bep20_unique`: two merchants may not hold
-// the same address (§25 — the address IS where the player's USDT lands). So the
-// driver mints a fresh one per merchant rather than reusing a literal.
-const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-export const trc20 = () => 'T' + Array.from({ length: 33 }, () => B58[Math.floor(Math.random() * B58.length)]).join('');
-export const bep20 = () => '0x' + Array.from({ length: 40 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
 
 /**
  * Give one actor the Telegram link a verified account HAS (Step 3).
@@ -87,7 +81,6 @@ export async function seedPlayer({ balancePaise = 0, verified = true, boardRules
  */
 export async function seedMerchant({
   currency = 'INR', approve = true, online = true,
-  usdtAddressTrc20 = null, usdtAddressBep20 = null,
   verified = true, tokensPaise, cashDenominationPaise,
 } = {}) {
   if (tokensPaise !== undefined || cashDenominationPaise !== undefined) {
@@ -108,7 +101,6 @@ export async function seedMerchant({
     bankDetails: currency === 'INR'
       ? { accountNo, ifsc: 'HDFC0000001', accountHolderName: name, bankName: 'HDFC Bank' }
       : null,
-    usdtAddressTrc20, usdtAddressBep20,
   });
   const id = merchant._id ?? merchant.merchantId;
 
@@ -223,12 +215,7 @@ export async function seedTeam({
 
   const members = [...include];
   while (members.length < TEAM_SIZE) {
-    // A USDT member holds an address on BOTH chains unless the scenario
-    // brings its own, so the padding can serve either network.
-    members.push(await seedMerchant({
-      currency, online: false,
-      ...(rail === RAILS.USDT ? { usdtAddressTrc20: trc20(), usdtAddressBep20: bep20() } : {}),
-    }));
+    members.push(await seedMerchant({ currency, online: false }));
   }
   for (const m of members) {
     const added = await addMember({ teamId, supervisorId: supervisor.merchantId, merchantRef: m.merchantId, actor: supervisor.merchantId });
