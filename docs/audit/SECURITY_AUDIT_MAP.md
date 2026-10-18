@@ -3540,8 +3540,8 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 336 |
-| Reachable with **no auth middleware** | 42 |
+| Route declarations in `backend/**` | 356 |
+| Reachable with **no auth middleware** | 44 |
 | Staff routes carrying an **area** (permission key) | 183 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 10 |
 
@@ -3563,6 +3563,8 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /games  (backend/domains/gameRegistry/gameRegistry.routes.js)`
 - `GET /invite/:code  (backend/domains/identity/playerAuth.routes.js)`
 - `GET /leaderboard/:period  (backend/routes/retention.routes.js)`
+- `GET /matches  (backend/domains/cricket/cricket.routes.js)`
+- `GET /matches/:matchId  (backend/domains/cricket/cricket.routes.js)`
 - `GET /me  (backend/routes.js)`
 - `GET /merchant/events  (backend/routes/sse.routes.js)`
 - `GET /mini-app  (backend/domains/telegram/miniApp.routes.js)`
@@ -3614,14 +3616,15 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 503 |
-| Parameters only (safe by construction) | 330 |
-| Interpolating into statement text (each needs a reading) | 165 |
-| Statement text built elsewhere and passed in (each needs a reading) | 8 |
+| `pgQuery` call sites | 533 |
+| Parameters only (safe by construction) | 356 |
+| Interpolating into statement text (each needs a reading) | 168 |
+| Statement text built elsewhere and passed in (each needs a reading) | 9 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
 
 - `database/repositories/adminTokenConsiderations.js — text`
+- `database/repositories/cricket.js — ok`
 - `database/repositories/identity.js — text`
 - `database/repositories/merchants.js — text`
 - `database/repositories/rtp.js — RESERVED_SQL`
@@ -3635,8 +3638,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 155 | 0 | 0 |
-| `admin-panel` | 144 | 0 | 0 |
+| `user-panel` | 161 | 0 | 0 |
+| `admin-panel` | 145 | 0 | 0 |
 | `merchant-panel` | 65 | 0 | 0 |
 
 <!-- END GENERATED -->

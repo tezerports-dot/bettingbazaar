@@ -311,6 +311,36 @@ export const SYSTEM_CONFIG_SPEC = group({
   firstDepositBonus: group({
     rupees: int(0, 0, 100000),
   }),
+  // ── Cricket opinion polls (owner, 2026-10-18) ──────────────────────────
+  // docs/reference/CRICKET_OPINION_DESIGN.md. Read through `cricketSettingsOf`
+  // (backend/domains/cricket/cricketSettings.js); the game is off until an
+  // admin switches it on. The seed is the most the house can lose on one poll
+  // (seed × options), per poll kind, in whole tokens.
+  cricket: group({
+    enabled: b(false),
+    // While the game is off, players still see its tab, opening a full-screen
+    // "coming soon" image (Branding.cricketComingSoonImageUrl; owner, 2026-10-18).
+    comingSoon: b(true),
+    spreadPercent: n(10, 0, 50),
+    claimMarginPercent: n(5, 0, 50),
+    rtpBoostPoints: n(5, 0, 50),
+    inPlayDelaySec: int(5, 0, 30),
+    claimHoldSec: int(2, 0, 60),
+    nextBallWindowSec: int(12, 3, 60),
+    tossCloseMinutes: int(30, 0, 240),
+    momVoidHours: int(24, 1, 168),
+    minStakeRupees: int(10, 1, 100000),
+    maxStakeRupees: int(50000, 10, 10000000),
+    seedRupees: group({
+      matchResult: int(500, 1, 10000000),
+      toss: int(500, 1, 10000000),
+      manOfMatch: int(200, 1, 10000000),
+      topBatsman: int(200, 1, 10000000),
+      topBowler: int(200, 1, 10000000),
+      over: int(200, 1, 10000000),
+      ball: int(100, 1, 10000000),
+    }),
+  }),
   // ── Red flags (redesign Step 2f) ────────────────────────────────────────
   // Computed once a day, shown to people, acted on by nobody's code. Read
   // through `redFlagSettings` in database/repositories/teamOversight.js.
@@ -477,6 +507,8 @@ export const BRANDING_SPEC = group({
   betCardDelhiImageUrl: s(''), betCardBombayImageUrl: s(''),
   // ── The board's Refer & Earn card (desktop/tablet side column) ────────────
   referPromoImageUrl: s(''),
+  // ── The Cricket tab while the game is off (coming soon), full screen ────
+  cricketComingSoonImageUrl: s(''),
 });
 
 /**

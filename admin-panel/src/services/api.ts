@@ -482,6 +482,33 @@ export const boards = {
     (await api.get<any>(`/api/admin/rtp/${encodeURIComponent(game)}/${encodeURIComponent(audience)}/entries`)).data,
 };
 
+// --- CRICKET (owner, 2026-10-18) ---------------------------------------------
+// Admin › Cricket: backend/domains/cricket/cricket.admin.routes.js. The game's
+// settings are `SystemConfig.cricket`, saved through `system.updateConfig`.
+export const cricket = {
+  overview: async () => (await api.get<any>('/api/admin/cricket')).data,
+  saveToken: async (token: string) => (await api.put<any>('/api/admin/cricket/feed-token', { token })).data,
+  sync: async () => (await api.post<any>('/api/admin/cricket/sync')).data,
+  publish: async (matchId: string) =>
+    (await api.post<any>(`/api/admin/cricket/matches/${encodeURIComponent(matchId)}/publish`)).data,
+  unpublish: async (matchId: string) =>
+    (await api.post<any>(`/api/admin/cricket/matches/${encodeURIComponent(matchId)}/unpublish`)).data,
+  setOrder: async (matchIds: string[]) => (await api.put<any>('/api/admin/cricket/matches/order', { matchIds })).data,
+  follow: async (seriesId: string, seriesName: string) =>
+    (await api.post<any>(`/api/admin/cricket/series/${encodeURIComponent(seriesId)}/follow`, { seriesName })).data,
+  unfollow: async (seriesId: string) =>
+    (await api.delete<any>(`/api/admin/cricket/series/${encodeURIComponent(seriesId)}/follow`)).data,
+  polls: async (matchId: string) =>
+    (await api.get<any>(`/api/admin/cricket/matches/${encodeURIComponent(matchId)}/polls`)).data,
+  settle: async (pollId: string, winningOption: string) =>
+    (await api.post<any>(`/api/admin/cricket/polls/${encodeURIComponent(pollId)}/settle`, { winningOption })).data,
+  voidPoll: async (pollId: string, reason: string) =>
+    (await api.post<any>(`/api/admin/cricket/polls/${encodeURIComponent(pollId)}/void`, { reason })).data,
+  report: async (from: string, to: string) =>
+    (await api.get<any>('/api/admin/cricket/report', { params: { from, to } })).data,
+  reportCsv: (from: string, to: string) => downloadCsv('/api/admin/cricket/report.csv', { from, to }, 'cricket-polls.csv'),
+};
+
 // --- RULES POP-UP (owner, 2026-10-14) -------------------------------------------
 // The board rules players accept before betting, edited and published here.
 // backend/routes/admin/boardRules.admin.routes.js; shapes mirror

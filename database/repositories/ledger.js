@@ -206,6 +206,26 @@ export async function findCasinoRoundsUnbooked({ limit = 200, settleSeconds = 30
   }));
 }
 
+/**
+ * Ended cricket polls (SETTLED or VOID) with no CRICKET_POLL_NET event yet;
+ * `netPaise` is what the house kept: stakes (refunds already out) less wins
+ * and claims paid.
+ */
+export async function findCricketPollsUnbooked({ limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT p.poll_id, p.title, p.settled_at,
+            p.stakes_paise - p.claims_paid_paise - p.won_paid_paise AS net_paise
+       FROM cricket_polls p
+       LEFT JOIN accounting_events e ON e.ref_model = 'CricketPoll' AND e.ref_id = p.poll_id
+      WHERE p.status IN ('SETTLED', 'VOID') AND e.id IS NULL
+        AND p.stakes_paise - p.claims_paid_paise - p.won_paid_paise <> 0
+      ORDER BY p.settled_at
+      LIMIT $1`,
+    [Math.min(Math.max(Number(limit) || 200, 1), 1000)], 'ledger_cricket_unbooked',
+  );
+  return rows.map((r) => ({ pollId: r.poll_id, title: r.title, settledAt: r.settled_at, netPaise: Number(r.net_paise) }));
+}
+
 /** General bonuses (`promo_grants`) with no PROMO_BONUS_PAID event yet. */
 export async function findPromoGrantsUnbooked({ limit = 200 } = {}) {
   const { rows } = await pgQuery(

@@ -15,7 +15,7 @@
  */
 import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import { useGame, spendableBalance, useBoardExtras, useFooterPages } from '../services/GameContext';
+import { useGame, spendableBalance, useBoardExtras, useFooterPages, useCricketSettings } from '../services/GameContext';
 import { useGameProviders } from '../services/GameProviderContext';
 import { useTheme } from './ThemeContext';
 import { useViewport } from './useViewport';
@@ -71,8 +71,11 @@ export const useShell = (): ShellContextValue => {
  * DELHI BAZAAR is the platform's own board and has no provider, so it has no
  * `needs` and is always offered.
  */
-const CATEGORIES: { title: string; sub: string; icon: string; accent: string; path: string; needs?: 'casino' | 'crash' | 'sports' }[] = [
+type Needs = 'casino' | 'crash' | 'sports' | 'cricket';
+const CATEGORIES: { title: string; sub: string; icon: string; accent: string; path: string; needs?: Needs }[] = [
   { title: 'DELHI BAZAAR', sub: 'vs Bombay', icon: '🎯', accent: 'var(--gold)', path: '/' },
+  // Shown while Admin › Cricket's switch is on, or as coming soon (owner, 2026-10-18).
+  { title: 'CRICKET', sub: 'Live opinion odds', icon: '🏏', accent: 'var(--green)', path: '/cricket', needs: 'cricket' },
   { title: 'CASH OR CRASH', sub: 'Take the flight', icon: '✈️', accent: '#60a5fa', path: '/crash', needs: 'crash' },
   { title: 'CASINO', sub: 'Play to win big', icon: '🃏', accent: '#a78bfa', path: '/casino', needs: 'casino' },
   { title: 'SPORTS', sub: 'Bet anytime', icon: '🏇', accent: '#34d399', path: '/sports', needs: 'sports' },
@@ -84,7 +87,7 @@ const CATEGORIES: { title: string; sub: string; icon: string; accent: string; pa
  * Footer; the keys are `FOOTER_PAGE_KEYS` in systemConfigPayload.js; owner,
  * 2026-10-15). A key with no entry here draws nothing. UI-only (§11).
  */
-const FOOTER_CATALOG: Record<string, { label: string; icon: string; path: string; needs?: 'casino' | 'crash' | 'sports' }> = {
+const FOOTER_CATALOG: Record<string, { label: string; icon: string; path: string; needs?: Needs }> = {
   home: { label: 'Game', icon: '🎲', path: '/' },
   results: { label: 'Results', icon: '📊', path: '/results' },
   winners: { label: 'Winners', icon: '🏆', path: '/winners' },
@@ -101,6 +104,7 @@ const FOOTER_CATALOG: Record<string, { label: string; icon: string; path: string
   casino: { label: 'Casino', icon: '🃏', path: '/casino', needs: 'casino' },
   crash: { label: 'Crash', icon: '✈️', path: '/crash', needs: 'crash' },
   sports: { label: 'Sports', icon: '🏇', path: '/sports', needs: 'sports' },
+  cricket: { label: 'Cricket', icon: '🏏', path: '/cricket', needs: 'cricket' },
 };
 // The last tab opens the menu drawer (owner, 2026-10-10): the header lost
 // its bell to make room for the profile pill, and everything else is there.
@@ -212,18 +216,20 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   // pages read, so the row and the page cannot disagree about whether a
   // category exists (§2, §5).
   const { anyCasino, anyCrash, anySports } = useGameProviders();
+  const cricketSettings = useCricketSettings();
+  const anyCricket = cricketSettings.enabled || cricketSettings.comingSoon;
+  const has: Record<Needs, boolean> = { casino: anyCasino, crash: anyCrash, sports: anySports, cricket: anyCricket };
   // The bottom bar: the admin's pages in their order, a provider page only
   // while that provider is on, then Menu.
   const tabs = [
     ...footerPages
       .map((k) => FOOTER_CATALOG[k])
-      .filter((t) => t && (!t.needs || { casino: anyCasino, crash: anyCrash, sports: anySports }[t.needs])),
+      .filter((t) => t && (!t.needs || has[t.needs])),
     MENU_TAB,
   ];
   const liveCategories = useMemo(
-    () => CATEGORIES.filter((c) => !c.needs
-      || (c.needs === 'casino' ? anyCasino : c.needs === 'crash' ? anyCrash : anySports)),
-    [anyCasino, anyCrash, anySports],
+    () => CATEGORIES.filter((c) => !c.needs || has[c.needs]),
+    [anyCasino, anyCrash, anySports, anyCricket], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const isActive = (path: string) => (path === '/' ? location.pathname === '/' : location.pathname.startsWith(path));
   const onBoard = location.pathname === '/';

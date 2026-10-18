@@ -9,7 +9,7 @@
  *   promo   — home promo cards, an image per screen (promo_content_images)
  *   board   — the betting cards' backgrounds and the Refer & Earn card (Branding)
  *   logos   — the logo set (Branding) and the app's logo, splash and icons (App Assets)
- *   pages   — the Pro Tips and Rules banners (Branding) and their slides
+ *   pages   — the Pro Tips, Rules and Refer banners, Cricket's coming-soon picture (Branding) and their slides
  *   library — every uploaded file (CDN library)
  * Uploads go to S3 through a presigned URL and are served from the CDN.
  */
@@ -25,7 +25,7 @@ export const IMAGE_TABS = [
   { key: 'promo', label: 'Promo cards', sub: 'Laptop, tablet, phone, small phone' },
   { key: 'board', label: 'Game board', sub: 'Betting cards, Refer & Earn' },
   { key: 'logos', label: 'Logo & app icons', sub: 'Logo, icons, splash' },
-  { key: 'pages', label: 'Page banners & slides', sub: 'Pro Tips, Rules' },
+  { key: 'pages', label: 'Page banners & slides', sub: 'Pro Tips, Rules, Cricket' },
   { key: 'library', label: 'Library', sub: 'Every uploaded file' },
 ] as const;
 
@@ -68,7 +68,7 @@ export const ImagesPage: React.FC = () => {
         {tab === 'pages' && (
           <div className="space-y-6">
             <BrandingImages fields={PAGE_IMAGES} title="Page banners"
-              intro="The banner at the top of the Pro Tips and Rules pages." />
+              intro="The banners at the top of the Pro Tips, Rules and Refer & Earn pages, and the full-screen Cricket coming-soon picture." />
             <ContentSlideManager />
           </div>
         )}

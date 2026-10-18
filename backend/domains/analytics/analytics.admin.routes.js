@@ -156,6 +156,8 @@ router.get('/analytics/financials.csv', authenticate, hasPermission('canViewAnal
       line('Revenue', 'Board games: kept', p.revenue.boardGames.amount),
       line('Revenue', 'of which winnings fee', p.revenue.winningsFees),
       line('Revenue', 'Casino games: kept', p.revenue.casino),
+      line('Revenue', 'Cricket polls: kept', p.revenue.cricket.amount),
+      line('Revenue', 'Cricket polls: winnings fee (inside the line above)', p.revenue.cricket.fees),
       line('Revenue', 'Total revenue', p.revenue.total),
       line('Costs', 'Referral bonuses', p.costs.referralBonuses.amount, p.costs.referralBonuses.count),
       line('Costs', 'First deposit bonuses', p.costs.firstDepositBonuses.amount, p.costs.firstDepositBonuses.count),

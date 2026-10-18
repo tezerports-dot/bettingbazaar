@@ -124,6 +124,17 @@ is `CLAUDE.md` §25.
 
 ## 3. What is left
 
+### Cricket opinion polls (built 2026-10-18)
+
+Built: the game end to end (`docs/reference/CRICKET_OPINION_DESIGN.md`; CLAUDE.md §2 *Cricket opinion polls…*): schema and the one writer, pricing with the book bound, bets, claims and Claim all with the in-play delay, settlement and voids, the engine driven by the feed, the Sportmonks adapter, crons, the odds publisher, the ledger (`CRICKET_POLL_NET`), P&L, token ledger, player net win/loss, the Cricket RTP fund, Admin › Cricket, the player's Cricket screen and its tab (shown while the switch is on). Tests: `database/tests/cricketPg.test.js`, `cricketEnginePg.test.js`, `backend/tests/routes/cricketRoutesPg.test.js`, `backend/tests/unit/cricket.test.js`, `user-panel/src/redesign/cricketValue.test.ts`.
+
+Left, in order:
+1. **Check the feed against a real Sportmonks token.** The ball fields the adapter reads (`score.runs`, `bye`, `leg_bye`, `noball`, `noball_runs`, `is_wicket`, `ball`, the wide test on `score.name`, `scoreboard` S1/S2) are from the provider's documentation, not from a recorded response. Record one live match's responses and add them as fixtures to `backend/tests/unit/cricket.test.js`.
+2. Drive the screens in a browser (`test:browser`) with the switch on and a published match; add the controls to the inventory.
+3. ~~Load-test one poll~~ done 2026-10-18: `npm run loadtest:cricket` (200 players × 5 bets, a bot firing 100 bets against a ₹1,000 wallet, one bet id pressed 20 times, then Claim all ×2 each, all at once) held every invariant; one poll took about 130–150 bets a second on the 4-core container. Left: settlement of a very large poll is one transaction (time it at 10,000+ bets).
+4. Team logos load from the provider's image server; if the admin wants them on our CDN, copy them on fixture sync.
+
+
 ### 3.0 Closed 2026-09-09 — the four findings from the penetration pass
 
 Four of the five items recorded here on `ab6bf69` are fixed. Kept as a record of

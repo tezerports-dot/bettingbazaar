@@ -31,7 +31,7 @@ import { createHash } from 'node:crypto';
 import {
   recordEventOnPostgres, trialBalanceOnPostgres,
   accountBalanceOnPostgres, getLedgerOnPostgres, recordSpendCoveredOnPostgres,
-  findCasinoRoundsUnbooked, findPromoGrantsUnbooked, findCompensationsUnbooked,
+  findCasinoRoundsUnbooked, findPromoGrantsUnbooked, findCompensationsUnbooked, findCricketPollsUnbooked,
 } from '#db/repositories/ledger.js';
 import { ACCOUNTS, ACCOUNT_CODES, EVENT_TYPES, toMinor } from './chartOfAccounts.js';
 import { INR_TOKEN_RATE } from '../configuration/tokenRates.js';
@@ -465,6 +465,35 @@ export async function reconcileCasinoRounds(limit = 200) {
       results.push({ refId: r.id, recorded: !res.idempotent });
     } catch (e) {
       results.push({ refId: r.id, recorded: false, error: e.message });
+    }
+  }
+  return results;
+}
+
+/**
+ * reconcileCricketPolls — book each ended cricket poll's net to the house
+ * (stakes kept less wins and claims paid), once per poll.
+ */
+export async function reconcileCricketPolls(limit = 200) {
+  const due = await findCricketPollsUnbooked({ limit });
+  const results = [];
+  for (const p of due) {
+    try {
+      const res = await recordAccountingEvent({
+        eventType: EVENT_TYPES.CRICKET_POLL_NET,
+        idempotencyKey: `acct_cricket_${p.pollId}`,
+        postings: [
+          { account: ACCOUNTS.USER_FUNDS.code,       amountMinor: p.netPaise },
+          { account: ACCOUNTS.PLATFORM_REVENUE.code, amountMinor: -p.netPaise },
+        ],
+        refModel: 'CricketPoll',
+        refId: p.pollId,
+        occurredAt: p.settledAt ? new Date(p.settledAt) : new Date(),
+        description: `Cricket poll ${p.title}: net to the house ₹${(p.netPaise / 100).toFixed(2)}`,
+      });
+      results.push({ refId: p.pollId, recorded: !res.idempotent });
+    } catch (e) {
+      results.push({ refId: p.pollId, recorded: false, error: e.message });
     }
   }
   return results;

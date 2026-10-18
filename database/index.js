@@ -77,6 +77,7 @@ import * as boardRules from './repositories/boardRules.js';
 import * as phantomAutoPlans from './repositories/phantomAutoPlans.js';
 import * as boards from './repositories/boards.js';
 import * as rtp from './repositories/rtp.js';
+import * as cricket from './repositories/cricket.js';
 import * as audit from './repositories/audit.js';
 import * as operations from './repositories/operations.js';
 import * as supportDocuments from './repositories/supportDocuments.js';
@@ -164,6 +165,8 @@ export const db = Object.freeze({
   phantomAutoPlans,
   boards,
   rtp,
+  // Cricket opinion polls (owner, 2026-10-18)
+  cricket,
   chat,
 
   // Platform

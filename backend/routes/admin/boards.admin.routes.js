@@ -10,7 +10,8 @@
  *   POST /boards           create (key and id prefix derived from the name)
  *   PUT  /boards/order     { keys: [every board, first to last] }
  *   PUT  /boards/:key      name, timer length, phases, stakes, enabled
- *   GET  /rtp              every board's RTP fund per profile (off when never set)
+ *   GET  /rtp              every board's RTP fund per profile, and each in-house
+ *                          game's (`IN_HOUSE_GAMES`: Cricket, VIP only); off when never set
  *   PUT  /rtp/:game/:audience          { enabled, ratePercent }
  *   GET  /rtp/:game/:audience/entries  the fund's per-round entries, newest first
  */
@@ -83,10 +84,17 @@ router.get('/rtp', authenticate, ALLOWED, async (req, res) => {
   try {
     const [boards, funds] = await Promise.all([db.boards.listBoards(), db.rtp.listFunds()]);
     const byKey = new Map(funds.map((f) => [`${f.gameKey}:${f.audience}`, f]));
-    const rows = boards.flatMap((b) => db.rtp.RTP_AUDIENCES.map((audience) => byKey.get(`${b.key}:${audience}`) ?? {
-      gameKey: b.key, audience, enabled: false, rateBp: db.rtp.DEFAULT_RTP_RATE_BP,
-      ratePercent: db.rtp.DEFAULT_RTP_RATE_BP / 100, balancePaise: 0, roundsHelped: 0, returnedPaise: 0,
-    }));
+    const games = [
+      ...boards.map((b) => ({ key: b.key, name: b.name, audiences: db.rtp.RTP_AUDIENCES })),
+      ...db.rtp.IN_HOUSE_GAMES,
+    ];
+    const rows = games.flatMap((g) => g.audiences.map((audience) => ({
+      gameName: g.name,
+      ...(byKey.get(`${g.key}:${audience}`) ?? {
+        gameKey: g.key, audience, enabled: false, rateBp: db.rtp.DEFAULT_RTP_RATE_BP,
+        ratePercent: db.rtp.DEFAULT_RTP_RATE_BP / 100, balancePaise: 0, roundsHelped: 0, returnedPaise: 0,
+      }),
+    })));
     res.json({ success: true, funds: rows });
   } catch (error) {
     return respondError(res, error, 'GET /admin/rtp', { message: 'Failed to load the RTP funds' });
@@ -95,7 +103,11 @@ router.get('/rtp', authenticate, ALLOWED, async (req, res) => {
 
 router.put('/rtp/:game/:audience', authenticate, ALLOWED, async (req, res) => {
   try {
-    if (!await db.boards.getBoard(req.params.game)) throw refusal(404, 'BOARD_NOT_FOUND', 'No such board.');
+    const inHouse = db.rtp.IN_HOUSE_GAMES.find((g) => g.key === req.params.game);
+    if (inHouse && !inHouse.audiences.includes(req.params.audience)) {
+      throw refusal(400, 'AUDIENCE_NOT_PLAYED', `${inHouse.name} is played from the ${inHouse.audiences.join(' and ')} wallet only.`);
+    }
+    if (!inHouse && !await db.boards.getBoard(req.params.game)) throw refusal(404, 'BOARD_NOT_FOUND', 'No such board.');
     const before = await db.rtp.getFund(req.params.game, req.params.audience);
     const fund = await db.rtp.saveSettings({
       gameKey: req.params.game, audience: req.params.audience,

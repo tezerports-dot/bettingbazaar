@@ -87,6 +87,7 @@ const NAV_GROUPS: MenuGroup[] = [
   ] },
   { key: 'games', label: 'Games', items: [
     { path: '/boards',         icon: Gamepad2, label: 'Boards',         title: 'Boards',         sub: 'Board games: timers, stakes and home-page order', permission: 'canManageGames' },
+    { path: '/cricket',        icon: Trophy,   label: 'Cricket',        title: 'Cricket',        sub: 'Opinion polls on live matches: feed, matches, polls and report', permission: 'canManageGames' },
     { path: '/games',          icon: Gamepad2, label: 'Game Registry',  title: 'Game Registry',  sub: 'Game catalogue & categories', permission: 'canManageGames' },
     { path: '/game-providers', icon: Star,     label: 'Game Providers', title: 'Game Providers', sub: 'Casino / crash / sports API providers', permission: 'canManageGames' },
   ] },

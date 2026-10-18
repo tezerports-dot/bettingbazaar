@@ -46,6 +46,20 @@ interface SysConfig {
   footerPages:   string[];
   // Admin › Player Screen (SystemConfig.boardExtras, config.spec.js).
   boardExtras:   BoardExtras;
+  // Admin › Cricket (SystemConfig.cricket via cricketPublicSettings).
+  cricket:       CricketSettings;
+  // The global winnings fee, read by the cricket position values (§11 mirror).
+  winningsFeePercent: number;
+}
+/** Mirrors `cricketPublicSettings` (backend/domains/cricket/cricketSettings.js). */
+export interface CricketSettings {
+  enabled:            boolean;
+  comingSoon:         boolean;
+  minStake:           number;
+  maxStake:           number;
+  inPlayDelaySec:     number;
+  claimMarginPercent: number;
+  claimHoldSec:       number;
 }
 /** Mirrors `boardExtras` in database/spec/config.spec.js (systemConfigPayload.js). */
 export interface BoardExtras {
@@ -60,6 +74,9 @@ const DEFAULT_SYS_CONFIG: SysConfig = {
   footerPages: ['home', 'results', 'wallet', 'promo'], // schema default (config.spec.js footerPages)
   // schema defaults: true / 10 / true / true / true
   boardExtras: { urgencyChips: true, closingWarnSeconds: 10, resultCelebration: true, bonusProgress: true, promoCards: true },
+  // schema defaults (config.spec.js `cricket`): off, coming soon, 10 to 50,000, 5 s, 5 %, 2 s
+  cricket: { enabled: false, comingSoon: true, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimMarginPercent: 5, claimHoldSec: 2 },
+  winningsFeePercent: 1, // schema default: 1
 };
 import { useToast } from '../components/ui/Toast';
 import { BOARD_RULES_EVENT } from '../redesign/BoardRules';
@@ -170,6 +187,12 @@ const createNullCycle = (type: CycleType): GameCycle => ({
 /** What the stream bridge already received of a replayed event (none from a test double). */
 const heldPayloads = (bridge: EventTarget | undefined, event: string): unknown[] =>
   (bridge as { heldPayloads?: (e: string) => unknown[] } | undefined)?.heldPayloads?.(event) ?? [];
+/**
+ * What the bridge last received of a once-per-open event (`system_config`),
+ * for a listener attached after the stream opened; none from a test double.
+ */
+const lastPayload = (bridge: EventTarget | undefined, event: string): unknown =>
+  (bridge as { last?: Map<string, unknown> } | undefined)?.last?.get(event);
 const NO_STATS: LiveStats = Object.freeze({ totalDelhi: 0, totalBombay: 0, totalPool: 0, poolsHidden: false }) as LiveStats;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -793,6 +816,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         tokenSellRate: data.tokenSellRate ?? prev.tokenSellRate,
         footerPages:   Array.isArray(data.footerPages) && data.footerPages.length ? data.footerPages : prev.footerPages,
         boardExtras:   data.boardExtras && typeof data.boardExtras === 'object' ? { ...prev.boardExtras, ...data.boardExtras } : prev.boardExtras,
+        cricket:       data.cricket && typeof data.cricket === 'object' ? { ...prev.cricket, ...data.cricket } : prev.cricket,
+        winningsFeePercent: typeof data.winningsFeePercent === 'number' ? data.winningsFeePercent : prev.winningsFeePercent,
       }));
     };
 
@@ -821,6 +846,14 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     // before this effect runs. Apply what the bridge already holds.
     // Each held payload once: this effect re-runs on sign-in, and a payload
     // already applied must not be applied again.
+    // The system config is sent once at open too, usually before this runs;
+    // without it the screens keep the defaults (cricket shown as coming soon
+    // while it is on) until an admin happens to save the config again.
+    const heldConfig = lastPayload(sseBridge, 'system_config');
+    if (heldConfig && typeof heldConfig === 'object' && !replayedRef.current.has(heldConfig)) {
+      replayedRef.current.add(heldConfig);
+      handleSystemConfig(heldConfig);
+    }
     for (const snap of heldPayloads(sseBridge, 'cycle_snapshot')) {
       if (snap && typeof snap === 'object' && !replayedRef.current.has(snap)) {
         replayedRef.current.add(snap);
@@ -985,6 +1018,12 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
  */
 export const useBoardExtras = (): BoardExtras =>
   useContext(GameContext)?.sysConfig.boardExtras ?? DEFAULT_SYS_CONFIG.boardExtras; // schema defaults
+
+/** Admin › Cricket's public settings, and the global winnings fee. */
+export const useCricketSettings = (): CricketSettings & { winningsFeePercent: number } => {
+  const cfg = useContext(GameContext)?.sysConfig ?? DEFAULT_SYS_CONFIG;
+  return { ...cfg.cricket, winningsFeePercent: cfg.winningsFeePercent };
+};
 
 /** The admin's footer tabs, page keys in order (SystemConfig.footerPages). */
 export const useFooterPages = (): string[] =>

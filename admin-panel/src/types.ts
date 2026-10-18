@@ -570,6 +570,7 @@ export interface FinancialStats {
     boardGames: { amount: number; settledStakes: number; payouts: number; bets: number; wins: number };
     winningsFees: number;
     casino: number;
+    cricket: { amount: number; fees: number; polls: number };
     total: number;
   };
   costs: {

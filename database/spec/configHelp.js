@@ -184,6 +184,82 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'What a player receives, in rupees, in their General (bonus) balance when their first buy completes. Paid once per player, never into VIP. It unlocks into withdrawable winnings after the same play requirement as every General bonus. 0 turns it off.',
     example: '100: a new player\'s first buy completes and ₹100 lands in General; it unlocks after ₹1,000 of bets at 10×.',
   },
+  'cricket.enabled': {
+    what: 'Whether players see Cricket next to Delhi Bazaar and can bet on the published matches. Off hides the game; bets already placed still settle.',
+    example: 'On once the data feed token is saved and a match is published.',
+  },
+  'cricket.spreadPercent': {
+    what: 'The house spread on cricket odds: odds = (100% − spread) × all money on the poll ÷ money on that option. It is the house\'s income on every bet.',
+    example: '10: 1,000 on A, 2,000 on B and 200 on Tie show A 2.88, B 1.44, Tie 14.40.',
+  },
+  'cricket.claimMarginPercent': {
+    what: 'What the house keeps when a player claims (cashes out) before a poll closes, as a percent of the position\'s current value.',
+    example: '5: a position worth ₹1,000 at today\'s pool is claimed for ₹950.',
+  },
+  'cricket.rtpBoostPoints': {
+    what: 'While the Cricket RTP fund is on and above zero, new polls open with the spread lowered by this many points, returning the house\'s extra wins to players.',
+    example: '5: with a 10% spread, boosted polls open at 5%.',
+  },
+  'cricket.inPlayDelaySec': {
+    what: 'Seconds every cricket bet and claim waits before it is executed. A ball reported during the wait refuses it, so nobody can bet on a ball they have already seen on a faster stream.',
+    example: '5: a bet pressed at 12:00:00 is executed at 12:00:05 unless a ball arrived in between.',
+  },
+  'cricket.comingSoon': {
+    what: 'While cricket is switched off, show players the Cricket tab anyway, opening a full-screen "coming soon" image (set it on Admin › Images). Off hides the tab until the game is switched on.',
+    example: 'On: players see Cricket beside Delhi Bazaar and get the coming-soon picture when they tap it.',
+  },
+  'cricket.claimHoldSec': {
+    what: 'Seconds a new cricket bet must stand before it can be claimed, counted from when it was placed. Stops a bot from placing and claiming in the same instant.',
+    example: '2: a bet placed at 12:00:05 can be claimed from 12:00:07.',
+  },
+  'cricket.nextBallWindowSec': {
+    what: 'How long the next-ball poll takes bets after the previous ball\'s result arrives. Keep it well under the gap between balls (about 35 seconds).',
+    example: '12: bets are taken for 12 seconds after each ball.',
+  },
+  'cricket.tossCloseMinutes': {
+    what: 'The toss poll closes this many minutes before the scheduled start, or at the toss if the feed reports it earlier.',
+    example: '30: for a 19:30 start, toss bets close at 19:00.',
+  },
+  'cricket.momVoidHours': {
+    what: 'Hours after a match ends to wait for the man of the match. If it has not arrived by then, or names a player not on the list, the poll is void and every open stake is returned.',
+    example: '24.',
+  },
+  'cricket.minStakeRupees': {
+    what: 'The smallest cricket bet, in tokens.',
+    example: '10.',
+  },
+  'cricket.maxStakeRupees': {
+    what: 'The largest single cricket bet, in tokens.',
+    example: '50000.',
+  },
+  'cricket.seedRupees.matchResult': {
+    what: 'The house seed on every option of a match-result poll, in tokens. It gives the first odds and is the most the house can lose per option; the poll\'s worst case is this × the number of options.',
+    example: '500: a three-option poll can cost the house at most 1,500.',
+  },
+  'cricket.seedRupees.toss': {
+    what: 'The house seed on every option of the toss poll, in tokens (four options).',
+    example: '500: at most 2,000 on one toss poll.',
+  },
+  'cricket.seedRupees.manOfMatch': {
+    what: 'The house seed on every player in the man-of-the-match poll, in tokens.',
+    example: '200: with 22 players, at most 4,400.',
+  },
+  'cricket.seedRupees.topBatsman': {
+    what: 'The house seed on every player in the best-batsman poll (most runs in the match), in tokens.',
+    example: '200: with 22 players, at most 4,400.',
+  },
+  'cricket.seedRupees.topBowler': {
+    what: 'The house seed on every player in the best-bowler poll (most wickets in the match), in tokens.',
+    example: '200: with 22 players, at most 4,400.',
+  },
+  'cricket.seedRupees.over': {
+    what: 'The house seed on every option of a next-over odd / even / zero poll, in tokens.',
+    example: '200: at most 600 per over.',
+  },
+  'cricket.seedRupees.ball': {
+    what: 'The house seed on every option of a next-ball poll, in tokens (ten options: 0 to 5 runs, 6+, wide, no ball, wicket).',
+    example: '100: at most 1,000 per ball.',
+  },
   'redFlags.lowActivityPercent': {
     what: 'An agent is flagged once a day when both their completed orders and their online time are this many percent below their team\'s average. A flag only warns the supervisor and admins.',
     example: '25: a team average of 40 orders flags a member who did fewer than 30 and was also online 25% less.',

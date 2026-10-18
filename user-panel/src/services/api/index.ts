@@ -16,3 +16,4 @@ export * as platform from './platform';
 export * as games from './games';
 export * as support from './support';
 export * as notifications from './notifications';
+export * as cricket from './cricket';

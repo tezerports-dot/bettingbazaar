@@ -39,6 +39,7 @@ import ipBlocksRoutes from './ipBlocks.admin.routes.js';
 import teamAdminRoutes from '../../domains/team/team.admin.routes.js';
 import merchantAccountAdminRoutes from '../../domains/merchant/merchantAccount.admin.routes.js';
 import usdtDepositAdminRoutes from '../../domains/payment/usdtDeposit.admin.routes.js';
+import cricketAdminRoutes from '../../domains/cricket/cricket.admin.routes.js';
 import { authenticateStaff } from '../../domains/identity/auth.middleware.js';
 
 const router = express.Router();
@@ -71,6 +72,7 @@ router.use('/', ipBlocksRoutes);
 router.use('/', teamAdminRoutes);
 router.use('/', merchantAccountAdminRoutes);
 router.use('/', usdtDepositAdminRoutes);
+router.use('/', cricketAdminRoutes);
 router.use('/', telegramAdminRoutes);
 router.use('/', communicationRoutes);
 router.use('/', operationsRoutes);

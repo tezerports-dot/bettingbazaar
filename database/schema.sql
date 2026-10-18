@@ -5154,3 +5154,242 @@ END $$;
 DROP TRIGGER IF EXISTS usdt_final_wallets_frozen ON usdt_final_wallets;
 CREATE TRIGGER usdt_final_wallets_frozen
   BEFORE UPDATE OR DELETE ON usdt_final_wallets FOR EACH ROW EXECUTE FUNCTION bb_usdt_final_wallet_frozen();
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- CRICKET OPINION POLLS (owner, 2026-10-18; docs/reference/CRICKET_OPINION_DESIGN.md)
+-- An in-house game. Matches come from one data feed the server alone reads
+-- (`cricket_feed`); an admin publishes a match (or follows a whole series) and
+-- sets the order players see them in. Each published match runs polls (toss,
+-- result, next over, next ball, man of the match), each with options. Odds are
+-- the pool ratio less the spread, fixed per bet when it is accepted. Every
+-- bet and claim keeps the poll's BOOK inside its bound, which the database
+-- holds at commit (`bb_cricket_book_bound`): for every option, what the house
+-- took in − what it paid in claims − what it owes if that option wins ≥ −(the
+-- house seed on the poll). One writer for every table here:
+-- database/repositories/cricket.js.
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- The feed's API token, encrypted (`encryptField`), one row. Never sent back to
+-- a panel: the admin sees only whether it is set and the feed's last answer.
+CREATE TABLE IF NOT EXISTS cricket_feed (
+  id            SMALLINT PRIMARY KEY DEFAULT 1,
+  provider      TEXT NOT NULL DEFAULT 'SPORTMONKS',
+  token_enc     TEXT,
+  set_by        TEXT,
+  set_at        TIMESTAMPTZ,
+  last_ok_at    TIMESTAMPTZ,
+  last_error    TEXT,
+  last_error_at TIMESTAMPTZ
+);
+ALTER TABLE cricket_feed DROP CONSTRAINT IF EXISTS cricket_feed_one_row;
+ALTER TABLE cricket_feed ADD CONSTRAINT cricket_feed_one_row CHECK (id = 1 AND provider = 'SPORTMONKS');
+
+-- A series (the feed's season) the admin follows: every fixture of it the feed
+-- lists is published as it arrives.
+CREATE TABLE IF NOT EXISTS cricket_series_follows (
+  series_id    TEXT PRIMARY KEY,
+  series_name  TEXT NOT NULL,
+  followed_by  TEXT NOT NULL,
+  followed_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS cricket_matches (
+  match_id        TEXT PRIMARY KEY,
+  feed_fixture_id TEXT NOT NULL UNIQUE,
+  series_id       TEXT,
+  series_name     TEXT,
+  format          TEXT NOT NULL DEFAULT 'OTHER',
+  team_a_id       TEXT NOT NULL,
+  team_a_name     TEXT NOT NULL,
+  team_a_code     TEXT,
+  team_a_logo     TEXT,
+  team_b_id       TEXT NOT NULL,
+  team_b_name     TEXT NOT NULL,
+  team_b_code     TEXT,
+  team_b_logo     TEXT,
+  venue           TEXT,
+  starts_at       TIMESTAMPTZ NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'SCHEDULED',
+  published       BOOLEAN NOT NULL DEFAULT FALSE,
+  published_at    TIMESTAMPTZ,
+  published_by    TEXT,
+  display_order   INTEGER,
+  toss_winner     TEXT,
+  toss_elected    TEXT,
+  result          TEXT,
+  man_of_match_id TEXT,
+  lineup          JSONB NOT NULL DEFAULT '[]'::jsonb,
+  score           JSONB NOT NULL DEFAULT '{}'::jsonb,
+  last_event_at   TIMESTAMPTZ,
+  finished_at     TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE cricket_matches DROP CONSTRAINT IF EXISTS cricket_matches_shape;
+ALTER TABLE cricket_matches ADD CONSTRAINT cricket_matches_shape CHECK (
+  format IN ('T20', 'T10', 'ODI', 'TEST', 'OTHER')
+  AND status IN ('SCHEDULED', 'LIVE', 'INNINGS_BREAK', 'FINISHED', 'ABANDONED')
+  AND (toss_winner IS NULL OR toss_winner IN ('A', 'B'))
+  AND (toss_elected IS NULL OR toss_elected IN ('BAT', 'BOWL'))
+  AND (result IS NULL OR result IN ('A', 'B', 'TIE', 'DRAW', 'NO_RESULT'))
+  AND (published = (published_at IS NOT NULL))
+  AND (display_order IS NULL OR display_order >= 0)
+  AND team_a_id <> team_b_id);
+CREATE INDEX IF NOT EXISTS cricket_matches_published_idx ON cricket_matches (published, starts_at);
+
+-- Every delivery the feed reported, once, in the order it was bowled. The
+-- polls are settled from these rows, so a result can always be re-derived.
+CREATE TABLE IF NOT EXISTS cricket_deliveries (
+  match_id     TEXT NOT NULL REFERENCES cricket_matches(match_id),
+  seq          INTEGER NOT NULL,
+  delivery_key TEXT NOT NULL,
+  innings      INTEGER NOT NULL,
+  over_no      INTEGER NOT NULL,
+  ball_label   TEXT NOT NULL,
+  outcome      TEXT NOT NULL,
+  runs         INTEGER NOT NULL,
+  feed_at      TIMESTAMPTZ,
+  received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (match_id, seq),
+  UNIQUE (match_id, delivery_key)
+);
+ALTER TABLE cricket_deliveries DROP CONSTRAINT IF EXISTS cricket_deliveries_shape;
+ALTER TABLE cricket_deliveries ADD CONSTRAINT cricket_deliveries_shape CHECK (
+  seq >= 1 AND innings >= 1 AND over_no >= 0 AND runs >= 0
+  AND outcome IN ('DOT', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6_PLUS', 'WIDE', 'NO_BALL', 'WICKET'));
+
+CREATE TABLE IF NOT EXISTS cricket_polls (
+  poll_id          TEXT PRIMARY KEY,
+  match_id         TEXT NOT NULL REFERENCES cricket_matches(match_id),
+  kind             TEXT NOT NULL,
+  innings          INTEGER NOT NULL DEFAULT 0,
+  over_no          INTEGER NOT NULL DEFAULT 0,
+  seq              INTEGER NOT NULL DEFAULT 0,
+  title            TEXT NOT NULL,
+  status           TEXT NOT NULL DEFAULT 'OPEN',
+  spread_bp        INTEGER NOT NULL,
+  seed_paise       BIGINT NOT NULL,
+  option_count     INTEGER NOT NULL,
+  opened_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  closes_at        TIMESTAMPTZ,
+  closed_at        TIMESTAMPTZ,
+  settled_at       TIMESTAMPTZ,
+  winning_option   TEXT,
+  void_reason      TEXT,
+  stakes_paise       BIGINT NOT NULL DEFAULT 0,
+  claims_paid_paise  BIGINT NOT NULL DEFAULT 0,
+  won_paid_paise     BIGINT NOT NULL DEFAULT 0,
+  fees_paise         BIGINT NOT NULL DEFAULT 0,
+  refunded_paise     BIGINT NOT NULL DEFAULT 0,
+  UNIQUE (match_id, kind, innings, over_no, seq)
+);
+ALTER TABLE cricket_polls DROP CONSTRAINT IF EXISTS cricket_polls_shape;
+ALTER TABLE cricket_polls ADD CONSTRAINT cricket_polls_shape CHECK (
+  kind IN ('TOSS', 'MATCH_RESULT', 'OVER', 'BALL', 'MOM', 'TOP_BATSMAN', 'TOP_BOWLER')
+  AND status IN ('OPEN', 'CLOSED', 'SETTLED', 'VOID')
+  AND spread_bp BETWEEN 0 AND 5000 AND seed_paise > 0 AND option_count >= 2
+  AND stakes_paise >= 0 AND claims_paid_paise >= 0 AND won_paid_paise >= 0
+  AND fees_paise >= 0 AND refunded_paise >= 0
+  AND (status <> 'OPEN' OR closed_at IS NULL)
+  AND (status NOT IN ('SETTLED', 'VOID') OR (closed_at IS NOT NULL AND settled_at IS NOT NULL))
+  AND ((status = 'SETTLED') = (winning_option IS NOT NULL))
+  AND ((status = 'VOID') = (void_reason IS NOT NULL))
+  AND (status <> 'VOID' OR won_paid_paise = 0));
+CREATE INDEX IF NOT EXISTS cricket_polls_match_idx ON cricket_polls (match_id, status);
+CREATE INDEX IF NOT EXISTS cricket_polls_open_idx ON cricket_polls (closes_at) WHERE status = 'OPEN';
+
+-- An option's live figures: the real stakes of OPEN bets on it (the pool the
+-- odds read, with the poll's seed added) and what the house owes them if it
+-- wins. Moved only with a bet, a claim or the settlement, under the poll lock.
+CREATE TABLE IF NOT EXISTS cricket_poll_options (
+  poll_id          TEXT NOT NULL REFERENCES cricket_polls(poll_id),
+  option_key       TEXT NOT NULL,
+  label            TEXT NOT NULL,
+  sort             INTEGER NOT NULL,
+  pool_paise       BIGINT NOT NULL DEFAULT 0,
+  liability_paise  BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (poll_id, option_key)
+);
+ALTER TABLE cricket_poll_options DROP CONSTRAINT IF EXISTS cricket_poll_options_shape;
+ALTER TABLE cricket_poll_options ADD CONSTRAINT cricket_poll_options_shape CHECK (
+  pool_paise >= 0 AND liability_paise >= 0 AND length(option_key) BETWEEN 1 AND 64);
+
+CREATE TABLE IF NOT EXISTS cricket_bets (
+  bet_id          TEXT PRIMARY KEY,
+  user_id         TEXT NOT NULL,
+  poll_id         TEXT NOT NULL REFERENCES cricket_polls(poll_id),
+  match_id        TEXT NOT NULL REFERENCES cricket_matches(match_id),
+  option_key      TEXT NOT NULL,
+  stake_paise     BIGINT NOT NULL,
+  odds_x100       INTEGER NOT NULL,
+  potential_paise BIGINT NOT NULL,
+  from_reserve_paise  BIGINT NOT NULL DEFAULT 0,
+  from_deposit_paise  BIGINT NOT NULL DEFAULT 0,
+  from_winnings_paise BIGINT NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL DEFAULT 'OPEN',
+  paid_paise      BIGINT NOT NULL DEFAULT 0,
+  fee_paise       BIGINT NOT NULL DEFAULT 0,
+  requested_at    TIMESTAMPTZ NOT NULL,
+  placed_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  ended_at        TIMESTAMPTZ,
+  FOREIGN KEY (poll_id, option_key) REFERENCES cricket_poll_options(poll_id, option_key)
+);
+ALTER TABLE cricket_bets DROP CONSTRAINT IF EXISTS cricket_bets_shape;
+ALTER TABLE cricket_bets ADD CONSTRAINT cricket_bets_shape CHECK (
+  stake_paise > 0 AND odds_x100 >= 101
+  AND potential_paise = (stake_paise * odds_x100) / 100
+  AND from_reserve_paise >= 0 AND from_deposit_paise >= 0 AND from_winnings_paise >= 0
+  AND from_reserve_paise + from_deposit_paise + from_winnings_paise = stake_paise
+  AND status IN ('OPEN', 'CLAIMED', 'WON', 'LOST', 'VOID')
+  AND paid_paise >= 0 AND fee_paise >= 0
+  AND ((status = 'OPEN') = (ended_at IS NULL))
+  AND (status <> 'OPEN' OR (paid_paise = 0 AND fee_paise = 0))
+  AND (status <> 'LOST' OR (paid_paise = 0 AND fee_paise = 0))
+  AND (status <> 'VOID' OR (paid_paise = stake_paise AND fee_paise = 0))
+  AND (status <> 'WON' OR paid_paise + fee_paise = potential_paise)
+  AND (status <> 'CLAIMED' OR paid_paise + fee_paise <= potential_paise));
+CREATE INDEX IF NOT EXISTS cricket_bets_user_idx ON cricket_bets (user_id, match_id, placed_at DESC);
+CREATE INDEX IF NOT EXISTS cricket_bets_poll_open_idx ON cricket_bets (poll_id) WHERE status = 'OPEN';
+
+-- A bet ends once: OPEN to one of its endings, and nothing else on it moves.
+CREATE OR REPLACE FUNCTION bb_cricket_bet_ends_once() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'cricket_bets rows are never deleted'; END IF;
+  IF OLD.status <> 'OPEN' THEN
+    RAISE EXCEPTION 'cricket bet % already ended (%)', OLD.bet_id, OLD.status USING ERRCODE = 'check_violation';
+  END IF;
+  IF (to_jsonb(NEW) - 'status' - 'paid_paise' - 'fee_paise' - 'ended_at')
+     IS DISTINCT FROM (to_jsonb(OLD) - 'status' - 'paid_paise' - 'fee_paise' - 'ended_at') THEN
+    RAISE EXCEPTION 'cricket bet % : only its ending is written', OLD.bet_id USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS cricket_bets_end_once ON cricket_bets;
+CREATE TRIGGER cricket_bets_end_once
+  BEFORE UPDATE OR DELETE ON cricket_bets FOR EACH ROW EXECUTE FUNCTION bb_cricket_bet_ends_once();
+
+-- The house's bound on one poll, asked at COMMIT of every transaction that
+-- moved its book or options: no option's outcome may cost the house more than
+-- the poll's seed (seed per option × options). A path that cannot keep this
+-- is a defect, never a reason to relax it.
+CREATE OR REPLACE FUNCTION bb_cricket_book_bound() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  p   cricket_polls%ROWTYPE;
+  worst BIGINT;
+BEGIN
+  SELECT * INTO p FROM cricket_polls WHERE poll_id = NEW.poll_id;
+  IF p.status IN ('SETTLED', 'VOID') THEN RETURN NULL; END IF;
+  SELECT MAX(o.liability_paise) INTO worst FROM cricket_poll_options o WHERE o.poll_id = p.poll_id;
+  IF p.stakes_paise - p.claims_paid_paise - COALESCE(worst, 0) < 0 - p.seed_paise * p.option_count THEN
+    RAISE EXCEPTION 'cricket poll % would cost the house more than its seed', p.poll_id USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS cricket_polls_book_bound ON cricket_polls;
+CREATE CONSTRAINT TRIGGER cricket_polls_book_bound
+  AFTER INSERT OR UPDATE ON cricket_polls DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION bb_cricket_book_bound();
+DROP TRIGGER IF EXISTS cricket_poll_options_book_bound ON cricket_poll_options;
+CREATE CONSTRAINT TRIGGER cricket_poll_options_book_bound
+  AFTER INSERT OR UPDATE ON cricket_poll_options DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION bb_cricket_book_bound();

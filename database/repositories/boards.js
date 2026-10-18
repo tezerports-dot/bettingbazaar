@@ -16,6 +16,7 @@
  * named by them. A board is switched off, never deleted.
  */
 import { pgQuery, withTransaction } from '../client.js';
+import { IN_HOUSE_GAME_KEYS } from './rtp.js';
 
 export const BOARD_KINDS = Object.freeze(['INTERVAL', 'DAILY']);
 /** A DAILY board's block, in minutes. */
@@ -161,6 +162,8 @@ export async function createBoard(input) {
   const v = validated(input ?? {});
   const key = keyFromName(v.name);
   if (!key) throw bad('The board name needs at least one letter or digit.');
+  // Another in-house game's key: its RTP fund is keyed by it (rtp.js).
+  if (IN_HOUSE_GAME_KEYS.includes(key)) throw bad('That name belongs to another game. Choose another name.');
   const prefix = prefixFromKey(key);
   if (!prefix) throw bad('The board name needs at least one letter or digit.');
   try {

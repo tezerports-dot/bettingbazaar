@@ -49,6 +49,7 @@ import { BalanceAdjustment } from './Pages/Users/BalanceAdjustment';
 import { GameProviders }           from './Pages/GameProviders/GameProviders';
 import { GamesManager }            from './Pages/Games/GamesManager';
 import { BoardsManager }           from './Pages/Games/BoardsManager';
+import { CricketManager }          from './Pages/Games/CricketManager';
 import { FakeWinnersManager }  from './Pages/Winners/FakeWinnersManager';
 import { ChatSupport }         from './Pages/Chat/ChatSupport';
 // ── ENTERPRISE PLATFORM CONSOLES (Phase C, 2026-07-10) ─────────────────────
@@ -437,6 +438,11 @@ const App: React.FC = () => {
         {/* ── BOARDS (timers, stakes, home order) — canManageGames */}
         <Route path="/boards" element={
           <PermRoute permission="canManageGames"><Layout><BoardsManager /></Layout></PermRoute>
+        } />
+
+        {/* ── CRICKET opinion polls (owner, 2026-10-18) — canManageGames */}
+        <Route path="/cricket" element={
+          <PermRoute permission="canManageGames"><Layout><CricketManager /></Layout></PermRoute>
         } />
 
         {/* ── GAME REGISTRY (catalogue + categories) — admin only */}
