@@ -31,3 +31,16 @@ export function positionValuePaise(options: PoolOption[], pos: Position, claimMa
   const gross = Math.min(pos.potentialPaise, Math.floor((fair * (10000 - Math.round(claimMarginPercent * 100))) / 10000));
   return gross - feeOn(gross, pos.stakePaise, feePercent);
 }
+
+/**
+ * The odds a bet of `stakePaise` on `optionKey` would get now, its own stake
+ * in the pool: a §11 display mirror of `quoteBet` without the book cap
+ * (backend/domains/cricket/cricketPricing.js). The server's quote is the figure.
+ */
+export function betOddsX100(options: PoolOption[], spreadBp: number, optionKey: string, stakePaise: number): number {
+  const mine = options.find((o) => o.key === optionKey);
+  if (!mine || stakePaise <= 0) return 0;
+  const total = options.reduce((t, o) => t + o.poolPaise, 0) + stakePaise;
+  const raw = Math.floor(((10000 - spreadBp) * total * 100) / (10000 * (mine.poolPaise + stakePaise)));
+  return Math.max(101, raw); // MIN_ODDS_X100 (cricketPricing.js)
+}

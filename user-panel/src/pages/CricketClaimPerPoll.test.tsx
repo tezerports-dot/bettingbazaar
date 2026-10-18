@@ -1,7 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * Each poll's positions can be claimed on their own, beside Claim all (owner,
- * 2026-10-18): a poll's Claim button quotes only that poll's open bets.
+ * Betting and claiming happen inside each poll's card (owner, 2026-10-18):
+ * pick an opinion, type a stake, see what it pays, place it; the poll's own
+ * Claim quotes only that poll's open bets, beside the match's Claim all.
  */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
@@ -35,13 +36,47 @@ const bet = (betId: string, pollId: string, pollTitle: string) => ({
 
 const { default: CricketPage } = await import('./CricketPage');
 
-describe('claiming one poll', () => {
-  it("quotes only that poll's bets", async () => {
-    api.matches.mockResolvedValue({ matches: [{
-      matchId: 'M1', seriesName: 'S', format: 'T20', teamA: { id: '1', name: 'Alpha', code: null, logo: null }, teamB: { id: '2', name: 'Bravo', code: null, logo: null },
-      venue: null, startsAt: new Date().toISOString(), status: 'LIVE', toss: null, result: null, score: {},
-      polls: [poll('P1', 'Match result', 'MATCH_RESULT'), poll('P2', 'Best batsman', 'TOP_BATSMAN')],
-    }] });
+const match = () => ({ matches: [{
+  matchId: 'M1', seriesName: 'S', format: 'T20', teamA: { id: '1', name: 'Alpha', code: null, logo: null }, teamB: { id: '2', name: 'Bravo', code: null, logo: null },
+  venue: null, startsAt: new Date().toISOString(), status: 'LIVE', toss: null, result: null, score: {},
+  polls: [poll('P1', 'Match result', 'MATCH_RESULT'), poll('P2', 'Best batsman', 'TOP_BATSMAN')],
+}] });
+
+describe('a poll card', () => {
+  it('takes a bet in place: pick, stake, see the payout, place at the exact odds', async () => {
+    api.matches.mockResolvedValue(match());
+    api.myBets.mockResolvedValue({ bets: [] });
+    // 3,000 + 3,000 in the pools, 10 % spread: a 100-token bet on A gets 0.9 × 6,100 / 3,100 = 1.77.
+    api.quoteBet.mockResolvedValue({ oddsX100: 177, potentialPaise: 17_700, delaySec: 5 });
+    api.placeBet.mockResolvedValue({ bet: { oddsX100: 177 } });
+    render(<CricketPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Alpha/ }));
+    const [resultPick] = await screen.findAllByRole('button', { name: 'Alpha win at 1.80' });
+    fireEvent.click(resultPick);
+    const [stake] = screen.getAllByLabelText('Stake (tokens)');
+    fireEvent.change(stake, { target: { value: '100' } });
+    expect(screen.getByText('1.77')).toBeTruthy();
+    expect(screen.getByText('+77')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Place bet · 100' }));
+    await waitFor(() => expect(api.placeBet).toHaveBeenCalledWith(expect.objectContaining({ pollId: 'P1', optionKey: 'A', stake: 100, minOdds: 177 })));
+  });
+
+  it('asks the player to confirm when the exact odds came back lower than shown', async () => {
+    api.matches.mockResolvedValue(match());
+    api.myBets.mockResolvedValue({ bets: [] });
+    api.placeBet.mockClear();
+    api.quoteBet.mockResolvedValue({ oddsX100: 150, potentialPaise: 15_000, delaySec: 5 });
+    render(<CricketPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Alpha/ }));
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Alpha win at 1.80' }))[0]);
+    fireEvent.change(screen.getAllByLabelText('Stake (tokens)')[0], { target: { value: '100' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Place bet · 100' }));
+    expect(await screen.findByRole('button', { name: 'Confirm at 1.50' })).toBeTruthy();
+    expect(api.placeBet).not.toHaveBeenCalled();
+  });
+
+  it("claims only that poll's bets", async () => {
+    api.matches.mockResolvedValue(match());
     api.myBets.mockResolvedValue({ bets: [bet('b1', 'P1', 'Match result'), bet('b2', 'P2', 'Best batsman'), bet('b3', 'P1', 'Match result')] });
     api.quoteClaim.mockResolvedValue({ lines: [], totalNetPaise: 0, totalStakePaise: 0, delaySec: 5 });
     render(<CricketPage />);
