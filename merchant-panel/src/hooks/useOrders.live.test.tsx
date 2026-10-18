@@ -88,6 +88,28 @@ describe('the merchant order list, live', () => {
     await waitFor(() => expect(screen.getByText('ord-1 PROCESSING DEPOSIT 2026-10-01T10:15:00.000Z')).toBeInTheDocument());
   });
 
+  it('keeps finished and disputed orders when the stream sends its snapshot', async () => {
+    // The snapshot holds only open orders; it used to REPLACE the list, so a
+    // (re)connect wiped History's totals and emptied the Disputed tile.
+    api.getOrders.mockImplementation(async (params?: { status?: string }) => ({
+      orders: params?.status
+        ? [{ _id: 'ord-1', orderId: 'ord-1', type: 'DEPOSIT', status: 'PROCESSING', expiresAt: 'x', createdAt: '2026-10-01T09:30:00.000Z' },
+           { _id: 'ord-3', orderId: 'ord-3', type: 'WITHDRAWAL', status: 'DISPUTED', expiresAt: 'x', createdAt: '2026-09-01T09:30:00.000Z' }]
+        : [{ _id: 'ord-1', orderId: 'ord-1', type: 'DEPOSIT', status: 'PROCESSING', expiresAt: 'x', createdAt: '2026-10-01T09:30:00.000Z' },
+           { _id: 'ord-2', orderId: 'ord-2', type: 'DEPOSIT', status: 'COMPLETED', expiresAt: 'x', createdAt: '2026-10-01T09:00:00.000Z' }],
+    }));
+    const stream = await mount();
+    // The open states are asked for on their own, so an old DISPUTED order is in.
+    expect(api.getOrders).toHaveBeenCalledWith(expect.objectContaining({ status: 'PENDING_QUEUE,PROCESSING,PAID,DISPUTED' }));
+    await screen.findByText(/ord-3 DISPUTED/);
+    act(() => stream.dispatch('merchant_orders_snapshot', {
+      orders: [{ _id: 'ord-1', orderId: 'ord-1', type: 'DEPOSIT', status: 'PAID' }],
+    }));
+    await waitFor(() => expect(screen.getByText(/ord-1 PAID DEPOSIT/)).toBeInTheDocument());
+    expect(screen.getByText(/ord-2 COMPLETED/)).toBeInTheDocument();
+    expect(screen.getByText(/ord-3 DISPUTED/)).toBeInTheDocument();
+  });
+
   it('registers every name the order list subscribes to on the merchant stream', async () => {
     const stream = await mount();
     for (const name of ['merchant_orders_snapshot', 'new_order', 'order_update', 'order_paid']) {

@@ -29,6 +29,31 @@ const SORT_RANK: Record<string, number> = {
 const orderKey = (order: PaymentOrder): string => String(order._id || order.id || order.orderId);
 
 /**
+ * Every state an order can still need the merchant in. The queue loads these
+ * on their own, beside the newest orders of any state: a busy merchant's
+ * newest page was all finished orders, so an older order still PROCESSING,
+ * PAID or DISPUTED fell off it, and the Needs you / Processing / Paid /
+ * Disputed tiles counted and showed only what happened to be on that page.
+ */
+const OPEN_STATES = [OrderStatus.PENDING_QUEUE, OrderStatus.PROCESSING, OrderStatus.PAID, OrderStatus.DISPUTED];
+
+/** `incoming` laid over `current` by order id: a known order is merged, a new one added. */
+function mergeOrders(current: PaymentOrder[], incoming: PaymentOrder[]): PaymentOrder[] {
+  const merged = [...current];
+  const index = new Map(merged.map((o, i) => [orderKey(o), i]));
+  for (const next of incoming) {
+    const key = orderKey(next);
+    if (!key || key === 'undefined') continue;
+    const at = index.get(key);
+    if (at === undefined) { index.set(key, merged.length); merged.push(next); }
+    // SSE payloads are partial snapshots — merge so fields the event omits
+    // (user details, payment destinations) survive a status change.
+    else merged[at] = { ...merged[at], ...next };
+  }
+  return merged;
+}
+
+/**
  * needsAction — the merchant has something to do on this order right now:
  * scan a cash buy's machine QR, verify a claimed deposit payment, or send a
  * payout. There is no accept (owner, 2026-10-17). This drives the nav badge
@@ -52,9 +77,12 @@ export function useOrders() {
   const load = useCallback(async () => {
     setState('loading');
     try {
-      const { orders: fetched } = await api.getOrders({ limit: PAGINATION.HISTORY_PER_PAGE });
+      const [recent, open] = await Promise.all([
+        api.getOrders({ limit: PAGINATION.HISTORY_PER_PAGE }),
+        api.getOrders({ status: OPEN_STATES.join(','), limit: PAGINATION.MAX_PAGE_SIZE }),
+      ]);
       if (!mounted.current) return;
-      setOrders(fetched);
+      setOrders(mergeOrders(recent.orders, open.orders));
       setState('ready');
     } catch {
       if (!mounted.current) return;
@@ -73,19 +101,19 @@ export function useOrders() {
       const key = orderKey(next);
       if (!key || key === 'undefined') return;
       setOrders((current) => {
-        const index = current.findIndex((o) => orderKey(o) === key);
-        if (index === -1) return [next, ...current];
-        const merged = [...current];
-        // SSE payloads are partial snapshots — merge so fields the event omits
-        // (user details, payment destinations) survive a status change.
-        merged[index] = { ...merged[index], ...next };
-        return merged;
+        if (current.some((o) => orderKey(o) === key)) return mergeOrders(current, [next]);
+        return [next, ...current];
       });
     };
 
+    // The snapshot sent on (re)connect holds only the open buys and sells
+    // (PENDING_QUEUE, PROCESSING, PAID). It REPLACED the list, so every time
+    // the stream connected or reconnected the completed and disputed orders
+    // vanished: History's totals fell to what was open and the Disputed tile
+    // emptied. It is merged now, like every other push.
     const onSnapshot = (payload: any) => {
       const list: PaymentOrder[] = payload?.orders || payload;
-      if (Array.isArray(list)) setOrders(list);
+      if (Array.isArray(list)) setOrders((current) => mergeOrders(current, list));
     };
 
     sseService.on('merchant_orders_snapshot', onSnapshot);

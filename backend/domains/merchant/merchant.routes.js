@@ -333,11 +333,19 @@ router.get('/orders', merchantAuth, async (req, res) => {
         const { status, type, limit = '50', skip = '0' } = req.query;
         const parsedLimit = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
         const parsedSkip  = Math.max(parseInt(skip)  || 0, 0);
+        // `status` is one state or a comma list of them (the live queue asks
+        // for every open state at once). An unknown one is the caller's mistake.
+        const states = status ? String(status).split(',').map((s) => s.trim()).filter(Boolean) : [];
+        const known = new Set(Object.values(db.orders.ORDER_STATES));
+        const unknown = states.filter((s) => !known.has(s));
+        if (unknown.length) {
+            return res.status(400).json({ success: false, code: 'UNKNOWN_ORDER_STATE', message: `Unknown order status: ${unknown.join(', ')}.` });
+        }
 
         // Only the member's own orders: there is no open pool (§3.10, 2c).
         const { orders, total } = await db.orders.merchantVisibleOrders({
             merchantId: req.merchantId,
-            state: status || null,
+            state: states.length ? states : null,
             orderType: type || null,
             limit: parsedLimit,
             offset: parsedSkip,
@@ -1175,6 +1183,8 @@ router.get('/earnings', merchantAuth, async (req, res) => {
                     totalEarnings: lifetime.totalEarnings,
                     totalVolume:   lifetime.totalVolume,
                     totalOrders:   lifetime.totalOrders,
+                    deposits:      lifetime.deposits,
+                    withdrawals:   lifetime.withdrawals,
                 },
                 // `merchants.earnings_paise`, which is also never written —
                 // the same dead column in a different table. It read as
@@ -1201,7 +1211,12 @@ router.get('/earnings/weekly', merchantAuth, async (req, res) => {
         // than it was. The bucketing is in the query, in the merchant's own
         // timezone, rather than seven ranges built in JavaScript.
         const result = (await db.stats.merchantDailyEarnings(req.merchantId, { days: 7 }))
-            .map((d) => ({ date: d.label, earnings: d.earnings, orders: d.orders }));
+            .map((d) => ({
+                date: d.label, earnings: d.earnings, orders: d.orders,
+                // Completed volume by direction, in tokens: History's volume
+                // chart, counted here over every order of the day.
+                depositVolume: d.depositVolume, withdrawalVolume: d.withdrawalVolume,
+            }));
 
         res.json({ success: true, weekly: result });
     } catch (err) {
@@ -1241,7 +1256,13 @@ router.get('/stats', merchantAuth, async (req, res) => {
             exposure: team.poolExposure,
         } : null;
 
-        res.json({ success: true, stats: { pending, processing, completedToday, paidPendingReview }, money: { own, pool } });
+        // The team's commission picture (`toSummary`, the one every screen
+        // reads): what is paid, and what is earned but waiting for the
+        // platform's commission pool, so the dashboard can say why today's
+        // earnings are 0. Team-level, as Team already shows a member.
+        const commission = team?.commission ?? null;
+
+        res.json({ success: true, stats: { pending, processing, completedToday, paidPendingReview }, money: { own, pool }, commission });
     } catch (err) {
         console.error('GET /merchant/stats error:', err);
         res.status(500).json({ success: false, message: 'Failed to fetch stats.' });

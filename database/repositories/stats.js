@@ -685,6 +685,14 @@ export async function merchantPerformanceHistory(merchantId, { days = 30, timezo
 
 
 /**
+ * The start of today in IST, the day the platform operates in. `CURRENT_DATE`
+ * is the database session's own day (UTC on the server), so "today" on the
+ * merchant dashboard ran from 05:30 IST and disagreed with the weekly chart,
+ * which cuts its days in IST.
+ */
+const IST_TODAY = `(date_trunc('day', now() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata')`;
+
+/**
  * One merchant's earnings — today, over a range, and split by direction.
  *
  * ONE STATEMENT for both windows. It was two aggregations issued together, so
@@ -703,14 +711,26 @@ export async function merchantEarnings(merchantId, { from = null, to = null } = 
        -- WORK DONE: the orders. Volume only — what a merchant EARNS is not
        -- here, see "paid" below.
        SELECT
-         COUNT(*) FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'DEPOSIT')::int AS today_deposit_count,
-         COALESCE(SUM(token_amount_paise) FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'DEPOSIT'), 0) AS today_deposit_amount,
-         COUNT(*) FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'WITHDRAWAL')::int AS today_withdrawal_count,
-         COALESCE(SUM(token_amount_paise) FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'WITHDRAWAL'), 0) AS today_withdrawal_amount,
+         COUNT(*) FILTER (WHERE completed_at >= ${IST_TODAY} AND order_type = 'DEPOSIT')::int AS today_deposit_count,
+         COALESCE(SUM(token_amount_paise) FILTER (WHERE completed_at >= ${IST_TODAY} AND order_type = 'DEPOSIT'), 0) AS today_deposit_amount,
+         COUNT(*) FILTER (WHERE completed_at >= ${IST_TODAY} AND order_type = 'WITHDRAWAL')::int AS today_withdrawal_count,
+         COALESCE(SUM(token_amount_paise) FILTER (WHERE completed_at >= ${IST_TODAY} AND order_type = 'WITHDRAWAL'), 0) AS today_withdrawal_amount,
          COUNT(*) FILTER (WHERE ($2::timestamptz IS NULL OR completed_at >= $2)
                             AND ($3::timestamptz IS NULL OR completed_at <= $3))::int AS range_orders,
          COALESCE(SUM(token_amount_paise) FILTER (WHERE ($2::timestamptz IS NULL OR completed_at >= $2)
-                            AND ($3::timestamptz IS NULL OR completed_at <= $3)), 0) AS range_volume
+                            AND ($3::timestamptz IS NULL OR completed_at <= $3)), 0) AS range_volume,
+         COUNT(*) FILTER (WHERE order_type = 'DEPOSIT'
+                            AND ($2::timestamptz IS NULL OR completed_at >= $2)
+                            AND ($3::timestamptz IS NULL OR completed_at <= $3))::int AS range_deposit_count,
+         COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'
+                            AND ($2::timestamptz IS NULL OR completed_at >= $2)
+                            AND ($3::timestamptz IS NULL OR completed_at <= $3)), 0) AS range_deposit_volume,
+         COUNT(*) FILTER (WHERE order_type = 'WITHDRAWAL'
+                            AND ($2::timestamptz IS NULL OR completed_at >= $2)
+                            AND ($3::timestamptz IS NULL OR completed_at <= $3))::int AS range_withdrawal_count,
+         COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'
+                            AND ($2::timestamptz IS NULL OR completed_at >= $2)
+                            AND ($3::timestamptz IS NULL OR completed_at <= $3)), 0) AS range_withdrawal_volume
        FROM order_states
        -- COMPLETED only, and "completed_at" is what every window above filters
        -- on. PAID was in this list while the windows all keyed off
@@ -727,7 +747,7 @@ export async function merchantEarnings(merchantId, { from = null, to = null } = 
        -- member. The tokens sit in the team's pool; this is what each person
        -- is told they earned.
        SELECT
-         COALESCE(SUM(share_paise) FILTER (WHERE created_at >= CURRENT_DATE), 0) AS today_paid,
+         COALESCE(SUM(share_paise) FILTER (WHERE created_at >= ${IST_TODAY}), 0) AS today_paid,
          COALESCE(SUM(share_paise) FILTER (WHERE ($2::timestamptz IS NULL OR created_at >= $2)
                             AND ($3::timestamptz IS NULL OR created_at <= $3)), 0) AS range_paid
        FROM team_commission_shares
@@ -757,6 +777,10 @@ export async function merchantEarnings(merchantId, { from = null, to = null } = 
       totalOrders: r.range_orders,
       totalEarnings: rupees(r.range_paid),
       totalVolume: rupees(r.range_volume),
+      // The same orders split by direction, so History's totals are the
+      // server's over every completed order, not a sum of one loaded page.
+      deposits: { count: r.range_deposit_count, totalVolume: rupees(r.range_deposit_volume) },
+      withdrawals: { count: r.range_withdrawal_count, totalVolume: rupees(r.range_withdrawal_volume) },
     },
   };
 }
@@ -792,7 +816,9 @@ export async function merchantDailyEarnings(merchantId, { days = 7, timezone = '
             -- USDT order that column holds USDT, so a 50,000-token deposit
             -- counted as 555 of volume beside a rupee order's 500, and the two
             -- were added together.
-            COALESCE(SUM(o.token_amount_paise), 0) AS volume
+            COALESCE(SUM(o.token_amount_paise), 0) AS volume,
+            COALESCE(SUM(o.token_amount_paise) FILTER (WHERE o.order_type = 'DEPOSIT'), 0)    AS deposit_volume,
+            COALESCE(SUM(o.token_amount_paise) FILTER (WHERE o.order_type = 'WITHDRAWAL'), 0) AS withdrawal_volume
        FROM span
        LEFT JOIN order_states o
          ON (o.completed_at AT TIME ZONE $2)::date = span.day
@@ -815,6 +841,8 @@ export async function merchantDailyEarnings(merchantId, { days = 7, timezone = '
     orders: r.orders,
     earnings: rupees(r.earnings),
     volume: rupees(r.volume),
+    depositVolume: rupees(r.deposit_volume),
+    withdrawalVolume: rupees(r.withdrawal_volume),
   }));
 }
 
@@ -826,7 +854,7 @@ export async function merchantQueueCounts(merchantId) {
        COUNT(*) FILTER (WHERE state = 'PROCESSING')::int    AS processing,
        COUNT(*) FILTER (WHERE state = 'DISPUTED')::int      AS disputed,
        COUNT(*) FILTER (WHERE state IN ('PAID','COMPLETED')
-                          AND completed_at >= CURRENT_DATE)::int AS completed_today
+                          AND completed_at >= ${IST_TODAY})::int AS completed_today
      FROM order_states WHERE merchant_id = $1`,
     [String(merchantId)], 'stats_merchant_queue',
   );

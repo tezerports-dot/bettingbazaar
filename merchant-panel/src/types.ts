@@ -323,12 +323,21 @@ export interface Earnings {
     totalVolume: number;
     /** COMPLETED orders only. A PAID order is money that has not moved yet. */
     totalOrders: number;
+    /** The same completed orders by direction (`merchantEarnings`, stats.js). Tokens. */
+    deposits: { count: number; totalVolume: number };
+    withdrawals: { count: number; totalVolume: number };
   };
 }
 
 export interface Stats {
   /** Where the tokens are (merchant.routes.js GET /stats). Absent when the read failed. */
   money?: MerchantMoney;
+  /**
+   * The team's commission (`toSummary`, sent by GET /stats as `commission`):
+   * null for a merchant not working in a team (a supervisor, an agent not yet
+   * approved). Absent when the read failed.
+   */
+  commission?: TeamCommissionSummary | null;
   pending: number;
   processing: number;
   completedToday: number;

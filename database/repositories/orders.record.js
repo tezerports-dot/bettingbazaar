@@ -1554,7 +1554,14 @@ export async function merchantVisibleOrders({
 }) {
   const params = [String(merchantId)];
   const filters = [];
-  if (state) { params.push(String(state)); filters.push(`state = $${params.length}`); }
+  // One state, or several: the panel's live queue asks for every open state
+  // at once, so an open order is never pushed off the page by newer finished
+  // ones.
+  if (Array.isArray(state) && state.length) {
+    params.push(state.map(String)); filters.push(`state = ANY($${params.length}::text[])`);
+  } else if (state && !Array.isArray(state)) {
+    params.push(String(state)); filters.push(`state = $${params.length}`);
+  }
   if (orderType) { params.push(String(orderType)); filters.push(`order_type = $${params.length}`); }
   if (scope) filters.push(staffScopeSql(scope, params));
 

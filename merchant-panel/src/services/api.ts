@@ -469,6 +469,7 @@ export const getStats = async (): Promise<Stats> => {
     // Backend returns: { stats: { pending, processing, completedToday } }
     return {
       money: data.money,
+      commission: data.commission ?? null,
       pending: data.stats?.pending || 0,
       processing: data.stats?.processing || 0,
       completedToday: data.stats?.completedToday || 0,
@@ -553,7 +554,9 @@ export const updateProfile = async (data: {
 // WEEKLY EARNINGS (FIX M4)
 // =======================================================================
 
-export const getWeeklyEarnings = async (): Promise<{ weekly: Array<{ date: string; earnings: number; orders: number }> }> => {
+export const getWeeklyEarnings = async (): Promise<{ weekly: Array<{
+  date: string; earnings: number; orders: number; depositVolume: number; withdrawalVolume: number;
+}> }> => {
   const data = await request<any>(ENDPOINTS.EARNINGS.WEEKLY);
   return { weekly: data.weekly || [] };
 };
