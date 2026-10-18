@@ -1519,7 +1519,7 @@ address*; background in RULES_BACKGROUND §25.
   from the phrase's own m/44'/60'/0'/1/0.
 - **Final wallet:** where every sweep sends, the owner's own BEP-20 wallet,
   pasted on Admin › USDT Deposits by a full admin (history kept, change
-  alerted); the tool asks for its last 6 characters before sending.
+  alerted); the tool sends only after the address is pasted from the owner's own wallet app and matches.
 - **Removed:** merchant USDT addresses (columns dropped), the merchant rail
   altogether (`accepted_currencies`, `merchant_type` dropped; every merchant is
   INR), USDT supervisors and teams (moved to UPI_BANK by the schema, refused by

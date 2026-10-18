@@ -70,7 +70,7 @@ import { toPlayerOrderView, playerCancelFrom } from './playerOrderView.js';
 // This service pushes to both parties, so it needs both projections.
 import { toMerchantOrderView } from '../merchant/merchantOrderView.js';
 import { sendAlert } from '../../services/alerting.service.js';
-import { openPlatformUsdtBuy, creditIfCovered } from './usdtDeposit.service.js';
+import { openPlatformUsdtBuy, creditIfCovered, usdtBuyMayLapse } from './usdtDeposit.service.js';
 
 // ─── Shared admin SSE payload ─────────────────────────────────────────────────
 function adminOrderPayload(order, user) {
@@ -1483,6 +1483,9 @@ export async function expireOrders() {
       // cancelled away (owner, 2026-10-18).
       if (order.type === 'DEPOSIT' && order.currency === ORDER_CURRENCY.USDT && order.usdtPayAddress) {
         if ((await creditIfCovered(order.orderId)).credited) continue;
+        // Not yet: the watcher has not read the chain far enough past the
+        // deadline to know nothing arrived in time. The next sweep asks again.
+        if (!(await usdtBuyMayLapse(order.expiresAt))) continue;
       }
       // Two instances running this cron both read the same expired batch. The
       // transition is what makes the refund happen once: the loser gets

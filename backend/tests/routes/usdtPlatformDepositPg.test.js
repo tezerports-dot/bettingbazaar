@@ -54,6 +54,18 @@ describePg('USDT buys paid to the platform on BSC', () => {
 
   const wallet = async (userId) => db.wallets.getBalances(userId);
 
+  /**
+   * Past its deadline, with the watcher having read the chain since and caught
+   * up, which is when a USDT buy may lapse (`usdtBuyMayLapse`).
+   */
+  const lapse = async (orderId) => {
+    await pgQuery(`UPDATE order_states SET expires_at = now() - interval '10 minutes' WHERE order_id = $1`, [orderId]);
+    const cur = await db.usdtDeposits.readCursor();
+    const at = cur?.nextBlock ?? 1_000_000;
+    await db.usdtDeposits.advanceCursor({ nextBlock: at, headBlock: at });
+    await expireOrders();
+  };
+
   beforeAll(async () => {
     await applySchema();
     setEnv('USDT_BEP20_XPUB', TEST_XPUB);
@@ -176,8 +188,7 @@ describePg('USDT buys paid to the platform on BSC', () => {
   it('expires an unpaid buy, and money that comes later is held for an admin, not credited', async () => {
     const who = await actor({});
     const { order } = await buy(who, 100);
-    await pgQuery(`UPDATE order_states SET expires_at = now() - interval '1 minute' WHERE order_id = $1`, [order.orderId]);
-    await expireOrders();
+    await lapse(order.orderId);
     const closed = await getOrderRecord(order.orderId);
     expect(['CANCELLED', 'EXPIRED']).toContain(closed.status);
 
@@ -193,9 +204,64 @@ describePg('USDT buys paid to the platform on BSC', () => {
     const who = await actor({});
     const { order } = await buy(who, 100);
     await pay(order.usdtAddress, 100);
-    await pgQuery(`UPDATE order_states SET expires_at = now() - interval '1 minute' WHERE order_id = $1`, [order.orderId]);
-    await expireOrders();
+    await lapse(order.orderId);
     expect((await getOrderRecord(order.orderId)).status).toBe('COMPLETED');
+  });
+
+  it('does not lapse a buy until the watcher has read the chain, caught up, past its deadline', async () => {
+    const who = await actor({});
+    const { order } = await buy(who, 100);
+    await pgQuery(`UPDATE order_states SET expires_at = now() - interval '10 minutes' WHERE order_id = $1`, [order.orderId]);
+    const cur = await db.usdtDeposits.readCursor();
+    const at = cur?.nextBlock ?? 1_000_000;
+
+    // Behind: the node is 1,000 blocks ahead of what the watcher has read.
+    await db.usdtDeposits.advanceCursor({ nextBlock: at, headBlock: at + 1000 });
+    await expireOrders();
+    expect((await getOrderRecord(order.orderId)).status).toBe('PROCESSING');
+
+    // Caught up, but its last good read was before the deadline (it has been failing since).
+    await db.usdtDeposits.advanceCursor({ nextBlock: at, headBlock: at });
+    await pgQuery(`UPDATE usdt_chain_cursors SET last_ok_at = now() - interval '1 hour' WHERE chain = 'BEP20'`);
+    await expireOrders();
+    expect((await getOrderRecord(order.orderId)).status).toBe('PROCESSING');
+
+    // The money was sent in time and the watcher now finds it: credited, not lapsed.
+    await pay(order.usdtAddress, 100);
+    await lapse(order.orderId);
+    expect((await getOrderRecord(order.orderId)).status).toBe('COMPLETED');
+  });
+
+  it('credits two buys paid by one transaction (a batch payout), each by its own transfer', async () => {
+    const { order: a } = await buy(await actor({}), 100);
+    const { order: b } = await buy(await actor({}), 100);
+    const txHash = hex64();
+    await pay(a.usdtAddress, 100, { txHash, logIndex: 4 });
+    await pay(b.usdtAddress, 100, { txHash, logIndex: 5 });
+    expect(await creditIfCovered(a.orderId)).toEqual({ credited: true });
+    expect(await creditIfCovered(b.orderId)).toEqual({ credited: true });
+    const { rows } = await pgQuery('SELECT utr, order_id FROM utr_registry WHERE order_id = ANY($1) ORDER BY utr', [[a.orderId, b.orderId]]);
+    expect(rows.map((r) => r.utr)).toEqual([`${txHash}:4`.toUpperCase(), `${txHash}:5`.toUpperCase()]);
+  });
+
+  it('records a failed read without inventing a cursor, so a first failure never restarts the chain from block 0', async () => {
+    const saved = (await pgQuery("SELECT * FROM usdt_chain_cursors WHERE chain = 'BEP20'")).rows[0];
+    await pgQuery("DELETE FROM usdt_chain_cursors WHERE chain = 'BEP20'");
+    try {
+      expect(await db.usdtDeposits.recordCursorError({ message: 'node down' })).toBe(false);
+      expect(await db.usdtDeposits.readCursor()).toBeNull();
+      await db.usdtDeposits.advanceCursor({ nextBlock: 5000, headBlock: 5015 });
+      expect(await db.usdtDeposits.recordCursorError({ message: 'node down' })).toBe(true);
+      expect(await db.usdtDeposits.readCursor()).toMatchObject({ nextBlock: 5000, lastError: 'node down' });
+    } finally {
+      await pgQuery("DELETE FROM usdt_chain_cursors WHERE chain = 'BEP20'");
+      if (saved) {
+        await pgQuery(
+          `INSERT INTO usdt_chain_cursors (chain, next_block, head_block, last_ok_at, last_error, last_error_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [saved.chain, saved.next_block, saved.head_block, saved.last_ok_at, saved.last_error, saved.last_error_at, saved.updated_at]);
+      }
+    }
   });
 
   it('the watcher reads the chain, records the transfer and credits the buy', async () => {
@@ -229,6 +295,32 @@ describePg('USDT buys paid to the platform on BSC', () => {
     expect(out.recorded).toBeGreaterThanOrEqual(1);
     expect((await getOrderRecord(order.orderId)).status).toBe('COMPLETED');
     expect(raw(1)).toBe(RAW_PER_USDT);
+  });
+
+  it('reads recent blocks behind the cursor again, so a transfer a node missed the first time is still found', async () => {
+    const who = await actor({});
+    const { order } = await buy(who, 100);
+    let cursor = await db.usdtDeposits.readCursor();
+    if (!cursor) { await db.usdtDeposits.advanceCursor({ nextBlock: 1_000_000, headBlock: 1_000_000 }); cursor = await db.usdtDeposits.readCursor(); }
+    // Already behind the cursor: an earlier tick read this block and the node said nothing.
+    const block = cursor.nextBlock - 50;
+    const head = cursor.nextBlock + 20;
+    vi.stubGlobal('fetch', async (_url, init) => {
+      const { id, method, params } = JSON.parse(init.body);
+      let result = [];
+      if (method === 'eth_blockNumber') result = `0x${head.toString(16)}`;
+      else if (method === 'eth_getLogs') {
+        const [{ fromBlock, toBlock, topics }] = params;
+        result = block >= Number(fromBlock) && block <= Number(toBlock) && topics[2].includes(addressTopic(order.usdtAddress)) ? [{
+          address: BSC_USDT_CONTRACT, topics: [TRANSFER_TOPIC, addressTopic(`0x${'1'.repeat(40)}`), addressTopic(order.usdtAddress)],
+          data: `0x${(100n * RAW_PER_USDT).toString(16)}`, blockNumber: `0x${block.toString(16)}`,
+          transactionHash: hex64(), logIndex: '0x0', removed: false,
+        }] : [];
+      }
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), { status: 200 });
+    });
+    await watchUsdtDeposits();
+    expect((await getOrderRecord(order.orderId)).status).toBe('COMPLETED');
   });
 
   it('rotates to a new key: new buys get its addresses, buys under the old key are still credited and swept with the old phrase', async () => {
@@ -287,8 +379,7 @@ describePg('USDT buys paid to the platform on BSC', () => {
     /** A buy whose order has closed, with `usdt` arrived after it closed. */
     const latePaid = async (usdt = 100) => {
       const { order } = await buy(await actor({}), 100);
-      await pgQuery(`UPDATE order_states SET expires_at = now() - interval '1 minute' WHERE order_id = $1`, [order.orderId]);
-      await expireOrders();
+      await lapse(order.orderId);
       await pay(order.usdtAddress, usdt);
       return order;
     };

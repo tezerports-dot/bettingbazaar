@@ -14,9 +14,10 @@
  *   2. USDT_SWEEP_MNEMONIC="twelve or twenty-four words"  BSC_RPC_URL=https://… \
  *      node scripts/usdt-sweep.mjs usdt-sweep.csv            (a dry run: the plan)
  *      node scripts/usdt-sweep.mjs usdt-sweep.csv --send     (signs and sends)
- *      Before sending it prints the final wallet and asks you to type its last
- *      6 characters, so a file changed on a broken-into server sends nothing
- *      (or pass --confirm <last 6>). USDT_TREASURY_ADDRESS, if set, must match it.
+ *      Before sending it prints the final wallet and asks you to paste your
+ *      wallet's address from your own wallet app; a file changed on a
+ *      broken-into server sends nothing (or pass --confirm <0x…>).
+ *      USDT_TREASURY_ADDRESS, if set, must match it.
  *   3. Admin › USDT Deposits › paste usdt-sweep-results.csv › Record results
  *
  * For each line it derives the key at m/44'/60'/0'/0/<derivationIndex> and
@@ -184,10 +185,15 @@ export function destinationFor(rows, envAddress) {
   return fromFile ?? local;
 }
 
-/** Whether `typed` is the last 6 characters of `address` (any case). */
+/**
+ * Whether `typed` is the whole of `address` (any case). The whole address,
+ * never a few characters of it: an address that ends (or starts) the same way
+ * as yours takes an attacker seconds to generate. Paste it from your own
+ * wallet app, not from the sweep file.
+ */
 export function confirmsAddress(address, typed) {
-  const want = String(address).toLowerCase().slice(-6);
-  return String(typed ?? '').trim().toLowerCase() === want;
+  const want = String(address).toLowerCase();
+  return ADDRESS_RE.test(want) && String(typed ?? '').trim().toLowerCase() === want;
 }
 
 // ── The chain ────────────────────────────────────────────────────────────────
@@ -314,7 +320,7 @@ async function main(argv) {
   const outFile = resolve(outAt >= 0 ? argv[outAt + 1] : 'usdt-sweep-results.csv');
   const input = argv.find((a, i) => !a.startsWith('--') && argv[i - 1] !== '--out' && argv[i - 1] !== '--confirm');
   if (!input) {
-    console.error('usage: node scripts/usdt-sweep.mjs <usdt-sweep.csv> [--send [--confirm <last 6 of the final wallet>]] [--out results.csv]');
+    console.error('usage: node scripts/usdt-sweep.mjs <usdt-sweep.csv> [--send [--confirm <your wallet address>]] [--out results.csv]');
     return 2;
   }
   if (process.env.NODE_ENV === 'production') {
@@ -339,11 +345,11 @@ async function main(argv) {
     let typed = confirmAt >= 0 ? argv[confirmAt + 1] : null;
     if (typed === null && process.stdin.isTTY) {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
-      typed = await rl.question('Check it is YOUR wallet. Type its last 6 characters to send: ');
+      typed = await rl.question('Open YOUR wallet app, copy its receiving address and paste it here to send: ');
       rl.close();
     }
     if (!confirmsAddress(to, typed)) {
-      console.error('Not confirmed: nothing was sent. If that is not your wallet, do not sweep; fix it on Admin › USDT Deposits.');
+      console.error('Not confirmed: what you pasted is not the address this file sends to, so nothing was sent. If the file\'s address is not yours, do not sweep: fix it on Admin › USDT Deposits and tell your team, because someone may have changed it.');
       return 2;
     }
   }

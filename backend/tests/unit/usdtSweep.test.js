@@ -88,11 +88,14 @@ describe('the sweep file', () => {
     expect(destinationFor([], other)).toBe(other);
   });
 
-  it('takes the last 6 characters of the final wallet, in any case, as the confirmation', () => {
+  it('takes only the whole final wallet, in any case, as the confirmation, never a few matching characters', () => {
     const w = '0xabababababababababababababababababababab';
-    expect(confirmsAddress(w, w.slice(-6).toUpperCase())).toBe(true);
-    expect(confirmsAddress(w, ` ${w.slice(-6)} `)).toBe(true);
-    expect(confirmsAddress(w, w.slice(-5))).toBe(false);
+    expect(confirmsAddress(w, w.toUpperCase().replace('0X', '0x'))).toBe(true);
+    expect(confirmsAddress(w, ` ${w} `)).toBe(true);
+    // A vanity address sharing the start and end of yours is not yours.
+    expect(confirmsAddress(w, `${w.slice(0, 8)}${'0'.repeat(28)}${w.slice(-6)}`)).toBe(false);
+    expect(confirmsAddress(w, w.slice(-6))).toBe(false);
+    expect(confirmsAddress('0x123', '0x123')).toBe(false);
     expect(confirmsAddress(w, null)).toBe(false);
     expect(confirmsAddress(w, '')).toBe(false);
   });

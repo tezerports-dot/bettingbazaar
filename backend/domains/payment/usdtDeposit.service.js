@@ -29,6 +29,19 @@ export const MAX_BLOCKS_PER_TICK = 20 * LOG_BLOCK_RANGE;
 export const FIRST_RUN_LOOKBACK_BLOCKS = 2000;
 /** Recipient topics per `eth_getLogs` (an OR list). */
 const ADDRESSES_PER_CALL = 100;
+/**
+ * Every tick reads this many blocks behind the cursor again. A load-balanced
+ * node can answer `[]` for blocks one of its backends has not seen yet rather
+ * than an error; reading the recent blocks twice catches what it missed.
+ * Recording is once per (hash, log index), so a second sighting is a no-op.
+ */
+export const RESCAN_BLOCKS = 200;
+/**
+ * A USDT buy past its deadline lapses only once the watcher has read the chain
+ * this long after the deadline (plus a few seconds per confirmation), so money
+ * sent just in time is credited, not counted as an unpaid buy.
+ */
+export const EXPIRY_GRACE_SECONDS = 120;
 
 /** The admin's USDT deposit settings (`SystemConfig.usdtDeposits`). */
 export function usdtDepositSettings(cfg) {
@@ -137,8 +150,9 @@ export async function watchUsdtDeposits() {
     const safe = head - confirmations;
     const watched = await db.usdtDeposits.watchedAddresses({ lateWatchHours });
     const cursor = await db.usdtDeposits.readCursor();
-    let from = cursor ? cursor.nextBlock : Math.max(0, safe - FIRST_RUN_LOOKBACK_BLOCKS);
-    const stop = Math.min(safe, from + MAX_BLOCKS_PER_TICK - 1);
+    const start = cursor ? cursor.nextBlock : Math.max(0, safe - FIRST_RUN_LOOKBACK_BLOCKS);
+    let from = cursor ? Math.max(0, start - RESCAN_BLOCKS) : start;
+    const stop = Math.min(safe, start + MAX_BLOCKS_PER_TICK - 1);
     const addresses = watched.map((w) => w.address);
 
     while (from <= stop) {
@@ -180,6 +194,26 @@ export async function watchUsdtDeposits() {
     }
   }
   return { head, scannedTo, recorded, credited };
+}
+
+/**
+ * Whether a USDT buy past its deadline may lapse now (`expireOrders`): only
+ * once the watcher has read, caught up, past the deadline and its grace, so a
+ * payment confirmed late or a watcher running behind never turns into an
+ * unpaid buy against the player. A deployment that cannot watch, or an order
+ * past the late-money watch, lapses anyway: nothing more would be read for it.
+ */
+export async function usdtBuyMayLapse(expiresAt, cfg) {
+  if (!usdtDepositsConfigured()) return true;
+  const { confirmations, lateWatchHours } = usdtDepositSettings(cfg ?? await getSystemConfig());
+  const deadline = new Date(expiresAt).getTime();
+  if (!Number.isFinite(deadline)) return true;
+  if (Date.now() > deadline + lateWatchHours * 3600_000) return true;
+  const cursor = await db.usdtDeposits.readCursor();
+  if (!cursor?.lastOkAt || cursor.headBlock === null) return false;
+  const caughtUp = cursor.headBlock - cursor.nextBlock <= confirmations + 1;
+  const readAfter = new Date(cursor.lastOkAt).getTime() >= deadline + (EXPIRY_GRACE_SECONDS + 3 * confirmations) * 1000;
+  return caughtUp && readAfter;
 }
 
 /** The watcher's health for the admin page: the cursor and how far behind it is. */

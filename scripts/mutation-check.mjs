@@ -3737,6 +3737,34 @@ const MUTATIONS = [
     from: `  if (local && fromFile !== undefined && local !== fromFile) {`,
     to: `  if (false) {`,
   },
+  {
+    id: 'M485', file: 'scripts/usdt-sweep.mjs', config: UNIT,
+    test: 'backend/tests/unit/usdtSweep.test.js',
+    why: 'a vanity address sharing the last 6 characters of the owner\'s wallet passes the sweep confirmation',
+    from: `  return ADDRESS_RE.test(want) && String(typed ?? '').trim().toLowerCase() === want;`,
+    to: `  return String(typed ?? '').trim().toLowerCase() === want.slice(-6);`,
+  },
+  {
+    id: 'M486', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/usdtPlatformDepositPg.test.js',
+    why: 'a USDT buy lapses while the watcher is behind, so money sent in time is an unpaid buy against the player',
+    from: `        if (!(await usdtBuyMayLapse(order.expiresAt))) continue;`,
+    to: `        if (false) continue;`,
+  },
+  {
+    id: 'M487', file: 'backend/domains/payment/usdtDeposit.service.js', config: PG,
+    test: 'backend/tests/routes/usdtPlatformDepositPg.test.js',
+    why: 'blocks a node answered empty the first time are never read again, so that payment is never seen',
+    from: `    let from = cursor ? Math.max(0, start - RESCAN_BLOCKS) : start;`,
+    to: `    let from = start;`,
+  },
+  {
+    id: 'M488', file: 'database/repositories/usdtDeposits.js', config: PG,
+    test: 'backend/tests/routes/usdtPlatformDepositPg.test.js',
+    why: 'one transaction paying two buys credits only the first; the second is refused as a reused reference',
+    from: "export const paymentReferenceOf = (t) => `${String(t.tx_hash ?? t.txHash).toLowerCase()}:${Number(t.log_index ?? t.logIndex)}`;",
+    to: "export const paymentReferenceOf = (t) => `${String(t.tx_hash ?? t.txHash).toLowerCase()}`;",
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

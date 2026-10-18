@@ -144,13 +144,17 @@ export async function advanceCursor({ chain = USDT_DEPOSIT_CHAIN, nextBlock, hea
     [chain, nextBlock, headBlock], 'usdt_cursor_advance');
 }
 
-/** A failed read, kept on the cursor so the admin page can say the watcher is stuck. */
-export async function recordCursorError({ chain = USDT_DEPOSIT_CHAIN, message, startBlock = 0 }) {
-  await pgQuery(
-    `INSERT INTO usdt_chain_cursors (chain, next_block, last_error, last_error_at, updated_at)
-     VALUES ($1, $3, $2, now(), now())
-     ON CONFLICT (chain) DO UPDATE SET last_error = EXCLUDED.last_error, last_error_at = now(), updated_at = now()`,
-    [chain, String(message ?? 'unknown error').slice(0, 500), startBlock], 'usdt_cursor_error');
+/**
+ * A failed read, kept on the cursor so the admin page can say the watcher is
+ * stuck. Before the first good read there is no cursor and none is made here:
+ * a made-up starting block would send the watcher back to it (block 0 is the
+ * chain's start, months of blocks away). Returns whether it was recorded.
+ */
+export async function recordCursorError({ chain = USDT_DEPOSIT_CHAIN, message }) {
+  const { rowCount } = await pgQuery(
+    `UPDATE usdt_chain_cursors SET last_error = $2, last_error_at = now(), updated_at = now() WHERE chain = $1`,
+    [chain, String(message ?? 'unknown error').slice(0, 500)], 'usdt_cursor_error');
+  return rowCount === 1;
 }
 
 /**
@@ -175,6 +179,9 @@ export async function recordTransfer({ txHash, logIndex, to, from, amountMicro, 
     ? { recorded: true, orderId: rows[0].order_id, orderState: rows[0].order_state_at_arrival }
     : { recorded: false };
 }
+
+/** A transfer's payment reference in `utr_registry`: its transaction hash and log index. */
+export const paymentReferenceOf = (t) => `${String(t.tx_hash ?? t.txHash).toLowerCase()}:${Number(t.log_index ?? t.logIndex)}`;
 
 /**
  * The credit for a USDT buy, inside its COMPLETED transition (the order row is
@@ -210,13 +217,16 @@ export async function creditUsdtBuyWithin(client, orderId, { actor = 'usdt-watch
   await client.query('UPDATE order_states SET pool_paid_at = now() WHERE order_id = $1', [oid]);
 
   // The order's reference, once, for good (§27). The registry holds one
-  // reference per order, so the FIRST transfer's hash is the one claimed; every
-  // transfer (each log) already belongs to exactly one order through the
-  // primary key of `usdt_deposit_transfers`. A hash another order claimed is
-  // refused, not credited twice.
-  const hash = transfers[0].tx_hash;
-  const claimed = await claimUtrWithin(client, { utr: hash, orderId: oid, userId: o[0].user_id });
-  if (!claimed.ok) throw new UsdtCreditRefused('reference_taken', { txHash: hash, heldBy: claimed.entry?.orderId ?? null });
+  // reference per order, so the FIRST transfer is the one claimed, named by its
+  // hash AND log index (`paymentReferenceOf`): one transaction may pay several
+  // orders (an exchange's batch payout), each by its own log, and the hash
+  // alone would refuse every order after the first. Each log already belongs
+  // to exactly one order through the primary key of `usdt_deposit_transfers`.
+  const reference = paymentReferenceOf(transfers[0]);
+  const claimed = await claimUtrWithin(client, { utr: reference, orderId: oid, userId: o[0].user_id });
+  if (!claimed.ok) {
+    throw new UsdtCreditRefused('reference_taken', { reference, heldBy: claimed.entry?.orderId ?? null });
+  }
 
   const wallet = await lockWalletWithin(client, o[0].user_id);
   const credited = await creditBuyWithin(wallet, {

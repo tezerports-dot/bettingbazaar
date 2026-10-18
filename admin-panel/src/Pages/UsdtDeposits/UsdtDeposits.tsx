@@ -78,7 +78,7 @@ const FinalWalletCard: React.FC<{
       <h3 className="text-sm font-semibold text-gray-100 flex items-center gap-2"><Wallet size={16} /> Final wallet</h3>
       <p className="text-xs text-gray-400">
         Your own BNB Smart Chain (BEP-20) wallet. Each buy is paid to its own address first; every sweep then sends the USDT here.
-        Before sending, the sweep tool shows this address and asks you to type its last 6 characters.
+        Before sending, the sweep tool shows this address and asks you to paste your wallet's address from your own wallet app; it sends nothing unless they match.
       </p>
       {wallet ? (
         <div className="text-sm">
@@ -252,7 +252,9 @@ export const UsdtDeposits: React.FC = () => {
               ? 'Not set up: this server has no USDT_BEP20_XPUB or BSC_RPC_URL, so players cannot buy with USDT.'
               : w.lastError && (!w.lastOkAt || (w.lastErrorAt && w.lastErrorAt > w.lastOkAt))
                 ? `The watcher cannot read the chain (${when(w.lastErrorAt)}): ${w.lastError}`
-                : `Watcher reading the chain. Last read ${when(w.lastOkAt)}, up to block ${w.nextBlock ?? '—'} of ${w.headBlock ?? '—'}.`}
+                : !w.lastOkAt
+                  ? 'The watcher has not read the chain yet. If this stays, check BSC_RPC_URL; failures are sent as alerts.'
+                  : `Watcher reading the chain. Last read ${when(w.lastOkAt)}, up to block ${w.nextBlock ?? '—'} of ${w.headBlock ?? '—'}.`}
           </p>
         )}
         {w?.activeKeyId && (
