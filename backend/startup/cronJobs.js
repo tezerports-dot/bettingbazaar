@@ -183,6 +183,19 @@ export function registerCronJobs(rebuildLeaderboard) {
     }
   });
 
+  // ── USDT deposits on BNB Smart Chain — every 20 seconds (owner, 2026-10-18) ─
+  // Reads the chain for USDT arriving at each open buy's own address and
+  // credits the buy once enough has arrived with enough confirmations. Does
+  // nothing on a deployment with no USDT_BEP20_XPUB / BSC_RPC_URL. A read that
+  // fails is retried on the next tick from the same block, and alerts.
+  registerRecurring('usdt-deposit-watch', 20 * 1000, async () => {
+    try {
+      const { watchUsdtDeposits } = await import('../domains/payment/usdtDeposit.service.js');
+      const r = await watchUsdtDeposits();
+      if (r?.credited > 0) console.log(`[usdt-watcher] Credited ${r.credited} USDT buy(s)`);
+    } catch (e) { console.error('[usdt-watcher] cron error:', e.message); }
+  });
+
   // ── Queued orders, offered to the teams again — runs every 30 seconds ──────
   // An order created while every member on its rail was busy, not Ready, or
   // short of pool tokens waits PENDING_QUEUE. Nothing else looks at it again

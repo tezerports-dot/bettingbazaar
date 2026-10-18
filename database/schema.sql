@@ -5096,3 +5096,131 @@ ALTER TABLE dispute_compensations ADD CONSTRAINT dispute_compensations_rule CHEC
 CREATE INDEX IF NOT EXISTS dispute_compensations_merchant_idx ON dispute_compensations (merchant_id, created_at DESC);
 CREATE OR REPLACE TRIGGER dispute_compensations_append_only
   BEFORE UPDATE OR DELETE ON dispute_compensations FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- USDT DEPOSITS TO THE PLATFORM (owner, 2026-10-18: BSC only, one address per order)
+-- A USDT buy is paid to an address the platform derived for that order alone
+-- from its account xpub (`order_states.usdt_pay_address`; the derivation is in
+-- `usdt_deposit_addresses`), watched on chain, and
+-- credited by the server when enough confirmed USDT has arrived. Every
+-- transfer seen arriving at one of those addresses is kept
+-- (`usdt_deposit_transfers`), whatever became of the order. All of it is
+-- written only by database/repositories/usdtDeposits.js (the address with the
+-- order, in `openUsdtBuy`); the chain is reached only
+-- through backend/domains/payment/usdtBsc.js. The server holds the xpub, never
+-- a private key: the coins are swept offline by scripts/usdt-sweep.mjs.
+-- ════════════════════════════════════════════════════════════════════════════
+CREATE SEQUENCE IF NOT EXISTS usdt_deposit_index_seq AS INTEGER MINVALUE 0 START 0 MAXVALUE 2147483647 NO CYCLE;
+
+-- Where the player pays: on the order itself, written with the row and never
+-- changed. The derivation behind it (key and index) and the sweep stamp are
+-- the address row's.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS usdt_pay_address TEXT;
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_usdt_pay_address_shape;
+ALTER TABLE order_states ADD CONSTRAINT order_states_usdt_pay_address_shape CHECK (
+  usdt_pay_address IS NULL OR (usdt_pay_address ~ '^0x[0-9a-f]{40}$' AND currency = 'USDT'));
+CREATE UNIQUE INDEX IF NOT EXISTS order_states_usdt_pay_address_unique
+  ON order_states (usdt_pay_address) WHERE usdt_pay_address IS NOT NULL;
+CREATE OR REPLACE FUNCTION bb_usdt_pay_address_frozen() RETURNS trigger AS $$
+BEGIN
+  IF NEW.usdt_pay_address IS DISTINCT FROM OLD.usdt_pay_address THEN
+    RAISE EXCEPTION 'order % pays to % and that never changes', OLD.order_id, OLD.usdt_pay_address;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER order_states_usdt_pay_address_frozen
+  BEFORE UPDATE OF usdt_pay_address ON order_states FOR EACH ROW EXECUTE FUNCTION bb_usdt_pay_address_frozen();
+
+CREATE TABLE IF NOT EXISTS usdt_deposit_addresses (
+  order_id          TEXT PRIMARY KEY REFERENCES order_states (order_id),
+  chain             TEXT NOT NULL,
+  key_id            TEXT NOT NULL,
+  derivation_index  INTEGER NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Set when an admin records the coins swept out, once.
+  swept_at          TIMESTAMPTZ,
+  swept_tx_hash     TEXT,
+  swept_by          TEXT
+);
+ALTER TABLE usdt_deposit_addresses DROP CONSTRAINT IF EXISTS usdt_deposit_addresses_shape;
+ALTER TABLE usdt_deposit_addresses ADD CONSTRAINT usdt_deposit_addresses_shape CHECK (
+  chain = 'BEP20'
+  AND key_id ~ '^[0-9a-f]{16}$'
+  AND derivation_index >= 0
+  AND ((swept_at IS NULL AND swept_tx_hash IS NULL AND swept_by IS NULL)
+    OR (swept_at IS NOT NULL AND swept_tx_hash ~ '^0x[0-9a-f]{64}$' AND swept_by IS NOT NULL)));
+CREATE UNIQUE INDEX IF NOT EXISTS usdt_deposit_addresses_index_unique ON usdt_deposit_addresses (key_id, derivation_index);
+
+-- The derivation never changes; the only later write is the sweep stamp, once.
+CREATE OR REPLACE FUNCTION bb_usdt_address_frozen() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'usdt_deposit_addresses rows are never deleted'; END IF;
+  IF NEW.order_id IS DISTINCT FROM OLD.order_id OR NEW.chain IS DISTINCT FROM OLD.chain
+     OR NEW.key_id IS DISTINCT FROM OLD.key_id OR NEW.derivation_index IS DISTINCT FROM OLD.derivation_index
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'a USDT deposit address is fixed once derived (order %)', OLD.order_id;
+  END IF;
+  IF OLD.swept_at IS NOT NULL THEN
+    RAISE EXCEPTION 'USDT deposit address of order % is already recorded as swept', OLD.order_id;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER usdt_deposit_addresses_frozen
+  BEFORE UPDATE OR DELETE ON usdt_deposit_addresses FOR EACH ROW EXECUTE FUNCTION bb_usdt_address_frozen();
+
+CREATE TABLE IF NOT EXISTS usdt_deposit_transfers (
+  chain          TEXT NOT NULL,
+  tx_hash        TEXT NOT NULL,
+  log_index      INTEGER NOT NULL,
+  order_id       TEXT NOT NULL REFERENCES usdt_deposit_addresses (order_id),
+  from_address   TEXT NOT NULL,
+  amount_micro   BIGINT NOT NULL,
+  block_number   BIGINT NOT NULL,
+  -- The order's state when the transfer was seen: whether it could count.
+  order_state_at_arrival TEXT NOT NULL,
+  seen_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- An admin's note that a transfer the server could not credit was dealt with.
+  handled_at     TIMESTAMPTZ,
+  handled_by     TEXT,
+  handled_note   TEXT,
+  PRIMARY KEY (chain, tx_hash, log_index)
+);
+ALTER TABLE usdt_deposit_transfers DROP CONSTRAINT IF EXISTS usdt_deposit_transfers_shape;
+ALTER TABLE usdt_deposit_transfers ADD CONSTRAINT usdt_deposit_transfers_shape CHECK (
+  chain = 'BEP20'
+  AND tx_hash ~ '^0x[0-9a-f]{64}$'
+  AND from_address ~ '^0x[0-9a-f]{40}$'
+  AND amount_micro >= 0 AND log_index >= 0 AND block_number >= 0
+  AND ((handled_at IS NULL AND handled_by IS NULL AND handled_note IS NULL)
+    OR (handled_at IS NOT NULL AND handled_by IS NOT NULL AND length(btrim(handled_note)) BETWEEN 1 AND 500)));
+CREATE INDEX IF NOT EXISTS usdt_deposit_transfers_order_idx ON usdt_deposit_transfers (order_id);
+CREATE INDEX IF NOT EXISTS usdt_deposit_transfers_open_idx ON usdt_deposit_transfers (seen_at DESC) WHERE handled_at IS NULL;
+
+-- A transfer is a fact about the chain: only the handled note is written later, once.
+CREATE OR REPLACE FUNCTION bb_usdt_transfer_frozen() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'usdt_deposit_transfers rows are never deleted'; END IF;
+  IF (to_jsonb(NEW) - 'handled_at' - 'handled_by' - 'handled_note')
+     IS DISTINCT FROM (to_jsonb(OLD) - 'handled_at' - 'handled_by' - 'handled_note') THEN
+    RAISE EXCEPTION 'a USDT transfer record is never edited (% #%)', OLD.tx_hash, OLD.log_index;
+  END IF;
+  IF OLD.handled_at IS NOT NULL THEN
+    RAISE EXCEPTION 'USDT transfer % #% is already marked handled', OLD.tx_hash, OLD.log_index;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER usdt_deposit_transfers_frozen
+  BEFORE UPDATE OR DELETE ON usdt_deposit_transfers FOR EACH ROW EXECUTE FUNCTION bb_usdt_transfer_frozen();
+
+-- How far the watcher has read the chain: the next block to read. One row per chain.
+CREATE TABLE IF NOT EXISTS usdt_chain_cursors (
+  chain       TEXT PRIMARY KEY,
+  next_block  BIGINT NOT NULL,
+  head_block  BIGINT,
+  last_ok_at  TIMESTAMPTZ,
+  last_error  TEXT,
+  last_error_at TIMESTAMPTZ,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE usdt_chain_cursors DROP CONSTRAINT IF EXISTS usdt_chain_cursors_shape;
+ALTER TABLE usdt_chain_cursors ADD CONSTRAINT usdt_chain_cursors_shape CHECK (chain = 'BEP20' AND next_block >= 0);

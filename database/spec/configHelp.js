@@ -92,6 +92,18 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'How many buy orders in a row may expire unpaid at the same agent before orders stop being sent to them. It is not a suspension; an admin or their next completed order clears it.',
     example: '3: if three players in a row cannot pay one agent, that agent stops getting buys until someone checks their QR or bank.',
   },
+  'usdtDeposits.paymentWindowMinutes': {
+    what: 'How long a player has to send the USDT for a buy to its own address before the order expires.',
+    example: '60: an order opened at 10:00 expires at 11:00 if not enough USDT has arrived by then.',
+  },
+  'usdtDeposits.confirmations': {
+    what: 'How many BNB Smart Chain blocks must follow a USDT transfer before it counts and the tokens are credited.',
+    example: '15 (about 10 to 45 seconds on BSC). More is safer against a chain reorganisation, and slower.',
+  },
+  'usdtDeposits.lateWatchHours': {
+    what: 'How long after a USDT buy ends its address is still watched, so money sent late is recorded for an admin to sort out.',
+    example: '72: a payment arriving two days after the order expired still shows on Admin › USDT Deposits.',
+  },
   'usdtBuy.minUsdt': {
     what: 'The smallest USDT buy a player may place. Must be a multiple of 100.',
     example: '200: a 100 USDT buy is refused; 200 and up are allowed.',

@@ -83,6 +83,7 @@ import * as supportDocuments from './repositories/supportDocuments.js';
 import * as depositPolicy from './repositories/depositPolicy.js';
 import * as teams from './repositories/teams.js';
 import * as teamPools from './repositories/teamPools.js';
+import * as usdtDeposits from './repositories/usdtDeposits.js';
 import * as teamCommission from './repositories/teamCommission.js';
 import * as teamRouting from './repositories/teamRouting.js';
 import * as teamOversight from './repositories/teamOversight.js';
@@ -170,6 +171,7 @@ export const db = Object.freeze({
   depositPolicy,
   teams,
   teamPools,
+  usdtDeposits,
   teamCommission,
   teamRouting,
   teamOversight,

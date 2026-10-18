@@ -212,6 +212,19 @@ export const SYSTEM_CONFIG_SPEC = group({
     minUsdt: { ...int(100, USDT_BUY_STEP, 100000), multipleOf: USDT_BUY_STEP },
     maxUsdt: { ...int(10000, USDT_BUY_STEP, 100000), multipleOf: USDT_BUY_STEP },
   }),
+  // ── USDT paid to the platform (owner, 2026-10-18: BSC only) ─────────────
+  // A USDT buy is paid to an address derived for that order alone and
+  // credited when the chain shows enough USDT arrived. `paymentWindowMinutes`:
+  // how long the player has to send it; `confirmations`: how many BSC blocks
+  // must follow the transfer before it counts; `lateWatchHours`: how long
+  // after an order ends its address is still watched, so a late payment is
+  // recorded for an admin. Read through `usdtDepositSettings`
+  // (backend/domains/payment/usdtDeposit.service.js).
+  usdtDeposits: group({
+    paymentWindowMinutes: int(60, 10, 1440),
+    confirmations:        int(15, 3, 200),
+    lateWatchHours:       int(72, 1, 720),
+  }),
   // ── Team routing (redesign Step 2c) ─────────────────────────────────────
   // An order goes to a TEAM member on the rail its amount and currency put it
   // on. There is no rail switch, so each rail carries its own timers and cap.

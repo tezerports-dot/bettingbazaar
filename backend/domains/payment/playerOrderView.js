@@ -38,6 +38,7 @@
 
 import { PAYMENT_MODES } from '#db/repositories/orderRails.js';
 import { buildUpiPayLink } from './cashLink.js';
+import { USDT_CHAIN_SPEC } from '../merchant/merchantCurrency.js';
 
 /**
  * Top-level fields a player may see of their own order. Anything absent here
@@ -96,6 +97,10 @@ export const PLAYER_ORDER_FIELDS = Object.freeze([
   // Whether they may still cancel it: derived below from `PLAYER_CANCEL_STATES`
   // (no column), declared here so the shape stays closed.
   'canCancel',
+
+  // On a USDT buy, the USDT that has arrived at its address so far (derived
+  // from the chain transfers, no column), so a part payment is visible.
+  'usdtReceived',
 ]);
 
 /**
@@ -175,7 +180,8 @@ export const PLAYER_PAY_TO_BANK_FIELDS = Object.freeze([
  *   merchant-account buy (owner, 2026-10-11): on a UPI_QR account
  *                  `paymentLink`, built from the account's payee and name with
  *                  the order's amount; on a BANK account `bankAccount` as above.
- *   USDT buy       `usdtAddress` with its chain, always together.
+ *   USDT buy       `usdtAddress` with its chain, always together: the
+ *                  platform's own address for this order (owner, 2026-10-18).
  *   any sell       nothing to pay: the member pays the player.
  *
  * The reference is `Merchant #<publicRef>`, a label that names nobody, so a
@@ -213,7 +219,26 @@ export function playerMayCancel(order) {
   return order.status !== 'PROCESSING' || !order.cashLink;
 }
 
+/**
+ * A USDT buy is paid to the platform (owner, 2026-10-18): the address derived
+ * for this order alone, always with its network, while the order is open.
+ * There is no merchant and no reference to name one.
+ */
+function platformUsdtPayTo(order) {
+  if (order?.type !== 'DEPOSIT' || order?.currency !== 'USDT' || !order?.usdtPayAddress) return undefined;
+  if (!PAY_DETAIL_STATES.includes(order.status)) return undefined;
+  const spec = USDT_CHAIN_SPEC[order.usdtChain];
+  return {
+    usdtAddress: order.usdtPayAddress,
+    usdtChain: order.usdtChain,
+    ...(spec ? { usdtChainLabel: spec.label } : {}),
+    ...(order.expiresAt ? { expiresAt: order.expiresAt } : {}),
+  };
+}
+
 function counterpartyFor(order) {
+  const platform = platformUsdtPayTo(order);
+  if (platform) return platform;
   const snapshot = order?.merchantSnapshot;
   if (!snapshot || typeof snapshot !== 'object') return undefined;
   const isBuy = order.type === 'DEPOSIT';
@@ -256,8 +281,12 @@ function counterpartyFor(order) {
   return Object.keys(view).length ? view : undefined;
 }
 
-/** Project one order into the player-facing shape. */
-export function toPlayerOrderView(order) {
+/**
+ * Project one order into the player-facing shape. `extras.usdtReceivedMicro`,
+ * when the caller read it (`usdtDeposits.depositFor`), is sent as
+ * `usdtReceived`: what has arrived at a USDT buy's address so far.
+ */
+export function toPlayerOrderView(order, extras = {}) {
   if (!order) return null;
   const plain = typeof order.toObject === 'function' ? order.toObject() : order;
 
@@ -275,6 +304,10 @@ export function toPlayerOrderView(order) {
   // Whether the Cancel button is offered, from the one rule the cancel route
   // enforces, so no screen keeps its own idea of when an order can be dropped.
   view.canCancel = playerMayCancel(plain);
+
+  if (plain.currency === 'USDT' && Number.isFinite(extras?.usdtReceivedMicro)) {
+    view.usdtReceived = extras.usdtReceivedMicro / 1e6;
+  }
 
   return view;
 }

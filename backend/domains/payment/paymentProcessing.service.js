@@ -70,6 +70,7 @@ import { toPlayerOrderView, playerCancelFrom } from './playerOrderView.js';
 // This service pushes to both parties, so it needs both projections.
 import { toMerchantOrderView } from '../merchant/merchantOrderView.js';
 import { sendAlert } from '../../services/alerting.service.js';
+import { openPlatformUsdtBuy, creditIfCovered } from './usdtDeposit.service.js';
 
 // ─── Shared admin SSE payload ─────────────────────────────────────────────────
 function adminOrderPayload(order, user) {
@@ -483,7 +484,7 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // there for good if the process died in between.
   // The rail is DERIVED from the currency and the size, inside the writer —
   // the same rule the risk gate judged the amount by (`paymentModeFor`).
-  const order = await db.orders.createOrderRecord({
+  const orderInput = {
     orderId:           `DEP_${crypto.randomBytes(12).toString('hex')}`,
     userId:            user.userId,
     type:              'DEPOSIT',
@@ -506,7 +507,24 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
     depositAllocation: split.depositAllocation,
     reserveAllocation: split.reserveAllocation,
     depositPolicySnapshot: split.snapshot,
-  });
+  };
+
+  // ── A USDT buy is the platform's own sale (owner, 2026-10-18) ───────────
+  // Paid to an address derived for this order alone on BNB Smart Chain, and
+  // credited by the chain watcher when the USDT arrives (`usdtDeposit.service`).
+  // No merchant, no team, no queue: the order is written already started.
+  if (currency === MERCHANT_CURRENCY.USDT) {
+    const { order } = await openPlatformUsdtBuy(orderInput, cfg);
+    emitAdminUpdate('new_order', adminOrderPayload(order, user));
+    return {
+      order: toPlayerOrderView(order, { usdtReceivedMicro: 0 }),
+      note: `Send ${fiatAmount.toLocaleString('en-IN')} USDT on BNB Smart Chain to receive `
+        + `${tokenAmount.toLocaleString('en-IN')} BB tokens `
+        + `(${order.depositAllocation} betting + ${order.reserveAllocation} reserve)`,
+    };
+  }
+
+  const order = await db.orders.createOrderRecord(orderInput);
 
   emitAdminUpdate('new_order', adminOrderPayload(order, user));
 
@@ -524,14 +542,8 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // one screen would have had to be added here too, by somebody remembering.
   return {
     order: toPlayerOrderView(order),
-    // Built from the STORED figures, so the message and the order agree — and
-    // in the CURRENCY the player actually sends. Saying "₹500" to somebody
-    // about to transfer 500 USDT names the wrong thing entirely.
-    note: currency === MERCHANT_CURRENCY.USDT
-      ? `You will send ${fiatAmount.toLocaleString('en-IN')} USDT to receive `
-        + `${tokenAmount.toLocaleString('en-IN')} BB tokens `
-        + `(${order.depositAllocation} betting + ${order.reserveAllocation} reserve)`
-      : `You will pay ₹${fiatAmount.toLocaleString()} to receive ${tokenAmount} BB tokens (${order.depositAllocation} betting + ${order.reserveAllocation} reserve)`,
+    // Built from the STORED figures, so the message and the order agree.
+    note: `You will pay ₹${fiatAmount.toLocaleString()} to receive ${tokenAmount} BB tokens (${order.depositAllocation} betting + ${order.reserveAllocation} reserve)`,
   };
 }
 
@@ -863,6 +875,13 @@ export async function markOrderPaid(userId, orderId, utrNumber) {
     throw Object.assign(new Error('Access denied'), { status: 403 });
   if (order.type !== 'DEPOSIT')
     throw Object.assign(new Error('Only DEPOSIT orders can be marked paid by user'), { status: 400 });
+  // A USDT buy is confirmed by the chain, not by the player (owner, 2026-10-18):
+  // there is nothing to submit, and nobody to show a hash to.
+  if (order.currency === MERCHANT_CURRENCY.USDT)
+    throw Object.assign(
+      new Error('USDT payments are confirmed automatically once they arrive. There is nothing to submit.'),
+      { status: 400, code: 'USDT_CONFIRMED_ON_CHAIN' },
+    );
   // "I've paid" is taken only on a started order (PROCESSING), the one state in
   // which the player is shown where to pay (`playerOrderView`).
   if (order.status !== 'PROCESSING')
@@ -1478,6 +1497,12 @@ export async function expireOrders() {
         if (await disputeUnpaidSell(order)) count++;
         continue;
       }
+      // A USDT buy gets one last look at the chain before it lapses: money
+      // the watcher recorded but has not yet credited is credited, not
+      // cancelled away (owner, 2026-10-18).
+      if (order.type === 'DEPOSIT' && order.currency === MERCHANT_CURRENCY.USDT && order.usdtPayAddress) {
+        if ((await creditIfCovered(order.orderId)).credited) continue;
+      }
       // Two instances running this cron both read the same expired batch. The
       // transition is what makes the refund happen once: the loser gets
       // `idempotent` and skips the release rather than racing it.
@@ -1508,7 +1533,31 @@ export async function expireOrders() {
       // tokens were held the moment the order became a member's; the window
       // has closed, so they come back. Unconditional because an order that
       // never reached a member holds nothing and this is a no-op.
-      if (order.type === 'DEPOSIT') {
+      if (order.type === 'DEPOSIT' && order.usdtPayAddress) {
+        // Part paid and lapsed: the USDT is recorded on the order for an admin
+        // (Admin › USDT Deposits, "needs attention"), and the player is told.
+        const deposit = await db.usdtDeposits.depositFor(order.orderId);
+        if (deposit?.receivedMicro > 0) {
+          const { notify } = await import('../communication/communication.service.js');
+          notify({
+            userId: String(order.userId), type: 'WARNING', title: 'Your USDT buy expired part paid',
+            message: `${(deposit.receivedMicro / 1e6).toLocaleString('en-IN', { maximumFractionDigits: 6 })} of `
+              + `${Number(order.fiatAmount).toLocaleString('en-IN')} USDT arrived before the order expired, so it was not credited. `
+              + 'Our team has been told and will sort it out with you.',
+            relatedId: String(order.orderId), relatedType: 'PaymentOrder',
+          }).catch(() => {});
+          sendAlert(`usdt-part-paid:${order.orderId}`, 'A USDT buy expired part paid',
+            { orderId: String(order.orderId), receivedUsdt: deposit.receivedMicro / 1e6, orderUsdt: order.fiatAmount })
+            .catch(() => {});
+        } else {
+          // Nothing arrived: an unpaid buy, the player's, like any other rail's.
+          const { recordPlayerPaymentFailure } = await import('./playerPaymentFailure.service.js');
+          await recordPlayerPaymentFailure({
+            orderId: order.orderId, userId: String(order.userId), merchantId: null,
+            reason: 'The USDT buy expired before any USDT arrived.', playerCouldPay: true,
+          });
+        }
+      } else if (order.type === 'DEPOSIT') {
         await db.teamPools.releaseBuyHold(order.orderId, { actor: 'expiry', reason: 'Order expired' });
       }
 
