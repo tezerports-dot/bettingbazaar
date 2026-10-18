@@ -58,6 +58,7 @@
     "test:mutate": "node backend/tests/browser/mutate.js",
     "test:operations": "node backend/tests/live/operations.mjs",
     "loadtest:scale": "node loadtest/scale.mjs",
+    "loadtest:cricket": "node loadtest/cricket-contention.mjs",
     "report:ui-coverage": "node scripts/report-ui-coverage.mjs",
     "test:captcha-doors": "node backend/tests/live/captchaDoors.mjs",
     "report:workflows": "BB_E2E_MD=docs/reference/E2E_WORKFLOWS.md npm run test:e2e",
