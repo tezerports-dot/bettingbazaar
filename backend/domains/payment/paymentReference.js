@@ -24,7 +24,7 @@
  * somebody who submitted a Tron hash reads as a different system's error, and
  * they will submit it again.
  */
-import { MERCHANT_CURRENCY } from '../merchant/merchantCurrency.js';
+import { ORDER_CURRENCY } from './orderCurrency.js';
 import { markUTRAsUsed, normalizeUTR } from '../../middleware/utrValidation.js';
 
 /** The minimum length of a bank UTR. Twelve is the shortest a bank issues. */
@@ -39,7 +39,7 @@ const MIN_UTR_LENGTH = 12;
 export function referenceSpecFor(order) {
   // A USDT buy is confirmed by the chain watcher (owner, 2026-10-18): nobody
   // submits a reference for one, so none is ever valid.
-  if (order?.currency === MERCHANT_CURRENCY.USDT) {
+  if (order?.currency === ORDER_CURRENCY.USDT) {
     return {
       label: 'transaction ID',
       valid: () => false,

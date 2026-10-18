@@ -181,6 +181,12 @@ export const UsdtDeposits: React.FC = () => {
                 : `Watcher reading the chain. Last read ${when(w.lastOkAt)}, up to block ${w.nextBlock ?? '—'} of ${w.headBlock ?? '—'}.`}
           </p>
         )}
+        {w?.activeKeyId && (
+          <p className="text-xs text-gray-500">
+            New addresses come from key <span className="font-mono text-gray-300">{w.activeKeyId}</span>. Each address keeps
+            the key it was made under, so after a key change the old addresses are still watched, and swept with the old phrase.
+          </p>
+        )}
         {t && (
           <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
             <Tile label="Waiting for payment" value={t.waiting} />

@@ -71,7 +71,7 @@ export const PayoutFromAccountDialog: React.FC<{
           <ArrowUpRight size={18} /> Mark payout as sent
         </div>
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-2)', lineHeight: 1.5 }}>
-          Confirm you sent {formatMoney(order.fiatAmount ?? order.amount, 'INR')} by bank transfer to the player&apos;s
+          Confirm you sent {formatMoney(order.fiatAmount ?? order.amount)} by bank transfer to the player&apos;s
           account. Choose the account you paid from and enter the UTR your bank gave the transfer.
         </div>
         {choices.length === 0 ? (

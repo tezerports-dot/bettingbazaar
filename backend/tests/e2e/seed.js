@@ -2,9 +2,9 @@
 import { db } from '#db';
 import { pgQuery } from '#db/client.js';
 import { createMerchant, approveMerchant, setOnline } from '#db/repositories/merchants.js';
-import { setSupervisorRole, createTeam, addMember, approveMember, TEAM_SIZE } from '#db/repositories/teams.js';
+import { setSupervisorRole, createTeam, addMember, approveMember, TEAM_SIZE, SUPERVISOR_RAILS } from '#db/repositories/teams.js';
 import { createRequest, fulfilRequest, getPool } from '#db/repositories/teamPools.js';
-import { setCashReady, RAILS } from '#db/repositories/teamRouting.js';
+import { setCashReady } from '#db/repositories/teamRouting.js';
 import { getTreasuryBalances, ACCOUNTS } from '#db/repositories/treasury.js';
 import { rid } from './harness.js';
 import { encryptField } from '../../domains/identity/fieldCrypto.util.js';
@@ -80,7 +80,7 @@ export async function seedPlayer({ balancePaise = 0, verified = true, boardRules
  * would let it carry on asserting against tokens nobody was given.
  */
 export async function seedMerchant({
-  currency = 'INR', approve = true, online = true,
+  approve = true, online = true,
   verified = true, tokensPaise, cashDenominationPaise,
 } = {}) {
   if (tokensPaise !== undefined || cashDenominationPaise !== undefined) {
@@ -97,10 +97,8 @@ export async function seedMerchant({
   const accountNo = String(100000000000 + Math.floor(Math.random() * 899999999999));
   const merchant = await createMerchant({
     name, username: name, mobile, email: `${name}@example.test`,
-    currency, status: 'PENDING',
-    bankDetails: currency === 'INR'
-      ? { accountNo, ifsc: 'HDFC0000001', accountHolderName: name, bankName: 'HDFC Bank' }
-      : null,
+    status: 'PENDING',
+    bankDetails: { accountNo, ifsc: 'HDFC0000001', accountHolderName: name, bankName: 'HDFC Bank' },
   });
   const id = merchant._id ?? merchant.merchantId;
 
@@ -200,13 +198,12 @@ export async function fundTeam(team, tokens) {
 export async function seedTeam({
   rail = 'UPI_BANK', poolTokens = 0, include = [], online = null, ready = [], exclusive = true,
 } = {}) {
-  if (!RAILS[rail]) throw new Error(`seedTeam: unknown rail ${rail}`);
+  if (!SUPERVISOR_RAILS.includes(rail)) throw new Error(`seedTeam: a team runs on ${SUPERVISOR_RAILS.join(' or ')}, not ${rail}`);
   if (include.length > TEAM_SIZE) throw new Error(`seedTeam: a team has ${TEAM_SIZE} members, not ${include.length}`);
-  const currency = rail === RAILS.USDT ? 'USDT' : 'INR';
 
   // The supervisor does no transactions (owner, 2026-10-02) — offline, and
   // never a member: `team_roles_disjoint` refuses one account being both.
-  const supervisor = await seedMerchant({ currency, online: false });
+  const supervisor = await seedMerchant({ online: false });
   const role = await setSupervisorRole(supervisor.merchantId, { rail });
   if (!role.ok) throw new Error(`seedTeam: supervisor refused: ${role.reason}`);
   const made = await createTeam({ supervisorId: supervisor.merchantId, name: rid(`team-${rail}`) });
@@ -215,7 +212,7 @@ export async function seedTeam({
 
   const members = [...include];
   while (members.length < TEAM_SIZE) {
-    members.push(await seedMerchant({ currency, online: false }));
+    members.push(await seedMerchant({ online: false }));
   }
   for (const m of members) {
     const added = await addMember({ teamId, supervisorId: supervisor.merchantId, merchantRef: m.merchantId, actor: supervisor.merchantId });

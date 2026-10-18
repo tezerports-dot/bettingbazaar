@@ -22,7 +22,7 @@ import { useOrders, needsAction } from '../hooks/useOrders';
 import { useNow, formatCountdown, secondsLeft } from '../hooks/useCountdown';
 import { useViewport } from '../hooks/useViewport';
 import { ROUTES } from '../constants';
-import { counterpartyOf, formatMoney, formatTokens, railOf } from '../utils/rail';
+import { counterpartyOf, formatMoney, formatTokens } from '../utils/rail';
 import { OrderStatus, type Earnings, type PaymentOrder, type Stats } from '../types';
 import { Card, CardTitle, Skeleton, StatusPill, cardStyle } from '../components/ui';
 import { CashReadyCard } from '../components/CashReadyCard';
@@ -42,7 +42,6 @@ const Dashboard: React.FC = () => {
   const now = useNow();
   const { isMobile, isDesktop } = useViewport();
 
-  const rail = railOf(merchant);
   // Online, and whether the platform paused new buy orders to them (§2:
   // three unpaid in a row) — one helper, shared with the sidebar (§5).
   const availability = availabilityOf(merchant);
@@ -307,7 +306,7 @@ const Dashboard: React.FC = () => {
                 </span>
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
-                    {formatMoney(order.fiatAmount ?? order.amount, rail)}
+                    {formatMoney(order.fiatAmount ?? order.amount)}
                   </span>
                   <span style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {order.type === 'DEPOSIT' ? 'Deposit' : 'Withdrawal'} · {counterpartyOf(order).name}
@@ -364,7 +363,7 @@ const Dashboard: React.FC = () => {
                   </span>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
-                      {formatMoney(order.fiatAmount ?? order.amount, rail)}
+                      {formatMoney(order.fiatAmount ?? order.amount)}
                       <span style={{ fontWeight: 600, color: 'var(--muted)', fontSize: 11 }}>
                         {' · '}{order.type === 'DEPOSIT' ? 'Deposit' : 'Withdrawal'}
                       </span>

@@ -326,8 +326,6 @@ export interface Merchant {
   isOnline: boolean;
   acceptsDeposits: boolean;
   acceptsWithdrawals: boolean;
-  /** Which credential set the merchant keeps — never which orders they get. */
-  merchantType?: 'INR' | 'USDT';
   merchantStats: {
     dailyProcessed: number;
     monthlyProcessed: number;
@@ -341,7 +339,6 @@ export interface Merchant {
 }
 
 export interface MerchantProfile extends Merchant {
-  acceptedCurrencies?: string[];
   /** Set when three buys in a row expired unpaid; routing skips them until an admin resumes. */
   assignmentPausedAt?: string | null;
   assignmentPauseReason?: string | null;
@@ -612,7 +609,7 @@ export interface PaginatedResponse<T> {
 // ── Supervisors and teams (redesign Step 2a) ─────────────────────────────────
 // Mirrors database/repositories/teams.js (`toTeam`, `toMember`,
 // SUPERVISOR_RAILS) — §5: change them together.
-export type SupervisorRail = 'CASH' | 'UPI_BANK' | 'USDT';
+export type SupervisorRail = 'CASH' | 'UPI_BANK';
 export interface TeamSupervisor {
   merchantId: string; name: string; publicRef: string; rail: SupervisorRail; isOnline: boolean;
 }

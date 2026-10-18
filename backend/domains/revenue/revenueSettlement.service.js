@@ -35,7 +35,7 @@ import {
 } from '#db/repositories/ledger.js';
 import { ACCOUNTS, ACCOUNT_CODES, EVENT_TYPES, toMinor } from './chartOfAccounts.js';
 import { INR_TOKEN_RATE } from '../configuration/tokenRates.js';
-import { formatOrderFiat } from '../merchant/merchantCurrency.js';
+import { formatOrderFiat } from '../payment/orderCurrency.js';
 import { db } from '#db';
 
 // ═════════════════════════════════════════════════════════════════════════════

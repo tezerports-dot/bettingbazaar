@@ -29,7 +29,7 @@ const page = (over: Record<string, unknown> = {}) => ({
   success: true, filters: ['ALL', 'WAITING', 'ATTENTION', 'UNSWEPT'], filter: 'ATTENTION', total: 1, page: 1, pages: 1,
   deposits: [LATE],
   totals: { waiting: 2, credited: 5, creditedTokens: 45000, usdtReceived: 600, usdtUnswept: 100 },
-  watcher: { configured: true, nextBlock: 101, headBlock: 120, lastOkAt: '2026-10-18T07:00:00Z', lastError: null, lastErrorAt: null },
+  watcher: { configured: true, activeKeyId: '7b2f9c1d0e4a5b68', nextBlock: 101, headBlock: 120, lastOkAt: '2026-10-18T07:00:00Z', lastError: null, lastErrorAt: null },
   ...over,
 });
 
@@ -50,12 +50,14 @@ describe('USDT Deposits', () => {
     expect(screen.getByText('Arrived after the order closed')).toBeInTheDocument();
     expect(screen.getByText('USDT not swept').parentElement).toHaveTextContent('100 USDT');
     expect(screen.getAllByRole('status')[0]).toHaveTextContent(/up to block 101 of 120/);
+    // Which key new addresses come from, so a key change can be seen to have taken.
+    expect(screen.getByText('7b2f9c1d0e4a5b68')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Not swept' }));
     await waitFor(() => expect(usdtDeposits.list).toHaveBeenLastCalledWith('UNSWEPT', 1, 50));
   });
 
   it('says plainly when the server is not set up for USDT', async () => {
-    usdtDeposits.list.mockResolvedValue(page({ watcher: { configured: false, nextBlock: null, headBlock: null, lastOkAt: null, lastError: null, lastErrorAt: null } }));
+    usdtDeposits.list.mockResolvedValue(page({ watcher: { configured: false, activeKeyId: null, nextBlock: null, headBlock: null, lastOkAt: null, lastError: null, lastErrorAt: null } }));
     render(<UsdtDeposits />);
     expect(await screen.findByText(/no USDT_BEP20_XPUB or BSC_RPC_URL/)).toBeInTheDocument();
   });

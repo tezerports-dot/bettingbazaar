@@ -26,6 +26,10 @@
  * is mined and succeeded, so a run that stops halfway can simply be run again:
  * an address already emptied is skipped.
  *
+ * To set up or rotate the key: USDT_SWEEP_MNEMONIC="…" node scripts/usdt-sweep.mjs --xpub
+ * prints the USDT_BEP20_XPUB for that phrase, its key id and gas wallet
+ * (docs/governance/USDT_KEY_ROTATION.md).
+ *
  * Optional: USDT_SWEEP_PASSPHRASE (a BIP-39 passphrase, if the phrase has one),
  * --out <file> (default usdt-sweep-results.csv).
  */
@@ -257,7 +261,22 @@ export async function runSweep({ rows, account, treasury, rpc, send = false, log
 
 // ── Command line ─────────────────────────────────────────────────────────────
 
+/**
+ * What the server is given for a phrase: its account xpub, the key id every
+ * address made from it carries, and its gas wallet. Reads no network.
+ */
+export function accountSummary(account) {
+  return { xpub: account.publicExtendedKey, keyId: keyIdOf(account), gasWallet: addressOf(gasKey(account)) };
+}
+
 async function main(argv) {
+  if (argv.includes('--xpub')) {
+    // For setting up, or rotating to, a phrase: print what goes in
+    // USDT_BEP20_XPUB, never the phrase or a private key.
+    const a = accountSummary(accountFromSeed(seedFromMnemonic(process.env.USDT_SWEEP_MNEMONIC, process.env.USDT_SWEEP_PASSPHRASE ?? '')));
+    console.log(`USDT_BEP20_XPUB=${a.xpub}\nkey id ${a.keyId} · gas wallet ${a.gasWallet}`);
+    return 0;
+  }
   const send = argv.includes('--send');
   const outAt = argv.indexOf('--out');
   const outFile = resolve(outAt >= 0 ? argv[outAt + 1] : 'usdt-sweep-results.csv');

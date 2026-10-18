@@ -37,7 +37,7 @@ const staffCache = (u, { isAdmin = false, isSubAdmin = false, isQueueManager = f
 });
 const merchantCache = (m, extra = {}) => ({
   id: m.merchantId, merchantId: m.merchantId, username: m.username, email: m.email, mobile: m.mobile,
-  isOnline: true, status: 'ACTIVE', acceptedCurrencies: ['INR'], ...extra,
+  isOnline: true, status: 'ACTIVE', ...extra,
 });
 
 const player = (opts, then) => ({
@@ -78,12 +78,12 @@ const staff = ({ isSubAdmin = false, isQueueManager = false, keys = [] }) => ({ 
  * pass's own merchant is routed.
  */
 const merchant = (opts, then, extraCache, rail = null) => ({ panel: 'merchant-panel', seed: async () => {
-  const m = await seedMerchant({ currency: 'INR', ...opts });
+  const m = await seedMerchant({ ...opts });
   if (rail) await seedTeam({ rail, include: [m], online: opts.online === false ? [] : [m], exclusive: false });
   if (then) await then(m);
   return {
     token: merchantToken(m),
-    cached: merchantCache(m, { acceptedCurrencies: [opts?.currency ?? 'INR'], ...extraCache }), who: m.merchantId,
+    cached: merchantCache(m, { ...extraCache }), who: m.merchantId,
   };
 } });
 

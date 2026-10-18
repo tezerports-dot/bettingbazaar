@@ -68,7 +68,6 @@ describePg('what a player is told about a merchant', () => {
     merchantRef: 'Merchant #7731',
     merchantId: 'MER-7731',
     merchantName: 'Merchant #7731',
-    merchantType: 'INR',
     upiId: MERCHANT_UPI,
     mobile: MERCHANT_MOBILE,
     qrCodeUrl: MERCHANT_QR,

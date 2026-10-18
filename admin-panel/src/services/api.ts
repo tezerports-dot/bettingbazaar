@@ -1238,7 +1238,7 @@ export interface UsdtDepositTotals {
   waiting: number; credited: number; creditedTokens: number; usdtReceived: number; usdtUnswept: number;
 }
 export interface UsdtWatcherStatus {
-  configured: boolean; nextBlock: number | null; headBlock: number | null;
+  configured: boolean; activeKeyId: string | null; nextBlock: number | null; headBlock: number | null;
   lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null;
 }
 export interface UsdtDepositsResponse {

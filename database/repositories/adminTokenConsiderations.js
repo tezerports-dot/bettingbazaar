@@ -44,9 +44,9 @@ export const DIRECTIONS = Object.freeze({
 /**
  * The currencies an admin↔merchant trade may settle in.
  *
- * Deliberately NOT `MERCHANT_CURRENCIES` from merchantCurrency.js, which is the
- * rail a merchant settles PLAYER orders on. A merchant on the USDT rail can
- * still pay the platform in rupees, and this is a different question.
+ * Its own list, not `ORDER_CURRENCY` (orderCurrency.js), which is what a
+ * PLAYER order is paid in: what a merchant pays the platform is a different
+ * question.
  */
 export const CONSIDERATION_CURRENCIES = Object.freeze(['INR', 'USDT']);
 

@@ -41,8 +41,8 @@ import { respondError } from '../../shared/httpError.js';
 
 /** Is Postgres the source of truth for the merchant side of a settlement? */
 import {
-  MERCHANT_CURRENCY, merchantTypeOf, formatOrderFiat,
-} from './merchantCurrency.js';
+  formatOrderFiat,
+} from '../payment/orderCurrency.js';
 // The merchant's own view of their account, which sign-in answers with too.
 import { formatMerchant } from './merchantSelfView.js';
 import { toMerchantOrderView, toMerchantOrderViews, toMerchantReportRows, merchantReportCsv } from './merchantOrderView.js';
@@ -142,10 +142,7 @@ router.get('/profile', merchantAuth, async (req, res) => {
     }
 });
 
-// FIX B5-d: PUT /profile — merchant edits their own settlement credentials.
-// Rail-exclusive (2026-07-27): only an INR merchant holds a bank account.
-// Enforced here and not merely hidden in the panel. Only the admin
-// (PUT /merchants/:id/capabilities) can change which rail a merchant is on.
+// FIX B5-d: PUT /profile — merchant edits their own bank account.
 //
 // There is no UPI handle to edit, so `upiId` is not read from the body: a
 // UPI_BANK buy is paid into the member's bank account and nobody is shown a
@@ -161,10 +158,6 @@ router.put('/profile', merchantAuth, ownerOnly, async (req, res) => {
         if (!current) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
 
         const update  = {};
-        if (merchantTypeOf(current) === MERCHANT_CURRENCY.USDT && bankDetails !== undefined) {
-            return res.status(400).json({ success: false, message: 'This is a USDT merchant account — bank details do not apply. Ask an admin to move you to INR.' });
-        }
-
         if (bankDetails) {
             if (bankDetails.accountHolderName !== undefined) update['bankDetails.accountHolderName'] = bankDetails.accountHolderName;
             if (bankDetails.bankName  !== undefined) update['bankDetails.bankName']  = bankDetails.bankName;

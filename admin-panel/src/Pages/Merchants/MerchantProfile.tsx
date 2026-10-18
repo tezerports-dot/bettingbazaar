@@ -25,8 +25,8 @@ import toast from 'react-hot-toast';
 
 interface Choices { routingPriority: { MIN: number; MAX: number; DEFAULT: number }; supervisorRails: SupervisorRail[] }
 
-/** UI names for the server's supervisor rails (teams.js SUPERVISOR_RAILS; USDT only on an old team). §11. */
-const RAIL_LABEL: Record<string, string> = { CASH: 'Cash (ATM QR)', UPI_BANK: 'UPI / bank', USDT: 'USDT' };
+/** UI names for the server's supervisor rails (teams.js SUPERVISOR_RAILS). §11. */
+const RAIL_LABEL: Record<string, string> = { CASH: 'Cash (ATM QR)', UPI_BANK: 'UPI / bank' };
 
 const errorOf = (e: any, fallback: string) => e?.response?.data?.message || fallback;
 
@@ -101,7 +101,6 @@ export const MerchantProfile: React.FC = () => {
 
   const id = merchant._id;
   const role = summary?.role;
-  const rail = merchant.merchantType ?? merchant.acceptedCurrencies?.[0] ?? 'INR'; // schema default: ['INR']
 
   // Every action: the server's own sentence on a refusal, shown where the
   // admin pressed (§32 S14, S44), and the page re-read on success.
@@ -131,12 +130,6 @@ export const MerchantProfile: React.FC = () => {
   const resume = async () => {
     if (await run('resume', () => api.merchants.resumeAssignment(id), 'Assignment resumed', 'Failed to resume assignment')) setResumeChecked(false);
   };
-  // Only ever back to INR: no merchant is put on USDT any more, since USDT buys
-  // are paid to the platform (owner, 2026-10-18; the route refuses it).
-  const moveToInr = () => run('rail',
-    () => api.put(`/api/admin/merchants/${id}/capabilities`, { merchantType: 'INR' }).then((r) => r.data),
-    'Now an INR merchant. They add their bank account in their panel.',
-    'Failed to change the payment details');
 
   return (
     <div className="om-fade space-y-4">
@@ -227,14 +220,6 @@ export const MerchantProfile: React.FC = () => {
             </label>
             <button type="button" className="btn-primary disabled:opacity-50" disabled={!resumeChecked || !!busy} onClick={() => void resume()}>
               {busy === 'resume' ? 'Resuming…' : 'Resume assignment'}
-            </button>
-          </Section>
-        )}
-
-        {rail === 'USDT' && (
-          <Section title="Payment details" sub="This merchant is still on USDT, which no longer takes orders: USDT buys are paid to the platform directly. Move them to INR to give them work; they then add their bank account in their panel.">
-            <button type="button" className="btn-primary disabled:opacity-50" disabled={!!busy} onClick={() => void moveToInr()}>
-              {busy === 'rail' ? 'Moving…' : 'Move to INR · bank account'}
             </button>
           </Section>
         )}

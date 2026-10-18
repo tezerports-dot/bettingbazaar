@@ -15,10 +15,12 @@ import { getSystemConfig, applySystemConfig } from '#db/repositories/config.js';
 import { createDepositOrder, markOrderPaid, expireOrders } from '../../domains/payment/paymentProcessing.service.js';
 import { creditIfCovered, watchUsdtDeposits } from '../../domains/payment/usdtDeposit.service.js';
 import {
-  BSC_USDT_CONTRACT, TRANSFER_TOPIC, addressTopic, configuredAccountKey, deriveDepositAddress,
+  BSC_USDT_CONTRACT, TRANSFER_TOPIC, addressTopic, configuredAccountKey, deriveDepositAddress, keyIdOf,
 } from '../../domains/payment/usdtBsc.js';
 import { actor, as, mountRouter } from './_harness.js';
 import usdtDepositAdminRoutes from '../../domains/payment/usdtDeposit.admin.routes.js';
+import { watcherStatus } from '../../domains/payment/usdtDeposit.service.js';
+import { seedFromMnemonic, accountFromSeed, runSweep } from '../../../scripts/usdt-sweep.mjs';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -227,6 +229,56 @@ describePg('USDT buys paid to the platform on BSC', () => {
     expect(out.recorded).toBeGreaterThanOrEqual(1);
     expect((await getOrderRecord(order.orderId)).status).toBe('COMPLETED');
     expect(raw(1)).toBe(RAW_PER_USDT);
+  });
+
+  it('rotates to a new key: new buys get its addresses, buys under the old key are still credited and swept with the old phrase', async () => {
+    // A second recovery phrase (BIP-39 test vector "legal winner …"), as an
+    // operator would make offline when rotating.
+    const oldAccount = accountFromSeed(seedFromMnemonic('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'));
+    const newAccount = accountFromSeed(seedFromMnemonic('legal winner thank year wave sausage worth useful legal winner thank yellow'));
+    expect(oldAccount.publicExtendedKey).toBe(TEST_XPUB);
+
+    const before = await buy(await actor({}), 100);
+    const saved = process.env.USDT_BEP20_XPUB;
+    process.env.USDT_BEP20_XPUB = newAccount.publicExtendedKey;
+    try {
+      expect((await watcherStatus()).activeKeyId).toBe(keyIdOf(newAccount));
+      const after = await buy(await actor({}), 100);
+      const oldDep = await db.usdtDeposits.depositFor(before.order.orderId);
+      const newDep = await db.usdtDeposits.depositFor(after.order.orderId);
+      expect(oldDep.keyId).toBe(keyIdOf(oldAccount));
+      expect(newDep.keyId).toBe(keyIdOf(newAccount));
+      // Each address is the one its own key derives at its index, never the other's.
+      expect(deriveDepositAddress(newAccount, newDep.derivationIndex)).toBe(after.order.usdtAddress);
+      expect(deriveDepositAddress(oldAccount, newDep.derivationIndex)).not.toBe(after.order.usdtAddress);
+
+      // Money to either address still credits its order: the watcher reads the
+      // stored addresses, not the key.
+      await pay(before.order.usdtAddress, 100);
+      await pay(after.order.usdtAddress, 100);
+      expect(await creditIfCovered(before.order.orderId)).toEqual({ credited: true });
+      expect(await creditIfCovered(after.order.orderId)).toEqual({ credited: true });
+
+      // The sweep file names each address's key, and the old phrase sweeps only
+      // its own: the new key's line is refused, nothing sent for it.
+      const lines = (await db.usdtDeposits.sweepCandidates())
+        .filter((c) => [before.order.orderId, after.order.orderId].includes(c.orderId));
+      expect(lines.map((l) => l.keyId).sort()).toEqual([keyIdOf(oldAccount), keyIdOf(newAccount)].sort());
+      const sent = [];
+      const rpc = async (method, params = []) => {
+        if (method === 'eth_call') return `0x${(100n * RAW_PER_USDT).toString(16)}`;
+        if (method === 'eth_gasPrice') return '0x3b9aca00';
+        if (method === 'eth_estimateGas') return '0xea60';
+        if (method === 'eth_getBalance') return '0x0';
+        if (method === 'eth_sendRawTransaction') { sent.push(params[0]); return hex64(); }
+        throw new Error(`unexpected ${method}`);
+      };
+      const out = await runSweep({ rows: lines, account: oldAccount, treasury: `0x${'7'.repeat(40)}`, rpc, log: () => {} });
+      const byOrder = Object.fromEntries(out.map((l) => [l.orderId, l.status]));
+      expect(byOrder[before.order.orderId]).toBe('planned');
+      expect(byOrder[after.order.orderId]).toBe('refused');
+      expect(sent).toHaveLength(0);
+    } finally { process.env.USDT_BEP20_XPUB = saved; }
   });
 
   describe('Admin › USDT Deposits', () => {

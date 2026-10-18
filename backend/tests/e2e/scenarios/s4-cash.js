@@ -21,8 +21,8 @@ const stateOf = async (oid) => (await pgQuery(
   [oid], 'e2e')).rows[0] ?? {};
 
 export default async function run() {
-  const m = await seedMerchant({ currency: 'INR' });
-  const outsider = await seedMerchant({ currency: 'INR' });
+  const m = await seedMerchant();
+  const outsider = await seedMerchant();
   // `m` is the only member online on the cash rail (`exclusive`), and has NOT
   // pressed Ready. The pool covers several cash buys.
   const team = await seedTeam({ rail: 'CASH', poolTokens: 20000, include: [m], online: [m] });

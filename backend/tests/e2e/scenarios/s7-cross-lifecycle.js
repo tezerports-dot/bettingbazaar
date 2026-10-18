@@ -94,7 +94,7 @@ export default async function run() {
     // A cash-team member who has pressed Ready, so the 1,000-token buy below is
     // routed to `m` and its tokens are held in the team's pool — the hold a
     // release then spends (Step 2c: a merchant holds no tokens of their own).
-    const m = await seedMerchant({ currency: 'INR' });
+    const m = await seedMerchant();
     await seedTeam({ rail: 'CASH', poolTokens: 10000, include: [m], online: [m], ready: [m] });
     const pT = playerToken(p);
     const mT = merchantToken(m);

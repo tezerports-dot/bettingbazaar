@@ -207,37 +207,9 @@ export default async function run() {
       'trap 19: the sender\'s receipt is not the record — the table is');
   }
 
-  // ══ 5. Admin changes a merchant's CAPABILITIES ═══════════════════════════
-  {
-    const m = await seedMerchant({ currency: 'INR' });
-    const mT = merchantToken(m);
-
-    const set = await PUT(aT, `/api/admin/merchants/${m.merchantId}/capabilities`, {
-      acceptsDeposits: false, acceptsWithdrawals: true,
-    });
-    check(A, 'admin', 'stop a merchant taking deposits', '200',
-      `${set.status} ${set.body?.message ?? ''}`, set.status === 200);
-
-    const prof = await GET(mT, '/api/merchant/profile');
-    check(A, 'merchant', 'the merchant panel reflects the capability change', 'acceptsDeposits false',
-      String(prof.body?.merchant?.acceptsDeposits),
-      prof.body?.merchant?.acceptsDeposits === false,
-      '§32 S17: an admin decision the merchant never sees is half a feature');
-
-    // The stored flag agrees with the panel. Its consumer is team routing:
-    // `teamRouting.routingCandidates` reads it per direction, so a member who
-    // stops taking deposits is not routed buys (merchantPanelRoutes, M329).
-    const candidate = await pgQuery(
-      `SELECT accepts_deposits FROM merchants WHERE merchant_id = $1`, [m.merchantId]);
-    check(A, 'system', 'and the stored flag agrees with the panel', 'false',
-      String(candidate.rows[0]?.accepts_deposits),
-      candidate.rows[0]?.accepts_deposits === false,
-      'one owner: the column the admin wrote is the column the panel renders');
-  }
-
   // ══ 6. A merchant goes OFFLINE — the platform stops sending them work ════
   {
-    const m = await seedMerchant({ currency: 'INR', online: true });
+    const m = await seedMerchant({ online: true });
     const mT = merchantToken(m);
 
     const off = await PUT(mT, '/api/merchant/online-status', { isOnline: false });

@@ -38,7 +38,7 @@
 
 import { PAYMENT_MODES } from '#db/repositories/orderRails.js';
 import { buildUpiPayLink } from './cashLink.js';
-import { USDT_CHAIN_SPEC } from '../merchant/merchantCurrency.js';
+import { USDT_CHAIN_SPEC } from './orderCurrency.js';
 
 /**
  * Top-level fields a player may see of their own order. Anything absent here

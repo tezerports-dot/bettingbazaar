@@ -14,8 +14,14 @@ import { CASH_SIZES, INR_ROUTING, INR_ROUTING_MODES } from '../../backend/domain
 // every UPI/bank size is above it, so the boundary IS the size list.
 const MAX_CASH_SIZE_PAISE = Math.max(...CASH_SIZES) * 100;
 
-/** The three rails a supervisor is approved for, as constants. */
-export const RAILS = Object.freeze(Object.fromEntries(SUPERVISOR_RAILS.map((r) => [r, r])));
+/**
+ * The rails an ORDER runs on: the two a team serves (`SUPERVISOR_RAILS`), and
+ * USDT, which no team serves (paid to the platform, owner 2026-10-18).
+ */
+export const RAILS = Object.freeze({
+  ...Object.fromEntries(SUPERVISOR_RAILS.map((r) => [r, r])),
+  USDT: 'USDT',
+});
 
 /**
  * The two values `order_states.payment_mode` takes. Import these — never write

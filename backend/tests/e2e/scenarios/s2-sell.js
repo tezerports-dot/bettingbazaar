@@ -15,8 +15,8 @@ export default async function run() {
   // A withdrawal is paid out of WINNINGS, so the player needs some.
   const player = await seedPlayer({});
   const other  = await seedPlayer({});
-  const m      = await seedMerchant({ currency: 'INR' });
-  const m2     = await seedMerchant({ currency: 'INR' });
+  const m      = await seedMerchant();
+  const m2     = await seedMerchant();
   // `m` is the only member online on the rail (`exclusive`), so the sell is
   // routed to `m`; `m2` is in the same team and is NOT its assignee.
   const team   = await seedTeam({ rail: 'UPI_BANK', include: [m, m2], online: [m] });

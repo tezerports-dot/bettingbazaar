@@ -47,8 +47,8 @@ import Dashboard from './Dashboard';
 import ProfileSettings from './ProfileSettings';
 import Layout from '../components/Layout';
 
-const SUPERVISOR = { id: 's-1', merchantId: 's-1', isSupervisor: true, isOnline: false, acceptedCurrencies: ['INR'], status: 'ACTIVE' };
-const MEMBER = { id: 'm-1', merchantId: 'm-1', isSupervisor: false, isOnline: false, acceptedCurrencies: ['INR'], status: 'ACTIVE' };
+const SUPERVISOR = { id: 's-1', merchantId: 's-1', isSupervisor: true, isOnline: false, status: 'ACTIVE' };
+const MEMBER = { id: 'm-1', merchantId: 'm-1', isSupervisor: false, isOnline: false, status: 'ACTIVE' };
 
 const width = window.innerWidth;
 const atDesktop = () => Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 });

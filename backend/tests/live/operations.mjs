@@ -135,9 +135,9 @@ async function cron() {
     const id = rid('m');
     await pgQuery(
       `INSERT INTO merchants (merchant_id, name, public_ref, username, mobile, status,
-                              merchant_approval_status, accepted_currencies, is_online,
+                              merchant_approval_status, is_online,
                               accepts_deposits, accepts_withdrawals)
-       VALUES ($1, 'Ops Merchant', $2, $1, $3, 'ACTIVE', 'APPROVED', ARRAY['INR'], true, true, true)`,
+       VALUES ($1, 'Ops Merchant', $2, $1, $3, 'ACTIVE', 'APPROVED', true, true, true)`,
       [id, id.slice(-12).toUpperCase(), String(6900000000 + Math.floor(Math.random() * 999999999))],
     );
     return id;

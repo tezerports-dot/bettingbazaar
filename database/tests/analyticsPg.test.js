@@ -298,10 +298,8 @@ describe('a player history', () => {
 
   it('names the merchant on a funding order without a per-row lookup', async () => {
     await pgQuery(
-      // merchant_type is GENERATED from accepted_currencies[1] — it cannot be
-      // inserted directly, which is the schema making one field the owner.
-      `INSERT INTO merchants (merchant_id, name, public_ref, mobile, accepted_currencies)
-       VALUES ('m1','Ravi Payments','MER-0001','9990001111', ARRAY['INR'])`, [],
+      `INSERT INTO merchants (merchant_id, name, public_ref, mobile)
+       VALUES ('m1','Ravi Payments','MER-0001','9990001111')`, [],
     );
     await pgQuery(
       `INSERT INTO order_states (order_id, user_id, merchant_id, order_type, state,

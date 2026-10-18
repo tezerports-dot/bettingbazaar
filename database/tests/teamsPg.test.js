@@ -91,12 +91,13 @@ describePg('supervisors and teams (PostgreSQL)', () => {
     expect(rows[0]).toEqual({ is_supervisor: true, supervisor_rail: 'UPI_BANK' });
   });
 
-  it('makes no new USDT supervisor, and a USDT supervisor from before makes no new team (owner, 2026-10-18)', async () => {
+  it('has no USDT supervisor or team: USDT buys are paid to the platform (owner, 2026-10-18)', async () => {
     const id = await merchant();
     await expect(setSupervisorRole(id, { rail: 'USDT' })).rejects.toThrow(/rail must be one of CASH, UPI_BANK$/);
-    // One set before the date, as the row still allows.
-    await pgQuery(`UPDATE merchants SET is_supervisor = TRUE, supervisor_rail = 'USDT', is_online = FALSE WHERE merchant_id = $1`, [id]);
-    expect(await createTeam({ supervisorId: id, name: 'Late USDT team' })).toEqual({ ok: false, reason: 'usdt_rail_retired' });
+    // Nor by hand: the row refuses it for every writer.
+    await expect(pgQuery(
+      `UPDATE merchants SET is_supervisor = TRUE, supervisor_rail = 'USDT', is_online = FALSE WHERE merchant_id = $1`, [id],
+    )).rejects.toThrow(/merchants_supervisor_rail/);
   });
 
   it('refuses the role to a merchant the admin has not approved', async () => {

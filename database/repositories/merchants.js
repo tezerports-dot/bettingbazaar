@@ -2,9 +2,8 @@
 /**
  * postgres/merchantPg.js — the merchant record.
  *
- * A merchant settles real INR and USDT. This module owns the row that says who
- * they are, which currency they settle in, and what credentials money is sent
- * to.
+ * A merchant settles real INR. This module owns the row that says who they
+ * are and what bank account money is sent to.
  *
  * ── What is NOT here, and why ───────────────────────────────────────────────
  *
@@ -23,9 +22,7 @@
  * ── Two things the row enforces that a schema flag could not ────────────────
  * `public_ref` is immutable by TRIGGER, because the document store's
  * `immutable: true` is honoured by a document save and ignored by an update
- * operator. And `merchant_type` is a GENERATED column over
- * `accepted_currencies[1]` rather than an application-layer virtual, so the
- * scalar the panels read cannot drift from the array assignment filters on.
+ * operator.
  */
 import { pgQuery, getPool, connectGuarded } from '../client.js';
 import { randomBytes } from 'node:crypto';
@@ -44,7 +41,7 @@ export function newMerchantId() {
 
 const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email,
   status, suspension_reason, is_online,
-  accepts_deposits, accepts_withdrawals, accepted_currencies, merchant_type,
+  accepts_deposits, accepts_withdrawals,
   bank_account_holder_name, bank_name, bank_account_no, bank_ifsc,
   min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
   total_processed_volume_paise, earnings_paise, total_deposit_amount_paise,
@@ -99,8 +96,6 @@ function toMerchant(row) {
     isOnline: row.is_online,
     acceptsDeposits: row.accepts_deposits,
     acceptsWithdrawals: row.accepts_withdrawals,
-    acceptedCurrencies: row.accepted_currencies,
-    merchantType: row.merchant_type,
 
     // A bank account and nothing else: no UPI handle is kept (§2, §24).
     bankDetails: {
@@ -209,25 +204,6 @@ export async function getMerchantByPublicRef(publicRef) {
 // The admin list is `adminDirectory.listMerchants` (owner, 2026-10-14): one
 // row per merchant with its pool and commission, sortable by any of them.
 
-/** Aggregate counts for the admin dashboard, in one pass over the table. */
-export async function merchantCounts() {
-  const { rows } = await pgQuery(
-    `SELECT
-       COUNT(*)::int                                                AS total,
-       COUNT(*) FILTER (WHERE status = 'ACTIVE')::int                AS active,
-       COUNT(*) FILTER (WHERE is_online)::int                        AS online,
-       COUNT(*) FILTER (WHERE merchant_approval_status = 'PENDING')::int AS pending_approval,
-       COUNT(*) FILTER (WHERE merchant_type = 'INR')::int            AS inr,
-       COUNT(*) FILTER (WHERE merchant_type = 'USDT')::int           AS usdt
-     FROM merchants`, [], 'merchant_counts',
-  );
-  const r = rows[0];
-  return {
-    total: r.total, active: r.active, online: r.online,
-    pendingApproval: r.pending_approval, inr: r.inr, usdt: r.usdt,
-  };
-}
-
 // ── Writes ───────────────────────────────────────────────────────────────────
 
 /**
@@ -238,8 +214,8 @@ export async function merchantCounts() {
  * reviewer, a counter that incremented nothing, each reporting success. A typo
  * here throws instead.
  *
- * `public_ref`, `merchant_id`, `merchant_type` and the money counters are
- * absent deliberately: the first two are identity, the third is generated, and
+ * `public_ref`, `merchant_id` and the money counters are
+ * absent deliberately: the first two are identity, and
  * the counters move through the arithmetic writers below so two concurrent
  * settlements cannot lose one of them to a read-modify-write.
  *
@@ -256,7 +232,6 @@ export async function merchantCounts() {
 const UPDATABLE = new Set([
   'user_id', 'name', 'username', 'mobile', 'email',
   'status', 'suspension_reason', 'accepts_deposits', 'accepts_withdrawals',
-  'accepted_currencies',
   'bank_account_holder_name', 'bank_name', 'bank_account_no', 'bank_ifsc',
   'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise', 'max_withdraw_paise',
   'rating', 'panel_url',
@@ -333,17 +308,11 @@ function toColumns(patch, fn) {
   return out;
 }
 
-/**
- * Create a merchant.
- *
- * The rail is normalised to a single-element array here rather than trusted to
- * the caller, because the CHECK will refuse anything else and a 500 at the
- * constraint tells an operator less than a value that was never wrong.
- */
+/** Create a merchant. Every merchant serves INR: there is no merchant rail. */
 export async function createMerchant({
   merchantId = null, userId = null, name, publicRef = null,
   username = null, mobile = null, email = null,
-  currency = 'INR', status = 'PENDING', bankDetails = null,
+  status = 'PENDING', bankDetails = null,
   panelUrl = '',
   limits = null, client = null,
 } = {}) {
@@ -359,16 +328,16 @@ export async function createMerchant({
   const { rows } = await run(
     `INSERT INTO merchants (
        merchant_id, user_id, name, public_ref, username, mobile, email,
-       accepted_currencies, status,
+       status,
        bank_account_holder_name, bank_name, bank_account_no, bank_ifsc,
        panel_url,
        min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise)
-     VALUES ($1,$2,$3,$4,$5,$6,$7, ARRAY[$8], $9,
-             $10,$11,$12,$13,$14,$15,$16,$17,$18)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
+             $9,$10,$11,$12,$13,$14,$15,$16,$17)
      RETURNING ${COLUMNS}`,
     [id, userId ? String(userId) : null, String(name), ref,
       username || null, mobile || null, email || null,
-      String(currency), String(status),
+      String(status),
       bankDetails?.accountHolderName || null,
       bankDetails?.bankName || null, bankDetails?.accountNo || null, bankDetails?.ifsc || null,
       panelUrl || '',
@@ -796,7 +765,7 @@ export async function createMerchantAccount(fields) {
  */
 export async function createMerchantAccountWithin(client, {
   userId, username, mobile, email = null,
-  currency = 'INR', bankDetails = null,
+  bankDetails = null,
   // A MERCHANT ACCOUNT (owner, 2026-10-11): its DIRECT team is created in this
   // same transaction (`createDirectTeamWithin`), so there is no instant at
   // which it is a merchant without its pool's team.
@@ -825,7 +794,7 @@ export async function createMerchantAccountWithin(client, {
     // Never the mobile: a name is shown to other people, a number is not.
     name: username || 'Member',
     username, mobile, email,
-    currency, status: 'PENDING', bankDetails,
+    status: 'PENDING', bankDetails,
     client,
   });
   if (direct) {

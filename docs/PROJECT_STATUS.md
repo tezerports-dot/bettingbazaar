@@ -1517,13 +1517,19 @@ address*; background in RULES_BACKGROUND §25.
   USDT Deposits for the three numbers.
 - **Sweep:** `scripts/usdt-sweep.mjs`, offline, with the recovery phrase; gas
   from the phrase's own m/44'/60'/0'/1/0.
-- **Removed:** merchant USDT addresses (columns dropped), USDT supervisors and
-  teams for new use, USDT routing and caps, the Tron chain.
+- **Removed:** merchant USDT addresses (columns dropped), the merchant rail
+  altogether (`accepted_currencies`, `merchant_type` dropped; every merchant is
+  INR), USDT supervisors and teams (moved to UPI_BANK by the schema, refused by
+  the row), USDT routing and caps, the Tron chain, and the admin's merchant
+  capabilities route (it existed for the rail; directions are the merchant's).
+- **Key rotation:** each address keeps its key id; swap `USDT_BEP20_XPUB` for a
+  new offline phrase's and old addresses stay watched and sweepable with the old
+  phrase (`docs/governance/USDT_KEY_ROTATION.md`, test in usdtPlatformDepositPg).
 
 **To switch it on:** set `USDT_BEP20_XPUB` (the account xpub at m/44'/60'/0'
 of a phrase kept offline) and `BSC_RPC_URL`. Deploy with no agent USDT buy open.
-USDT teams and merchants already made are left for an admin (owner, 2026-10-18:
-"Leave for admin" was the recommended choice; move them to INR from the merchant page).
+USDT teams and merchants are removed outright (owner, 2026-10-18: "completely
+remove", the platform being a test setup).
 
 **Not built:** a second BSC node cross-checked before crediting (offered to the
 owner); an automatic refund of late money (needs the key the server lacks).

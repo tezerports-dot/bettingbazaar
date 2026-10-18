@@ -41,9 +41,9 @@ import {
 } from '../configuration/tokenRates.js';
 import { debitWinningsForWithdrawal, refundWithdrawal } from '../wallet/walletAuthority.service.js';
 import {
-  MERCHANT_CURRENCY, merchantTypeOf, formatOrderFiat,
+  ORDER_CURRENCY, formatOrderFiat,
   USDT_CHAIN_SPEC, USDT_CHAINS, isUsdtChain,
-} from '../merchant/merchantCurrency.js';
+} from './orderCurrency.js';
 import { postSystemMessage } from '#db/repositories/chat.js';
 // Risk Platform (Phase 010): the single validation authority for funding orders.
 import { assessFundingOrder, getRiskRules, computePayoutFeeMinor } from '../risk/riskValidation.service.js';
@@ -151,7 +151,6 @@ function buildMerchantSnapshot(merchant, expiresAt, payAccount = null) {
     merchantName:  merchantRef,
     // What was true at assignment, because a dispute months later is decided
     // from it.
-    merchantType:  merchantTypeOf(merchant),
     bankName:      bank.bankName          || '',
     accountNo:     bank.accountNo         || '',
     ifsc:          bank.ifsc              || '',
@@ -185,7 +184,7 @@ function buildMerchantSnapshot(merchant, expiresAt, payAccount = null) {
  */
 async function tryAssignMerchant(order, { alsoBar = [] } = {}) {
   // A USDT buy is paid to the platform (owner, 2026-10-18): nobody serves it.
-  if (order.currency === MERCHANT_CURRENCY.USDT) return false;
+  if (order.currency === ORDER_CURRENCY.USDT) return false;
   const cfg = await getSystemConfig();
   // ── Agents or merchant accounts (owner, 2026-10-11) ─────────────────────
   // An INR order still waiting for its first taker follows who the admin now
@@ -381,13 +380,13 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // INR unless the caller says USDT. The provider registry is what says so —
   // the player's request reaches this through `requestDeposit({ provider })`,
   // so which rail serves an amount stays a decision the SERVER makes.
-  const currency = attempt.currency === MERCHANT_CURRENCY.USDT
-    ? MERCHANT_CURRENCY.USDT : MERCHANT_CURRENCY.INR;
+  const currency = attempt.currency === ORDER_CURRENCY.USDT
+    ? ORDER_CURRENCY.USDT : ORDER_CURRENCY.INR;
   // One chain, BNB Smart Chain (owner, 2026-10-18). A request naming another
   // is refused by name BEFORE anything is written: the player would otherwise
   // be shown a BSC address while holding funds on a network that cannot reach it.
-  const usdtChain = currency === MERCHANT_CURRENCY.USDT ? attempt.usdtChain ?? USDT_CHAINS[0] : null;
-  if (currency === MERCHANT_CURRENCY.USDT && !isUsdtChain(usdtChain)) {
+  const usdtChain = currency === ORDER_CURRENCY.USDT ? attempt.usdtChain ?? USDT_CHAINS[0] : null;
+  if (currency === ORDER_CURRENCY.USDT && !isUsdtChain(usdtChain)) {
     throw Object.assign(
       new Error(`USDT can only be sent on ${USDT_CHAINS.map((c) => USDT_CHAIN_SPEC[c].label).join(' or ')}.`),
       { status: 400, code: 'USDT_CHAIN_UNSUPPORTED' },
@@ -398,7 +397,7 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // A USDT buy is chosen in what the player SENDS — whole steps of 100 USDT
   // (Step 2d) — and the tokens follow from the admin's rate. `tokenAmount` is
   // ignored on this rail: a client cannot name its own token count.
-  const usdtAmount = currency === MERCHANT_CURRENCY.USDT ? attempt.usdtAmount : null;
+  const usdtAmount = currency === ORDER_CURRENCY.USDT ? attempt.usdtAmount : null;
 
   // Risk Platform gate (Phase 010): the size on offer (INR) or the USDT step
   // and bounds, one open buy per currency, velocity — the single validation
@@ -436,7 +435,7 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // assignment path is forbidden from touching it.
   let fiatAmount = tokenAmount * INR_TOKEN_RATE;
   let rateUsed = INR_TOKEN_RATE;
-  if (currency === MERCHANT_CURRENCY.USDT) {
+  if (currency === ORDER_CURRENCY.USDT) {
     const quoted = tokensForUsdt(usdtAmount, cfg);
     // NO FALLBACK. The schema default is 0 and 0 is not a rate: substituting 1
     // would sell 100 USDT's worth of tokens for 100 tokens, and a band breach
@@ -495,7 +494,7 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // Paid to an address derived for this order alone on BNB Smart Chain, and
   // credited by the chain watcher when the USDT arrives (`usdtDeposit.service`).
   // No merchant, no team, no queue: the order is written already started.
-  if (currency === MERCHANT_CURRENCY.USDT) {
+  if (currency === ORDER_CURRENCY.USDT) {
     const { order } = await openPlatformUsdtBuy(orderInput, cfg);
     emitAdminUpdate('new_order', adminOrderPayload(order, user));
     return {
@@ -776,9 +775,9 @@ export async function retryOrder(userId, orderId) {
   // Smart Chain whatever chain it named: it is priced in USDT (Step 2d), and its token count is not
   // an INR size, so retrying it on the INR rail would be refused — or worse,
   // be a different purchase. The new order is quoted at today's rate.
-  if (original.type === 'DEPOSIT' && String(original.currency).toUpperCase() === MERCHANT_CURRENCY.USDT) {
+  if (original.type === 'DEPOSIT' && String(original.currency).toUpperCase() === ORDER_CURRENCY.USDT) {
     Object.assign(attempt, {
-      currency: MERCHANT_CURRENCY.USDT, usdtAmount: original.fiatAmount,
+      currency: ORDER_CURRENCY.USDT, usdtAmount: original.fiatAmount,
     });
   }
   const result = original.type === 'DEPOSIT'
@@ -859,7 +858,7 @@ export async function markOrderPaid(userId, orderId, utrNumber) {
     throw Object.assign(new Error('Only DEPOSIT orders can be marked paid by user'), { status: 400 });
   // A USDT buy is confirmed by the chain, not by the player (owner, 2026-10-18):
   // there is nothing to submit, and nobody to show a hash to.
-  if (order.currency === MERCHANT_CURRENCY.USDT)
+  if (order.currency === ORDER_CURRENCY.USDT)
     throw Object.assign(
       new Error('USDT payments are confirmed automatically once they arrive. There is nothing to submit.'),
       { status: 400, code: 'USDT_CONFIRMED_ON_CHAIN' },
@@ -973,7 +972,7 @@ export async function markOrderPaid(userId, orderId, utrNumber) {
   // so the honest value is NONE. A field that lies is worse than no field.
   const { reference: normalizedUTR } = await claimPaymentReference({
     reference: utrNumber, orderId: order.orderId, userId: order.userId,
-    amountRupees: order.currency === MERCHANT_CURRENCY.USDT ? null : order.fiatAmount,
+    amountRupees: order.currency === ORDER_CURRENCY.USDT ? null : order.fiatAmount,
     spec,
   });
 
@@ -1074,7 +1073,7 @@ export async function submitPaymentReference(userId, orderId, utrNumber) {
 
   const { reference } = await claimPaymentReference({
     reference: utrNumber, orderId: order.orderId, userId: order.userId,
-    amountRupees: order.currency === MERCHANT_CURRENCY.USDT ? null : order.fiatAmount,
+    amountRupees: order.currency === ORDER_CURRENCY.USDT ? null : order.fiatAmount,
     spec: referenceSpecFor(order),
   });
 
@@ -1482,7 +1481,7 @@ export async function expireOrders() {
       // A USDT buy gets one last look at the chain before it lapses: money
       // the watcher recorded but has not yet credited is credited, not
       // cancelled away (owner, 2026-10-18).
-      if (order.type === 'DEPOSIT' && order.currency === MERCHANT_CURRENCY.USDT && order.usdtPayAddress) {
+      if (order.type === 'DEPOSIT' && order.currency === ORDER_CURRENCY.USDT && order.usdtPayAddress) {
         if ((await creditIfCovered(order.orderId)).credited) continue;
       }
       // Two instances running this cron both read the same expired batch. The

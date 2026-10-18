@@ -4,7 +4,6 @@
  * on 2026-07-01 (BBEPS Phase 004 migration). */
 import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
-import { MERCHANT_CURRENCIES, SETTABLE_MERCHANT_CURRENCIES } from './merchantCurrency.js';
 import { assertExternalHttpsUrl } from '../../shared/storedUrl.js';
 import { normalisePhone, isValidMobile } from '../identity/signupFields.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
@@ -207,86 +206,6 @@ router.put('/merchants/:merchantId/activate', authenticate, hasPermission('canMa
   }
 });
 
-// PUT /merchants/:merchantId/capabilities — which orders a merchant takes
-// (deposit/withdrawal) and which currency their credentials are for (INR/USDT).
-router.put('/merchants/:merchantId/capabilities', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
-  try {
-    const { merchantId } = req.params;
-    const { acceptsDeposits, acceptsWithdrawals, acceptedCurrencies, merchantType } = req.body;
-
-    const merchant = await db.merchants.getMerchant(merchantId);
-    if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
-
-    // A merchant settles on exactly ONE rail. Since 2026-10-18 that rail is
-    // INR: USDT buys are paid to the platform, not to a merchant, so a merchant
-    // can be moved OFF the USDT rail here but never onto it.
-    const patch = {};
-    const railInput = merchantType !== undefined ? [merchantType] : acceptedCurrencies;
-    if (railInput !== undefined) {
-      const rails = Array.isArray(railInput) ? [...new Set(railInput)] : [railInput];
-      if (rails.length !== 1 || !MERCHANT_CURRENCIES.includes(rails[0])) {
-        return res.status(400).json({ success: false, message: 'A merchant settles on exactly one rail — send merchantType "INR".' });
-      }
-      const nextRail = rails[0];
-      if (!SETTABLE_MERCHANT_CURRENCIES.includes(nextRail) && nextRail !== merchant.merchantType) {
-        return res.status(400).json({
-          success: false, code: 'USDT_RAIL_RETIRED',
-          message: 'USDT buys are now paid to the platform directly, so a merchant cannot be put on the USDT rail.',
-        });
-      }
-      // A team member settles on their team's rail (approval sets it,
-      // `teams.approveMember`): switched away, they could hold no credential
-      // routing asks of that team, and its orders would never reach them.
-      const teamRail = await db.teams.teamRailOf(merchantId);
-      if (teamRail && nextRail !== db.teams.memberCurrencyFor(teamRail)) {
-        return res.status(409).json({
-          success: false, code: 'RAIL_SET_BY_TEAM',
-          message: `This merchant is in a ${teamRail === 'USDT' ? 'USDT' : 'INR'} team, so they settle in ${db.teams.memberCurrencyFor(teamRail)}. Remove them from the team first to change it.`,
-        });
-      }
-      patch.acceptedCurrencies = rails;
-    }
-    if (typeof acceptsDeposits === 'boolean')    patch.acceptsDeposits = acceptsDeposits;
-    if (typeof acceptsWithdrawals === 'boolean') patch.acceptsWithdrawals = acceptsWithdrawals;
-
-    // The range and the rail are checked by the ROW as well. These messages
-    // exist so an admin gets one they can act on rather than a constraint name.
-    let updated;
-    try {
-      updated = await db.merchants.updateMerchant(merchantId, patch);
-    } catch (e) {
-      if (e.code === '23514') {
-        return res.status(400).json({
-          success: false,
-          message: 'Those settings are not valid — check that the order range includes at least one amount and the rail is INR.',
-        });
-      }
-      throw e;
-    }
-    const capabilities = {
-      acceptsDeposits: updated.acceptsDeposits, acceptsWithdrawals: updated.acceptsWithdrawals,
-      merchantType: updated.merchantType, acceptedCurrencies: updated.acceptedCurrencies,
-    };
-
-    // Not swallowed. This is the record of an admin changing which orders a
-    // merchant is routed, and `recordDetailed` already logs its own failure
-    // rather than throwing — a bare catch here would hide that twice.
-    await db.audit.recordDetailed({
-      performedBy: req.user.userId, performedByName: req.user.username, performedByRole: 'admin',
-      action: 'UPDATE_MERCHANT_CAPABILITIES', category: 'MERCHANT',
-      targetType: 'Merchant', targetId: merchantId,
-      details: capabilities, success: true,
-    });
-
-    if (global.sseManager) global.sseManager.broadcastToAdmins('merchant_status_changed', { merchantId, status: updated.status });
-
-    res.json({ success: true, message: 'Merchant capabilities updated.', capabilities });
-  } catch (error) {
-    console.error('Update merchant capabilities error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update merchant capabilities' });
-  }
-});
-
 // Get merchant earnings
 router.get('/merchants/:merchantId/earnings', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
@@ -345,7 +264,7 @@ router.get('/merchants/:merchantId/profile', authenticate, hasPermission('canMan
       // supervisor can run.
       choices: {
         routingPriority: db.merchants.ROUTING_PRIORITY,
-        supervisorRails: db.teams.SETTABLE_SUPERVISOR_RAILS,
+        supervisorRails: db.teams.SUPERVISOR_RAILS,
       },
     });
   } catch (error) {

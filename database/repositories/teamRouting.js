@@ -273,7 +273,6 @@ export async function directCandidates(order, { cap, barredMerchantIds = [], lim
         AND owner.merchant_approval_status = 'APPROVED'
         AND owner.is_online
         AND owner.assignment_paused_at IS NULL
-        AND 'INR' = ANY (owner.accepted_currencies)
         AND (CASE WHEN $2 THEN owner.accepts_deposits ELSE owner.accepts_withdrawals END)
         AND COALESCE(CASE WHEN $2 THEN ob.buys_open ELSE ob.sells_open END, 0) < $1
         AND (NOT $2 OR COALESCE(pool.available_paise, 0) >= $3)

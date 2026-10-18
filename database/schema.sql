@@ -887,17 +887,6 @@ CREATE TABLE IF NOT EXISTS merchants (
   accepts_deposits    BOOLEAN NOT NULL DEFAULT TRUE,
   accepts_withdrawals BOOLEAN NOT NULL DEFAULT TRUE,
 
-  -- ── The rail, and why it is still an array ────────────────────────────────
-  -- A merchant settles on EXACTLY ONE rail. The array shape is kept because it
-  -- is what merchantScoring and the admin capabilities route already filter on;
-  -- the cardinality is enforced by a CHECK, so the "exactly one" rule is a
-  -- property of the row rather than of a validator that update operators skip.
-  accepted_currencies TEXT[] NOT NULL DEFAULT ARRAY['INR'],
-  -- The scalar view panels want. A GENERATED column, not a stored copy and not
-  -- an application-layer virtual: derived in the database, so it cannot drift
-  -- from the array and cannot be written independently of it.
-  merchant_type TEXT GENERATED ALWAYS AS (accepted_currencies[1]) STORED,
-
   -- ── Payment credentials. Money is sent to these ───────────────────────────
   -- A bank account on the INR rail, never a UPI handle (CLAUDE.md §2 "How each
   -- rail is paid", §24): `bank_upi_id` is dropped below.
@@ -955,16 +944,6 @@ CREATE TABLE IF NOT EXISTS merchants (
     status IN ('ACTIVE', 'SUSPENDED', 'INACTIVE', 'PENDING', 'REJECTED')),
   CONSTRAINT merchants_approval_known CHECK (
     merchant_approval_status IN ('PENDING', 'APPROVED', 'REJECTED', 'SUSPENDED')),
-  -- Exactly one rail, and a known one.
-  --
-  -- `cardinality`, NOT `array_length`: array_length returns NULL for an empty
-  -- array, `NULL = 1` is NULL, and a CHECK is satisfied by anything that is not
-  -- FALSE — so the first draft of this constraint accepted a merchant on NO
-  -- rail, whose merchant_type was then NULL and who matched no assignment
-  -- query. cardinality returns 0.
-  CONSTRAINT merchants_one_rail CHECK (
-    cardinality(accepted_currencies) = 1
-    AND accepted_currencies[1] IN ('INR', 'USDT')),
   -- A suspended merchant without a reason is a suspension nobody can appeal.
   CONSTRAINT merchants_suspension_has_reason CHECK (
     status <> 'SUSPENDED' OR (suspension_reason IS NOT NULL AND suspension_reason <> '')),
@@ -985,6 +964,17 @@ ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_pending_secret;
 ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_last_counter;
 ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_enrolled_at;
 ALTER TABLE merchants DROP COLUMN IF EXISTS backup_codes;
+
+-- No merchant rail (owner, 2026-10-18). A merchant used to settle on INR or
+-- USDT (`accepted_currencies`, its scalar `merchant_type`); USDT buys are now
+-- paid to the platform, so every merchant is INR and the column said nothing.
+-- Dropped, with the CHECK and the assignment index over them, before that index
+-- is made again below without the rail, so an existing database converges (S31).
+-- An order's own currency (`order_states.currency`) stays.
+DROP INDEX IF EXISTS merchants_assignable_idx;
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_one_rail;
+ALTER TABLE merchants DROP COLUMN IF EXISTS merchant_type;
+ALTER TABLE merchants DROP COLUMN IF EXISTS accepted_currencies;
 
 -- No UPI handle. `bank_upi_id` was written by Profile and copied into each
 -- order's snapshot, and nothing ever read it: a UPI_BANK buy is paid into the
@@ -1008,9 +998,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS merchants_mobile_unique
 CREATE UNIQUE INDEX IF NOT EXISTS merchants_username_unique
   ON merchants (lower(username)) WHERE username IS NOT NULL AND username <> '';
 
--- The assignment query: online, active, accepting this direction, on this rail.
+-- The assignment query: online, active.
 CREATE INDEX IF NOT EXISTS merchants_assignable_idx
-  ON merchants (status, is_online, merchant_type)
+  ON merchants (status, is_online)
   WHERE status = 'ACTIVE' AND is_online;
 
 -- `public_ref` is immutable. Enforced here because a schema-level flag is
@@ -3516,13 +3506,20 @@ ALTER TABLE merchants ADD CONSTRAINT merchants_routing_priority_range
 ALTER TABLE merchants ADD COLUMN IF NOT EXISTS is_supervisor BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE merchants ADD COLUMN IF NOT EXISTS supervisor_rail TEXT;
 ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_supervisor_rail;
+-- ── No team is on USDT (owner, 2026-10-18) ─────────────────────────────────
+-- USDT buys are paid to the platform ("USDT DEPOSITS TO THE PLATFORM" below),
+-- so the USDT team is gone, not kept for an admin. Convergent (§32 S31): a
+-- USDT team's supervisor is moved to UPI_BANK before the CHECK that no longer
+-- admits USDT goes back on. Its members hold no bank details yet, so routing
+-- offers them no UPI/bank order until they add them (`routingCandidates`).
+UPDATE merchants SET supervisor_rail = 'UPI_BANK' WHERE supervisor_rail = 'USDT';
 -- `IS NOT NULL` is load-bearing: `NULL IN (…)` is NULL, a CHECK passes
 -- anything that is not FALSE, and the first draft therefore admitted a
 -- supervisor with NO rail — measured by teamsPg before it shipped.
 ALTER TABLE merchants ADD CONSTRAINT merchants_supervisor_rail CHECK (
   (NOT is_supervisor AND supervisor_rail IS NULL)
   OR (is_supervisor AND supervisor_rail IS NOT NULL
-      AND supervisor_rail IN ('CASH', 'UPI_BANK', 'USDT')));
+      AND supervisor_rail IN ('CASH', 'UPI_BANK')));
 
 CREATE TABLE IF NOT EXISTS teams (
   team_id       TEXT PRIMARY KEY,
@@ -4043,22 +4040,6 @@ CREATE OR REPLACE TRIGGER merchants_log_online_insert
 -- as the end of its stretch.
 UPDATE merchants SET is_online = FALSE, last_online_toggle = now() WHERE is_supervisor AND is_online;
 
--- An approved team member settles on the team's rail (`teams.approveMember`,
--- owner 2026-10-14): USDT in a USDT team, INR in a cash or UPI/bank team, with
--- the other rail's credentials cleared. Convergent (§32 S31) for members
--- approved before the rule, whose Profile refused the credentials their team's
--- orders need, so nothing on that rail was ever routed to them.
-UPDATE merchants m
-   SET accepted_currencies = ARRAY[x.currency]::text[],
-       bank_account_no          = CASE WHEN x.currency = 'USDT' THEN NULL ELSE m.bank_account_no END,
-       bank_ifsc                = CASE WHEN x.currency = 'USDT' THEN NULL ELSE m.bank_ifsc END,
-       bank_account_holder_name = CASE WHEN x.currency = 'USDT' THEN NULL ELSE m.bank_account_holder_name END
-  FROM (SELECT tm.merchant_id, CASE WHEN s.supervisor_rail = 'USDT' THEN 'USDT' ELSE 'INR' END AS currency
-          FROM team_members tm
-          JOIN teams t ON t.team_id = tm.team_id
-          JOIN merchants s ON s.merchant_id = t.supervisor_id
-         WHERE tm.status = 'APPROVED' AND s.supervisor_rail IS NOT NULL) x
- WHERE m.merchant_id = x.merchant_id AND m.accepted_currencies[1] IS DISTINCT FROM x.currency;
 ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_supervisor_never_online;
 ALTER TABLE merchants ADD CONSTRAINT merchants_supervisor_never_online
   CHECK (NOT (is_supervisor AND is_online));

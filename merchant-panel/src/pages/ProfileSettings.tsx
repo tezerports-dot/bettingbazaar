@@ -5,12 +5,10 @@
 // tokens — their team's pool does (PROJECT_STATUS §3.10) — so there is no
 // wallet card here.
 //
-// The payment-details section is the one place the settlement rail is fully
-// visible: an INR merchant edits a bank account (no UPI handle: a UPI_BANK buy
-// is paid into it, and nobody is shown a handle, CLAUDE.md §2 and §24). USDT
-// buys are paid to the platform, never to a merchant (owner, 2026-10-18,
-// CLAUDE.md §25), so a merchant holds no USDT address; one still on the old USDT
-// rail is told so and has nothing to edit until an admin moves them.
+// The payment-details section is where a merchant edits their bank account (no
+// UPI handle: a UPI_BANK buy is paid into it, and nobody is shown a handle,
+// CLAUDE.md §2 and §24). USDT buys are paid to the platform, never to a
+// merchant (owner, 2026-10-18, CLAUDE.md §25), so there is no USDT address.
 import React, { useEffect, useState } from 'react';
 import { Edit3, LogOut, Save } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -20,9 +18,9 @@ import { actorOf, ROLE_LABEL } from '../utils/actor';
 import { api } from '../services/api';
 import { useViewport } from '../hooks/useViewport';
 import { SUCCESS_MESSAGES } from '../constants';
-import { formatTokens, railOf } from '../utils/rail';
+import { formatTokens } from '../utils/rail';
 import {
-  Banner, Button, Card, CardTitle, Field, Toggle, Verified, cardStyle, copyText, inputStyle,
+  Button, Card, CardTitle, Field, Toggle, Verified, cardStyle, copyText, inputStyle,
 } from '../components/ui';
 
 /**
@@ -59,8 +57,6 @@ export const SubMemberProfile: React.FC = () => {
 const OwnerProfileSettings: React.FC = () => {
   const { merchant, logout, refreshProfile } = useAuth();
   const { isMobile } = useViewport();
-  const rail = railOf(merchant);
-  const isUsdt = rail === 'USDT';
   // Online, paused, or a supervisor with no switch at all: one helper (§5).
   const availability = availabilityOf(merchant);
 
@@ -166,11 +162,8 @@ const OwnerProfileSettings: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: perfColumns, gap: 11 }}>
           {[
             { label: 'Completed orders', value: merchant?.totalOrdersCompleted !== undefined ? String(merchant.totalOrdersCompleted) : '—', tone: 'var(--text)' },
-            // TOKENS, not the rail's currency. `merchants.total_deposit_amount_paise`
-            // is fed `order.tokenAmount` by recordCompletedOrder, so on the USDT rail
-            // `formatMoney(..., rail)` printed a token count with a USDT suffix —
-            // a 50,000-token deposit read "50,000 USDT" for about 555 USDT of work.
-            // CLAUDE.md trap 15, in the line a human reads.
+            // TOKENS: `merchants.total_deposit_amount_paise` is fed
+            // `order.tokenAmount` by recordCompletedOrder.
             { label: 'Deposits processed', value: merchant?.totalDepositAmount !== undefined ? formatTokens(merchant.totalDepositAmount) : '—', tone: 'var(--dep)' },
             { label: 'Withdrawals processed', value: merchant?.totalWithdrawalAmount !== undefined ? formatTokens(merchant.totalWithdrawalAmount) : '—', tone: 'var(--wd)' },
             { label: 'Merchant rating', value: merchant?.rating !== undefined ? `${merchant.rating.toFixed(1)} ★` : '—', tone: 'var(--text)' },
@@ -199,20 +192,20 @@ const OwnerProfileSettings: React.FC = () => {
         </div>
       </Card>
 
-      {/* Payment details — the rail-specific section */}
+      {/* Payment details */}
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 3 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
             <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--text)' }}>Payment details</span>
             <span style={{
               fontSize: 10, fontWeight: 800, padding: '3px 8px', borderRadius: 7, letterSpacing: '.03em',
-              color: isUsdt ? 'var(--dep)' : 'var(--brand)',
-              background: isUsdt ? 'var(--dep-bg)' : 'var(--brand-bg)',
+              color: 'var(--brand)',
+              background: 'var(--brand-bg)',
             }}>
-              {isUsdt ? 'USDT · retired' : 'INR · bank account'}
+              INR · bank account
             </span>
           </div>
-          {!editingPayment && !isUsdt && (
+          {!editingPayment && (
             <button
               onClick={() => setEditingPayment(true)}
               style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 700, color: 'var(--brand)', background: 'none', border: 0, cursor: 'pointer' }}
@@ -222,18 +215,10 @@ const OwnerProfileSettings: React.FC = () => {
           )}
         </div>
         <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', marginBottom: 15 }}>
-          {isUsdt
-            ? 'USDT buys are now paid to the platform directly'
-            : 'Users pay here for deposits · you receive settlements here'}
+          Users pay here for deposits · you receive settlements here
         </div>
 
-        {!editingPayment && (isUsdt ? (
-          <Banner tone="warn" title="No USDT orders come to merchants any more">
-            Players now pay USDT straight to an address the platform makes for each order, and it is credited by
-            itself. There is nothing to set here. Ask an admin to move this account to bank payments if you want
-            to keep taking orders.
-          </Banner>
-        ) : (
+        {!editingPayment && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
             {/* A bank account only. A UPI ID row stood above this, saved and
                 copied into every order, and nothing ever read it: a UPI_BANK
@@ -257,9 +242,9 @@ const OwnerProfileSettings: React.FC = () => {
               </div>
             </div>
           </div>
-        ))}
+        )}
 
-        {editingPayment && !isUsdt && (
+        {editingPayment && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
             <div style={{ display: 'grid', gridTemplateColumns: twoColumns, gap: 12 }}>
               <Field label="Account holder">
@@ -359,7 +344,7 @@ const OwnerProfileSettings: React.FC = () => {
           <div style={{ background: 'var(--surface-2)', borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)' }}>Settlement rail</span>
             <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
-              {isUsdt ? 'USDT · retired' : 'INR · bank account'}
+              INR · bank account
             </span>
           </div>
           <Button variant="outline" tone="danger" full onClick={logout} style={{ marginTop: 2 }}>

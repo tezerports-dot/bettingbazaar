@@ -185,8 +185,12 @@ export async function watchUsdtDeposits() {
 /** The watcher's health for the admin page: the cursor and how far behind it is. */
 export async function watcherStatus() {
   const cursor = await db.usdtDeposits.readCursor();
+  const configured = usdtDepositsConfigured();
   return {
-    configured: usdtDepositsConfigured(),
+    configured,
+    // The key new addresses are derived from now (`keyIdOf`), so an admin can
+    // see a rotation took: every address keeps the key it was made under.
+    activeKeyId: configured ? keyIdOf(configuredAccountKey()) : null,
     nextBlock: cursor?.nextBlock ?? null,
     headBlock: cursor?.headBlock ?? null,
     lastOkAt: cursor?.lastOkAt ?? null,

@@ -378,7 +378,7 @@ export async function seedActors() {
   // has to remember to call two things in order is a pass that will one day
   // call one; there is nothing to forget if the seeding owns both.
   const restoreTelegram = await configureTelegram();
-  const theMerchant = await seedMerchant({ currency: 'INR' });
+  const theMerchant = await seedMerchant();
   await seedTeam({ rail: 'CASH', poolTokens: 10000, include: [theMerchant], online: [theMerchant] });
   const theAdmin = await seedAdmin();
   return {
@@ -400,7 +400,7 @@ export async function seedActors() {
       'merchant-panel': {
         id: theMerchant.merchantId, merchantId: theMerchant.merchantId,
         username: theMerchant.username, email: theMerchant.email, mobile: theMerchant.mobile,
-        isOnline: true, status: 'ACTIVE', acceptedCurrencies: ['INR'],
+        isOnline: true, status: 'ACTIVE',
       },
     },
   };

@@ -2,16 +2,13 @@
 /**
  * The merchant record, against a real PostgreSQL.
  *
- * A merchant settles real INR and USDT, so the properties worth testing are the
- * ones that decide where money goes: which rail they are on, which credentials
- * money is sent to, whether they can be routed an order, and whether the
+ * A merchant settles real INR, so the properties worth testing are the ones
+ * that decide where money goes: which bank account money is sent to, whether they can be routed an order, and whether the
  * counters an operator reads describe the orders that actually happened.
  *
- * Three of these assert something the document model could NOT enforce:
+ * Two of these assert something the document model could NOT enforce:
  *   • `public_ref` immutability, which `immutable: true` honours on a document
  *     save and ignores on an update operator;
- *   • `merchant_type`, a GENERATED column rather than a virtual, so the scalar
- *     panels read cannot drift from the array assignment filters on;
  *   • the active order count, DERIVED from rows rather than accumulated — the
  *     document store's counter lost its decrement to any crash and throttled
  *     the merchant permanently.
@@ -21,7 +18,7 @@ import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
   createMerchant, getMerchant, getMerchants,
   getMerchantByUserId, getMerchantByPublicRef,
-  merchantCounts, updateMerchant, setOnline,
+  updateMerchant, setOnline,
   recordCompletedOrder, resetPeriodicStats, suspendMerchant, approveMerchant,
   rejectMerchant, deleteMerchant, generateMerchantPublicRef, newMerchantId,
 } from '../repositories/merchants.js';
@@ -122,50 +119,14 @@ describePg('the merchant record', () => {
     expect(rows).toEqual([]);
   });
 
-  // ── The rail ──────────────────────────────────────────────────────────────
-  it('derives merchantType in the DATABASE, so it cannot drift from the rail', async () => {
-    await make({ currency: 'USDT' });
-    expect((await getMerchant(ID)).merchantType).toBe('USDT');
-
-    // Changing the array moves the scalar with it — there is no second write.
-    await updateMerchant(ID, { accepted_currencies: ['INR'] });
-    expect((await getMerchant(ID)).merchantType).toBe('INR');
-  });
-
-  it('defaults to the INR rail, so a merchant created without one is usable', async () => {
-    // A merchant with no rail matches no assignment query, which is a merchant
-    // that silently never receives an order.
+  // ── No rail ───────────────────────────────────────────────────────────────
+  it('has no rail: every merchant serves INR (owner, 2026-10-18)', async () => {
+    const { rows } = await pgQuery(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'merchants' AND column_name IN ('accepted_currencies', 'merchant_type')`);
+    expect(rows).toEqual([]);
     await make();
-    const m = await getMerchant(ID);
-    expect(m.acceptedCurrencies).toEqual(['INR']);
-    expect(m.merchantType).toBe('INR');
-  });
-
-  it('allows a USDT merchant with no address yet — it is configured later', async () => {
-    // Onboarding is two steps: the merchant exists before their wallet address
-    // is confirmed. Refusing this would force an address to be invented at
-    // creation, and an invented USDT address is unrecoverable money.
-    const m = await createMerchant({
-      merchantId: `${ID}-noaddr`, name: 'Pending address', currency: 'USDT',
-    });
-    expect(m.merchantType).toBe('USDT');
-    // Neither chain. The assignment query is what excludes them from orders —
-    // a row-level "must hold an address" check could not see WHICH chain an
-    // order asked for, and would refuse the middle step of ordinary onboarding.
-    expect(m.usdtAddressTrc20 ?? null).toBeNull();
-    expect(m.usdtAddressBep20 ?? null).toBeNull();
-  });
-
-  it('refuses a merchant on two rails, or on none', async () => {
-    await expect(pgQuery(
-      `INSERT INTO merchants (merchant_id, name, public_ref, accepted_currencies)
-       VALUES ($1, 'Both', $2, ARRAY['INR','USDT'])`, [ID, generateMerchantPublicRef()],
-    )).rejects.toThrow(/merchants_one_rail/);
-
-    await expect(pgQuery(
-      `INSERT INTO merchants (merchant_id, name, public_ref, accepted_currencies)
-       VALUES ($1, 'None', $2, ARRAY[]::text[])`, [`${ID}-none`, generateMerchantPublicRef()],
-    )).rejects.toThrow(/merchants_one_rail/);
+    expect(await getMerchant(ID)).not.toHaveProperty('merchantType');
   });
 
   it('holds no USDT address: USDT buys are paid to the platform (owner, 2026-10-18)', async () => {
@@ -345,8 +306,8 @@ describePg('the merchant record', () => {
     await make();
     await expect(updateMerchant(ID, { tokenBalance: 500 }))
       .rejects.toThrow(/refusing to write unknown or protected column\(s\): tokenBalance/);
-    // Generated and identity columns are protected too.
-    await expect(updateMerchant(ID, { merchant_type: 'USDT' })).rejects.toThrow(/refusing to write/);
+    // Identity columns are protected too, and the removed rail is unknown.
+    await expect(updateMerchant(ID, { acceptedCurrencies: ['USDT'] })).rejects.toThrow(/refusing to write/);
     await expect(updateMerchant(ID, { public_ref: 'MDEADBEEF' })).rejects.toThrow(/refusing to write/);
     // The online switch has one writer, `setOnline`, whose WHERE keeps a
     // supervisor offline; a generic patch would be a path around it (§2, §3).
@@ -403,13 +364,5 @@ describePg('the merchant record', () => {
     expect(await deleteMerchant(ID)).toEqual({ ok: true });
     expect(await getMerchant(ID)).toBeNull();
     expect(await deleteMerchant(ID)).toEqual({ ok: false, reason: 'NOT_FOUND' });
-  });
-
-  it('counts by status in one pass', async () => {
-    await make();
-    const counts = await merchantCounts();
-    expect(counts.total).toBeGreaterThan(0);
-    expect(counts.active).toBeGreaterThan(0);
-    expect(counts.inr + counts.usdt).toBe(counts.total);
   });
 });

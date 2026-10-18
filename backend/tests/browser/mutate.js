@@ -281,7 +281,7 @@ const words = (page) => page.locator('body').innerText()
  */
 async function seedReferences() {
   const player = await seedPlayer({ balancePaise: 0 });
-  const merchant = await seedMerchant({ currency: 'INR' });
+  const merchant = await seedMerchant();
   const mk = async () => {
     const orderId = rid('UTRO');
     await pgQuery(
@@ -431,7 +431,7 @@ async function disputedBuys(n) {
        JOIN teams t ON t.team_id = tm.team_id
        JOIN merchants s ON s.merchant_id = t.supervisor_id
       WHERE m.is_online AND s.supervisor_rail = 'UPI_BANK'`);
-  const member = await seedMerchant({ currency: 'INR' });
+  const member = await seedMerchant();
   const team = await seedTeam({ rail: 'UPI_BANK', poolTokens: BUY_TOKENS * n, include: [member], online: [member] });
   const restore = async () => {
     for (const m of team.members) await setOnline(m.merchantId, false).catch(() => {});
@@ -499,7 +499,6 @@ async function supervisorSession({ secondTeam = false } = {}) {
     cached: {
       id: supervisor.merchantId, merchantId: supervisor.merchantId, username: supervisor.username,
       email: supervisor.email, mobile: supervisor.mobile, isOnline: false, status: 'ACTIVE',
-      acceptedCurrencies: ['INR'],
     },
     supervisor, team: { ...team, name }, second,
   };
@@ -826,8 +825,8 @@ const CASES = [
     panel: 'admin-panel',
     what: 'Suspend a merchant',
     async run(page, cfg, base) {
-      const target = await seedMerchant({ currency: 'INR' });
-      const bystander = await seedMerchant({ currency: 'INR' });
+      const target = await seedMerchant();
+      const bystander = await seedMerchant();
 
       await go(page, cfg, base, '/merchants');
       await search(page, target.name);
@@ -1483,8 +1482,8 @@ const CASES = [
       // exists for. A merchant seeded APPROVED has no Approve button at all,
       // and a case that reports NOT DRIVEN for its own fixture's sake is worse
       // than no case.
-      const target = await seedMerchant({ currency: 'INR', approve: false, online: false });
-      const bystander = await seedMerchant({ currency: 'INR', approve: false, online: false });
+      const target = await seedMerchant({ approve: false, online: false });
+      const bystander = await seedMerchant({ approve: false, online: false });
 
       await go(page, cfg, base, '/merchants');
       await search(page, target.username);
@@ -1509,8 +1508,8 @@ const CASES = [
     panel: 'admin-panel',
     what: 'Reject a pending merchant application',
     async run(page, cfg, base) {
-      const target = await seedMerchant({ currency: 'INR', approve: false, online: false });
-      const bystander = await seedMerchant({ currency: 'INR', approve: false, online: false });
+      const target = await seedMerchant({ approve: false, online: false });
+      const bystander = await seedMerchant({ approve: false, online: false });
 
       await go(page, cfg, base, '/merchants');
       await search(page, target.username);
@@ -1762,7 +1761,7 @@ const CASES = [
     async run(page, cfg, base) {
       const seeded = [];
       for (let i = 0; i < 4; i++) {
-        seeded.push(await seedMerchant({ currency: 'INR', approve: true, online: false }));
+        seeded.push(await seedMerchant({ approve: true, online: false }));
       }
       await go(page, cfg, base, '/merchants');
       await settle(page, 8000);
@@ -2529,7 +2528,7 @@ const CASES = [
     what: 'A supervisor proposes a merchant for a team by the ID that merchant was given — "Add" enables once typed',
     as: () => supervisorSession({ secondTeam: true }),
     async run(page, cfg, base, s) {
-      const candidate = await seedMerchant({ currency: 'INR', online: false });
+      const candidate = await seedMerchant({ online: false });
       const { rows: [ref] } = await pgQuery('SELECT public_ref FROM merchants WHERE merchant_id = $1', [candidate.merchantId]);
       try {
         await go(page, cfg, base, '/team');
@@ -2617,7 +2616,7 @@ async function main() {
     // screens render their working state and a buy created during the run is
     // routed to it — `merchant/orders/confirm-a-later-row` depends on exactly
     // that. Since Step 2c a merchant outside a team is served no orders at all.
-    driveMerchant = await seedMerchant({ currency: 'INR' });
+    driveMerchant = await seedMerchant();
     await seedTeam({ rail: 'UPI_BANK', poolTokens: 200000, include: [driveMerchant], online: [driveMerchant] });
     tokens['merchant-panel'] = merchantToken(driveMerchant);
     // A RETURNING merchant has a cached profile besides a token; seeding only
@@ -2626,7 +2625,6 @@ async function main() {
       id: driveMerchant.merchantId, merchantId: driveMerchant.merchantId,
       username: driveMerchant.username, email: driveMerchant.email,
       mobile: driveMerchant.mobile, isOnline: true, status: 'ACTIVE',
-      acceptedCurrencies: ['INR'],
     };
   }
 

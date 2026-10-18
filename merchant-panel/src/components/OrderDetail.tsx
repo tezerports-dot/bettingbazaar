@@ -8,7 +8,7 @@ import React from 'react';
 import { ArrowDownLeft, ArrowUpRight, Check, QrCode, ShieldCheck, X } from 'lucide-react';
 import { OrderStatus, type MerchantProfile, type PaymentAccount, type PaymentOrder } from '../types';
 import { mayWorkOrder } from '../utils/actor';
-import { counterpartyOf, formatMoney, railCopy, railOf, tokenColumn } from '../utils/rail';
+import { counterpartyOf, formatMoney, tokenColumn, PAYMENT_COPY } from '../utils/rail';
 import { formatCountdown, secondsLeft, URGENT_SECONDS } from '../hooks/useCountdown';
 import { Banner, Button, CopyInline, Panel, StatusPill } from './ui';
 import { accountNamed, viewOnlyReason, type OrderActions } from './OrderRow';
@@ -30,8 +30,7 @@ export const OrderDetail: React.FC<{
 }> = ({ order, merchant, now, isMobile, onClose, actions, paymentAccounts }) => {
   if (!order) return null;
 
-  const rail = railOf(merchant);
-  const copy = railCopy(rail);
+  const copy = PAYMENT_COPY;
   const isDeposit = order.type === 'DEPOSIT';
   const accent = isDeposit ? 'var(--dep)' : 'var(--wd)';
   const accentBg = isDeposit ? 'var(--dep-bg)' : 'var(--wd-bg)';
@@ -83,11 +82,7 @@ export const OrderDetail: React.FC<{
       paymentRows.push({ label: 'IFSC', value: payAccount.ifsc });
     }
   } else if (isDeposit) {
-    if (rail === 'USDT') {
-      // A USDT buy is paid to an address the platform made for the order and is
-      // credited by itself (owner, 2026-10-18); no merchant receives it.
-      paymentRows.push({ label: 'Paid to', value: 'The platform, not you' });
-    } else if (order.paymentMode === 'CASH_ATM') {
+    if (order.paymentMode === 'CASH_ATM') {
       // Paid to the cash machine this member scans (Step 2d), never to them.
       paymentRows.push({ label: 'Cash machine QR', value: order.cashLink ? 'Scanned — the player can pay it' : 'Not scanned yet' });
     } else {
@@ -111,8 +106,7 @@ export const OrderDetail: React.FC<{
   }
 
   const paySectionLabel = isDeposit
-    ? (rail === 'USDT' ? 'Payment — paid to the platform'
-      : order.paymentMode === 'CASH_ATM' ? 'Payment — user pays the cash machine'
+    ? (order.paymentMode === 'CASH_ATM' ? 'Payment — user pays the cash machine'
       : 'Payment — user transfers to your account')
     : copy.payoutDestinationLabel;
 
@@ -213,7 +207,7 @@ export const OrderDetail: React.FC<{
             {isDeposit ? 'User pays you' : 'You send'}
           </div>
           <div className="bb-mono" style={{ fontSize: 22, fontWeight: 700, color: 'var(--text)', letterSpacing: '-1px' }}>
-            {formatMoney(order.fiatAmount ?? order.amount, rail)}
+            {formatMoney(order.fiatAmount ?? order.amount)}
           </div>
         </div>
         <div style={{ background: 'var(--surface-2)', borderRadius: 13, padding: 14 }}>
@@ -278,7 +272,7 @@ export const OrderDetail: React.FC<{
               <CopyInline label={copy.proofLabel} value={order.utrNumber} />
             </div>
           )}
-          {order.proofScreenshot && rail !== 'USDT' && (
+          {order.proofScreenshot && (
             <a href={order.proofScreenshot} target="_blank" rel="noreferrer" style={{ display: 'block' }}>
               <img
                 src={order.proofScreenshot}

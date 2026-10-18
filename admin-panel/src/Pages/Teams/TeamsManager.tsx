@@ -31,7 +31,7 @@ import type { SupervisorRail, TeamMemberView, TeamRedFlag, TeamSupervisor, TeamV
 import { poolExposureLine } from '../../types';
 
 /**
- * Mirrors SETTABLE_SUPERVISOR_RAILS in database/repositories/teams.js (§5). No
+ * Mirrors SUPERVISOR_RAILS in database/repositories/teams.js (§5). No
  * USDT: USDT buys are paid to the platform, never to a team (owner, 2026-10-18).
  */
 const RAILS: Array<{ value: SupervisorRail; label: string }> = [

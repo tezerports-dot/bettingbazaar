@@ -21,7 +21,6 @@ const REFUSALS = Object.freeze({
   is_supervisor:         [409, 'A supervisor cannot be a member of a team.'],
   supervisor_no_priority: [409, 'A supervisor takes no orders, so has no routing priority. Set it on a member.'],
   not_supervisor:        [403, 'Only a supervisor can do that.'],
-  usdt_rail_retired:     [409, 'USDT buys are now paid to the platform directly, so no new USDT team can be made.'],
   team_limit:            [409, `A supervisor can run at most ${MAX_TEAMS} teams.`],
   team_full:             [409, `That team already has ${TEAM_SIZE} members.`],
   already_in_team:       [409, 'That merchant is already in a team. They must leave it first.'],

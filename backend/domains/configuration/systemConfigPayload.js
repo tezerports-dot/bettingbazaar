@@ -51,7 +51,7 @@ export const DEFAULT_FOOTER_PAGES = Object.freeze(['home', 'results', 'wallet', 
 // The phantom-bets line players read beside the pool totals.
 import { demoResultsOnOf } from '../markets/demoResults.js';
 // The INR peg comes from the one place that owns it.
-import { USDT_CHAINS, USDT_CHAIN_SPEC } from '../merchant/merchantCurrency.js';
+import { USDT_CHAINS, USDT_CHAIN_SPEC } from '../payment/orderCurrency.js';
 import { tokensPerUsdt } from './tokenRates.js';
 import { INR_TOKEN_RATE } from './tokenRates.js';
 // The legal order sizes come from the module the risk gate validates against,

@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   seedFromMnemonic, accountFromSeed, depositKey, gasKey, addressOf, signLegacyTx, rlp,
-  transferData, balanceOfData, parseSweepFile, runSweep,
+  transferData, balanceOfData, parseSweepFile, runSweep, accountSummary,
 } from '../../../scripts/usdt-sweep.mjs';
 import { BSC_USDT_CONTRACT, keyIdOf, parseAccountXpub } from '../../domains/payment/usdtBsc.js';
 
@@ -24,6 +24,14 @@ describe('keys', () => {
     expect(keyIdOf(account)).toBe(keyIdOf(parseAccountXpub(TEST_XPUB)));
     expect(addressOf(depositKey(account, 0))).toBe('0x9858effd232b4033e47d90003d41ec34ecaeda94');
     expect(addressOf(depositKey(account, 1))).toBe('0x6fac4d18c912343bf86fa7049364dd4e424ab9c0');
+  });
+
+  it('prints, for a phrase, the xpub the server is given and the key id its addresses carry', () => {
+    expect(accountSummary(account)).toEqual({ xpub: TEST_XPUB, keyId: keyIdOf(account), gasWallet: addressOf(gasKey(account)) });
+    // A rotated phrase is a different key: its addresses can never be mistaken for the old one's.
+    const other = accountFromSeed(seedFromMnemonic('legal winner thank year wave sausage worth useful legal winner thank yellow'));
+    expect(accountSummary(other).keyId).not.toBe(keyIdOf(account));
+    expect(addressOf(depositKey(other, 0))).not.toBe(addressOf(depositKey(account, 0)));
   });
 
   it('keeps the gas wallet off the deposit branch', () => {

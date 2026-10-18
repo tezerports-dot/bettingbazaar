@@ -536,8 +536,8 @@ describePg('the payment queue an operator works', () => {
        VALUES ('u1','Asha','9990001111','ASHA1')`, [],
     );
     await pgQuery(
-      `INSERT INTO merchants (merchant_id, name, public_ref, mobile, accepted_currencies)
-       VALUES ('m1','Ravi Payments','MER-1','9990002222', ARRAY['INR'])`, [],
+      `INSERT INTO merchants (merchant_id, name, public_ref, mobile)
+       VALUES ('m1','Ravi Payments','MER-1','9990002222')`, [],
     );
     await order('o-1', 'PROCESSING', { userId: 'u1', merchantId: 'm1' });
 

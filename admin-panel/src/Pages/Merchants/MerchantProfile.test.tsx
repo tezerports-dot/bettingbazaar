@@ -6,7 +6,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router';
 
 const { merchants, teams, put } = vi.hoisted(() => ({
@@ -87,19 +87,12 @@ describe('merchant page', () => {
     expect(screen.queryByRole('button', { name: 'Resume assignment' })).toBeNull();
   });
 
-  it('offers no way onto USDT, and moves a merchant still on it back to INR', async () => {
+  it('offers no way onto USDT: merchants have no rail', async () => {
     // USDT buys are paid to the platform (owner, 2026-10-18): no merchant takes them.
     renderPage();
     await screen.findByRole('heading', { name: 'ravi' });
-    expect(screen.queryByRole('button', { name: /USDT/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Move to INR/ })).toBeNull();
-
-    put.mockResolvedValue({ data: { success: true } });
-    profile('AGENT', { merchantType: 'USDT', acceptedCurrencies: ['USDT'] });
-    cleanup();
-    renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: /Move to INR/ }));
-    await waitFor(() => expect(put).toHaveBeenCalledWith('/api/admin/merchants/MRC-1/capabilities', { merchantType: 'INR' }));
+    expect(screen.queryByRole('button', { name: /USDT|Move to INR/ })).toBeNull();
+    expect(screen.queryByRole('option', { name: /USDT/ })).toBeNull();
   });
 
   it('suspends with the reason typed beside the button', async () => {

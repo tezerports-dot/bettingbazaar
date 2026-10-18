@@ -10,13 +10,12 @@
 // (a buy's payment arrived, or a sell's payout was sent); ✗ says no (a buy's
 // payment never arrived, or a started order is declined back to the queue).
 //
-// Everything currency-shaped comes from utils/rail.ts, so an INR merchant sees
-// ₹ / UTR and a USDT merchant sees USDT / Tx ID from the same component.
+// Everything payment-shaped (₹, UTR) is worded in utils/rail.ts.
 import React from 'react';
 import { ArrowDownLeft, ArrowUpRight, Check, Clock, QrCode, X } from 'lucide-react';
 import { OrderStatus, type MerchantProfile, type PaymentAccount, type PaymentOrder } from '../types';
 import { actorOf, mayWorkOrder } from '../utils/actor';
-import { formatMoney, railCopy, railOf, truncateMiddle } from '../utils/rail';
+import { formatMoney, truncateMiddle, PAYMENT_COPY } from '../utils/rail';
 import { formatCountdown, secondsLeft, URGENT_SECONDS } from '../hooks/useCountdown';
 import { StatusPill, cardStyle } from './ui';
 
@@ -87,8 +86,7 @@ export const OrderRow: React.FC<{
   now: number;
   actions: OrderActions;
 }> = ({ order, merchant, now, actions }) => {
-  const rail = railOf(merchant);
-  const copy = railCopy(rail);
+  const copy = PAYMENT_COPY;
   const isDeposit = order.type === 'DEPOSIT';
   const accent = isDeposit ? 'var(--dep)' : 'var(--wd)';
   const reference = String(order.orderId || order._id || '');
@@ -139,7 +137,7 @@ export const OrderRow: React.FC<{
           {isDeposit ? <ArrowDownLeft size={17} /> : <ArrowUpRight size={17} />}
         </span>
         <span className="bb-mono" style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', flexShrink: 0 }}>
-          {formatMoney(order.fiatAmount ?? order.amount, rail)}
+          {formatMoney(order.fiatAmount ?? order.amount)}
         </span>
         <span
           className="bb-mono"

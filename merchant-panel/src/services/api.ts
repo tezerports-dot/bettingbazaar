@@ -538,9 +538,7 @@ export const setCashReady = async (ready: boolean): Promise<boolean> => {
 // =======================================================================
 
 // Bank details only: a merchant holds no USDT address, since USDT buys are paid
-// to the platform (owner, 2026-10-18). The backend refuses bank details on a
-// merchant still on the old USDT rail (backend/domains/merchant/merchant.routes.js
-// PUT /profile).
+// to the platform (owner, 2026-10-18).
 export const updateProfile = async (data: {
   bankDetails: { accountHolderName?: string; bankName?: string; accountNo?: string; ifsc?: string };
 }): Promise<any> => {

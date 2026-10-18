@@ -6,9 +6,8 @@
  * wire them).
  *
  * What is pinned, and why each was worth a test:
- *   · the stats say WHICH currency their volumes are in. They are summed in the
- *     order's currency — one rail per merchant (§2) — and rendered as the
- *     wrong one they are trap 15's display mouth;
+ *   · the stats count a merchant's completed work in rupees (every merchant
+ *     serves INR; USDT buys are paid to the platform);
  *   · the history buckets a completed order on its own day, with a zero for
  *     every day that had none, over exactly the window asked for.
  *
@@ -122,7 +121,7 @@ describePg('merchant platform stats', () => {
     expect((await getOrderRecord(orderId)).state).toBe('COMPLETED');
   };
 
-  it('counts an INR merchant\'s completed work, in rupees, and says so', async () => {
+  it('counts a merchant\'s completed work, in rupees', async () => {
     const m = await member('UPI_BANK');
     await completedBuy(m, { tokens: 50_000 });
     await completedBuy(m, { tokens: 100_000 });
@@ -130,7 +129,6 @@ describePg('merchant platform stats', () => {
     const res = await as(app, admin).get(`/merchant-platform/${m.merchantId}/funding-stats`);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.stats).toMatchObject({
-      currency: 'INR',
       depositsCompleted: 2, depositVolume: 150_000,
       withdrawalsCompleted: 1, withdrawalVolume: 50_000,
     });

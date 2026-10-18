@@ -674,7 +674,7 @@ const MUTATIONS = [
     from: `      payTo:           view.payTo ?? null,`,
     to: `      payTo:           order.merchantSnapshot,`,
   },
-  // ── B7: the USDT merchant rail, and one payment claimed once ─────────────
+  // ── B7: a USDT buy is the platform's, and one payment claimed once ───────
   {
     id: 'M143', file: 'database/repositories/teamRouting.js', config: PG,
     test: 'database/tests/teamRoutingPg.test.js',
@@ -686,7 +686,7 @@ const MUTATIONS = [
     id: 'M145', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/usdtBuyPricingPg.test.js',
     why: 'a USDT buy naming another chain is admitted, so the player is shown a BSC address while holding funds on a network that cannot reach it',
-    from: `  if (currency === MERCHANT_CURRENCY.USDT && !isUsdtChain(usdtChain)) {`,
+    from: `  if (currency === ORDER_CURRENCY.USDT && !isUsdtChain(usdtChain)) {`,
     to: `  if (false) {`,
   },
   {
@@ -1530,13 +1530,6 @@ const MUTATIONS = [
     to: `const isAdjustment = () => false;`,
   },
   // ── The Merchant Platform's per-merchant figures (2026-10-01) ───────────
-  {
-    id: 'M271', file: 'backend/domains/merchant/merchantAnalytics.service.js', config: PG,
-    test: 'backend/tests/routes/merchantPlatformStatsPg.test.js',
-    why: 'a USDT merchant\'s volume is labelled as rupees on the admin screen',
-    from: `    currency: merchantTypeOf(merchant),`,
-    to: `    currency: 'INR',`,
-  },
   // ── A create is a create (2026-10-01) ───────────────────────────────────
   {
     id: 'M272', file: 'backend/domains/gameRegistry/gameRegistry.routes.js', config: PG,

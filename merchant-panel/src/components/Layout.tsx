@@ -16,7 +16,7 @@ import { availabilityOf } from '../utils/availability';
 import { api } from '../services/api';
 import { ROUTES, SUCCESS_MESSAGES } from '../constants';
 import { useViewport } from '../hooks/useViewport';
-import { railOf, railCopy } from '../utils/rail';
+import { PAYMENT_COPY } from '../utils/rail';
 import { Avatar, Logo } from './ui';
 import { useTheme } from '../services/ThemeContext';
 import { actorOf, isMerchantAccountSession } from '../utils/actor';
@@ -58,8 +58,7 @@ const Layout: React.FC<LayoutProps> = ({ children, actionable = 0 }) => {
   const navigate = useNavigate();
   const { isMobile, isTablet, isDesktop } = useViewport();
 
-  const rail = railOf(merchant);
-  const copy = railCopy(rail);
+  const copy = PAYMENT_COPY;
   // One helper for every screen (§5). A supervisor has no online switch: they
   // take no orders (CLAUDE.md §2), and the server refuses it.
   const availability = availabilityOf(merchant);

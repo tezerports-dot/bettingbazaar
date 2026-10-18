@@ -16,8 +16,8 @@ const A = 'BUY';
 export default async function run() {
   const player = await seedPlayer({ balancePaise: 0 });
   const other  = await seedPlayer({ balancePaise: 0 });
-  const m      = await seedMerchant({ currency: 'INR' });
-  const m2     = await seedMerchant({ currency: 'INR' });
+  const m      = await seedMerchant();
+  const m2     = await seedMerchant();
   // The two named members are the only ones online on the rail (`exclusive`),
   // so the buy lands on one of them and the other is the stranger.
   const team   = await seedTeam({ rail: 'UPI_BANK', poolTokens: 100000, include: [m, m2], online: [m, m2] });

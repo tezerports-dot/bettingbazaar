@@ -83,7 +83,6 @@ describe('the cash Ready switch', () => {
 
   it.each([
     ['a member of a UPI_BANK team', { role: 'MEMBER', publicRef: 'M1', status: 'APPROVED', team: team('UPI_BANK') }],
-    ['a member of a USDT team', { role: 'MEMBER', publicRef: 'M1', status: 'APPROVED', team: team('USDT') }],
     ['a cash member an admin has not approved yet', { role: 'MEMBER', publicRef: 'M1', status: 'PENDING', team: team('CASH') }],
     ['a supervisor of a cash team', { role: 'SUPERVISOR', rail: 'CASH', publicRef: 'MS', teams: [], members: [], poolRequests: [] }],
     ['a merchant in no team', { role: 'NONE', publicRef: 'M1' }],
@@ -218,7 +217,7 @@ describe('the cash Ready switch', () => {
   });
 
   it('is on the Dashboard, under the online switch', async () => {
-    auth.merchant = merchant({ cashReady: false, acceptedCurrencies: ['INR'] });
+    auth.merchant = merchant({ cashReady: false });
     api.getMyTeam.mockResolvedValue(cashMember);
     render(<MemoryRouter><Dashboard /></MemoryRouter>);
     const sw = await theSwitch();
