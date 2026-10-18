@@ -90,6 +90,8 @@ lock (a few milliseconds each); different polls never wait for each other.
 | Next over: odd / even / zero | when the over before it starts | when this over's first ball arrives | runs conceded in the over, extras included; 0 is "Zero", not "Even" |
 | Next ball | when the previous delivery's result arrives | after `nextBallWindowSec` (12 s), or when the next delivery arrives | the delivery's result |
 | Man of the match | when the playing XIs arrive (after the toss) | when the result arrives | the official award; not announced in 24 h or not on the list: void |
+| Best batsman | when the playing XIs arrive (after the toss), every player of both XIs | when the result arrives | most runs in the match (innings added up); level on runs, fewer balls faced; still level, nobody scored, or no scorecard: void, stakes back |
+| Best bowler | as best batsman | when the result arrives | most wickets in the match; level on wickets, fewer runs conceded; still level, no wicket to a bowler, or no scorecard: void, stakes back |
 
 **Why overs close before they start.** Pool odds do not know the score. An
 over poll still open at the fifth ball would pay pool odds on a result anyone
@@ -104,8 +106,15 @@ between balls (about 35 s), so the default is 12 s plus a 5 s delay.
 
 **Next-ball options** (one wins, in this order of priority): Wicket, No ball,
 Wide, then the runs off the delivery (bat, byes and leg byes): 0 (dot), 1, 2,
-3, 4, 6, and "5 or 7+". A wide or no ball is its own delivery; the next poll
-is for the re-bowled ball.
+3, 4, 5 and 6+. A wide or no ball is its own delivery; the next poll is for
+the re-bowled ball. Each next-ball poll is named by innings, over and ball
+("Innings 1, over 3, ball 4"): the ball number counts the legal balls of the
+over so far, so after a wide it stays, and after the sixth legal ball the next
+over starts at ball 1 (`nextBallAfter`).
+
+**Claiming.** A player claims one poll's positions with that poll's Claim
+button, or every claimable position of the match with Claim all; both are the
+same claim (`claimPositions`), the first naming that poll's bets.
 
 **Odd / even / zero.** Zero is even in arithmetic, but a maiden is a different
 opinion from "2, 4, 6…", so the three options are Odd, Even (2 or more) and

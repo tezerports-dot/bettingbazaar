@@ -12,22 +12,27 @@ export const POLL_KINDS = Object.freeze({
   OVER: 'OVER',
   BALL: 'BALL',
   MOM: 'MOM',
+  TOP_BATSMAN: 'TOP_BATSMAN',
+  TOP_BOWLER: 'TOP_BOWLER',
 });
+
+/** The polls with one option per player of the playing XIs, opened with the lineup. */
+export const PLAYER_POLL_KINDS = Object.freeze([POLL_KINDS.MOM, POLL_KINDS.TOP_BATSMAN, POLL_KINDS.TOP_BOWLER]);
 
 /** Which seed setting each kind reads (`cricket.seedRupees.<key>`). */
 export const SEED_KEY = Object.freeze({
-  TOSS: 'toss', MATCH_RESULT: 'matchResult', OVER: 'over', BALL: 'ball', MOM: 'manOfMatch',
+  TOSS: 'toss', MATCH_RESULT: 'matchResult', OVER: 'over', BALL: 'ball', MOM: 'manOfMatch', TOP_BATSMAN: 'topBatsman', TOP_BOWLER: 'topBowler',
 });
 
 /** A delivery's outcome, in the priority it is judged: a wicket beats everything. */
 export const BALL_OUTCOMES = Object.freeze([
-  { key: 'DOT', label: 'Dot ball' },
+  { key: 'DOT', label: '0 (dot ball)' },
   { key: 'R1', label: '1 run' },
   { key: 'R2', label: '2 runs' },
   { key: 'R3', label: '3 runs' },
   { key: 'R4', label: '4 runs' },
-  { key: 'R6', label: '6 runs' },
-  { key: 'R_OTHER', label: '5 or 7+ runs' },
+  { key: 'R5', label: '5 runs' },
+  { key: 'R6_PLUS', label: '6+ runs' },
   { key: 'WIDE', label: 'Wide' },
   { key: 'NO_BALL', label: 'No ball' },
   { key: 'WICKET', label: 'Wicket' },
@@ -48,8 +53,8 @@ export function deliveryOutcome({ wicket = false, noBall = false, wide = false, 
   if (r === 2) return 'R2';
   if (r === 3) return 'R3';
   if (r === 4) return 'R4';
-  if (r === 6) return 'R6';
-  return 'R_OTHER';
+  if (r === 5) return 'R5';
+  return 'R6_PLUS';
 }
 
 /** An over's result from the runs conceded in it, extras included. Zero is its own option. */
@@ -83,6 +88,8 @@ export function optionsFor(kind, match) {
     case POLL_KINDS.BALL:
       return BALL_OUTCOMES.map((o) => ({ ...o }));
     case POLL_KINDS.MOM:
+    case POLL_KINDS.TOP_BATSMAN:
+    case POLL_KINDS.TOP_BOWLER:
       return (match.lineup ?? []).map((p) => ({ key: `P${p.id}`, label: `${p.name} (${teamName(match, p.team)})` }));
     default:
       throw new Error(`unknown poll kind '${kind}'`);
@@ -90,13 +97,15 @@ export function optionsFor(kind, match) {
 }
 
 /** The poll's title, in players' words. */
-export function titleFor(kind, { innings = 0, overNo = 0, seq = 0 } = {}) {
+export function titleFor(kind, { innings = 0, overNo = 0, seq = 0, ball = 0 } = {}) {
   switch (kind) {
     case POLL_KINDS.TOSS: return 'Toss: who wins, and their choice';
     case POLL_KINDS.MATCH_RESULT: return 'Match result';
     case POLL_KINDS.OVER: return `Innings ${innings}, over ${overNo + 1}: odd, even or zero runs`;
-    case POLL_KINDS.BALL: return `Next ball (delivery ${seq})`;
+    case POLL_KINDS.BALL: return ball ? `Innings ${innings}, over ${overNo + 1}, ball ${ball}` : `Next ball (delivery ${seq})`;
     case POLL_KINDS.MOM: return 'Man of the match';
+    case POLL_KINDS.TOP_BATSMAN: return 'Best batsman: most runs in the match';
+    case POLL_KINDS.TOP_BOWLER: return 'Best bowler: most wickets in the match';
     default: throw new Error(`unknown poll kind '${kind}'`);
   }
 }
@@ -108,3 +117,39 @@ export function pollIdFor(matchId, kind, { innings = 0, overNo = 0, seq = 0 } = 
 
 /** The toss poll's winning option. */
 export const tossOutcome = (winner, elected) => `${winner}_${elected}`;
+
+/**
+ * The best batsman: most runs in the match (every innings added up); level on
+ * runs, fewer balls faced. Still level, or nobody scored: null, and the poll is
+ * void (stakes returned), never split.
+ */
+export function topBatsman(batting = []) {
+  const best = [...batting].filter((b) => b.runs > 0)
+    .sort((a, b) => b.runs - a.runs || a.balls - b.balls);
+  if (!best.length) return null;
+  const [first, second] = best;
+  if (second && second.runs === first.runs && second.balls === first.balls) return null;
+  return first.playerId;
+}
+
+/**
+ * The best bowler: most wickets in the match; level on wickets, fewer runs
+ * conceded. Still level, or no wicket fell to a bowler: null, and the poll is void.
+ */
+export function topBowler(bowling = []) {
+  const best = [...bowling].filter((b) => b.wickets > 0)
+    .sort((a, b) => b.wickets - a.wickets || a.runs - b.runs);
+  if (!best.length) return null;
+  const [first, second] = best;
+  if (second && second.wickets === first.wickets && second.runs === first.runs) return null;
+  return first.playerId;
+}
+
+/**
+ * Where the next ball is bowled, from the last delivery and the legal balls of
+ * its over so far: a wide or a no ball is bowled again, so the count stays;
+ * after the sixth legal ball the next over starts at ball 1.
+ */
+export function nextBallAfter({ innings, overNo }, legalBallsInOver) {
+  return legalBallsInOver >= 6 ? { innings, overNo: overNo + 1, ball: 1 } : { innings, overNo, ball: legalBallsInOver + 1 };
+}

@@ -23,6 +23,7 @@ import { useCricketSettings, useGame } from '../services/GameContext';
 import { useShell } from '../redesign/RedesignShell';
 import { useToast } from '../components/ui/Toast';
 import { positionValuePaise } from '../redesign/cricketValue';
+import { useHeaderLogo } from '../services/brandAssets';
 
 const tokens = (paise: number) => (paise / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const odds = (x100: number) => (x100 / 100).toFixed(2);
@@ -199,6 +200,16 @@ const Positions: React.FC<{ match: CricketMatch; bets: CricketBet[]; onClaimed: 
   });
   const claimableRows = rows.filter((r) => r.claimable);
   const net = claimableRows.reduce((t, r) => t + (r.value ?? 0) - r.b.stakePaise, 0);
+  // One group per poll, so each poll's positions can be claimed on their own.
+  const groups = useMemo(() => {
+    const byPoll = new Map<string, { pollId: string; title: string; items: CricketBet[] }>();
+    for (const b of bets) {
+      const g = byPoll.get(b.pollId) ?? { pollId: b.pollId, title: b.pollTitle, items: [] };
+      g.items.push(b);
+      byPoll.set(b.pollId, g);
+    }
+    return [...byPoll.values()];
+  }, [bets]);
 
   const getQuote = async (betIds?: string[]) => {
     setBusy('quote'); setError('');
@@ -264,19 +275,36 @@ const Positions: React.FC<{ match: CricketMatch; bets: CricketBet[]; onClaimed: 
       {settings.claimHoldSec > 0 && !error && (
         <p style={{ fontSize: 11, color: 'var(--text3)', margin: '8px 0 0' }}>A new bet can be claimed {settings.claimHoldSec} s after it is placed.</p>
       )}
-      <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {bets.map((b) => {
-          const row = rows.find((r) => r.b.betId === b.betId);
-          const pl = row?.value !== null && row?.value !== undefined ? row.value - b.stakePaise : null;
+      <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {groups.map(({ pollId, title, items }) => {
+          const claimIds = items.filter((b) => rows.find((r) => r.b.betId === b.betId)?.claimable).map((b) => b.betId);
+          const groupNet = rows.filter((r) => r.claimable && r.b.pollId === pollId).reduce((t, r) => t + (r.value ?? 0) - r.b.stakePaise, 0);
           return (
-            <div key={b.betId} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, borderTop: '1px solid var(--line)', paddingTop: 6 }}>
-              <span style={{ color: 'var(--text2)', minWidth: 0 }}>
-                <b style={{ color: 'var(--text)' }}>{b.optionLabel}</b> · {b.pollTitle} · {tokens(b.stakePaise)} @ {odds(b.oddsX100)}
-              </span>
-              <span style={{ whiteSpace: 'nowrap', fontWeight: 700, color: b.status === 'OPEN' ? (pl === null ? 'var(--text3)' : pl >= 0 ? 'var(--green)' : 'var(--red)') : b.status === 'LOST' ? 'var(--red)' : 'var(--green)' }}>
-                {b.status === 'OPEN' ? (pl === null ? 'Awaiting result' : `${pl >= 0 ? '+' : ''}${tokens(pl)}`)
-                  : b.status === 'LOST' ? 'Lost' : b.status === 'VOID' ? 'Returned' : `${b.status === 'CLAIMED' ? 'Claimed' : 'Won'} ${tokens(b.paidPaise)}`}
-              </span>
+            <div key={pollId} style={{ borderTop: '1px solid var(--line)', paddingTop: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', minWidth: 0 }}>{title}</span>
+                {claimIds.length > 0 && !quote && (
+                  <button type="button" onClick={() => getQuote(claimIds)} disabled={busy !== null} aria-label={`Claim ${title}`}
+                    style={{ padding: '5px 12px', borderRadius: 999, border: '1px solid var(--gold)', background: 'transparent', color: 'var(--gold-ink)', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                    Claim {groupNet >= 0 ? '+' : ''}{tokens(groupNet)}
+                  </button>
+                )}
+              </div>
+              {items.map((b) => {
+                const row = rows.find((r) => r.b.betId === b.betId);
+                const pl = row?.value !== null && row?.value !== undefined ? row.value - b.stakePaise : null;
+                return (
+                  <div key={b.betId} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, paddingTop: 3 }}>
+                    <span style={{ color: 'var(--text2)', minWidth: 0 }}>
+                      <b style={{ color: 'var(--text)' }}>{b.optionLabel}</b> · {tokens(b.stakePaise)} @ {odds(b.oddsX100)}
+                    </span>
+                    <span style={{ whiteSpace: 'nowrap', fontWeight: 700, color: b.status === 'OPEN' ? (pl === null ? 'var(--text3)' : pl >= 0 ? 'var(--green)' : 'var(--red)') : b.status === 'LOST' ? 'var(--red)' : 'var(--green)' }}>
+                      {b.status === 'OPEN' ? (pl === null ? 'Awaiting result' : `${pl >= 0 ? '+' : ''}${tokens(pl)}`)
+                        : b.status === 'LOST' ? 'Lost' : b.status === 'VOID' ? 'Returned' : `${b.status === 'CLAIMED' ? 'Claimed' : 'Won'} ${tokens(b.paidPaise)}`}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           );
         })}
@@ -334,7 +362,8 @@ const MatchView: React.FC<{ m: CricketMatch; bets: CricketBet[]; onPick: (p: Cri
   const byKind = (k: string) => m.polls.find((p) => p.kind === k) ?? null;
   const ball = threeOf(m.polls, 'BALL');
   const over = threeOf(m.polls, 'OVER');
-  const mom = byKind('MOM');
+  const players = (['MOM', 'TOP_BATSMAN', 'TOP_BOWLER'] as const).map(byKind).filter((p): p is CricketPoll => p !== null);
+  const playerTag = (p: CricketPoll) => (p.status === 'OPEN' ? 'Open' : p.status === 'CLOSED' ? 'Awaiting' : p.status === 'VOID' ? 'Void' : 'Settled');
   return (
     <div>
       <button type="button" onClick={onBack} style={{ background: 'none', border: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 13, marginBottom: 10, padding: 0 }}>← All matches</button>
@@ -359,9 +388,9 @@ const MatchView: React.FC<{ m: CricketMatch; bets: CricketBet[]; onPick: (p: Cri
         {byKind('MATCH_RESULT') && <PollCard poll={byKind('MATCH_RESULT')} tag={byKind('MATCH_RESULT')!.status === 'OPEN' ? 'Open' : 'Settled'} onPick={onPick} />}
         {byKind('TOSS') && <PollCard poll={byKind('TOSS')} tag={byKind('TOSS')!.status === 'OPEN' ? 'Open' : 'Settled'} onPick={onPick} />}
       </Section>
-      {mom && (
-        <Section title="Man of the match">
-          <PollCard poll={mom} tag={mom.status === 'OPEN' ? 'Open' : mom.status === 'CLOSED' ? 'Awaiting' : 'Settled'} onPick={onPick} />
+      {players.length > 0 && (
+        <Section title="Players">
+          {players.map((p) => <PollCard key={p.pollId} poll={p} tag={playerTag(p)} onPick={onPick} />)}
         </Section>
       )}
     </div>
@@ -446,15 +475,18 @@ const CricketLive: React.FC = () => {
  * Admin › Images), drawn over the whole screen with a way back; with none, a
  * plain line says it is coming.
  */
+const COMING_POLLS = ['Toss', 'Match result', 'Next ball', 'Every over', 'Man of the match', 'Best batsman', 'Best bowler'];
+
 const ComingSoon: React.FC = () => {
   const navigate = useNavigate();
+  const headerLogo = useHeaderLogo();
   const imageUrl: string = (() => {
     try { return String(JSON.parse(localStorage.getItem('app_branding') || '{}').cricketComingSoonImageUrl || ''); } catch { return ''; }
   })();
   const [broken, setBroken] = useState(false);
   const back = (
     <button type="button" onClick={() => navigate('/')} aria-label="Back to the boards"
-      style={{ position: 'absolute', top: 'max(12px, env(safe-area-inset-top))', left: 12, zIndex: 1, padding: '8px 14px', borderRadius: 999, border: '1px solid var(--line2)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+      style={{ position: 'absolute', top: 'max(12px, env(safe-area-inset-top))', left: 12, zIndex: 1, padding: '8px 14px', borderRadius: 999, border: '1px solid var(--pill-line)', background: 'var(--pill)', color: 'var(--gold-ink)', fontSize: 13, fontWeight: 700, cursor: 'pointer', boxShadow: 'var(--shadow-sm)' }}>
       ← Back
     </button>
   );
@@ -467,15 +499,30 @@ const ComingSoon: React.FC = () => {
       </div>
     );
   }
+  // No picture set: the same full screen, drawn in the site's own theme.
   return (
-    <ScreenShell icon="🏏" title="Cricket" sub="Coming soon">
-      <div style={{ ...card, textAlign: 'center', padding: 28 }}>
-        <div style={{ fontSize: 40 }}>🏏</div>
-        <p style={{ color: 'var(--text)', fontSize: 18, fontWeight: 800, margin: '8px 0 4px' }}>Cricket is coming soon</p>
-        <p style={{ color: 'var(--text2)', fontSize: 13, margin: '0 0 14px' }}>Back your opinion on live matches, ball by ball. Watch this space.</p>
-        <button type="button" onClick={() => navigate('/')} style={{ ...goldButton, width: 'auto', padding: '10px 18px', fontSize: 13 }}>Back to the boards</button>
+    <div role="dialog" aria-label="Cricket is coming soon"
+      style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'var(--app-bg)', backgroundColor: 'var(--bg)', overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '72px 20px 32px' }}>
+      {back}
+      <div style={{ width: '100%', maxWidth: 420, textAlign: 'center' }}>
+        <img src={headerLogo} alt="" style={{ height: 44, maxWidth: '80%', objectFit: 'contain', marginBottom: 28 }} onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+        <div aria-hidden style={{ width: 132, height: 132, margin: '0 auto', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 64,
+          background: 'radial-gradient(circle at 50% 40%, rgba(var(--brand-primary-rgb), .28), rgba(var(--brand-primary-rgb), .04) 70%)',
+          border: '1px solid var(--line2)', boxShadow: '0 0 60px -10px var(--glow)' }}>🏏</div>
+        <h1 style={{ margin: '26px 0 0', fontSize: 40, fontWeight: 900, letterSpacing: '.08em', lineHeight: 1.05,
+          background: 'var(--gold-metal)', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' }}>CRICKET</h1>
+        <div style={{ ...capLabel, marginTop: 10, fontSize: 13, letterSpacing: '.32em', color: 'var(--gold-ink)' }}>Coming soon</div>
+        <p style={{ color: 'var(--text2)', fontSize: 14, lineHeight: 1.5, margin: '18px 0 20px' }}>
+          Back your opinion on live matches, ball by ball. Odds move with every bet, and you can cash out before the result.
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginBottom: 26 }}>
+          {COMING_POLLS.map((t) => (
+            <span key={t} style={{ padding: '6px 11px', borderRadius: 999, border: '1px solid var(--pill-line)', background: 'var(--pill)', color: 'var(--text)', fontSize: 12, fontWeight: 600 }}>{t}</span>
+          ))}
+        </div>
+        <button type="button" onClick={() => navigate('/')} style={{ ...goldButton, width: 'auto', padding: '12px 26px', fontSize: 14 }}>Play Delhi Bazaar meanwhile</button>
       </div>
-    </ScreenShell>
+    </div>
   );
 };
 

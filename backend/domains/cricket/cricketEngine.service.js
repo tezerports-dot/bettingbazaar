@@ -13,6 +13,8 @@
  *                 or at the toss
  *   MATCH_RESULT  from publication to the result
  *   MOM           from the playing XIs to the result; settled on the award
+ *   TOP_BATSMAN,  from the playing XIs to the result; settled at the result
+ *   TOP_BOWLER    from the scorecard (most runs; most wickets), void when level
  *   OVER n        from the first ball of over n−1 to the first ball of over n
  *   BALL k        from delivery k−1's report for `nextBallWindowSec`, or to
  *                 delivery k; a bet pressed at or after the moment delivery k
@@ -25,7 +27,8 @@ import { db } from '#db';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { cricketSettingsOf } from './cricketSettings.js';
 import {
-  POLL_KINDS, SEED_KEY, OVERS_PER_INNINGS, optionsFor, titleFor, pollIdFor, tossOutcome, overOutcome,
+  POLL_KINDS, PLAYER_POLL_KINDS, SEED_KEY, OVERS_PER_INNINGS, optionsFor, titleFor, pollIdFor, tossOutcome, overOutcome,
+  nextBallAfter, topBatsman, topBowler,
 } from './cricketPolls.js';
 import { fetchUpcoming, fetchLive } from './cricketFeed.js';
 import { emitToPlayer, emitWalletUpdate } from '../notification/realtimeEmitters.js';
@@ -41,12 +44,12 @@ async function spreadForNewPoll(settings) {
   return settings.spreadBp;
 }
 
-async function open(match, kind, pos, { settings, spreadBp, closesAt = null }) {
+async function open(match, kind, pos, { settings, spreadBp, closesAt = null, titlePos = pos }) {
   const options = optionsFor(kind, match);
   return db.cricket.openPoll({
     pollId: pollIdFor(match.matchId, kind, pos), matchId: match.matchId, kind,
     innings: pos.innings ?? 0, overNo: pos.overNo ?? 0, seq: pos.seq ?? 0,
-    title: titleFor(kind, pos), closesAt, spreadBp,
+    title: titleFor(kind, titlePos), closesAt, spreadBp,
     seedPaise: settings.seedPaise[SEED_KEY[kind]], options,
   });
 }
@@ -127,7 +130,7 @@ export async function applyLiveState(match, state, { cfg = null, now = new Date(
 
   if (state.toss) {
     await end(pollIdFor(mid, POLL_KINDS.TOSS, {}), { winningOption: tossOutcome(state.toss.winner, state.toss.elected) }, feeBp);
-    if (m.lineup?.length && !state.result) await open(m, POLL_KINDS.MOM, {}, ctx);
+    if (m.lineup?.length && !state.result) for (const kind of PLAYER_POLL_KINDS) await open(m, kind, {}, ctx);
   }
 
   const maxOvers = OVERS_PER_INNINGS[m.format] ?? null;
@@ -153,7 +156,10 @@ export async function applyLiveState(match, state, { cfg = null, now = new Date(
   }
   const last = fresh.at(-1);
   if (last && !state.result && state.status !== 'INNINGS_BREAK') {
-    await open(m, POLL_KINDS.BALL, { seq: last.seq + 1 }, { ...ctx, closesAt: new Date(now.getTime() + settings.nextBallWindowMs) });
+    const { legal } = await db.cricket.overRuns(mid, last.innings, last.overNo);
+    await open(m, POLL_KINDS.BALL, { seq: last.seq + 1 }, {
+      ...ctx, closesAt: new Date(now.getTime() + settings.nextBallWindowMs), titlePos: nextBallAfter(last, legal),
+    });
   }
 
   if (state.status === 'INNINGS_BREAK') {
@@ -174,9 +180,23 @@ export async function applyLiveState(match, state, { cfg = null, now = new Date(
     await voidOpen(mid, POLL_KINDS.TOSS, 'The toss was not reported', feeBp);
     await db.cricket.closePoll(pollIdFor(mid, POLL_KINDS.MOM, {}));
     if (state.manOfMatchId) await end(pollIdFor(mid, POLL_KINDS.MOM, {}), { winningOption: `P${state.manOfMatchId}` }, feeBp);
+    await settleFromFigures(mid, POLL_KINDS.TOP_BATSMAN, state.batting, topBatsman, 'runs and balls faced', feeBp);
+    await settleFromFigures(mid, POLL_KINDS.TOP_BOWLER, state.bowling, topBowler, 'wickets and runs conceded', feeBp);
   }
   cricketOddsPublisher.markDirty(mid);
   return { deliveries: fresh.length };
+}
+
+/**
+ * Best batsman or bowler, at the result, from the scorecard: the one player
+ * ahead wins; level on both figures, or no scorecard, the poll is void and
+ * every stake comes back (never a split).
+ */
+async function settleFromFigures(matchId, kind, figures, pickWinner, levelOn, feeBp) {
+  const pollId = pollIdFor(matchId, kind, {});
+  if (!figures?.length) return end(pollId, { voidReason: 'The scorecard was not reported' }, feeBp);
+  const winner = pickWinner(figures);
+  return end(pollId, winner ? { winningOption: `P${winner}` } : { voidReason: `Players level on ${levelOn}` }, feeBp);
 }
 
 /** Settle every over poll still running before `pos` from the deliveries bowled in it. */

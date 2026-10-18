@@ -5256,7 +5256,7 @@ CREATE TABLE IF NOT EXISTS cricket_deliveries (
 ALTER TABLE cricket_deliveries DROP CONSTRAINT IF EXISTS cricket_deliveries_shape;
 ALTER TABLE cricket_deliveries ADD CONSTRAINT cricket_deliveries_shape CHECK (
   seq >= 1 AND innings >= 1 AND over_no >= 0 AND runs >= 0
-  AND outcome IN ('DOT', 'R1', 'R2', 'R3', 'R4', 'R6', 'R_OTHER', 'WIDE', 'NO_BALL', 'WICKET'));
+  AND outcome IN ('DOT', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6_PLUS', 'WIDE', 'NO_BALL', 'WICKET'));
 
 CREATE TABLE IF NOT EXISTS cricket_polls (
   poll_id          TEXT PRIMARY KEY,
@@ -5285,7 +5285,7 @@ CREATE TABLE IF NOT EXISTS cricket_polls (
 );
 ALTER TABLE cricket_polls DROP CONSTRAINT IF EXISTS cricket_polls_shape;
 ALTER TABLE cricket_polls ADD CONSTRAINT cricket_polls_shape CHECK (
-  kind IN ('TOSS', 'MATCH_RESULT', 'OVER', 'BALL', 'MOM')
+  kind IN ('TOSS', 'MATCH_RESULT', 'OVER', 'BALL', 'MOM', 'TOP_BATSMAN', 'TOP_BOWLER')
   AND status IN ('OPEN', 'CLOSED', 'SETTLED', 'VOID')
   AND spread_bp BETWEEN 0 AND 5000 AND seed_paise > 0 AND option_count >= 2
   AND stakes_paise >= 0 AND claims_paid_paise >= 0 AND won_paid_paise >= 0

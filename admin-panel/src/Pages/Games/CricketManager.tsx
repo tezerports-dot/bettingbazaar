@@ -40,7 +40,7 @@ interface Settings {
   enabled: boolean; comingSoon: boolean; claimHoldSec: number; spreadPercent: number; claimMarginPercent: number; rtpBoostPoints: number;
   inPlayDelaySec: number; nextBallWindowSec: number; tossCloseMinutes: number; momVoidHours: number;
   minStakeRupees: number; maxStakeRupees: number;
-  seedRupees: { matchResult: number; toss: number; manOfMatch: number; over: number; ball: number };
+  seedRupees: { matchResult: number; toss: number; manOfMatch: number; topBatsman: number; topBowler: number; over: number; ball: number };
 }
 
 const rupees = (p: number) => `₹${(p / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
@@ -60,7 +60,7 @@ const NUMBER_FIELDS: Array<[keyof Omit<Settings, 'enabled' | 'comingSoon' | 'see
   ['maxStakeRupees', 'Maximum stake (tokens)'],
 ];
 const SEED_FIELDS: Array<[keyof Settings['seedRupees'], string]> = [
-  ['matchResult', 'Match result'], ['toss', 'Toss'], ['manOfMatch', 'Man of the match'], ['over', 'Over'], ['ball', 'Next ball'],
+  ['matchResult', 'Match result'], ['toss', 'Toss'], ['manOfMatch', 'Man of the match'], ['topBatsman', 'Best batsman'], ['topBowler', 'Best bowler'], ['over', 'Over'], ['ball', 'Next ball'],
 ];
 
 const SettingsCard: React.FC = () => {

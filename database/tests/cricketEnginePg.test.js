@@ -49,6 +49,8 @@ describePg('the cricket engine', () => {
     await applyLiveState(await cricket.getMatch(id), { ...base, toss: { winner: 'B', elected: 'BOWL' }, deliveries: [] }, { cfg: CFG });
     expect(await statusOf(P('TOSS'))).toEqual({ status: 'SETTLED', winning_option: 'B_BOWL' });
     expect((await statusOf(P('MOM'))).status).toBe('OPEN');
+    expect((await statusOf(P('TOP_BATSMAN'))).status).toBe('OPEN');
+    expect((await statusOf(P('TOP_BOWLER'))).status).toBe('OPEN');
     expect((await statusOf(P('OVER', { innings: 1, overNo: 0 }))).status).toBe('OPEN');
 
     const u = `pg-crk-eng-${RUN}`;
@@ -66,6 +68,8 @@ describePg('the cricket engine', () => {
     expect((await statusOf(P('OVER', { innings: 1, overNo: 0 }))).status).toBe('CLOSED');
     expect((await statusOf(P('OVER', { innings: 1, overNo: 1 }))).status).toBe('OPEN');
     expect((await statusOf(P('BALL', { seq: 4 }))).status).toBe('OPEN');
+    const { rows: [b4] } = await pgQuery('SELECT title FROM cricket_polls WHERE poll_id = $1', [P('BALL', { seq: 4 })]);
+    expect(b4.title).toBe('Innings 1, over 1, ball 4');
 
     // Read again: nothing changes.
     await applyLiveState(await cricket.getMatch(id), { ...t, deliveries: over1 }, { cfg: CFG });
@@ -82,11 +86,16 @@ describePg('the cricket engine', () => {
     // The result: match result settled, open next ball voided, overs settled, MOM settled when named.
     await applyLiveState(await cricket.getMatch(id), {
       ...t, status: 'FINISHED', result: 'B', manOfMatchId: '21', deliveries: over2,
+      batting: [{ playerId: '11', runs: 30, balls: 20 }, { playerId: '21', runs: 30, balls: 18 }],
+      bowling: [{ playerId: '12', wickets: 2, runs: 20 }, { playerId: '22', wickets: 2, runs: 20 }],
     }, { cfg: CFG });
     expect(await statusOf(P('MATCH_RESULT'))).toEqual({ status: 'SETTLED', winning_option: 'B' });
     expect((await statusOf(P('BALL', { seq: 5 }))).status).toBe('VOID');
     expect((await statusOf(P('OVER', { innings: 1, overNo: 1 }))).status).toBe('SETTLED');
     expect(await statusOf(P('MOM'))).toEqual({ status: 'SETTLED', winning_option: 'P21' });
+    // Best batsman: level on runs, fewer balls wins. Best bowler: level on both, so void.
+    expect(await statusOf(P('TOP_BATSMAN'))).toEqual({ status: 'SETTLED', winning_option: 'P21' });
+    expect((await statusOf(P('TOP_BOWLER'))).status).toBe('VOID');
     const { rows: open } = await pgQuery(`SELECT poll_id FROM cricket_polls WHERE match_id = $1 AND status IN ('OPEN', 'CLOSED')`, [id]);
     expect(open).toEqual([]);
   });

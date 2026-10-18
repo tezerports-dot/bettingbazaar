@@ -10,6 +10,7 @@ import {
 } from '../../domains/cricket/cricketPricing.js';
 import {
   deliveryOutcome, overOutcome, optionsFor, tossOutcome, pollIdFor, POLL_KINDS,
+  titleFor, nextBallAfter, topBatsman, topBowler,
 } from '../../domains/cricket/cricketPolls.js';
 import { parseBall, parseLiveState, statusOf, formatOf } from '../../domains/cricket/cricketFeed.js';
 
@@ -106,9 +107,38 @@ describe('cricket polls', () => {
     expect(deliveryOutcome({ noBall: true, runs: 4 })).toBe('NO_BALL');
     expect(deliveryOutcome({ wide: true })).toBe('WIDE');
     expect(deliveryOutcome({ runs: 0 })).toBe('DOT');
-    expect(deliveryOutcome({ runs: 6 })).toBe('R6');
-    expect(deliveryOutcome({ runs: 5 })).toBe('R_OTHER');
-    expect(deliveryOutcome({ runs: 7 })).toBe('R_OTHER');
+    expect(deliveryOutcome({ runs: 5 })).toBe('R5');
+    expect(deliveryOutcome({ runs: 6 })).toBe('R6_PLUS');
+    expect(deliveryOutcome({ runs: 7 })).toBe('R6_PLUS');
+  });
+
+  it('offer the next ball as 0 to 5 runs, 6+, wide, no ball and wicket, in that order', () => {
+    expect(optionsFor(POLL_KINDS.BALL, {}).map((o) => o.label)).toEqual(
+      ['0 (dot ball)', '1 run', '2 runs', '3 runs', '4 runs', '5 runs', '6+ runs', 'Wide', 'No ball', 'Wicket']);
+  });
+
+  it('name the next ball by innings, over and ball: a wide is bowled again, the seventh legal ball starts the next over', () => {
+    expect(nextBallAfter({ innings: 1, overNo: 2 }, 3)).toEqual({ innings: 1, overNo: 2, ball: 4 });
+    expect(nextBallAfter({ innings: 2, overNo: 4 }, 6)).toEqual({ innings: 2, overNo: 5, ball: 1 });
+    expect(titleFor(POLL_KINDS.BALL, { innings: 1, overNo: 2, ball: 4 })).toBe('Innings 1, over 3, ball 4');
+  });
+
+  it('pick the best batsman by runs, then fewer balls; level on both is no winner', () => {
+    expect(topBatsman([{ playerId: '1', runs: 50, balls: 40 }, { playerId: '2', runs: 50, balls: 35 }, { playerId: '3', runs: 12, balls: 5 }])).toBe('2');
+    expect(topBatsman([{ playerId: '1', runs: 50, balls: 40 }, { playerId: '2', runs: 50, balls: 40 }])).toBeNull();
+    expect(topBatsman([{ playerId: '1', runs: 0, balls: 3 }])).toBeNull();
+    expect(topBatsman([])).toBeNull();
+  });
+
+  it('pick the best bowler by wickets, then fewer runs; no wicket, or level on both, is no winner', () => {
+    expect(topBowler([{ playerId: '1', wickets: 3, runs: 30 }, { playerId: '2', wickets: 3, runs: 22 }, { playerId: '3', wickets: 1, runs: 5 }])).toBe('2');
+    expect(topBowler([{ playerId: '1', wickets: 2, runs: 20 }, { playerId: '2', wickets: 2, runs: 20 }])).toBeNull();
+    expect(topBowler([{ playerId: '1', wickets: 0, runs: 10 }])).toBeNull();
+  });
+
+  it('offer every player of the playing XIs in the man of the match, best batsman and best bowler polls', () => {
+    const m = { teamA: { name: 'Alpha' }, teamB: { name: 'Bravo' }, lineup: Array.from({ length: 22 }, (_, i) => ({ id: String(i), name: `P${i}`, team: i < 11 ? 'A' : 'B' })) };
+    for (const kind of [POLL_KINDS.MOM, POLL_KINDS.TOP_BATSMAN, POLL_KINDS.TOP_BOWLER]) expect(optionsFor(kind, m)).toHaveLength(22);
   });
 
   it('judge an over: zero is its own option, not even', () => {
@@ -155,6 +185,16 @@ describe('the cricket feed adapter', () => {
     });
     expect(s).toMatchObject({ status: 'FINISHED', toss: { winner: 'B', elected: 'BAT' }, result: 'A', manOfMatchId: '77' });
     expect(s.lineup).toEqual([{ id: '5', name: 'P One', team: 'A' }]);
+  });
+
+  it("adds up each player's runs, balls and wickets across innings", () => {
+    const s = parseLiveState({
+      status: 'Finished', localteam_id: 1, visitorteam_id: 2,
+      batting: [{ player_id: 5, score: 40, ball: 30 }, { player_id: 5, score: 12, ball: 9 }, { player_id: 6, score: 7, ball: 4 }],
+      bowling: [{ player_id: 6, wickets: 2, runs: 30 }, { player_id: 6, wickets: 1, runs: 10 }],
+    });
+    expect(s.batting).toEqual([{ playerId: '5', runs: 52, balls: 39 }, { playerId: '6', runs: 7, balls: 4 }]);
+    expect(s.bowling).toEqual([{ playerId: '6', wickets: 3, runs: 40 }]);
   });
 });
 

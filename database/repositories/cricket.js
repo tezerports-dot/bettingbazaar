@@ -368,11 +368,13 @@ export async function recordDeliveries(matchId, deliveries) {
 /** Runs conceded in one over, extras included, and how many deliveries it had. */
 export async function overRuns(matchId, innings, overNo) {
   const { rows } = await pgQuery(
-    `SELECT COALESCE(SUM(runs), 0) AS runs, COUNT(*) AS balls FROM cricket_deliveries
+    `SELECT COALESCE(SUM(runs), 0) AS runs, COUNT(*) AS balls,
+            COUNT(*) FILTER (WHERE outcome NOT IN ('WIDE', 'NO_BALL')) AS legal
+       FROM cricket_deliveries
       WHERE match_id = $1 AND innings = $2 AND over_no = $3`,
     [String(matchId), innings, overNo], 'cricket_over_runs',
   );
-  return { runs: num(rows[0].runs), deliveries: num(rows[0].balls) };
+  return { runs: num(rows[0].runs), deliveries: num(rows[0].balls), legal: num(rows[0].legal) };
 }
 
 export async function lastDelivery(matchId) {
@@ -459,7 +461,7 @@ const POLL_ORDER = `ORDER BY CASE kind WHEN 'BALL' THEN 0 WHEN 'OVER' THEN 1 WHE
  */
 export async function playerPolls(matchId) {
   return pollsWithOptions(
-    `match_id = $1 AND (kind IN ('TOSS', 'MATCH_RESULT', 'MOM') OR status IN ('OPEN', 'CLOSED')
+    `match_id = $1 AND (kind IN ('TOSS', 'MATCH_RESULT', 'MOM', 'TOP_BATSMAN', 'TOP_BOWLER') OR status IN ('OPEN', 'CLOSED')
        OR poll_id IN (SELECT DISTINCT ON (kind) poll_id FROM cricket_polls
                        WHERE match_id = $1 AND kind IN ('BALL', 'OVER') AND status IN ('SETTLED', 'VOID')
                        ORDER BY kind, innings DESC, over_no DESC, seq DESC))

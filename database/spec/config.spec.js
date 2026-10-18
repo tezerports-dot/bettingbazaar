@@ -335,6 +335,8 @@ export const SYSTEM_CONFIG_SPEC = group({
       matchResult: int(500, 1, 10000000),
       toss: int(500, 1, 10000000),
       manOfMatch: int(200, 1, 10000000),
+      topBatsman: int(200, 1, 10000000),
+      topBowler: int(200, 1, 10000000),
       over: int(200, 1, 10000000),
       ball: int(100, 1, 10000000),
     }),

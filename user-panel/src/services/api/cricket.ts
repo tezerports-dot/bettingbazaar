@@ -11,7 +11,7 @@ import apiClient from '../apiClient';
 export interface CricketTeam { id: string; name: string; code: string | null; logo: string | null }
 export interface CricketOption { key: string; label: string; poolPaise: number; oddsX100: number }
 export interface CricketPoll {
-  pollId: string; matchId: string; kind: 'TOSS' | 'MATCH_RESULT' | 'MOM' | 'OVER' | 'BALL';
+  pollId: string; matchId: string; kind: 'TOSS' | 'MATCH_RESULT' | 'MOM' | 'TOP_BATSMAN' | 'TOP_BOWLER' | 'OVER' | 'BALL';
   innings: number; overNo: number; seq: number; title: string;
   status: 'OPEN' | 'CLOSED' | 'SETTLED' | 'VOID';
   spreadBp: number; seedPaise: number; closesAt: string | null;

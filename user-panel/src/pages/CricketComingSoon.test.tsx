@@ -2,7 +2,7 @@
 /**
  * The Cricket tab while the game is switched off (owner, 2026-10-18): the
  * admin's full-screen image (Branding.cricketComingSoonImageUrl) with a way
- * back, or a plain "coming soon" line when no image is set or it fails.
+ * back, or a full-screen page in the site's theme when no image is set or it fails.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -35,12 +35,17 @@ describe('the Cricket tab while the game is off', () => {
     expect(navigate).toHaveBeenCalledWith('/');
   });
 
-  it('says it is coming soon in words when no image is set, or the image fails', () => {
-    render(<CricketPage />);
-    expect(screen.getByText('Cricket is coming soon')).toBeTruthy();
+  it('draws a full-screen page in the site\'s theme when no image is set, or the image fails', () => {
+    const { unmount } = render(<CricketPage />);
+    const page = screen.getByRole('dialog', { name: /coming soon/i });
+    expect(page.style.position).toBe('fixed');
+    expect(page.style.backgroundColor).toBe('var(--bg)');
+    expect(screen.getByRole('heading', { name: 'CRICKET' })).toBeTruthy();
+    expect(screen.getByText('Best batsman')).toBeTruthy();
+    unmount();
     localStorage.setItem('app_branding', JSON.stringify({ cricketComingSoonImageUrl: 'https://cdn.example/missing.webp' }));
-    const { container } = render(<CricketPage />);
-    fireEvent.error(container.querySelector('img')!);
-    expect(screen.getAllByText('Cricket is coming soon').length).toBe(2);
+    render(<CricketPage />);
+    fireEvent.error(screen.getByRole('img', { name: /coming soon/i }));
+    expect(screen.getByRole('heading', { name: 'CRICKET' })).toBeTruthy();
   });
 });

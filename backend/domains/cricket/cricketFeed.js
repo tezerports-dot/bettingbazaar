@@ -88,7 +88,7 @@ export function parseBall(b) {
   };
 }
 
-/** The live facts of a fixture with its balls, lineup and scoreboards. */
+/** The live facts of a fixture with its balls, lineup, scoreboards and player figures. */
 export function parseLiveState(f) {
   const status = statusOf(f.status);
   const toss = f.toss_won_team_id && f.elected
@@ -115,6 +115,22 @@ export function parseLiveState(f) {
   const innings = boards.filter((s) => s.type === 'total').map((s) => ({
     innings: inningsOf(s.scoreboard), team: sideOf(f, s.team_id), runs: int(s.total), wickets: int(s.wickets), overs: Number(s.overs) || 0,
   })).sort((a, b) => a.innings - b.innings);
+  // Each player's match figures, every innings added up (best batsman and bowler polls).
+  const listOf = (x) => (Array.isArray(x) ? x : x?.data ?? []);
+  const batting = [...listOf(f.batting).reduce((acc, b) => {
+    const id = String(b.player_id ?? '');
+    if (!id) return acc;
+    const t = acc.get(id) ?? { playerId: id, runs: 0, balls: 0 };
+    t.runs += int(b.score); t.balls += int(b.ball);
+    return acc.set(id, t);
+  }, new Map()).values()];
+  const bowling = [...listOf(f.bowling).reduce((acc, b) => {
+    const id = String(b.player_id ?? '');
+    if (!id) return acc;
+    const t = acc.get(id) ?? { playerId: id, wickets: 0, runs: 0 };
+    t.wickets += int(b.wickets); t.runs += int(b.runs);
+    return acc.set(id, t);
+  }, new Map()).values()];
   return {
     status,
     toss: toss?.winner ? toss : null,
@@ -122,6 +138,8 @@ export function parseLiveState(f) {
     manOfMatchId: f.man_of_match_id ? String(f.man_of_match_id) : null,
     lineup,
     deliveries: balls,
+    batting,
+    bowling,
     score: { innings, note: f.note ?? null },
   };
 }
@@ -158,7 +176,7 @@ export async function fetchUpcoming({ days = 14, fetchImpl } = {}) {
 /** One fixture's live facts. */
 export async function fetchLive(feedFixtureId, { fetchImpl } = {}) {
   const data = await get(`/fixtures/${encodeURIComponent(feedFixtureId)}`, {
-    include: 'balls,lineup,scoreboards',
+    include: 'balls,lineup,scoreboards,batting,bowling',
   }, { fetchImpl });
   return parseLiveState(data ?? {});
 }

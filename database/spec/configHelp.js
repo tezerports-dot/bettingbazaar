@@ -244,12 +244,20 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'The house seed on every player in the man-of-the-match poll, in tokens.',
     example: '200: with 22 players, at most 4,400.',
   },
+  'cricket.seedRupees.topBatsman': {
+    what: 'The house seed on every player in the best-batsman poll (most runs in the match), in tokens.',
+    example: '200: with 22 players, at most 4,400.',
+  },
+  'cricket.seedRupees.topBowler': {
+    what: 'The house seed on every player in the best-bowler poll (most wickets in the match), in tokens.',
+    example: '200: with 22 players, at most 4,400.',
+  },
   'cricket.seedRupees.over': {
     what: 'The house seed on every option of a next-over odd / even / zero poll, in tokens.',
     example: '200: at most 600 per over.',
   },
   'cricket.seedRupees.ball': {
-    what: 'The house seed on every option of a next-ball poll, in tokens (ten options).',
+    what: 'The house seed on every option of a next-ball poll, in tokens (ten options: 0 to 5 runs, 6+, wide, no ball, wicket).',
     example: '100: at most 1,000 per ball.',
   },
   'redFlags.lowActivityPercent': {
