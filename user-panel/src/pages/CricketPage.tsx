@@ -29,7 +29,7 @@ import { useToast } from '../components/ui/Toast';
 import { betOddsX100, positionValuePaise } from '../redesign/cricketValue';
 import { useHeaderLogo } from '../services/brandAssets';
 
-const tokens = (paise: number) => (paise / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+const tokens = (paise: number) => (paise / 100).toLocaleString('en-IN', paise % 100 === 0 ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const odds = (x100: number) => (x100 / 100).toFixed(2);
 const newKey = () => {
   try { if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID(); } catch { /* older webview */ }
@@ -80,7 +80,7 @@ function byTeam(options: CricketOption[]): [string, CricketOption[]][] {
   return [...groups.entries()];
 }
 
-const OptionGrid: React.FC<{ poll: CricketPoll; picked: string | null; onPick: (o: CricketOption) => void }> = ({ poll, picked, onPick }) => (PLAYER_KINDS.has(poll.kind)
+const OptionGrid: React.FC<{ poll: CricketPoll; picked: string | null; onPick: (o: CricketOption) => void; betBox?: React.ReactNode }> = ({ poll, picked, onPick, betBox }) => (PLAYER_KINDS.has(poll.kind)
   ? (
     <div>
       {byTeam(poll.options).map(([team, options]) => (
@@ -89,6 +89,8 @@ const OptionGrid: React.FC<{ poll: CricketPoll; picked: string | null; onPick: (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(96px,1fr))', gap: 6 }}>
             {options.map((o) => <OddsButton key={o.key} option={o} poll={poll} picked={picked === o.key} onPick={onPick} />)}
           </div>
+          {/* The bet box opens under the team of the player picked, so it is in view on a phone. */}
+          {betBox && options.some((o) => o.key === picked) && <div style={{ marginTop: 8 }}>{betBox}</div>}
         </div>
       ))}
     </div>
@@ -166,7 +168,7 @@ const BetBox: React.FC<{ poll: CricketPoll; option: CricketOption | null; onPlac
         {option && <button type="button" onClick={onClear} aria-label="Clear the pick" style={{ background: 'none', border: 'none', color: 'var(--text3)', cursor: 'pointer', fontSize: 12 }}>Clear</button>}
       </div>
       <div style={{ fontSize: 14, fontWeight: 800, color: option ? 'var(--text)' : 'var(--text3)', margin: '4px 0 8px' }}>
-        {option ? option.label : 'Tap an opinion to back it'}
+        {option?.label}
       </div>
       <label htmlFor={`stake-${poll.pollId}`} style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>Stake (tokens)</label>
       <div style={{ display: 'flex', gap: 6 }}>
@@ -189,7 +191,7 @@ const BetBox: React.FC<{ poll: CricketPoll; option: CricketOption | null; onPlac
       )}
       {!inRange && amount > 0 && <p style={{ fontSize: 11, color: 'var(--text3)', margin: '8px 0 0' }}>Stake {settings.minStake} to {settings.maxStake.toLocaleString('en-IN')} tokens.</p>}
       {error && <p role="alert" style={{ color: 'var(--red)', fontSize: 12, margin: '8px 0 0' }}>{error}</p>}
-      <button type="button" style={{ ...smallGold, marginTop: 10 }} disabled={!option || !inRange || busy}
+      <button type="button" style={{ ...smallGold, marginTop: 10, opacity: !option || !inRange ? 0.5 : 1 }} disabled={!option || !inRange || busy}
         onClick={() => (moved ? place(moved.oddsX100) : start())}>
         {busy ? `Placing… (${settings.inPlayDelaySec} s check)` : moved ? `Confirm at ${odds(moved.oddsX100)}` : option && inRange ? `Place bet · ${tokens(amount * 100)}` : 'Place bet'}
       </button>
@@ -265,7 +267,8 @@ const PollPositions: React.FC<{ poll: CricketPoll; bets: CricketBet[]; onClaimed
           <div style={capLabel}>Your bets on this poll</div>
           {open && live.length > 0 && (
             <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 2 }}>
-              Staked {tokens(staked)} · worth <b style={{ color: worth >= staked ? 'var(--green)' : 'var(--red)' }}>{tokens(worth)}</b> now
+              Staked {tokens(staked)} · worth <b style={{ color: 'var(--gold-ink)' }}>{tokens(worth)}</b> now
+              {' '}<span style={{ color: worth >= staked ? 'var(--green)' : 'var(--red)' }}>({worth >= staked ? '+' : '−'}{tokens(Math.abs(worth - staked))})</span>
             </div>
           )}
         </div>
@@ -293,7 +296,7 @@ const PollPositions: React.FC<{ poll: CricketPoll; bets: CricketBet[]; onClaimed
           );
         })}
       </div>
-      {open && settings.claimHoldSec > 0 && !c.error && live.length > 0 && (
+      {open && settings.claimHoldSec > 0 && !c.error && live.some((b) => Date.now() - Date.parse(b.placedAt) < settings.claimHoldSec * 1000) && (
         <p style={{ fontSize: 11, color: 'var(--text3)', margin: '6px 0 0' }}>A new bet can be claimed {settings.claimHoldSec} s after it is placed.</p>
       )}
     </div>
@@ -306,6 +309,7 @@ const PollCard: React.FC<{ poll: CricketPoll | null; tag: string; placeholder?: 
   const option = poll?.options.find((o) => o.key === picked) ?? null;
   const open = poll?.status === 'OPEN';
   useEffect(() => { if (!open) setPicked(null); }, [open]);
+  const togglePick = (o: CricketOption) => setPicked(o.key === picked ? null : o.key);
   return (
     <div style={{ ...card, padding: 12 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, gap: 8 }}>
@@ -317,14 +321,18 @@ const PollCard: React.FC<{ poll: CricketPoll | null; tag: string; placeholder?: 
           <>
             {poll.status === 'VOID' && <p style={{ margin: '0 0 6px', fontSize: 11, color: 'var(--text3)' }}>Void: {poll.voidReason}. Stakes returned.</p>}
             {poll.status === 'CLOSED' && <p style={{ margin: '0 0 6px', fontSize: 11, color: 'var(--text3)' }}>Bets closed. The result settles it.</p>}
-            {open
-              ? (
-                <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,240px),1fr))', alignItems: 'start' }}>
-                  <OptionGrid poll={poll} picked={picked} onPick={(o) => setPicked(o.key === picked ? null : o.key)} />
-                  <BetBox poll={poll} option={option} onPlaced={onChanged} onClear={() => setPicked(null)} />
-                </div>
-              )
-              : <OptionGrid poll={poll} picked={null} onPick={() => {}} />}
+            {open && PLAYER_KINDS.has(poll.kind) && (
+              <OptionGrid poll={poll} picked={picked} onPick={togglePick}
+                betBox={option && <BetBox poll={poll} option={option} onPlaced={onChanged} onClear={() => setPicked(null)} />} />
+            )}
+            {open && !PLAYER_KINDS.has(poll.kind) && (
+              <div style={{ display: 'grid', gap: 10, gridTemplateColumns: option ? 'repeat(auto-fit,minmax(min(100%,240px),1fr))' : '1fr', alignItems: 'start' }}>
+                <OptionGrid poll={poll} picked={picked} onPick={togglePick} />
+                {option && <BetBox poll={poll} option={option} onPlaced={onChanged} onClear={() => setPicked(null)} />}
+              </div>
+            )}
+            {open && !option && <p style={{ margin: '8px 0 0', fontSize: 11, color: 'var(--text3)' }}>Tap an opinion to bet on it.</p>}
+            {!open && <OptionGrid poll={poll} picked={null} onPick={() => {}} />}
             <PollPositions poll={poll} bets={bets} onClaimed={onChanged} />
           </>
         )
@@ -362,8 +370,10 @@ const MatchPositions: React.FC<{ match: CricketMatch; bets: CricketBet[]; onClai
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
         <div aria-live="polite" style={{ minWidth: 0 }}>
           <div style={capLabel}>All your open bets on this match</div>
-          <div style={{ fontSize: 20, fontWeight: 800, color: net >= 0 ? 'var(--green)' : 'var(--red)' }}>{tokens(worth)}</div>
-          <div style={{ fontSize: 11, color: 'var(--text3)' }}>yours if you claim everything now ({net >= 0 ? '+' : '−'}{tokens(Math.abs(net))} on {tokens(staked)} staked)</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--gold-ink)' }}>{tokens(worth)}</div>
+          <div style={{ fontSize: 11, color: 'var(--text3)' }}>
+            yours if you claim everything now <span style={{ color: net >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>({net >= 0 ? '+' : '−'}{tokens(Math.abs(net))} on {tokens(staked)} staked)</span>
+          </div>
         </div>
         {!c.quote && (
           <button type="button" onClick={() => c.ask({ matchId: match.matchId })} disabled={c.busy !== null}
