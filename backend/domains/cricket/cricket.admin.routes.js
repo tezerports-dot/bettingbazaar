@@ -225,7 +225,7 @@ router.get('/cricket/report.csv', authenticate, ALLOWED, async (req, res) => {
     const r2 = (paise) => (paise / 100).toFixed(2);
     const csv = toCsv(rows.map((r) => ({
       settled_at: r.settledAt ? new Date(r.settledAt).toISOString() : '',
-      match: r.match, poll: r.title, kind: r.kind, status: r.status, winner: r.winningOption ?? '',
+      match: r.match, poll: r.title, kind: r.kind, status: r.status, winner: r.winnerLabel ?? '',
       bets: r.bets, stakes: r2(r.stakesPaise), claims_paid: r2(r.claimsPaidPaise), wins_paid: r2(r.wonPaidPaise),
       fees: r2(r.feesPaise), refunded: r2(r.refundedPaise), house_net: r2(r.houseNetPaise),
     })));

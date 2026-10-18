@@ -187,6 +187,12 @@ const createNullCycle = (type: CycleType): GameCycle => ({
 /** What the stream bridge already received of a replayed event (none from a test double). */
 const heldPayloads = (bridge: EventTarget | undefined, event: string): unknown[] =>
   (bridge as { heldPayloads?: (e: string) => unknown[] } | undefined)?.heldPayloads?.(event) ?? [];
+/**
+ * What the bridge last received of a once-per-open event (`system_config`),
+ * for a listener attached after the stream opened; none from a test double.
+ */
+const lastPayload = (bridge: EventTarget | undefined, event: string): unknown =>
+  (bridge as { last?: Map<string, unknown> } | undefined)?.last?.get(event);
 const NO_STATS: LiveStats = Object.freeze({ totalDelhi: 0, totalBombay: 0, totalPool: 0, poolsHidden: false }) as LiveStats;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -840,6 +846,14 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     // before this effect runs. Apply what the bridge already holds.
     // Each held payload once: this effect re-runs on sign-in, and a payload
     // already applied must not be applied again.
+    // The system config is sent once at open too, usually before this runs;
+    // without it the screens keep the defaults (cricket shown as coming soon
+    // while it is on) until an admin happens to save the config again.
+    const heldConfig = lastPayload(sseBridge, 'system_config');
+    if (heldConfig && typeof heldConfig === 'object' && !replayedRef.current.has(heldConfig)) {
+      replayedRef.current.add(heldConfig);
+      handleSystemConfig(heldConfig);
+    }
     for (const snap of heldPayloads(sseBridge, 'cycle_snapshot')) {
       if (snap && typeof snap === 'object' && !replayedRef.current.has(snap)) {
         replayedRef.current.add(snap);

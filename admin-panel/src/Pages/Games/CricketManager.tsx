@@ -32,7 +32,7 @@ interface AdminPoll {
   options: { key: string; label: string; oddsX100: number }[];
 }
 interface ReportRow {
-  pollId: string; match: string; title: string; kind: string; status: string; winningOption: string | null;
+  pollId: string; match: string; title: string; kind: string; status: string; winningOption: string | null; winnerLabel: string | null;
   settledAt: string; bets: number; stakesPaise: number; claimsPaidPaise: number; wonPaidPaise: number;
   feesPaise: number; houseNetPaise: number;
 }
@@ -223,7 +223,7 @@ const PollsPanel: React.FC<{ match: Match; onClose: () => void }> = ({ match, on
       {polls.map((p) => (
         <div key={p.pollId} className="border border-dark-700 rounded-lg p-3">
           <div className="flex flex-wrap justify-between gap-2 text-sm">
-            <span className="font-semibold">{p.title} <span className="text-xs text-gray-500">({p.status}{p.winningOption ? `: ${p.winningOption}` : ''}{p.voidReason ? `: ${p.voidReason}` : ''})</span></span>
+            <span className="font-semibold">{p.title} <span className="text-xs text-gray-500">({p.status}{p.winningOption ? `: ${p.options.find((o) => o.key === p.winningOption)?.label ?? p.winningOption}` : ''}{p.voidReason ? `: ${p.voidReason}` : ''})</span></span>
             <span className="text-xs text-gray-400">
               Staked {rupees(p.stakesPaise)} · claims {rupees(p.claimsPaidPaise)} · wins {rupees(p.wonPaidPaise)} · fees {rupees(p.feesPaise)} · spread {p.spreadBp / 100}% · max loss {rupees(p.maxLossPaise)}
             </span>
@@ -293,7 +293,7 @@ const ReportCard: React.FC = () => {
           <tbody>{rows.map((r) => (
             <tr key={r.pollId} className="border-t border-dark-700">
               <td className="py-1">{when(r.settledAt)}</td><td>{r.match}</td><td>{r.title}</td>
-              <td>{r.status === 'VOID' ? 'Void' : r.winningOption}</td><td className="text-right">{r.bets}</td>
+              <td>{r.status === 'VOID' ? 'Void' : r.winnerLabel}</td><td className="text-right">{r.bets}</td>
               <td className="text-right">{rupees(r.stakesPaise)}</td><td className="text-right">{rupees(r.claimsPaidPaise + r.wonPaidPaise)}</td>
               <td className={`text-right ${r.houseNetPaise < 0 ? 'text-red-400' : ''}`}>{rupees(r.houseNetPaise)}</td>
             </tr>

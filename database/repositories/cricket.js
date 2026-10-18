@@ -919,6 +919,7 @@ export async function pollReport({ from, to, limit = 5000 }) {
     `SELECT p.poll_id, p.match_id, p.kind, p.title, p.status, p.winning_option, p.settled_at,
             p.stakes_paise, p.claims_paid_paise, p.won_paid_paise, p.fees_paise, p.refunded_paise,
             m.team_a_name, m.team_b_name,
+            (SELECT o.label FROM cricket_poll_options o WHERE o.poll_id = p.poll_id AND o.option_key = p.winning_option) AS winner_label,
             (SELECT COUNT(*) FROM cricket_bets b WHERE b.poll_id = p.poll_id) AS bets
        FROM cricket_polls p JOIN cricket_matches m ON m.match_id = p.match_id
       WHERE p.status IN ('SETTLED', 'VOID') AND p.settled_at >= $1 AND p.settled_at < $2
@@ -926,7 +927,7 @@ export async function pollReport({ from, to, limit = 5000 }) {
     [from, to, Math.min(Math.max(Number(limit) || 5000, 1), 50000)], 'cricket_poll_report');
   return rows.map((r) => ({
     pollId: r.poll_id, matchId: r.match_id, match: `${r.team_a_name} v ${r.team_b_name}`,
-    kind: r.kind, title: r.title, status: r.status, winningOption: r.winning_option, settledAt: r.settled_at,
+    kind: r.kind, title: r.title, status: r.status, winningOption: r.winning_option, winnerLabel: r.winner_label ?? r.winning_option, settledAt: r.settled_at,
     bets: num(r.bets), stakesPaise: num(r.stakes_paise), claimsPaidPaise: num(r.claims_paid_paise),
     wonPaidPaise: num(r.won_paid_paise), feesPaise: num(r.fees_paise), refundedPaise: num(r.refunded_paise),
     houseNetPaise: num(r.stakes_paise) - num(r.claims_paid_paise) - num(r.won_paid_paise),

@@ -36,9 +36,9 @@ const refusalOf = (e: any): { message: string; code?: string; quote?: any } => (
   code: e?.data?.code, quote: e?.data?.quote,
 });
 
-const Logo: React.FC<{ src: string | null; name: string; size?: number }> = ({ src, name, size = 34 }) => (src
+const Logo: React.FC<{ src: string | null; name: string; code?: string | null; size?: number }> = ({ src, name, code, size = 34 }) => (src
   ? <img src={src} alt="" width={size} height={size} style={{ width: size, height: size, objectFit: 'contain' }} loading="lazy" />
-  : <span aria-hidden style={{ width: size, height: size, borderRadius: '50%', background: 'var(--surface3)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: size / 2.6, fontWeight: 800, color: 'var(--text2)' }}>{name.slice(0, 3).toUpperCase()}</span>);
+  : <span aria-hidden style={{ width: size, height: size, borderRadius: '50%', background: 'var(--surface3)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: size / 2.6, fontWeight: 800, color: 'var(--text2)' }}>{(code || name.slice(0, 3)).toUpperCase()}</span>);
 
 const scoreLine = (m: CricketMatch) => (m.score?.innings ?? [])
   .map((i) => `${i.team === 'A' ? (m.teamA.code ?? m.teamA.name) : (m.teamB.code ?? m.teamB.name)} ${i.runs}/${i.wickets} (${i.overs})`).join(' · ');
@@ -56,7 +56,7 @@ const OddsButton: React.FC<{ option: CricketOption; poll: CricketPoll; onPick: (
         background: won ? 'color-mix(in srgb,var(--green) 18%,var(--surface2))' : 'var(--surface2)',
         opacity: open || won ? 1 : 0.55, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
       }}>
-      <span style={{ fontSize: 11, color: 'var(--text2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>{option.label}</span>
+      <span style={{ fontSize: 11, lineHeight: 1.25, color: 'var(--text2)', textAlign: 'center', overflowWrap: 'anywhere', maxWidth: '100%' }}>{option.label}</span>
       <span style={{ fontSize: 15, fontWeight: 800, color: won ? 'var(--green)' : 'var(--gold-ink)' }}>{open ? odds(option.oddsX100) : won ? 'Won' : '—'}</span>
     </button>
   );
@@ -138,9 +138,13 @@ const BetSlip: React.FC<{ slip: SlipState; onClose: () => void; onPlaced: () => 
             <div style={capLabel}>{slip.poll.title}</div>
             <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text)', marginTop: 2 }}>{slip.option.label}</div>
           </div>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: 10, color: 'var(--text3)' }}>Live odds</div>
-            <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--gold-ink)' }}>{odds(slip.option.oddsX100)}</div>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: 10, color: 'var(--text3)' }}>Live odds</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--gold-ink)' }}>{odds(slip.option.oddsX100)}</div>
+            </div>
+            <button type="button" onClick={onClose} aria-label="Close the bet slip"
+              style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid var(--line)', background: 'transparent', color: 'var(--text2)', fontSize: 16, cursor: 'pointer' }}>✕</button>
           </div>
         </div>
         <label htmlFor="cricket-stake" style={{ ...capLabel, display: 'block', marginTop: 14, marginBottom: 6 }}>Stake (tokens)</label>
@@ -198,7 +202,12 @@ const Positions: React.FC<{ match: CricketMatch; bets: CricketBet[]; onClaimed: 
 
   const getQuote = async (betIds?: string[]) => {
     setBusy('quote'); setError('');
-    try { setQuote(await api.quoteClaim(betIds ? { betIds } : { matchId: match.matchId })); }
+    try {
+      const q = await api.quoteClaim(betIds ? { betIds } : { matchId: match.matchId });
+      // A bet placed moments ago is left out of the quote until the hold passes.
+      if (!q.lines.length) { setQuote(null); setError(`A new bet can be claimed ${settings.claimHoldSec} s after it is placed. Try again in a moment.`); }
+      else setQuote(q);
+    }
     catch (e) { setError(refusalOf(e).message); }
     finally { setBusy(null); }
   };
@@ -289,13 +298,18 @@ const MatchHeader: React.FC<{ m: CricketMatch; onClick?: () => void }> = ({ m, o
           : <span>{m.result ? 'Finished' : new Date(m.startsAt).toLocaleString('en-IN', { weekday: 'short', hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })}</span>}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}><Logo src={m.teamA.logo} name={m.teamA.name} /><b style={{ color: 'var(--text)', fontSize: 14 }}>{m.teamA.name}</b></div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}><Logo src={m.teamA.logo} name={m.teamA.name} code={m.teamA.code} /><b style={{ color: 'var(--text)', fontSize: 14 }}>{m.teamA.name}</b></div>
         <span style={{ color: 'var(--text3)', fontSize: 12 }}>v</span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexDirection: 'row-reverse' }}><Logo src={m.teamB.logo} name={m.teamB.name} /><b style={{ color: 'var(--text)', fontSize: 14 }}>{m.teamB.name}</b></div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexDirection: 'row-reverse' }}><Logo src={m.teamB.logo} name={m.teamB.name} code={m.teamB.code} /><b style={{ color: 'var(--text)', fontSize: 14 }}>{m.teamB.name}</b></div>
       </div>
       {scoreLine(m) && <div style={{ fontSize: 12, color: 'var(--gold-ink)', marginTop: 8, textAlign: 'center' }}>{scoreLine(m)}</div>}
       {m.toss && <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4, textAlign: 'center' }}>{(m.toss.winner === 'A' ? m.teamA : m.teamB).name} won the toss and chose to {m.toss.elected === 'BAT' ? 'bat' : 'bowl'}</div>}
-      {onClick && result && (
+      {m.result && (
+        <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--green)', marginTop: 8, textAlign: 'center' }}>
+          {m.result === 'A' ? `${m.teamA.name} won` : m.result === 'B' ? `${m.teamB.name} won` : m.result === 'TIE' ? 'Match tied' : m.result === 'DRAW' ? 'Match drawn' : 'No result'}
+        </div>
+      )}
+      {onClick && result && !m.result && (
         <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
           {result.options.map((o) => (
             <div key={o.key} style={{ flex: 1, textAlign: 'center', padding: '6px 4px', borderRadius: 9, background: 'var(--surface2)', border: '1px solid var(--line)' }}>

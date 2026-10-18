@@ -14,6 +14,7 @@ import { render, screen, act } from '@testing-library/react';
 const held: Record<string, unknown[]> = vi.hoisted(() => ({}));
 const bridge = vi.hoisted(() => Object.assign(new EventTarget(), {
   heldPayloads: (event: string) => held[event] ?? [],
+  last: new Map<string, unknown>(),
 }));
 vi.mock('./backend.service', () => ({
   getBackend: () => ({ sseBridge: bridge, socket: null, getCycleHistory: async () => [] }),
@@ -22,7 +23,7 @@ vi.mock('./backend.service', () => ({
 vi.mock('../components/ui/Toast', () => ({ useToast: () => ({ addToast: () => {} }) }));
 vi.mock('./branding', () => ({ applyBranding: () => {} }));
 
-const { GameProvider, useGame } = await import('./GameContext');
+const { GameProvider, useGame, useCricketSettings } = await import('./GameContext');
 
 const snapshot = (audience: string, cycleId: string, startTime: number) => ({
   audience,
@@ -54,5 +55,17 @@ describe('a snapshot that arrived before the board subscribed', () => {
       bridge.dispatchEvent(Object.assign(new Event('cycle_snapshot'), { data: snapshot('VIP', '30MIN_1', 1000) }));
     });
     expect(screen.getByText(/^VIP 30MIN_2$/)).toBeTruthy();
+  });
+});
+
+// The system config is sent once at open as well (owner, 2026-10-18: a cold
+// load showed Cricket as "coming soon" while it was switched on).
+describe('a system config that arrived before the context subscribed', () => {
+  it('is applied on mount, not left at the defaults', () => {
+    bridge.last.set('system_config', { cricket: { enabled: true, comingSoon: false, minStake: 10, maxStake: 50000, inPlayDelaySec: 1, claimMarginPercent: 5, claimHoldSec: 2 } });
+    const Cricket = () => { const c = useCricketSettings(); return <p>{`cricket ${c.enabled} ${c.inPlayDelaySec}`}</p>; };
+    render(<GameProvider><Cricket /></GameProvider>);
+    expect(screen.getByText('cricket true 1')).toBeTruthy();
+    bridge.last.clear();
   });
 });
