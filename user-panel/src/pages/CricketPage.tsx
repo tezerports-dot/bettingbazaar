@@ -261,7 +261,7 @@ const Positions: React.FC<{ match: CricketMatch; bets: CricketBet[]; onClaimed: 
         </div>
       )}
       {error && <p role="alert" style={{ color: 'var(--red)', fontSize: 12, margin: '10px 0 0' }}>{error}</p>}
-      {settings.claimHoldSec > 0 && (
+      {settings.claimHoldSec > 0 && !error && (
         <p style={{ fontSize: 11, color: 'var(--text3)', margin: '8px 0 0' }}>A new bet can be claimed {settings.claimHoldSec} s after it is placed.</p>
       )}
       <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
