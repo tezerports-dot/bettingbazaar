@@ -90,7 +90,7 @@ const OptionGrid: React.FC<{ poll: CricketPoll; picked: string | null; onPick: (
             {options.map((o) => <OddsButton key={o.key} option={o} poll={poll} picked={picked === o.key} onPick={onPick} />)}
           </div>
           {/* The bet box opens under the team of the player picked, so it is in view on a phone. */}
-          {betBox && options.some((o) => o.key === picked) && <div style={{ marginTop: 8 }}>{betBox}</div>}
+          {betBox && options.some((o) => o.key === picked) && <div style={{ marginTop: 8, maxWidth: 420 }}>{betBox}</div>}
         </div>
       ))}
     </div>
@@ -254,6 +254,14 @@ const ClaimConfirm: React.FC<{ c: ReturnType<typeof useClaim> }> = ({ c }) => {
 const PollPositions: React.FC<{ poll: CricketPoll; bets: CricketBet[]; onClaimed: () => void }> = ({ poll, bets, onClaimed }) => {
   const settings = useCricketSettings();
   const c = useClaim(onClaimed);
+  const [, tick] = useState(0);
+  const youngest = bets.reduce((t, b) => Math.max(t, Date.parse(b.placedAt) || 0), 0);
+  useEffect(() => {
+    const left = youngest + settings.claimHoldSec * 1000 - Date.now();
+    if (left <= 0) return undefined;
+    const t = setTimeout(() => tick((n) => n + 1), left + 50);
+    return () => clearTimeout(t);
+  }, [youngest, settings.claimHoldSec]);
   if (!bets.length) return null;
   const open = poll.status === 'OPEN';
   const live = bets.filter((b) => b.status === 'OPEN');
@@ -268,7 +276,7 @@ const PollPositions: React.FC<{ poll: CricketPoll; bets: CricketBet[]; onClaimed
           {open && live.length > 0 && (
             <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 2 }}>
               Staked {tokens(staked)} · worth <b style={{ color: 'var(--gold-ink)' }}>{tokens(worth)}</b> now
-              {' '}<span style={{ color: worth >= staked ? 'var(--green)' : 'var(--red)' }}>({worth >= staked ? '+' : '−'}{tokens(Math.abs(worth - staked))})</span>
+              {' '}<span style={{ color: worth >= staked ? 'var(--green)' : 'var(--red)', whiteSpace: 'nowrap' }}>({worth >= staked ? '+' : '−'}{tokens(Math.abs(worth - staked))})</span>
             </div>
           )}
         </div>
@@ -372,7 +380,7 @@ const MatchPositions: React.FC<{ match: CricketMatch; bets: CricketBet[]; onClai
           <div style={capLabel}>All your open bets on this match</div>
           <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--gold-ink)' }}>{tokens(worth)}</div>
           <div style={{ fontSize: 11, color: 'var(--text3)' }}>
-            yours if you claim everything now <span style={{ color: net >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>({net >= 0 ? '+' : '−'}{tokens(Math.abs(net))} on {tokens(staked)} staked)</span>
+            yours if you claim everything now <span style={{ color: net >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 700, whiteSpace: 'nowrap' }}>({net >= 0 ? '+' : '−'}{tokens(Math.abs(net))} on {tokens(staked)} staked)</span>
           </div>
         </div>
         {!c.quote && (
