@@ -157,7 +157,7 @@ describePg('every declared merchantOrderLimits field is admin-editable', () => {
     expect(routing, 'teamRouting is no longer declared').toBeTruthy();
     const leaves = leavesOf(routing);
     expect(leaves.map(({ path }) => path.join('.'))).toEqual(expect.arrayContaining([
-      'concurrency.CASH', 'concurrency.UPI_BANK', 'concurrency.USDT',
+      'concurrency.CASH', 'concurrency.UPI_BANK',
     ]));
 
     const stored = (await as(app, admin).get('/system/config')).body.config.teamRouting;

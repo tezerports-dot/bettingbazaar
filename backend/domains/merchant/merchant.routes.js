@@ -42,7 +42,6 @@ import { respondError } from '../../shared/httpError.js';
 /** Is Postgres the source of truth for the merchant side of a settlement? */
 import {
   MERCHANT_CURRENCY, merchantTypeOf, formatOrderFiat,
-  USDT_CHAINS, USDT_CHAIN_SPEC, isUsdtAddress, usdtAddressFor,
 } from './merchantCurrency.js';
 // The merchant's own view of their account, which sign-in answers with too.
 import { formatMerchant } from './merchantSelfView.js';
@@ -102,7 +101,7 @@ router.post('/auth/login/telegram/ticket', ...doorRoute('MERCHANT', 'telegramTic
 // ─── PROFILE ─────────────────────────────────────────────────────────────────
 
 /** The owner's own details a merchant account's sub-member is never sent. */
-const OWNER_ONLY_PROFILE_FIELDS = ['mobile', 'email', 'username', 'bankDetails', 'usdtAddressTrc20', 'usdtAddressBep20'];
+const OWNER_ONLY_PROFILE_FIELDS = ['mobile', 'email', 'username', 'bankDetails'];
 
 router.get('/profile', merchantAuth, async (req, res) => {
     try {
@@ -144,77 +143,26 @@ router.get('/profile', merchantAuth, async (req, res) => {
 });
 
 // FIX B5-d: PUT /profile — merchant edits their own settlement credentials.
-// Rail-exclusive (2026-07-27): an INR merchant may edit the bank account and
-// NOT the USDT addresses; a USDT merchant may edit only those. Enforced here
-// and not merely hidden in the panel, so a hand-crafted request cannot leave a
-// merchant holding credentials for a rail they do not settle on. Only the admin
+// Rail-exclusive (2026-07-27): only an INR merchant holds a bank account.
+// Enforced here and not merely hidden in the panel. Only the admin
 // (PUT /merchants/:id/capabilities) can change which rail a merchant is on.
 //
 // There is no UPI handle to edit, so `upiId` is not read from the body: a
 // UPI_BANK buy is paid into the member's bank account and nobody is shown a
 // handle (§2 "How each rail is paid", §24).
 //
-// A USDT merchant holds an address PER CHAIN and may hold one, the other, or
-// both — the chains are separate networks and an address on one cannot receive
-// on the other. Holding both means orders on both chains are offered to them;
-// holding neither means they are offered none, which is why clearing the last
-// one is refused with a sentence rather than accepted silently.
+// No merchant holds a USDT address: USDT buys are paid to the platform
+// (owner, 2026-10-18), so the profile takes bank details only.
 router.put('/profile', merchantAuth, ownerOnly, async (req, res) => {
     try {
-        const { bankDetails, usdtAddressTrc20, usdtAddressBep20 } = req.body;
-        const submittedAddresses = { TRC20: usdtAddressTrc20, BEP20: usdtAddressBep20 };
+        const { bankDetails } = req.body;
 
         const current = await db.merchants.getMerchant(req.merchantId);
         if (!current) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
 
-        const isUsdt  = merchantTypeOf(current) === MERCHANT_CURRENCY.USDT;
-        const railName = isUsdt ? 'USDT' : 'INR';
         const update  = {};
-
-        const wantsInrFields  = bankDetails !== undefined;
-        const wantsUsdtFields = USDT_CHAINS.some((chain) => submittedAddresses[chain] !== undefined);
-
-        if (isUsdt && wantsInrFields) {
-            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — bank details do not apply. Update the USDT wallet addresses instead.` });
-        }
-        if (!isUsdt && wantsUsdtFields) {
-            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — a USDT wallet address does not apply. Update the bank details instead.` });
-        }
-
-        if (wantsUsdtFields) {
-            // What the merchant will hold AFTER this write: the submitted value
-            // where one was sent, the stored value where it was not. Validating
-            // the submitted fields alone cannot answer "will they still be
-            // reachable on some chain", and clearing the only address a
-            // merchant has is exactly the edit that must be refused.
-            const after = {};
-            for (const chain of USDT_CHAINS) {
-                const spec = USDT_CHAIN_SPEC[chain];
-                const submitted = submittedAddresses[chain];
-                if (submitted === undefined) {
-                    after[chain] = usdtAddressFor(current, chain);
-                    continue;
-                }
-                const address = String(submitted ?? '').trim();
-                // Empty CLEARS that chain — a merchant who stops serving one
-                // network needs a way to say so, and a blank field is how a
-                // panel says it.
-                if (!address) { after[chain] = null; update[spec.field] = null; continue; }
-                if (!isUsdtAddress(chain, address)) {
-                    return res.status(400).json({
-                        success: false,
-                        message: `That is not a valid ${spec.label} address. USDT sent to a wrong address cannot be recovered.`,
-                    });
-                }
-                after[chain] = address;
-                update[spec.field] = address;
-            }
-            if (!USDT_CHAINS.some((chain) => after[chain])) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Keep at least one wallet address. With none, no order can be assigned to you.',
-                });
-            }
+        if (merchantTypeOf(current) === MERCHANT_CURRENCY.USDT && bankDetails !== undefined) {
+            return res.status(400).json({ success: false, message: 'This is a USDT merchant account — bank details do not apply. Ask an admin to move you to INR.' });
         }
 
         if (bankDetails) {
@@ -228,8 +176,7 @@ router.put('/profile', merchantAuth, ownerOnly, async (req, res) => {
             return res.status(400).json({ success: false, message: 'No valid profile fields provided.' });
         }
 
-        // The TRC-20 format and the credential uniqueness are CHECK constraints
-        // and unique indexes on the row, so they hold on this path without a
+        // The credential uniqueness is a unique index on the row, so they hold on this path without a
         // `runValidators` flag to remember — which is the point of moving them
         // into the table. A collision comes back as 23505.
         let merchant;
@@ -565,8 +512,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                     message: 'Enter the UTR your bank gave this transfer. It is what a dispute is matched against.',
                 });
             }
-            // The order's OWN rule, so a USDT payout is held to a chain hash and
-            // an INR one to a bank UTR, rather than one length check for both.
+            // The order's OWN rule (`paymentReference.js`): a bank UTR.
             const claimed = await claimPaymentReference({
                 reference: submitted,
                 orderId: order.orderId,

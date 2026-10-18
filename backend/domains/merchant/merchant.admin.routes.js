@@ -4,7 +4,7 @@
  * on 2026-07-01 (BBEPS Phase 004 migration). */
 import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
-import { MERCHANT_CURRENCY, MERCHANT_CURRENCIES } from './merchantCurrency.js';
+import { MERCHANT_CURRENCIES, SETTABLE_MERCHANT_CURRENCIES } from './merchantCurrency.js';
 import { assertExternalHttpsUrl } from '../../shared/storedUrl.js';
 import { normalisePhone, isValidMobile } from '../identity/signupFields.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
@@ -217,18 +217,23 @@ router.put('/merchants/:merchantId/capabilities', authenticate, hasPermission('c
     const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
-    // A merchant settles on exactly ONE rail — an INR merchant (bank account) or
-    // a USDT merchant (TRC-20), never both. Accepts either `merchantType:
-    // 'USDT'` or the equivalent `acceptedCurrencies: ['USDT']`; both write the
-    // one stored authority, and the row's CHECK refuses anything else.
+    // A merchant settles on exactly ONE rail. Since 2026-10-18 that rail is
+    // INR: USDT buys are paid to the platform, not to a merchant, so a merchant
+    // can be moved OFF the USDT rail here but never onto it.
     const patch = {};
     const railInput = merchantType !== undefined ? [merchantType] : acceptedCurrencies;
     if (railInput !== undefined) {
       const rails = Array.isArray(railInput) ? [...new Set(railInput)] : [railInput];
       if (rails.length !== 1 || !MERCHANT_CURRENCIES.includes(rails[0])) {
-        return res.status(400).json({ success: false, message: 'A merchant settles on exactly one rail — send merchantType "INR" or "USDT".' });
+        return res.status(400).json({ success: false, message: 'A merchant settles on exactly one rail — send merchantType "INR".' });
       }
       const nextRail = rails[0];
+      if (!SETTABLE_MERCHANT_CURRENCIES.includes(nextRail) && nextRail !== merchant.merchantType) {
+        return res.status(400).json({
+          success: false, code: 'USDT_RAIL_RETIRED',
+          message: 'USDT buys are now paid to the platform directly, so a merchant cannot be put on the USDT rail.',
+        });
+      }
       // A team member settles on their team's rail (approval sets it,
       // `teams.approveMember`): switched away, they could hold no credential
       // routing asks of that team, and its orders would never reach them.
@@ -238,19 +243,6 @@ router.put('/merchants/:merchantId/capabilities', authenticate, hasPermission('c
           success: false, code: 'RAIL_SET_BY_TEAM',
           message: `This merchant is in a ${teamRail === 'USDT' ? 'USDT' : 'INR'} team, so they settle in ${db.teams.memberCurrencyFor(teamRail)}. Remove them from the team first to change it.`,
         });
-      }
-      if (nextRail !== merchant.merchantType) {
-        // Switching rails strands the old rail's credentials on the record,
-        // where they still occupy a unique index — so the merchant cannot
-        // re-register them elsewhere — and could still be snapshotted onto an
-        // order. Cleared here; the merchant re-enters the credentials for
-        // their new rail from the panel.
-        if (nextRail === MERCHANT_CURRENCY.USDT) {
-          patch.bankAccountNo = null;
-          patch.bankIfsc = null; patch.bankAccountHolderName = null;
-        } else {
-          patch.usdtAddressTrc20 = null; patch.usdtAddressBep20 = null;
-        }
       }
       patch.acceptedCurrencies = rails;
     }
@@ -266,7 +258,7 @@ router.put('/merchants/:merchantId/capabilities', authenticate, hasPermission('c
       if (e.code === '23514') {
         return res.status(400).json({
           success: false,
-          message: 'Those settings are not valid — check that the order range includes at least one amount and the rail is INR or USDT.',
+          message: 'Those settings are not valid — check that the order range includes at least one amount and the rail is INR.',
         });
       }
       throw e;

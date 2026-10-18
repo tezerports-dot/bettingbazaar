@@ -17,7 +17,6 @@
  *   CASH buy  — the member must have pressed Ready (they are at the machine);
  *               the assignment switches Ready off.
  *   CASH sell — not to a member holding an open buy.
- *   USDT      — the member must hold an address on the order's chain.
  *   any buy   — the team's pool must cover it, and it is HELD in the pool in
  *               the same transaction that assigns the order.
  *
@@ -34,7 +33,6 @@ import { RAILS, railOf } from './orderRails.js';
 import { holdForBuyWithin, PoolRefused } from './teamPools.js';
 import { leastUsedDepositAccount, takeDepositAccountWithin } from './merchantPaymentAccounts.js';
 import { transitionOrder } from './orders.js';
-import { USDT_CHAIN_SPEC } from '../../backend/domains/merchant/merchantCurrency.js';
 
 export { RAILS, railOf, PAYMENT_MODES, paymentModeFor, routedToMerchants } from './orderRails.js';
 
@@ -52,13 +50,11 @@ export function routingSettings(cfg) {
     concurrency: {
       CASH: Number(c.CASH ?? 1),          // schema default: 1
       UPI_BANK: Number(c.UPI_BANK ?? 3),  // schema default: 3
-      USDT: Number(c.USDT ?? 3),          // schema default: 3
     },
     assignmentWaitSeconds: Number(t.assignmentWaitSeconds ?? 1500),   // schema default: 1500
     processingWindowSeconds: {
       CASH: Number(p.CASH ?? 900),          // schema default: 900
       UPI_BANK: Number(p.UPI_BANK ?? 900),  // schema default: 900
-      USDT: Number(p.USDT ?? 900),          // schema default: 900
     },
     utrSubmitSeconds: Number(t.utrSubmitSeconds ?? 60),  // schema default: 60
   };
@@ -83,12 +79,9 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
   if (!Number.isInteger(amount) || amount <= 0) {
     throw new TypeError(`routingCandidates: order ${order.orderId} has no token amount in paise`);
   }
-  let chainColumn = null;
+  // A USDT buy is paid to the platform (owner, 2026-10-18); no member serves one.
   if (rail === RAILS.USDT) {
-    chainColumn = USDT_CHAIN_SPEC[order.usdtChain]?.column ?? null;
-    // An unknown chain is a throw, not an empty list: "nobody is free" would
-    // be the wrong sentence on a malformed order.
-    if (!chainColumn) throw new TypeError(`routingCandidates: unknown usdtChain '${order.usdtChain}'`);
+    throw new TypeError(`routingCandidates: order ${order.orderId} is a USDT buy, which no member serves`);
   }
   const barred = [...new Set((barredMerchantIds || []).filter(Boolean).map(String))];
 
@@ -119,7 +112,6 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
         AND (NOT ($3 AND $1 = 'CASH') OR m.cash_ready)
         AND (NOT (NOT $3 AND $1 = 'CASH') OR COALESCE(o.buys, 0) = 0)
         AND NOT (m.merchant_id = ANY($5))
-        ${chainColumn ? `AND m.${chainColumn} IS NOT NULL AND m.${chainColumn} <> ''` : ''}
         -- A UPI/bank buy is paid by bank transfer to the member's own account
         -- (owner, 2026-10-03), so a member without one is not a candidate: the
         -- player would be shown nowhere to pay and take the expiry for it.

@@ -11,7 +11,7 @@
  * A member holds no tokens — their team's pool does (§3.10) — so there is no
  * balance here; the Team page shows the pool.
  */
-import { merchantTypeOf, usdtChainsHeldBy } from './merchantCurrency.js';
+import { merchantTypeOf } from './merchantCurrency.js';
 
 /**
  * @param {object} merchant  a `merchants` row as the repository maps it
@@ -42,11 +42,6 @@ export function formatMerchant(merchant, user = null) {
     merchantType,
     acceptedCurrencies:   merchant.acceptedCurrencies,
     bankDetails:          merchant.bankDetails,
-    // One per chain, and the list of chains they can actually be paid on
-    // — which is what decides whether any USDT order reaches them.
-    usdtAddressTrc20:     merchant.usdtAddressTrc20 || '',
-    usdtAddressBep20:     merchant.usdtAddressBep20 || '',
-    usdtChains:           usdtChainsHeldBy(merchant),
     limits:               merchant.limits,
     // Whether the platform has stopped sending them new buy orders (three
     // unpaid in a row, §2). A merchant was never told: the Dashboard read

@@ -39,18 +39,6 @@ describePg('the merchant record', () => {
 
   beforeEach(() => { seq += 1; ID = `m-${RUN}-${seq}`; });
 
-  // A well-formed TRC-20 address: 'T' plus 33 base58 characters. Distinct per
-  // call because the address is UNIQUE across merchants — two tests reusing one
-  // would collide on the index rather than on the property under test.
-  const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-  const trc20 = () => `T${Array.from({ length: 33 },
-    () => BASE58[Math.floor(Math.random() * BASE58.length)]).join('')}`;
-  // A well-formed BEP-20 address, distinct per call for the same reason. These
-  // were fixed literals, so a second run of this file against the same
-  // database collided on the UNIQUE index with the first run's rows (trap 10).
-  const bep20addr = () => `0x${Array.from({ length: 40 },
-    () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('')}`;
-
   const make = (over = {}) => createMerchant({
     merchantId: ID, name: `Merchant ${seq}`, status: 'ACTIVE', ...over,
   });
@@ -136,7 +124,7 @@ describePg('the merchant record', () => {
 
   // ── The rail ──────────────────────────────────────────────────────────────
   it('derives merchantType in the DATABASE, so it cannot drift from the rail', async () => {
-    await make({ currency: 'USDT', usdtAddressTrc20: trc20() });
+    await make({ currency: 'USDT' });
     expect((await getMerchant(ID)).merchantType).toBe('USDT');
 
     // Changing the array moves the scalar with it — there is no second write.
@@ -180,45 +168,11 @@ describePg('the merchant record', () => {
     )).rejects.toThrow(/merchants_one_rail/);
   });
 
-  it('refuses a malformed address on EITHER chain — USDT sent to one is unrecoverable', async () => {
-    // An address from the wrong chain, a truncated paste, and a lowercase 't'
-    // are all rejected. Base58 is case-sensitive, so that last one is not a
-    // cosmetic check.
-    const valid = trc20();
-    const bep20 = bep20addr();
-    for (const [i, bad] of ['0x1234', bep20, valid.slice(0, -1), valid.replace(/^T/, 't')].entries()) {
-      await expect(createMerchant({
-        merchantId: `${ID}-badt${i}`, name: 'Bad', currency: 'USDT', usdtAddressTrc20: bad,
-      })).rejects.toThrow(/merchants_usdt_trc20_format/);
-    }
-    for (const [i, bad] of ['0x1234', valid, `${bep20}ff`, bep20.slice(2)].entries()) {
-      await expect(createMerchant({
-        merchantId: `${ID}-badb${i}`, name: 'Bad', currency: 'USDT', usdtAddressBep20: bad,
-      })).rejects.toThrow(/merchants_usdt_bep20_format/);
-    }
-
-    const good = await createMerchant({
-      merchantId: `${ID}-ok`, name: 'Good', currency: 'USDT',
-      usdtAddressTrc20: valid, usdtAddressBep20: bep20,
-    });
-    expect(good.usdtAddressTrc20).toBe(valid);
-    expect(good.usdtAddressBep20).toBe(bep20);
-  });
-
-  it('refuses two merchants sharing one wallet address, on either chain', async () => {
-    // An address is an IDENTITY, for the same reason a UPI id is: money routed
-    // to either arrives at one, and no record afterwards says which was meant.
-    const tron = trc20();
-    const bnb = bep20addr();
-    await createMerchant({ merchantId: `${ID}-first`, name: 'First', currency: 'USDT',
-      usdtAddressTrc20: tron, usdtAddressBep20: bnb });
-
-    await expect(createMerchant({
-      merchantId: `${ID}-dupt`, name: 'Dup', currency: 'USDT', usdtAddressTrc20: tron,
-    })).rejects.toThrow(/merchants_usdt_trc20_unique/);
-    await expect(createMerchant({
-      merchantId: `${ID}-dupb`, name: 'Dup', currency: 'USDT', usdtAddressBep20: bnb,
-    })).rejects.toThrow(/merchants_usdt_bep20_unique/);
+  it('holds no USDT address: USDT buys are paid to the platform (owner, 2026-10-18)', async () => {
+    const { rows } = await pgQuery(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'merchants' AND column_name LIKE 'usdt%'`);
+    expect(rows).toEqual([]);
   });
 
   // ── Payment credentials are an identity ───────────────────────────────────

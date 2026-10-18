@@ -41,7 +41,7 @@ import {
 } from '../configuration/tokenRates.js';
 import { debitWinningsForWithdrawal, refundWithdrawal } from '../wallet/walletAuthority.service.js';
 import {
-  MERCHANT_CURRENCY, merchantTypeOf, usdtAddressFor, formatOrderFiat,
+  MERCHANT_CURRENCY, merchantTypeOf, formatOrderFiat,
   USDT_CHAIN_SPEC, USDT_CHAINS, isUsdtChain,
 } from '../merchant/merchantCurrency.js';
 import { postSystemMessage } from '#db/repositories/chat.js';
@@ -143,36 +143,19 @@ function buildMerchantSnapshot(merchant, expiresAt, order = null, payAccount = n
     // An opaque label, and on an INR bank-transfer buy the member's bank
     // account below (`bankName`…`accountHolder`, owner 2026-10-03). A CASH buy
     // is paid through the ATM the member scans (`cash_link`, Step 2d), never
-    // to the member; the USDT rail through the address for the order's chain.
+    // to the member. A USDT buy is paid to the platform and has no member.
     merchantRef,
-
-    // ── For the player, on the USDT rail ───────────────────────────────
-    // Where to send, and on WHICH network. Both, always together: an address
-    // without its chain is how somebody sends BEP-20 tokens to a Tron address
-    // and loses them, and this is the one field on the platform where a
-    // mistake is unrecoverable.
-    //
-    // ONLY the chain this order asked for. The merchant's address on the other
-    // chain is not part of this order and is not sent — the same allowlist
-    // reasoning as everything else the player receives.
-    usdtChain:     order?.usdtChain ?? null,
-    usdtPayTo:     order?.usdtChain ? usdtAddressFor(merchant, order.usdtChain) : null,
-    usdtChainLabel: order?.usdtChain ? (USDT_CHAIN_SPEC[order.usdtChain]?.label ?? null) : null,
 
     // ── For the admin and the disputes desk, from the row ───────────────
     merchantId:    merchant.merchantId,
     merchantName:  merchantRef,
-    // A merchant settles on exactly one rail, so exactly one credential set is
-    // populated: the bank account for an INR merchant, the wallet addresses
-    // for a USDT one. Both chains are recorded here because a dispute months
-    // later is decided from what was true at assignment.
+    // What was true at assignment, because a dispute months later is decided
+    // from it.
     merchantType:  merchantTypeOf(merchant),
     bankName:      bank.bankName          || '',
     accountNo:     bank.accountNo         || '',
     ifsc:          bank.ifsc              || '',
     accountHolder: bank.accountHolderName || '',
-    usdtAddressTrc20: merchant.usdtAddressTrc20 || '',
-    usdtAddressBep20: merchant.usdtAddressBep20 || '',
     snapshotAt:    new Date(),
     expiresAt,
   };
@@ -201,6 +184,8 @@ function buildMerchantSnapshot(merchant, expiresAt, order = null, payAccount = n
  * free for waits PENDING_QUEUE and the assignment sweep offers it again.
  */
 async function tryAssignMerchant(order, { alsoBar = [] } = {}) {
+  // A USDT buy is paid to the platform (owner, 2026-10-18): nobody serves it.
+  if (order.currency === MERCHANT_CURRENCY.USDT) return false;
   const cfg = await getSystemConfig();
   // ── Agents or merchant accounts (owner, 2026-10-11) ─────────────────────
   // An INR order still waiting for its first taker follows who the admin now
@@ -263,9 +248,7 @@ async function postStartedNote(order, cfg) {
   let text;
   if (order.type === 'DEPOSIT') {
     // Named the way the player's screen names it, never a UPI handle (§24).
-    const payTo = order.currency === MERCHANT_CURRENCY.USDT
-      ? `the merchant's USDT address on ${USDT_CHAIN_SPEC[order.usdtChain]?.label ?? 'the order chain'}, shown on the order`
-      : order.paymentMode === PAYMENT_MODES.CASH_ATM
+    const payTo = order.paymentMode === PAYMENT_MODES.CASH_ATM
         ? 'the cash machine QR the member scans'
         : order.payAccountId
           ? 'the payment details shown on the order'
@@ -400,15 +383,14 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // so which rail serves an amount stays a decision the SERVER makes.
   const currency = attempt.currency === MERCHANT_CURRENCY.USDT
     ? MERCHANT_CURRENCY.USDT : MERCHANT_CURRENCY.INR;
-  const usdtChain = currency === MERCHANT_CURRENCY.USDT ? attempt.usdtChain ?? null : null;
+  // One chain, BNB Smart Chain (owner, 2026-10-18). A request naming another
+  // is refused by name BEFORE anything is written: the player would otherwise
+  // be shown a BSC address while holding funds on a network that cannot reach it.
+  const usdtChain = currency === MERCHANT_CURRENCY.USDT ? attempt.usdtChain ?? USDT_CHAINS[0] : null;
   if (currency === MERCHANT_CURRENCY.USDT && !isUsdtChain(usdtChain)) {
-    // Named, and refused BEFORE anything is written. A USDT order with no chain
-    // matches no merchant, so it would sit in the queue until it expired while
-    // the screen said "waiting for a merchant" — and the player would never
-    // learn that the request was malformed.
     throw Object.assign(
-      new Error(`Choose the network you will send USDT on: ${USDT_CHAINS.join(' or ')}.`),
-      { status: 400, code: 'USDT_CHAIN_REQUIRED' },
+      new Error(`USDT can only be sent on ${USDT_CHAINS.map((c) => USDT_CHAIN_SPEC[c].label).join(' or ')}.`),
+      { status: 400, code: 'USDT_CHAIN_UNSUPPORTED' },
     );
   }
 
@@ -790,13 +772,13 @@ export async function retryOrder(userId, orderId) {
   }
 
   const attempt = { priority: 1, retryOf: original.orderId };
-  // A USDT buy is retried AS a USDT buy, for the USDT it asked for, on the
-  // chain it named: it is priced in USDT (Step 2d), and its token count is not
+  // A USDT buy is retried AS a USDT buy, for the USDT it asked for, on BNB
+  // Smart Chain whatever chain it named: it is priced in USDT (Step 2d), and its token count is not
   // an INR size, so retrying it on the INR rail would be refused — or worse,
   // be a different purchase. The new order is quoted at today's rate.
   if (original.type === 'DEPOSIT' && String(original.currency).toUpperCase() === MERCHANT_CURRENCY.USDT) {
     Object.assign(attempt, {
-      currency: MERCHANT_CURRENCY.USDT, usdtChain: original.usdtChain, usdtAmount: original.fiatAmount,
+      currency: MERCHANT_CURRENCY.USDT, usdtAmount: original.fiatAmount,
     });
   }
   const result = original.type === 'DEPOSIT'

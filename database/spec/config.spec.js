@@ -236,7 +236,6 @@ export const SYSTEM_CONFIG_SPEC = group({
     concurrency: group({
       CASH:     n(1, 1, 10),
       UPI_BANK: n(3, 1, 20),
-      USDT:     n(3, 1, 20),
     }),
     // Seconds. A queued order nobody could take expires after assignmentWait;
     // an assigned order after processingWindow; a cash player's reference is
@@ -248,14 +247,13 @@ export const SYSTEM_CONFIG_SPEC = group({
     processingWindowSeconds: group({
       CASH:     n(900, 60, 7200),
       UPI_BANK: n(900, 60, 7200),
-      USDT:     n(900, 60, 7200),
     }),
     utrSubmitSeconds:      n(60, 15, 3600),
   }),
   // ── Who serves each INR size (owner, 2026-10-15) ─────────────────────────
   // Per direction, the sizes listed here go to merchant accounts (paid by UPI
   // QR or bank transfer); every other size goes to agents (cash at an ATM or
-  // UPI/bank by its size). USDT is never affected: always agents' USDT teams.
+  // UPI/bank by its size). USDT is never affected: it is paid to the platform.
   // Stamped on each INR order at creation (`order_states.inr_routing`); a
   // change moves only the INR orders still waiting for a first taker.
   merchantBuySizes:  { type: 'number[]', default: [], allowed: ORDER_SIZES },

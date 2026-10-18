@@ -86,14 +86,22 @@ describePg('supervisors and teams (PostgreSQL)', () => {
   it('accepts the agent ID (public ref) an admin sees, in any case, and answers with the merchant id', async () => {
     const id = await merchant();
     const { rows: [m] } = await pgQuery('SELECT public_ref FROM merchants WHERE merchant_id = $1', [id]);
-    expect(await setSupervisorRole(m.public_ref.toLowerCase(), { rail: 'USDT' })).toEqual({ ok: true, merchantId: id });
+    expect(await setSupervisorRole(m.public_ref.toLowerCase(), { rail: 'UPI_BANK' })).toEqual({ ok: true, merchantId: id });
     const { rows } = await pgQuery('SELECT is_supervisor, supervisor_rail FROM merchants WHERE merchant_id = $1', [id]);
-    expect(rows[0]).toEqual({ is_supervisor: true, supervisor_rail: 'USDT' });
+    expect(rows[0]).toEqual({ is_supervisor: true, supervisor_rail: 'UPI_BANK' });
+  });
+
+  it('makes no new USDT supervisor, and a USDT supervisor from before makes no new team (owner, 2026-10-18)', async () => {
+    const id = await merchant();
+    await expect(setSupervisorRole(id, { rail: 'USDT' })).rejects.toThrow(/rail must be one of CASH, UPI_BANK$/);
+    // One set before the date, as the row still allows.
+    await pgQuery(`UPDATE merchants SET is_supervisor = TRUE, supervisor_rail = 'USDT', is_online = FALSE WHERE merchant_id = $1`, [id]);
+    expect(await createTeam({ supervisorId: id, name: 'Late USDT team' })).toEqual({ ok: false, reason: 'usdt_rail_retired' });
   });
 
   it('refuses the role to a merchant the admin has not approved', async () => {
     const id = await merchant({ approval: 'PENDING' });
-    expect(await setSupervisorRole(id, { rail: 'USDT' })).toEqual({ ok: false, reason: 'not_approved' });
+    expect(await setSupervisorRole(id, { rail: 'CASH' })).toEqual({ ok: false, reason: 'not_approved' });
   });
 
   it('will not change the rail, or remove the role, while the supervisor runs a team', async () => {

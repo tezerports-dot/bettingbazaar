@@ -33,17 +33,15 @@ const manualP2PInr = {
   createWithdrawal: ({ userId, tokenAmount }) => createWithdrawalOrder(userId, tokenAmount),
 };
 
-// ── USDT — merchant-served, deposit only ────────────────────────────────────
+// ── USDT — paid to the platform on BNB Smart Chain, deposit only ──────────
 //
-// There is no payment processor in this rail and no webhook. A USDT buy is an
-// ORDINARY order assigned to a USDT merchant, exactly as an INR buy is assigned
-// to an INR merchant: the player is shown that merchant's wallet address on the
-// chain they chose, sends the USDT, and submits the transaction hash. The same
-// assignment, the same timers, the same dispute machinery.
+// No merchant and no payment processor (owner, 2026-10-18). The order gets an
+// address derived for it alone; the player sends USDT there and the chain
+// watcher credits the order when the full amount arrives
+// (`payment/usdtDeposit.service.js`). No transaction hash is asked for.
 //
-// So this adapter delegates to `createDepositOrder` like the INR one. The
-// difference is the CURRENCY on the order, which is what routes it to a USDT
-// merchant and what makes the denomination and chain rules apply.
+// So this adapter delegates to `createDepositOrder` like the INR one; the
+// CURRENCY on the order is what sends it to the platform's address.
 //
 // Deposit-only, per the 2026-07 direction: a player buys tokens with USDT and
 // never sells back into it. `capabilities.withdrawal` is false AND the method
@@ -51,7 +49,7 @@ const manualP2PInr = {
 // caller has to remember.
 const usdt = {
   code: 'USDT',
-  label: 'USDT (merchant)',
+  label: 'USDT (BNB Smart Chain)',
   currency: 'USDT',
   kind: 'P2P',
   active: true,

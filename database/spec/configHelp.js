@@ -120,10 +120,6 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'How many open UPI or bank orders one agent may hold at the same time.',
     example: '3: a fourth UPI order waits for another agent or for one of the three to finish.',
   },
-  'teamRouting.concurrency.USDT': {
-    what: 'How many open USDT orders one agent may hold at the same time.',
-    example: '3',
-  },
   'teamRouting.assignmentWaitSeconds': {
     what: 'How long an order may wait in the queue for a free agent before it expires and the player is told nobody was available.',
     example: '1500 (25 minutes): an order nobody could take by then expires; nothing is charged.',
@@ -135,10 +131,6 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
   'teamRouting.processingWindowSeconds.UPI_BANK': {
     what: 'Once a UPI or bank order is assigned to an agent, how long it has to be completed before it expires.',
     example: '900 (15 minutes).',
-  },
-  'teamRouting.processingWindowSeconds.USDT': {
-    what: 'Once a USDT order is assigned to an agent, how long it has to be completed before it expires.',
-    example: '1800 (30 minutes), to allow for slow blockchain confirmations.',
   },
   'teamRouting.utrSubmitSeconds': {
     what: 'Extra seconds a player gets to type the payment reference after the order window, so a payment made at the last moment is not lost.',

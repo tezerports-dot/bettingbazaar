@@ -67,9 +67,8 @@ export const PLAYER_ORDER_FIELDS = Object.freeze([
   // Not the merchant's rail — the ORDER's, stamped at creation.
   'paymentMode',
 
-  // Which chain THIS player chose to pay on. Their own choice, and the screen
-  // has to keep showing it: a player who picked BEP-20 and is shown a Tron
-  // address has lost their money, so the two are rendered together everywhere.
+  // Which network a USDT buy is paid on, rendered with the address everywhere:
+  // USDT sent on the wrong network is lost.
   'usdtChain',
 
   // Their own payment evidence, and the deadline for it.
@@ -114,10 +113,9 @@ export const PLAYER_FORBIDDEN_ORDER_FIELDS = Object.freeze([
   // ── Who they are paying ───────────────────────────────────────────────────
   'merchantSnapshot', 'merchantId',
   'upiId',
-  // The merchant's stored addresses, as columns. What the player DOES receive
-  // is `payTo.usdtAddress` — the one chain their own order named — which is a
-  // payment destination, the wallet equivalent of the UPI intent. These two are
-  // the merchant's credentials for BOTH chains and are not.
+  // Merchant USDT addresses, retired 2026-10-18 and still refused by name so
+  // an old snapshot can never pass one through. A USDT buy's destination is
+  // `payTo.usdtAddress`, the platform address derived for that order.
   'usdtAddressTrc20', 'usdtAddressBep20', 'usdtWalletAddress',
   // Never at the top level of an order: the member's account travels only in
   // `payTo.bankAccount`, and only on the bank-transfer buy it is paid on.
@@ -266,17 +264,6 @@ function counterpartyFor(order) {
       if (snapshot[key]) bank[key] = snapshot[key];
     }
     view.bankAccount = bank;
-  }
-
-  // ── The USDT rail's payment destination ────────────────────────────────
-  // ONLY the chain this order asked for; the merchant's address on the other
-  // chain is not part of this order. The chain travels WITH the address,
-  // always: an address on its own is how somebody sends on the wrong network
-  // and loses the tokens.
-  if (accepted && isBuy && snapshot.usdtPayTo && snapshot.usdtChain) {
-    view.usdtAddress = snapshot.usdtPayTo;
-    view.usdtChain = snapshot.usdtChain;
-    if (snapshot.usdtChainLabel) view.usdtChainLabel = snapshot.usdtChainLabel;
   }
   return Object.keys(view).length ? view : undefined;
 }

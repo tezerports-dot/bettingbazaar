@@ -29,7 +29,14 @@ import { textHasAMobile } from '../../backend/domains/identity/mobileInText.js';
 
 export const MAX_TEAMS = 4;
 export const TEAM_SIZE = 10;
+/** Every rail a supervisor row can hold, including USDT, set before 2026-10-18. */
 export const SUPERVISOR_RAILS = Object.freeze(['CASH', 'UPI_BANK', 'USDT']);
+/**
+ * The rails a supervisor can be PUT on now. USDT buys are paid to the platform
+ * (owner, 2026-10-18), so no new USDT supervisor or USDT team is made; the ones
+ * that exist take no orders until an admin moves or removes them.
+ */
+export const SETTABLE_SUPERVISOR_RAILS = Object.freeze(['CASH', 'UPI_BANK']);
 
 const newTeamId = () => `team_${randomBytes(10).toString('hex')}`;
 
@@ -123,8 +130,8 @@ const MEMBER_SELECT = `
  * their members are routed (and what they are holding) mid-flight.
  */
 export async function setSupervisorRole(merchantId, { rail }) {
-  if (rail !== null && !SUPERVISOR_RAILS.includes(rail)) {
-    throw Object.assign(new Error(`rail must be one of ${SUPERVISOR_RAILS.join(', ')}`), { status: 400 });
+  if (rail !== null && !SETTABLE_SUPERVISOR_RAILS.includes(rail)) {
+    throw Object.assign(new Error(`rail must be one of ${SETTABLE_SUPERVISOR_RAILS.join(', ')}`), { status: 400 });
   }
   try {
     return await withTransaction(async (client) => {
@@ -198,8 +205,9 @@ export async function createTeam({ supervisorId, name }) {
   return withTransaction(async (client) => {
     // The lock every concurrent create for this supervisor queues on.
     const { rows } = await client.query(
-      'SELECT is_supervisor FROM merchants WHERE merchant_id = $1 FOR UPDATE', [String(supervisorId)]);
+      'SELECT is_supervisor, supervisor_rail FROM merchants WHERE merchant_id = $1 FOR UPDATE', [String(supervisorId)]);
     if (!rows[0]?.is_supervisor) return { ok: false, reason: 'not_supervisor' };
+    if (!SETTABLE_SUPERVISOR_RAILS.includes(rows[0].supervisor_rail)) return { ok: false, reason: 'usdt_rail_retired' };
     const { rows: c } = await client.query(
       'SELECT count(*)::int AS n FROM teams WHERE supervisor_id = $1', [String(supervisorId)]);
     if (c[0].n >= MAX_TEAMS) return { ok: false, reason: 'team_limit' };
@@ -320,12 +328,10 @@ export const memberCurrencyFor = (rail) => (rail === 'USDT' ? 'USDT' : 'INR');
  *
  * Routing picks a team's members by the SUPERVISOR's rail, but a member's own
  * `accepted_currencies` decided which credentials their Profile would take. A
- * member left on INR in a USDT team could never save a wallet address, so no
- * USDT buy could ever be routed to them and every one waited at "Finding a
- * merchant" until it expired. Approval now puts the member on the team's rail,
- * in the approving transaction, and clears the other rail's credentials the
- * way the admin's rail switch does (they would sit in its unique indexes and
- * could be snapshotted onto an order). A no-op when the rail already matches.
+ * member on the wrong rail could hold no credential routing asks of the team.
+ * Approval now puts the member on the team's rail, in the approving
+ * transaction, and clears bank details on a move to USDT (a USDT team is one
+ * set before 2026-10-18 and takes no orders). A no-op when the rail matches.
  */
 async function alignMemberRailWithin(client, merchantId, supervisorRail) {
   const currency = memberCurrencyFor(supervisorRail);
@@ -334,9 +340,7 @@ async function alignMemberRailWithin(client, merchantId, supervisorRail) {
         SET accepted_currencies = ARRAY[$2]::text[],
             bank_account_no          = CASE WHEN $2 = 'USDT' THEN NULL ELSE bank_account_no END,
             bank_ifsc                = CASE WHEN $2 = 'USDT' THEN NULL ELSE bank_ifsc END,
-            bank_account_holder_name = CASE WHEN $2 = 'USDT' THEN NULL ELSE bank_account_holder_name END,
-            usdt_address_trc20       = CASE WHEN $2 = 'INR' THEN NULL ELSE usdt_address_trc20 END,
-            usdt_address_bep20       = CASE WHEN $2 = 'INR' THEN NULL ELSE usdt_address_bep20 END
+            bank_account_holder_name = CASE WHEN $2 = 'USDT' THEN NULL ELSE bank_account_holder_name END
       WHERE merchant_id = $1 AND accepted_currencies[1] IS DISTINCT FROM $2`,
     [String(merchantId), currency]);
 }

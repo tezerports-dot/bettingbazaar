@@ -905,10 +905,6 @@ CREATE TABLE IF NOT EXISTS merchants (
   bank_name                TEXT,
   bank_account_no          TEXT,
   bank_ifsc                TEXT,
-  -- TRC-20 (Tron), base58 and CASE-SENSITIVE. Uppercasing corrupts an address
-  -- and USDT sent to a corrupted address is unrecoverable, so the format is
-  -- checked by the row rather than trusted to the caller.
-  usdt_wallet_address      TEXT,
 
   -- ── Limits and thresholds, in integer paise ───────────────────────────────
   -- The document store held these as rupee floats. Every one of them is
@@ -2812,81 +2808,21 @@ CREATE INDEX IF NOT EXISTS order_states_queued_idx
   ON order_states (assignment_priority DESC, created_at ASC)
   WHERE state = 'PENDING_QUEUE';
 
--- ── A USDT merchant holds an address PER CHAIN ──────────────────────────────
+-- ── No merchant holds a USDT address (owner, 2026-10-18) ────────────────────
 --
--- USDT is one token on several blockchains, and they are not interchangeable:
--- USDT sent to a TRC-20 address from a BEP-20 wallet is gone. So the player
--- chooses the chain THEY hold funds on, and is shown only the address that can
--- receive them.
---
--- `usdt_wallet_address` was ONE column with a TRC-20 CHECK on it, which made
--- Tron the only chain a merchant could serve and made "which chain is this?" a
--- question the schema could not answer. Two columns say it instead: a merchant
--- may hold one, the other, or both, and the assignment query filters on the
--- chain the order asked for.
-ALTER TABLE merchants ADD COLUMN IF NOT EXISTS usdt_address_trc20 TEXT;
-ALTER TABLE merchants ADD COLUMN IF NOT EXISTS usdt_address_bep20 TEXT;
-
--- Carry the existing addresses across before the old column goes. Its CHECK was
--- the TRC-20 format, so every value in it is a Tron address by construction.
---
--- Guarded on the column still existing: this file is applied REPEATEDLY and
--- every statement in it has to be idempotent. A bare UPDATE naming a dropped
--- column is a hard error on the second run, which fails the whole schema apply
--- — and the second run is every run after the first deployment.
-DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.columns
-              WHERE table_name = 'merchants' AND column_name = 'usdt_wallet_address') THEN
-    UPDATE merchants
-       SET usdt_address_trc20 = usdt_wallet_address
-     WHERE usdt_wallet_address IS NOT NULL AND usdt_address_trc20 IS NULL;
-    ALTER TABLE merchants DROP COLUMN usdt_wallet_address;
-  END IF;
-END $$;
-
-DO $$ BEGIN
-  -- 34 base58 characters beginning with T. Base58 excludes 0, O, I and l so
-  -- visually similar characters cannot be confused.
-  ALTER TABLE merchants ADD CONSTRAINT merchants_usdt_trc20_format CHECK (
-    usdt_address_trc20 IS NULL
-    OR usdt_address_trc20 ~ '^T[1-9A-HJ-NP-Za-km-z]{33}$');
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN
-  -- BEP-20 is an EVM chain, so the address is the ordinary 20-byte hex form.
-  -- Case is not checked: EIP-55 mixed-case is a CHECKSUM, and rejecting a
-  -- lower-case address would refuse the form most wallets copy.
-  ALTER TABLE merchants ADD CONSTRAINT merchants_usdt_bep20_format CHECK (
-    usdt_address_bep20 IS NULL
-    OR usdt_address_bep20 ~ '^0x[0-9a-fA-F]{40}$');
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
--- ── Why there is NO "a USDT merchant must hold an address" constraint ───────
---
--- It was written and backed out. A merchant is created, an admin puts them on
--- the USDT rail, and only THEN do they enter a wallet address — so a row-level
--- check refuses the middle step of the ordinary signup, and the migration fails
--- outright on every merchant already on the rail without one.
---
--- It could not be right anyway. The question is not "does this merchant hold an
--- address" but "does this merchant hold an address ON THE CHAIN THIS ORDER
--- ASKED FOR", and a row cannot see the order. The guard belongs in the
--- assignment query, where it is per-chain and where a merchant with no address
--- is simply not a candidate. The merchant panel says so on their own screen, so
--- the symptom is visible rather than silent.
-
--- A wallet address is an IDENTITY, for the same reason a bank account is: two
--- merchants sharing one means money routed to either arrives at one, and no
--- record afterwards can say which was intended.
-CREATE UNIQUE INDEX IF NOT EXISTS merchants_usdt_trc20_unique
-  ON merchants (usdt_address_trc20) WHERE usdt_address_trc20 IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS merchants_usdt_bep20_unique
-  ON merchants (usdt_address_bep20) WHERE usdt_address_bep20 IS NOT NULL;
+-- USDT buys are paid to an address the PLATFORM derives for each order (see
+-- "USDT DEPOSITS TO THE PLATFORM" below), so the merchant address columns, their
+-- format checks and unique indexes are gone. Dropping a column drops its
+-- constraints and indexes with it; IF EXISTS keeps the file re-runnable.
+ALTER TABLE merchants DROP COLUMN IF EXISTS usdt_wallet_address;
+ALTER TABLE merchants DROP COLUMN IF EXISTS usdt_address_trc20;
+ALTER TABLE merchants DROP COLUMN IF EXISTS usdt_address_bep20;
 
 -- ── The chain a USDT order is being paid on ────────────────────────────────
 --
--- Chosen by the PLAYER at creation, from the chain they hold funds on, and
--- fixed for the life of the order: the merchant snapshot carries the address
--- for this chain and nothing else, and a chain that changed after assignment
--- would point a player at an address on a network they cannot reach.
+-- Fixed for the life of the order. Every USDT buy since 2026-10-18 is BEP20
+-- (`usdtDeposits.openUsdtBuy`); TRC20 stays allowed for the orders written
+-- before then, which this CHECK must keep accepting on every later update.
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS usdt_chain TEXT;
 
 DO $$ BEGIN
@@ -2902,14 +2838,6 @@ DO $$ BEGIN
     CHECK ((currency = 'USDT') = (usdt_chain IS NOT NULL));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
--- The assignment path for a USDT buy: merchants on this rail holding an address
--- on the chain the order asked for.
-CREATE INDEX IF NOT EXISTS merchants_usdt_trc20_live_idx
-  ON merchants (status, merchant_approval_status)
-  WHERE usdt_address_trc20 IS NOT NULL;
-CREATE INDEX IF NOT EXISTS merchants_usdt_bep20_live_idx
-  ON merchants (status, merchant_approval_status)
-  WHERE usdt_address_bep20 IS NOT NULL;
 
 -- ── The chain a USDT order pays on cannot move ─────────────────────────────
 --
@@ -4124,9 +4052,7 @@ UPDATE merchants m
    SET accepted_currencies = ARRAY[x.currency]::text[],
        bank_account_no          = CASE WHEN x.currency = 'USDT' THEN NULL ELSE m.bank_account_no END,
        bank_ifsc                = CASE WHEN x.currency = 'USDT' THEN NULL ELSE m.bank_ifsc END,
-       bank_account_holder_name = CASE WHEN x.currency = 'USDT' THEN NULL ELSE m.bank_account_holder_name END,
-       usdt_address_trc20       = CASE WHEN x.currency = 'INR' THEN NULL ELSE m.usdt_address_trc20 END,
-       usdt_address_bep20       = CASE WHEN x.currency = 'INR' THEN NULL ELSE m.usdt_address_bep20 END
+       bank_account_holder_name = CASE WHEN x.currency = 'USDT' THEN NULL ELSE m.bank_account_holder_name END
   FROM (SELECT tm.merchant_id, CASE WHEN s.supervisor_rail = 'USDT' THEN 'USDT' ELSE 'INR' END AS currency
           FROM team_members tm
           JOIN teams t ON t.team_id = tm.team_id

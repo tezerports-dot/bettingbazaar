@@ -126,13 +126,13 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
 
   it('routing settings fall back to the schema defaults, key by key', () => {
     expect(routingSettings(null)).toEqual({
-      concurrency: { CASH: 1, UPI_BANK: 3, USDT: 3 },
+      concurrency: { CASH: 1, UPI_BANK: 3 },
       assignmentWaitSeconds: 1500,
-      processingWindowSeconds: { CASH: 900, UPI_BANK: 900, USDT: 900 },
+      processingWindowSeconds: { CASH: 900, UPI_BANK: 900 },
       utrSubmitSeconds: 60,
     });
     const s = routingSettings({ teamRouting: { concurrency: { UPI_BANK: '5' }, utrSubmitSeconds: 90 } });
-    expect(s.concurrency).toEqual({ CASH: 1, UPI_BANK: 5, USDT: 3 });
+    expect(s.concurrency).toEqual({ CASH: 1, UPI_BANK: 5 });
     expect(s.utrSubmitSeconds).toBe(90);
   });
 
@@ -562,29 +562,11 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     expect(await getBalances(`u_${sell.orderId}`)).toMatchObject({ winningsBalance: 0, lockedBalance: 0 });
   });
 
-  it('a USDT order reaches only a member holding an address on ITS chain (§25)', async () => {
-    const t = await workingTeam('USDT', 200000);
-    const [tron, bsc] = t.members;
-    await pgQuery('UPDATE merchants SET usdt_address_trc20 = $2 WHERE merchant_id = $1', [tron, `T${'A'.repeat(33)}`]);
-    await pgQuery('UPDATE merchants SET usdt_address_bep20 = $2 WHERE merchant_id = $1', [bsc, `0x${'b'.repeat(40)}`]);
-
-    const onTron = await order('DEPOSIT', 50000, { currency: 'USDT', usdtChain: 'TRC20' });
-    expect(await assign(onTron)).toMatchObject({ ok: true, merchantId: tron, teamId: t.teamId });
-    const onBsc = await order('DEPOSIT', 50000, { currency: 'USDT', usdtChain: 'BEP20' });
-    expect(await assign(onBsc)).toMatchObject({ ok: true, merchantId: bsc, teamId: t.teamId });
-
-    // Nobody else holds a Tron address, and the one who does is still free
-    // (cap 3): the next Tron order goes to them again, never to a member who
-    // would show the player nothing to send to.
-    const again = await order('DEPOSIT', 50000, { currency: 'USDT', usdtChain: 'TRC20' });
-    expect(await assign(again)).toMatchObject({ ok: true, merchantId: tron });
-  });
-
-  it('an unknown chain is a throw, never an empty list that reads as "nobody is free"', async () => {
+  it('never routes a USDT buy to a member: it is paid to the platform (owner, 2026-10-18)', async () => {
     await expect(routingCandidates(
-      { orderId: 'x', type: 'DEPOSIT', currency: 'USDT', paymentMode: 'P2P_UPI', usdtChain: 'ERC20', tokenAmountPaise: T(50000) },
+      { orderId: 'x', type: 'DEPOSIT', currency: 'USDT', paymentMode: 'P2P_UPI', usdtChain: 'BEP20', tokenAmountPaise: T(50000) },
       { cap: 3 },
-    )).rejects.toThrow(/unknown usdtChain 'ERC20'/);
+    )).rejects.toThrow(/USDT buy, which no member serves/);
   });
 
   it('a REFUND the team cannot fund is covered by the platform, once, and the pool is never taken twice', async () => {

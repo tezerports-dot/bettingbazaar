@@ -46,7 +46,6 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   status, suspension_reason, is_online,
   accepts_deposits, accepts_withdrawals, accepted_currencies, merchant_type,
   bank_account_holder_name, bank_name, bank_account_no, bank_ifsc,
-  usdt_address_trc20, usdt_address_bep20,
   min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
   total_processed_volume_paise, earnings_paise, total_deposit_amount_paise,
   total_withdrawal_amount_paise, total_deposits_processed, total_withdrawals_processed,
@@ -110,11 +109,6 @@ function toMerchant(row) {
       accountNo: row.bank_account_no,
       ifsc: row.bank_ifsc,
     },
-    // One address PER CHAIN. USDT sent to a TRC-20 address from a BEP-20
-    // wallet is gone, so which chain an address belongs to is a fact the row
-    // states rather than one a reader infers from its shape.
-    usdtAddressTrc20: row.usdt_address_trc20,
-    usdtAddressBep20: row.usdt_address_bep20,
 
     limits: {
       minDeposit: rupees(row.min_deposit_paise),
@@ -264,7 +258,6 @@ const UPDATABLE = new Set([
   'status', 'suspension_reason', 'accepts_deposits', 'accepts_withdrawals',
   'accepted_currencies',
   'bank_account_holder_name', 'bank_name', 'bank_account_no', 'bank_ifsc',
-  'usdt_address_trc20', 'usdt_address_bep20',
   'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise', 'max_withdraw_paise',
   'rating', 'panel_url',
   'merchant_approval_status', 'merchant_approved_by', 'merchant_approved_at',
@@ -351,7 +344,7 @@ export async function createMerchant({
   merchantId = null, userId = null, name, publicRef = null,
   username = null, mobile = null, email = null,
   currency = 'INR', status = 'PENDING', bankDetails = null,
-  usdtAddressTrc20 = null, usdtAddressBep20 = null, panelUrl = '',
+  panelUrl = '',
   limits = null, client = null,
 } = {}) {
   if (!name) throw new Error('createMerchant requires a name');
@@ -368,17 +361,17 @@ export async function createMerchant({
        merchant_id, user_id, name, public_ref, username, mobile, email,
        accepted_currencies, status,
        bank_account_holder_name, bank_name, bank_account_no, bank_ifsc,
-       usdt_address_trc20, usdt_address_bep20, panel_url,
+       panel_url,
        min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise)
      VALUES ($1,$2,$3,$4,$5,$6,$7, ARRAY[$8], $9,
-             $10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+             $10,$11,$12,$13,$14,$15,$16,$17,$18)
      RETURNING ${COLUMNS}`,
     [id, userId ? String(userId) : null, String(name), ref,
       username || null, mobile || null, email || null,
       String(currency), String(status),
       bankDetails?.accountHolderName || null,
       bankDetails?.bankName || null, bankDetails?.accountNo || null, bankDetails?.ifsc || null,
-      usdtAddressTrc20 || null, usdtAddressBep20 || null, panelUrl || '',
+      panelUrl || '',
       rupeesToPaise(l.minDeposit ?? 500), rupeesToPaise(l.maxDeposit ?? 50000),
       rupeesToPaise(l.minWithdraw ?? 500), rupeesToPaise(l.maxWithdraw ?? 50000)],
   );
@@ -803,7 +796,7 @@ export async function createMerchantAccount(fields) {
  */
 export async function createMerchantAccountWithin(client, {
   userId, username, mobile, email = null,
-  currency = 'INR', bankDetails = null, usdtAddressTrc20 = null, usdtAddressBep20 = null,
+  currency = 'INR', bankDetails = null,
   // A MERCHANT ACCOUNT (owner, 2026-10-11): its DIRECT team is created in this
   // same transaction (`createDirectTeamWithin`), so there is no instant at
   // which it is a merchant without its pool's team.
@@ -832,7 +825,7 @@ export async function createMerchantAccountWithin(client, {
     // Never the mobile: a name is shown to other people, a number is not.
     name: username || 'Member',
     username, mobile, email,
-    currency, status: 'PENDING', bankDetails, usdtAddressTrc20, usdtAddressBep20,
+    currency, status: 'PENDING', bankDetails,
     client,
   });
   if (direct) {

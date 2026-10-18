@@ -52,7 +52,7 @@ const MERCHANT_ORDER_RULES: Array<{
 // dispute in are `rejectedBuyDisputeMinutes` and `withdrawalHoldMinutes`,
 // offered beside the withdrawal hold below; a per-rail copy that nothing read
 // was removed from the spec (§3).
-type RoutingRail = 'CASH' | 'UPI_BANK' | 'USDT';
+type RoutingRail = 'CASH' | 'UPI_BANK';
 const ROUTING_RAILS: Array<{
   rail: RoutingRail; label: string;
   concurrency: { min: number; max: number; fallback: number };
@@ -64,9 +64,15 @@ const ROUTING_RAILS: Array<{
   { rail: 'UPI_BANK', label: 'UPI / bank',
     concurrency: { min: 1, max: 20, fallback: 3 },     // spec default: 3
     processing:  { min: 60, max: 7200, fallback: 900 } }, // spec default: 900
-  { rail: 'USDT',     label: 'USDT',
-    concurrency: { min: 1, max: 20, fallback: 3 },     // spec default: 3
-    processing:  { min: 60, max: 7200, fallback: 900 } }, // spec default: 900
+];
+// USDT buys paid to the platform on BNB Smart Chain (config.spec.js usdtDeposits).
+const USDT_DEPOSIT_FIELDS: Array<{
+  key: 'paymentWindowMinutes' | 'confirmations' | 'lateWatchHours'; label: string;
+  min: number; max: number; fallback: number;
+}> = [
+  { key: 'paymentWindowMinutes', label: 'USDT Payment Window (minutes)', min: 10, max: 1440, fallback: 60 }, // spec default: 60
+  { key: 'confirmations', label: 'BSC Confirmations Before Crediting', min: 3, max: 200, fallback: 15 },     // spec default: 15
+  { key: 'lateWatchHours', label: 'Watch Closed Orders For Late USDT (hours)', min: 1, max: 720, fallback: 72 }, // spec default: 72
 ];
 const ROUTING_TIMERS: Array<{
   key: 'assignmentWaitSeconds' | 'utrSubmitSeconds'; label: string;
@@ -231,6 +237,7 @@ export const SystemSettings: React.FC = () => {
     buyOrderSizes: [] as number[],
     sellOrderSizes: [] as number[],
     usdtBuy: { minUsdt: 100, maxUsdt: 10000 },   // schema defaults: 100 / 10,000
+    usdtDeposits: Object.fromEntries(USDT_DEPOSIT_FIELDS.map((f) => [f.key, f.fallback])) as Record<string, number>,
     maxBalanceAdjustment: 1000000, // schema default: 1000000 (₹10,00,000)
     // ── Money rules (Phase A + Risk Platform) — consumed by bet.routes.js,
     //    gameEngine.js and riskValidation.service.js on the backend ──────────
@@ -328,6 +335,10 @@ export const SystemSettings: React.FC = () => {
             minUsdt: response.data.usdtBuy?.minUsdt ?? 100,    // schema default: 100
             maxUsdt: response.data.usdtBuy?.maxUsdt ?? 10000,  // schema default: 10,000
           },
+          usdtDeposits: {
+            ...Object.fromEntries(USDT_DEPOSIT_FIELDS.map((f) => [f.key, f.fallback])),
+            ...(response.data.usdtDeposits ?? {}),
+          } as Record<string, number>,
           maxBalanceAdjustment: response.data.maxBalanceAdjustment ?? 1000000, // schema default: 1000000
           betReservePercent:  response.data.betReservePercent  ?? 1, // schema default: 1
           winningsFeePercent: response.data.winningsFeePercent ?? 1, // schema default: 1
@@ -845,6 +856,27 @@ export const SystemSettings: React.FC = () => {
               <SettingHelp path="usdtBuy.maxUsdt" />
             </div>
           </div>
+          <div className="pt-4 border-t border-dark-700">
+            <h3 className="font-semibold mb-1">USDT Deposits (BNB Smart Chain)</h3>
+            <p className="text-xs text-gray-500 mb-4">
+              Each USDT buy gets its own BSC address. The tokens are credited once the full amount arrives
+              with enough confirmations. Payments that arrive late, short or over are listed under USDT Deposits.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {USDT_DEPOSIT_FIELDS.map((f) => (
+                <div key={f.key}>
+                  <label className="label" htmlFor={`usdt-deposits-${f.key}`}>{f.label}</label>
+                  <input id={`usdt-deposits-${f.key}`}
+                    type="number" min={f.min} max={f.max} step={1}
+                    value={formData.usdtDeposits[f.key]}
+                    onChange={(e) => setFormData({ ...formData, usdtDeposits: { ...formData.usdtDeposits, [f.key]: Number(e.target.value) || 0 } })}
+                    className="input"
+                  />
+                  <SettingHelp path={`usdtDeposits.${f.key}`} />
+                </div>
+              ))}
+            </div>
+          </div>
           {(!usdtStepOk(formData.usdtBuy.minUsdt) || !usdtStepOk(formData.usdtBuy.maxUsdt)
             || formData.usdtBuy.minUsdt > formData.usdtBuy.maxUsdt) && (
             <div role="alert" className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
@@ -908,11 +940,10 @@ export const SystemSettings: React.FC = () => {
           <div className="pt-4 border-t border-dark-700">
             <h3 className="font-semibold mb-1">Agent Team Routing</h3>
             <p className="text-xs text-gray-500 mb-4">
-              An order routed to agents goes to an agent of a working team on its rail: USDT orders to USDT teams,
-              INR orders up to the cash ceiling to Cash teams, larger INR orders to UPI / bank teams. Each rail has
-              its own cap and window.
+              An order routed to agents goes to an agent of a working team on its rail: INR orders up to the cash
+              ceiling to Cash teams, larger INR orders to UPI / bank teams. Each rail has its own cap and window.
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {ROUTING_RAILS.map((r) => {
                 const conc = formData.teamRouting.concurrency[r.rail];
                 const proc = formData.teamRouting.processingWindowSeconds[r.rail];
@@ -990,7 +1021,7 @@ export const SystemSettings: React.FC = () => {
             <h3 className="font-semibold mb-1">INR Orders</h3>
             <p className="text-xs text-gray-500 mb-3">
               Pick who serves each size. Agents: 500 to 10,000 as cash at an ATM, 50,000 and up by UPI/bank.
-              Merchant accounts: paid by UPI QR or bank transfer. USDT always goes to agents.
+              Merchant accounts: paid by UPI QR or bank transfer. USDT is paid to the platform directly.
             </p>
             <table className="text-sm" aria-label="Who serves each INR size">
               <thead>
@@ -1652,6 +1683,7 @@ export const SystemSettings: React.FC = () => {
           || ROUTING_RAILS.some((r) => outOfRange(formData.teamRouting.concurrency[r.rail], r.concurrency)
             || outOfRange(formData.teamRouting.processingWindowSeconds[r.rail], r.processing))
           || ROUTING_TIMERS.some((t) => outOfRange(formData.teamRouting[t.key], t))
+          || USDT_DEPOSIT_FIELDS.some((f) => outOfRange(formData.usdtDeposits[f.key], f))
           || MERCHANT_ROUTING_DIRECTIONS.some((d) => outOfRange(formData.merchantRouting.concurrency[d.direction], d.concurrency)
             || outOfRange(formData.merchantRouting.processingWindowSeconds[d.direction], d.processing))
           || outOfRange(formData.merchantRouting.assignmentWaitSeconds, MERCHANT_ASSIGNMENT_WAIT)

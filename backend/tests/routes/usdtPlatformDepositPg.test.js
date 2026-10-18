@@ -64,6 +64,14 @@ describePg('USDT buys paid to the platform on BSC', () => {
   afterAll(async () => {
     for (const [k, v] of Object.entries(env)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     if (priorPricing) await applySystemConfig({ usdtPricing: priorPricing }, { actor: 'usdt-platform-suite' });
+    // The rows are append-only by trigger; the test's own are removed with
+    // triggers off, as every suite on this shared database does.
+    await withTransaction(async (c) => {
+      await c.query('SET LOCAL session_replication_role = replica');
+      for (const table of ['usdt_deposit_transfers', 'usdt_deposit_addresses', 'order_transitions', 'order_states']) {
+        await c.query(`DELETE FROM ${table} WHERE order_id = ANY($1)`, [orders]);
+      }
+    });
     await closePg();
   });
 
