@@ -196,6 +196,25 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[usdt-watcher] cron error:', e.message); }
   });
 
+  // ── Cricket opinion polls (owner, 2026-10-18) ─────────────────────────────
+  // Every 4 seconds: close the polls whose time is up, open the standing polls
+  // of published matches, and read each match under way from the feed (one
+  // request per live match, whatever the number of players). Every 10 minutes:
+  // the fixture list. Both do nothing until the data token is saved and never
+  // throw, so a feed outage is a line on Admin › Cricket, not a retry storm.
+  registerRecurring('cricket-live', 4 * 1000, async () => {
+    try {
+      const { syncLive } = await import('../domains/cricket/cricketEngine.service.js');
+      await syncLive();
+    } catch (e) { console.error('[cricket-live] cron error:', e.message); }
+  });
+  registerRecurring('cricket-fixtures', 10 * 60 * 1000, async () => {
+    try {
+      const { syncFixtures } = await import('../domains/cricket/cricketEngine.service.js');
+      await syncFixtures();
+    } catch (e) { console.error('[cricket-fixtures] cron error:', e.message); }
+  });
+
   // ── Queued orders, offered to the teams again — runs every 30 seconds ──────
   // An order created while every member on its rail was busy, not Ready, or
   // short of pool tokens waits PENDING_QUEUE. Nothing else looks at it again
@@ -248,6 +267,7 @@ export function registerCronJobs(rebuildLeaderboard) {
     try {
       const {
         reconcileCompletedOrders, reconcileSettledCycles, reconcileCasinoRounds, reconcilePromoGrants, reconcileCompensations,
+        reconcileCricketPolls,
       } =
         await import('../domains/revenue/revenueSettlement.service.js');
 
@@ -274,7 +294,11 @@ export function registerCronJobs(rebuildLeaderboard) {
       for (const r of compensationResults) {
         if (r.error) console.error(`[ledger-reconcile] DisputeCompensation ${r.refId} failed:`, r.error);
       }
-      const all = [...orderResults, ...cycleResults, ...casinoResults, ...promoResults, ...compensationResults];
+      const cricketResults = await reconcileCricketPolls();
+      for (const r of cricketResults) {
+        if (r.error) console.error(`[ledger-reconcile] CricketPoll ${r.refId} failed:`, r.error);
+      }
+      const all = [...orderResults, ...cycleResults, ...casinoResults, ...promoResults, ...compensationResults, ...cricketResults];
 
       const failures = all.filter(r => r.error);
       if (failures.length > 0) {

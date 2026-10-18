@@ -44,6 +44,7 @@ const LAZY_PAGES = {
   casino:      () => import('./pages/CasinoPage'),
   crash:       () => import('./pages/CrashPage'),
   sports:      () => import('./pages/SportsPage'),
+  cricket:     () => import('./pages/CricketPage'),
   winners:     () => import('./pages/WinnersPage'),
   leaderboard: () => import('./pages/LeaderboardPage'),
   wallet:      () => import('./pages/WalletPage'),
@@ -52,6 +53,7 @@ const LAZY_PAGES = {
 const CasinoPage          = React.lazy(LAZY_PAGES.casino);
 const CrashPage           = React.lazy(LAZY_PAGES.crash);
 const SportsPage          = React.lazy(LAZY_PAGES.sports);
+const CricketPage         = React.lazy(LAZY_PAGES.cricket);
 const WinnersPage         = React.lazy(LAZY_PAGES.winners);
 const LeaderboardPage     = React.lazy(LAZY_PAGES.leaderboard);
 const WalletPage          = React.lazy(LAZY_PAGES.wallet);
@@ -351,6 +353,7 @@ const App: React.FC = () => (
                           <Route path="/casino"          element={lazy(<CasinoPage />)} />
                           <Route path="/crash"           element={lazy(<CrashPage />)} />
                           <Route path="/sports"          element={lazy(<SportsPage />)} />
+                          <Route path="/cricket"         element={lazy(<CricketPage />)} />
 
                           {/* Finance */}
                           <Route path="/wallet"          element={<SignInFirst what="wallet">{lazy(<WalletPage />)}</SignInFirst>} />

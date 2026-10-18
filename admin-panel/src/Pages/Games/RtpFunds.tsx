@@ -11,7 +11,7 @@ import toast from 'react-hot-toast';
 import { boards as boardsApi } from '../../services/api';
 
 interface Fund {
-  gameKey: string; audience: 'VIP' | 'GENERAL'; enabled: boolean; ratePercent: number;
+  gameKey: string; gameName?: string; audience: 'VIP' | 'GENERAL'; enabled: boolean; ratePercent: number;
   balancePaise: number; roundsHelped: number; returnedPaise: number;
 }
 interface Entry {
@@ -67,7 +67,8 @@ export const RtpFunds: React.FC = () => {
       <p className="text-xs text-slate-500 mb-3">
         Each round adds the rate × the real player pool, minus what players got back, to the fund. When the fund covers
         a whole round, the house places a real bet as the round's last bet so the side most players backed wins.
-        Phantom bets are never part of this.
+        Phantom bets are never part of this. Cricket keeps its own fund (VIP only): each ended poll adds the rate × real
+        stakes less what was paid back, and while the fund is above zero new cricket polls open with a lower spread.
       </p>
       <table className="w-full text-sm">
         <thead><tr className="text-left text-slate-500 text-xs">
@@ -77,7 +78,7 @@ export const RtpFunds: React.FC = () => {
         <tbody>
           {funds.map((f) => (
             <tr key={`${f.gameKey}:${f.audience}`} className="border-t border-[#1e2736]">
-              <td className="py-1.5">{f.gameKey}</td>
+              <td className="py-1.5">{f.gameName ?? f.gameKey}</td>
               <td>{f.audience === 'VIP' ? 'VIP' : 'General'}</td>
               <td><input type="checkbox" aria-label={`RTP on for ${f.gameKey} ${f.audience}`} checked={f.enabled}
                 onChange={(e) => edit(f, { enabled: e.target.checked })} /></td>

@@ -46,6 +46,18 @@ interface SysConfig {
   footerPages:   string[];
   // Admin › Player Screen (SystemConfig.boardExtras, config.spec.js).
   boardExtras:   BoardExtras;
+  // Admin › Cricket (SystemConfig.cricket via cricketPublicSettings).
+  cricket:       CricketSettings;
+  // The global winnings fee, read by the cricket position values (§11 mirror).
+  winningsFeePercent: number;
+}
+/** Mirrors `cricketPublicSettings` (backend/domains/cricket/cricketSettings.js). */
+export interface CricketSettings {
+  enabled:            boolean;
+  minStake:           number;
+  maxStake:           number;
+  inPlayDelaySec:     number;
+  claimMarginPercent: number;
 }
 /** Mirrors `boardExtras` in database/spec/config.spec.js (systemConfigPayload.js). */
 export interface BoardExtras {
@@ -60,6 +72,9 @@ const DEFAULT_SYS_CONFIG: SysConfig = {
   footerPages: ['home', 'results', 'wallet', 'promo'], // schema default (config.spec.js footerPages)
   // schema defaults: true / 10 / true / true / true
   boardExtras: { urgencyChips: true, closingWarnSeconds: 10, resultCelebration: true, bonusProgress: true, promoCards: true },
+  // schema defaults (config.spec.js `cricket`): off, 10 to 50,000, 5 s, 5 %
+  cricket: { enabled: false, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimMarginPercent: 5 },
+  winningsFeePercent: 1, // schema default: 1
 };
 import { useToast } from '../components/ui/Toast';
 import { BOARD_RULES_EVENT } from '../redesign/BoardRules';
@@ -793,6 +808,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         tokenSellRate: data.tokenSellRate ?? prev.tokenSellRate,
         footerPages:   Array.isArray(data.footerPages) && data.footerPages.length ? data.footerPages : prev.footerPages,
         boardExtras:   data.boardExtras && typeof data.boardExtras === 'object' ? { ...prev.boardExtras, ...data.boardExtras } : prev.boardExtras,
+        cricket:       data.cricket && typeof data.cricket === 'object' ? { ...prev.cricket, ...data.cricket } : prev.cricket,
+        winningsFeePercent: typeof data.winningsFeePercent === 'number' ? data.winningsFeePercent : prev.winningsFeePercent,
       }));
     };
 
@@ -985,6 +1002,12 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
  */
 export const useBoardExtras = (): BoardExtras =>
   useContext(GameContext)?.sysConfig.boardExtras ?? DEFAULT_SYS_CONFIG.boardExtras; // schema defaults
+
+/** Admin › Cricket's public settings, and the global winnings fee. */
+export const useCricketSettings = (): CricketSettings & { winningsFeePercent: number } => {
+  const cfg = useContext(GameContext)?.sysConfig ?? DEFAULT_SYS_CONFIG;
+  return { ...cfg.cricket, winningsFeePercent: cfg.winningsFeePercent };
+};
 
 /** The admin's footer tabs, page keys in order (SystemConfig.footerPages). */
 export const useFooterPages = (): string[] =>

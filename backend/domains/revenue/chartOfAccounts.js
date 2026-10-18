@@ -93,6 +93,11 @@ export const EVENT_TYPES = Object.freeze({
   // a win credited later reverses what was booked (owner, 2026-10-17).
   CASINO_ROUND_NET: 'CASINO_ROUND_NET',
 
+  // A cricket poll's net to the house once it ends (stakes kept less wins and
+  // claims paid, the fee inside; refunds were never kept), booked once per
+  // poll (reconcileCricketPolls; owner, 2026-10-18).
+  CRICKET_POLL_NET: 'CRICKET_POLL_NET',
+
   // A General bonus paid out of the platform's own holding (referral or first
   // deposit, `promo_grants`): a cost against revenue, what the platform now
   // owes the player (owner, 2026-10-17).

@@ -116,6 +116,7 @@ export const ProfitLoss: React.FC = () => {
                 <Line label="Board games: paid to winners" val={-stats.revenue.boardGames.payouts} note={`${stats.revenue.boardGames.wins.toLocaleString()} wins`} tone="text-orange-500" />
                 <Line label="Board games: kept" val={stats.revenue.boardGames.amount} note={`includes ${fmt(stats.revenue.winningsFees)} winnings fee`} tone="text-green-500" />
                 <Line label="Casino games: kept" val={stats.revenue.casino} tone="text-green-500" />
+                <Line label="Cricket polls: kept" val={stats.revenue.cricket.amount} note={`${stats.revenue.cricket.polls.toLocaleString()} polls, includes ${fmt(stats.revenue.cricket.fees)} winnings fee`} tone="text-green-500" />
               </div>
             </div>
             <div className="card">

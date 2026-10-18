@@ -63,6 +63,8 @@ import { doorRoute } from './domains/identity/loginDoors.js';
 import playerAuthRoutes from './domains/identity/playerAuth.routes.js';
 import adminRoutes        from './routes/admin/index.js';      // ← new modular index
 import betRoutes          from './domains/markets/bet.routes.js';
+import cricketRoutes      from './domains/cricket/cricket.routes.js';
+import { cricketOddsPublisher } from './domains/cricket/cricketOddsPublisher.js';
 // The Telegram Mini App's own calls (Step 3). Public by design: the Mini App
 // has no session, and `initData` — signed by the one bot's token, single-use —
 // is its credential, verified per request.
@@ -625,6 +627,7 @@ app.use('/api/game',      gameProviderRoutes);
 app.use('/api/game',      gameRegistryRoutes);
 app.use('/api/telegram',  miniAppRoutes);
 app.use('/api/bet',       betRoutes);
+app.use('/api/v1/cricket', cricketRoutes);
 app.use('/api',           userRoutes);
 // The merchant sign-in door's limits are ON its routes (merchant.routes.js,
 // loginDoors.js), never on a path prefix (§32 S28).
@@ -687,6 +690,7 @@ if (runtime.acceptsRealtime) {
 // streams of its own hands its snapshots to the realtime workers through
 // `sseManager.sharePeer` (the Redis bridge below), and they send them on.
 cycleSnapshotPublisher.attach({ io, sseManager }).start();
+cricketOddsPublisher.start();
 
 // Cross-instance real-time bridge (Phase X): fan out socket.io + SSE events
 // across all instances via Redis. No-op without REDIS_URL. EVERY role joins
@@ -825,6 +829,7 @@ Promise.allSettled([
 // kept accepting new requests through the whole grace window and then killed
 // them mid-flight on process.exit — rolling deploys dropped requests.
 async function closeResources() {
+  try { cricketOddsPublisher.stop(); } catch (_) {}
   try { cycleSnapshotPublisher.stop(); } catch (_) {}                            // stop the 1s snapshot timer
   await Promise.allSettled([
     import('./services/jobQueue.service.js').then(m => m.closeJobQueue()),      // 17+56: finish/close queue

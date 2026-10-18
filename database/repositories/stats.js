@@ -910,7 +910,9 @@ export async function platformFinance({ from = null, to = null } = {}) {
  *   board games  settled player stakes (WON or LOST) minus what winners were
  *                paid (`payout_paise` is net of the winnings fee, so the fee
  *                is inside this figure; `winningsFees` shows it apart);
- *   casino       bets minus wins minus refunds (`game_transactions`).
+ *   casino       bets minus wins minus refunds (`game_transactions`);
+ *   cricket      each poll ended in the window: stakes kept (refunds already
+ *                out) minus wins and claims paid, fees inside (`cricket_polls`).
  * Costs are what the platform paid out of its own holding:
  *   referral and first-deposit bonuses (`promo_grants`), and team commission
  *   (`team_commissions`, paid from MERCHANT_BONUS_POOL into team pools).
@@ -942,6 +944,12 @@ export async function profitAndLoss({ from = null, to = null } = {}) {
                                  WHEN tx_type IN ('WIN', 'REFUND', 'ROLLBACK') THEN -amount_paise
                                  ELSE 0 END), 0)
           FROM game_transactions WHERE ${inWindow('created_at')}) AS casino_ggr,
+       (SELECT COALESCE(SUM(stakes_paise - claims_paid_paise - won_paid_paise), 0) FROM cricket_polls
+         WHERE status IN ('SETTLED', 'VOID') AND ${inWindow('settled_at')}) AS cricket_ggr,
+       (SELECT COALESCE(SUM(fees_paise), 0) FROM cricket_polls
+         WHERE status IN ('SETTLED', 'VOID') AND ${inWindow('settled_at')}) AS cricket_fees,
+       (SELECT COUNT(*) FROM cricket_polls
+         WHERE status IN ('SETTLED', 'VOID') AND stakes_paise > 0 AND ${inWindow('settled_at')}) AS cricket_polls,
        (SELECT COALESCE(SUM(amount_paise), 0) FROM promo_grants
          WHERE source = 'REFERRAL' AND ${inWindow('created_at')}) AS referral_bonuses,
        (SELECT COUNT(*) FROM promo_grants
@@ -966,7 +974,7 @@ export async function profitAndLoss({ from = null, to = null } = {}) {
   );
   const r = rows[0];
   const boardGgr = Number(r.settled_stakes) - Number(r.payouts);
-  const revenue = boardGgr + Number(r.casino_ggr);
+  const revenue = boardGgr + Number(r.casino_ggr) + Number(r.cricket_ggr);
   const costs = Number(r.referral_bonuses) + Number(r.first_deposit_bonuses) + Number(r.team_commission);
   return {
     revenue: {
@@ -974,6 +982,7 @@ export async function profitAndLoss({ from = null, to = null } = {}) {
                     bets: int(r.settled_bets), wins: int(r.wins) },
       winningsFees: rupees(r.winnings_fees),
       casino: rupees(r.casino_ggr),
+      cricket: { amount: rupees(r.cricket_ggr), fees: rupees(r.cricket_fees), polls: int(r.cricket_polls) },
       total: rupees(revenue),
     },
     costs: {

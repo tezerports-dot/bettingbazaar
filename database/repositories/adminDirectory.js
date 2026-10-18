@@ -13,7 +13,8 @@
  *                    (`token_amount_paise`, never `fiat_amount_paise`: trap 15)
  *   Net win/loss     settled board bets (`payout - stake` on WON, `-stake` on
  *                    LOST; phantom bets excluded) plus casino rounds
- *                    (`credited + refunded - debited`). Positive: the player is
+ *                    (`credited + refunded - debited`) plus ended cricket bets
+ *                    (`paid - stake`; a void is even). Positive: the player is
  *                    up; negative: the player has lost that much.
  * Merchants:
  *   Processed, orders  the merchant row's own counters, moved by
@@ -106,7 +107,7 @@ const PLAYER_SQL = `
          COALESCE(o.deposits_paise, 0)    AS deposits_paise,
          COALESCE(o.withdrawals_paise, 0) AS withdrawals_paise,
          COALESCE(o.deposit_count, 0)     AS deposit_count,
-         COALESCE(b.net_paise, 0) + COALESCE(c.net_paise, 0) AS net_paise
+         COALESCE(b.net_paise, 0) + COALESCE(c.net_paise, 0) + COALESCE(k.net_paise, 0) AS net_paise
     FROM users u
     LEFT JOIN wallets w ON w.user_id = u.user_id
     LEFT JOIN LATERAL (
@@ -125,7 +126,12 @@ const PLAYER_SQL = `
       SELECT SUM(credited_paise + refunded_paise - debited_paise) AS net_paise
         FROM casino_rounds
        WHERE user_id = u.user_id
-    ) c ON TRUE`;
+    ) c ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT SUM(paid_paise - stake_paise) AS net_paise
+        FROM cricket_bets
+       WHERE user_id = u.user_id AND status IN ('WON', 'LOST', 'CLAIMED')
+    ) k ON TRUE`;
 
 function toPlayerRow(r) {
   return {

@@ -1489,7 +1489,7 @@ export const SystemSettings: React.FC = () => {
               ['wallet', '💰 Wallet'], ['referrals', '🎁 Refer & Earn'],
               ['my-bets', '📜 My Bets'], ['history', '🕘 History'], ['rules', '📖 Rules'],
               ['faq', '❓ FAQ'], ['support', '🛟 Support'],
-              ['casino', '🎰 Casino'], ['crash', '🚀 Crash'], ['sports', '⚽ Sports'],
+              ['casino', '🎰 Casino'], ['crash', '🚀 Crash'], ['sports', '⚽ Sports'], ['cricket', '🏏 Cricket'],
             ];
             const current = formData.footerPages[i] || '';
             const usedElsewhere = formData.footerPages.filter((_, j) => j !== i);

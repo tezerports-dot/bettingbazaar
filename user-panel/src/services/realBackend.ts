@@ -86,6 +86,9 @@ const STREAM_EVENTS = [
   'cycle_phase', 'celebration', 'fireworks', 'cycle_history',
   'bet_placed', 'system_config', 'branding', 'branding_updated',
   'user_balance_update', 'user_update', 'round_result', 'payout_success', 'order_update',
+  // Cricket opinion polls (owner, 2026-10-18): a match's pools and odds, at
+  // most once a second (public), and a poll of the player's ending (private).
+  'cricket_odds', 'cricket_settled',
 ] as const;
 
 /** Opening state a screen must see even if it subscribes after the stream opened. */
@@ -449,6 +452,15 @@ export class RealBackend implements Backend {
       this.onStream('user_update',    (data) => callback(data)),
       this.onStream('payout_success', (data) => callback({ ...data, type: 'PAYOUT_SUCCESS' })),
       this.onStream('order_update',   (data) => callback({ ...data, type: 'ORDER_UPDATE' })), // CROSS-4 fix
+    ];
+    return () => offs.forEach((off) => off());
+  }
+
+  /** A published match's polls as they move, and the player's own polls ending. */
+  subscribeToCricket(onOdds: (data: any) => void, onSettled: (data: any) => void) {
+    const offs = [
+      this.onStream('cricket_odds', (data) => onOdds(data)),
+      this.onStream('cricket_settled', (data) => onSettled(data)),
     ];
     return () => offs.forEach((off) => off());
   }

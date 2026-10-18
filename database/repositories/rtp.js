@@ -23,6 +23,16 @@ import { pgQuery, withTransaction } from '../client.js';
 export const RTP_AUDIENCES = Object.freeze(['VIP', 'GENERAL']);
 export const DEFAULT_RTP_RATE_BP = 8000;
 
+/**
+ * In-house games that are not boards, each with its own fund per profile it
+ * plays (owner, 2026-10-18: every game's RTP is its own). Cricket plays the
+ * VIP wallet only. A board may not take one of these keys (`boards.js`).
+ */
+export const IN_HOUSE_GAMES = Object.freeze([
+  Object.freeze({ key: 'CRICKET', name: 'Cricket', audiences: Object.freeze(['VIP']) }),
+]);
+export const IN_HOUSE_GAME_KEYS = Object.freeze(IN_HOUSE_GAMES.map((g) => g.key));
+
 const bad = (message, code = 'INVALID_RTP') => Object.assign(new Error(message), { status: 400, code });
 const num = (v) => Number(v ?? 0);
 
@@ -218,24 +228,43 @@ export async function recordRoundWithin(client, cycleId) {
       WHERE cycle_id = $1 AND NOT is_phantom AND status NOT IN ('REFUNDED', 'VOID')`,
     [String(cycleId)],
   );
+  return appendEntryWithin(client, {
+    gameKey: c.cycle_type, audience: c.audience, refId: String(cycleId), fund,
+    poolPaise: num(p[0].pool), paidBackPaise: num(c.total_paid_out_paise), houseBetPaise: num(c.house_bet_paise),
+  });
+}
+
+/** One entry and the balance it moves, under the fund's lock the caller took. Once per `refId`. */
+async function appendEntryWithin(client, { gameKey, audience, refId, fund, poolPaise, paidBackPaise, houseBetPaise = 0 }) {
   const rateBp = num(fund.rate_bp);
-  const poolPaise = num(p[0].pool);
-  const paidBackPaise = num(c.total_paid_out_paise);
   const deltaPaise = owedPaise(rateBp, poolPaise) - paidBackPaise;
   const balanceAfter = num(fund.balance_paise) + deltaPaise;
-
   const { rows: ins } = await client.query(
     `INSERT INTO rtp_fund_entries
        (game_key, audience, cycle_id, rate_bp, pool_paise, paid_back_paise, delta_paise, balance_after_paise, house_bet_paise)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
      ON CONFLICT (cycle_id) DO NOTHING
      RETURNING *`,
-    [c.cycle_type, c.audience, String(cycleId), rateBp, poolPaise, paidBackPaise, deltaPaise, balanceAfter, num(c.house_bet_paise)],
+    [gameKey, audience, refId, rateBp, poolPaise, paidBackPaise, deltaPaise, balanceAfter, houseBetPaise],
   );
   if (!ins[0]) return null;
   await client.query(
     'UPDATE rtp_funds SET balance_paise = $3, updated_at = now() WHERE game_key = $1 AND audience = $2',
-    [c.cycle_type, c.audience, balanceAfter],
+    [gameKey, audience, balanceAfter],
   );
   return toEntry(ins[0]);
+}
+
+/**
+ * An in-house game's settled event (a cricket poll), inside the transaction
+ * that settles it: rate × real stakes − paid back to players (wins and claims,
+ * net of the fee). Written while the fund is on; once per `refId`.
+ */
+export async function recordGameEventWithin(client, { gameKey, audience, refId, poolPaise, paidBackPaise }) {
+  const { rows: f } = await client.query(
+    'SELECT enabled, rate_bp, balance_paise FROM rtp_funds WHERE game_key = $1 AND audience = $2 FOR UPDATE',
+    [String(gameKey), String(audience)],
+  );
+  if (!f[0]?.enabled) return null;
+  return appendEntryWithin(client, { gameKey, audience, refId: String(refId), fund: f[0], poolPaise, paidBackPaise });
 }

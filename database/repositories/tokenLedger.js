@@ -17,7 +17,8 @@
  * (wallets) and TEAM_FLOAT (team pools) are the other side. Positive = the
  * platform holds more tokens after the movement than before.
  *
- *   GAME_BOARD, GAME_CASINO   what the house kept or paid (revenue)
+ *   GAME_BOARD, GAME_CASINO,  what the house kept or paid (revenue)
+ *   GAME_CRICKET
  *   BONUS, COMMISSION,        tokens given away (costs); a platform-covered
  *   PLATFORM_COVER            sell refund is a cost until a person recovers it
  *   ADJUSTMENT                an admin's balance adjustment
@@ -49,19 +50,20 @@ export const PLATFORM_ACCOUNTS = Object.freeze([
 
 /** Kinds, in the order the screen and the CSV list them. */
 export const TOKEN_FLOW_KINDS = Object.freeze([
-  'GAME_BOARD', 'GAME_CASINO', 'BONUS', 'COMMISSION', 'PLATFORM_COVER', 'ADJUSTMENT',
+  'GAME_BOARD', 'GAME_CASINO', 'GAME_CRICKET', 'BONUS', 'COMMISSION', 'PLATFORM_COVER', 'ADJUSTMENT',
   'POOL_TRADE', 'PLAYER_TRADE', 'COMPENSATION', 'INTERNAL', 'UNCLASSIFIED',
 ]);
 
 /** Kinds that are profit or loss; the rest are exchanges or internal. */
-export const PROFIT_KINDS = Object.freeze(['GAME_BOARD', 'GAME_CASINO', 'BONUS', 'COMMISSION', 'PLATFORM_COVER', 'ADJUSTMENT']);
+export const PROFIT_KINDS = Object.freeze(['GAME_BOARD', 'GAME_CASINO', 'GAME_CRICKET', 'BONUS', 'COMMISSION', 'PLATFORM_COVER', 'ADJUSTMENT']);
 
 /** How many movements one CSV export may carry. */
 export const MOVEMENTS_EXPORT_MAX = 200_000;
 
 /**
  * An operation's kind, in SQL, from the operation names the producers write:
- * `BET_<state>` (bets.core), `CASINO_<type>` (casino.core), `PROMO_CREDITED`
+ * `BET_<state>` (bets.core), `CASINO_<type>` (casino.core), `CRICKET_<type>`
+ * (cricket.js: bet, claim, win, refund), `PROMO_CREDITED`
  * (promo.js), `WINNINGS_CREDITED` (wallets.creditWinnings), `PAYOUT_<pool>` and
  * `CLAWBACK_<pool>` (bonuses.core), `TEAM_COMMISSION`, `TEAM_SELL_REFUND_COVERED`,
  * `TEAM_POOL_SALE`/`_BUYBACK`, `TEAM_BUY_PAID`, `TEAM_SELL_*` (teamPools),
@@ -72,6 +74,7 @@ export const MOVEMENTS_EXPORT_MAX = 200_000;
 export const KIND_SQL = `CASE
     WHEN operation LIKE 'BET\\_%' THEN 'GAME_BOARD'
     WHEN operation LIKE 'CASINO\\_%' THEN 'GAME_CASINO'
+    WHEN operation LIKE 'CRICKET\\_%' THEN 'GAME_CRICKET'
     WHEN operation IN ('PROMO_CREDITED', 'WINNINGS_CREDITED')
       OR operation LIKE 'PAYOUT\\_%' OR operation LIKE 'CLAWBACK\\_%' THEN 'BONUS'
     WHEN operation = 'TEAM_COMMISSION' THEN 'COMMISSION'

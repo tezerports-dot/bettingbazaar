@@ -28,6 +28,7 @@ interface TokenProfit {
 const KIND_LABEL: Record<string, string> = {
   GAME_BOARD: 'Board games (kept or paid by the house)',
   GAME_CASINO: 'Casino games',
+  GAME_CRICKET: 'Cricket opinion polls',
   BONUS: 'Bonuses given (referral, first deposit)',
   COMMISSION: 'Team commission given',
   PLATFORM_COVER: 'Sell refunds the platform covered',
