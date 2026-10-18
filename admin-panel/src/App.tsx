@@ -40,6 +40,7 @@ import ErrorLogs from './Pages/Settings/ErrorLogs';
 import { DisputeManager } from './Pages/Disputes/DisputeManager';
 import { StalledWithdrawals } from './Pages/Disputes/StalledWithdrawals';
 import { UtrMonitor } from './Pages/Utr/UtrMonitor';
+import { UsdtDeposits } from './Pages/UsdtDeposits/UsdtDeposits';
 import { AndroidAppPage } from './Pages/AndroidApp/AndroidAppPage';
 import { BlockedIpsPage } from './Pages/Security/BlockedIpsPage';
 // ── NEW FEATURE PAGES ──────────────────────────────────────────────────────
@@ -402,6 +403,12 @@ const App: React.FC = () => {
         <Route path="/payment-references" element={
           <PermRoute permission="canManageUtr">
             <Layout><UtrMonitor /></Layout>
+          </PermRoute>
+        } />
+        {/* USDT buys paid to the platform on BSC (owner, 2026-10-18). */}
+        <Route path="/usdt-deposits" element={
+          <PermRoute permission="canManageUsdtDeposits">
+            <Layout><UsdtDeposits /></Layout>
           </PermRoute>
         } />
         {/* UTR REMOVED: route /utr-monitor stripped per product decision */}

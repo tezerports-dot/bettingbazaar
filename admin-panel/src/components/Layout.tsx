@@ -13,7 +13,7 @@ import {
   MessageCircle, Shield, History, Scale, Search, Sun, Moon, Bell,
   SlidersHorizontal, Trophy, Star, Gamepad2, Bot, Share2,
   type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, Hourglass, Fingerprint,
-  Ghost, Smartphone, ShieldBan, KeyRound, Wallet, ScrollText } from 'lucide-react';
+  Ghost, Smartphone, ShieldBan, KeyRound, Wallet, ScrollText, Coins } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -74,6 +74,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/disputes',        icon: Scale,    label: 'Disputes',       title: 'Disputes',      sub: 'Payment order disputes & resolution', permission: 'canResolveDisputes' },
     { path: '/disputes/stalled-withdrawals', icon: Hourglass, label: 'Stalled Payouts', title: 'Stalled Withdrawals', sub: 'Payouts no merchant has taken, and the tokens locked behind them', permission: 'canResolveDisputes' },
     { path: '/transactions',    icon: FileText, label: 'Transactions',   title: 'Transactions',  sub: 'Ledger of deposits, withdrawals, bets & adjustments', permission: 'canViewTransactions' },
+    { path: '/usdt-deposits', icon: Coins, label: 'USDT Deposits', title: 'USDT Deposits', sub: 'USDT buys paid to the platform on BNB Smart Chain: late or overpaid money, and the sweep', permission: 'canManageUsdtDeposits' },
     { path: '/payment-references', icon: Fingerprint, label: 'Payment References', title: 'Payment References', sub: 'UTRs and chain hashes: who claimed what, and who tried to reuse one', permission: 'canManageUtr' },
     { path: '/users/balance-adjust',icon: SlidersHorizontal,label: 'Balance Adjust', title: 'Balance Adjustment', sub: 'Manual credit / debit with mandatory audit note', permission: 'canAdjustBalances' },
   ] },

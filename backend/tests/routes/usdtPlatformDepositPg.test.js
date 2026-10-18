@@ -17,7 +17,8 @@ import { creditIfCovered, watchUsdtDeposits } from '../../domains/payment/usdtDe
 import {
   BSC_USDT_CONTRACT, TRANSFER_TOPIC, addressTopic, configuredAccountKey, deriveDepositAddress,
 } from '../../domains/payment/usdtBsc.js';
-import { actor } from './_harness.js';
+import { actor, as, mountRouter } from './_harness.js';
+import usdtDepositAdminRoutes from '../../domains/payment/usdtDeposit.admin.routes.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -226,5 +227,96 @@ describePg('USDT buys paid to the platform on BSC', () => {
     expect(out.recorded).toBeGreaterThanOrEqual(1);
     expect((await getOrderRecord(order.orderId)).status).toBe('COMPLETED');
     expect(raw(1)).toBe(RAW_PER_USDT);
+  });
+
+  describe('Admin › USDT Deposits', () => {
+    const app = mountRouter(usdtDepositAdminRoutes, { prefix: '/api/admin' });
+
+    /** A buy whose order has closed, with `usdt` arrived after it closed. */
+    const latePaid = async (usdt = 100) => {
+      const { order } = await buy(await actor({}), 100);
+      await pgQuery(`UPDATE order_states SET expires_at = now() - interval '1 minute' WHERE order_id = $1`, [order.orderId]);
+      await expireOrders();
+      await pay(order.usdtAddress, usdt);
+      return order;
+    };
+
+    it('is the canManageUsdtDeposits area and nothing weaker', async () => {
+      const other = await actor({ isSubAdmin: true, permissions: { canManageUtr: true } });
+      expect((await as(app, other).get('/api/admin/usdt-deposits')).status).toBe(403);
+      const granted = await actor({ isSubAdmin: true, permissions: { canManageUsdtDeposits: true } });
+      expect((await as(app, granted).get('/api/admin/usdt-deposits')).status).toBe(200);
+    });
+
+    it('lists what needs a person, with the watcher and totals, and refuses an unknown filter', async () => {
+      const admin = await actor({ isAdmin: true });
+      const late = await latePaid();
+      const res = await as(app, admin).get('/api/admin/usdt-deposits?filter=ATTENTION&limit=200');
+      expect(res.status).toBe(200);
+      expect(res.body.filters).toEqual(['ALL', 'WAITING', 'ATTENTION', 'UNSWEPT']);
+      expect(res.body.deposits.find((d) => d.orderId === late.orderId)).toMatchObject({ attention: 'LATE', usdtReceived: 100 });
+      expect(res.body.watcher).toMatchObject({ configured: true });
+      expect(typeof res.body.totals.usdtUnswept).toBe('number');
+      const bad = await as(app, admin).get('/api/admin/usdt-deposits?filter=OPEN');
+      expect(bad.status).toBe(400);
+      expect(bad.body.code).toBe('UNKNOWN_DEPOSIT_FILTER');
+    });
+
+    it('marks late money handled once, with a note, and never on an open order', async () => {
+      const admin = await actor({ isAdmin: true });
+      const late = await latePaid(50);
+      const transfers = await as(app, admin).get(`/api/admin/usdt-deposits/${late.orderId}/transfers`);
+      expect(transfers.body.transfers).toHaveLength(1);
+      expect(transfers.body.transfers[0]).toMatchObject({ usdt: 50, handledAt: null });
+
+      expect((await as(app, admin).post(`/api/admin/usdt-deposits/${late.orderId}/handled`).send({ note: ' ' })).status).toBe(400);
+      const ok = await as(app, admin).post(`/api/admin/usdt-deposits/${late.orderId}/handled`).send({ note: 'Refunded to the sender' });
+      expect(ok.body).toMatchObject({ success: true, marked: 1 });
+      const again = await as(app, admin).post(`/api/admin/usdt-deposits/${late.orderId}/handled`).send({ note: 'Again' });
+      expect(again.status).toBe(409);
+      const list = await as(app, admin).get('/api/admin/usdt-deposits?filter=ATTENTION&limit=200');
+      expect(list.body.deposits.find((d) => d.orderId === late.orderId)).toBeUndefined();
+
+      const { order: open } = await buy(await actor({}), 100);
+      await pay(open.usdtAddress, 10);
+      expect((await as(app, admin).post(`/api/admin/usdt-deposits/${open.orderId}/handled`).send({ note: 'x' })).status).toBe(409);
+    });
+
+    it('offers an ended address with coins to the sweep, never an open one, and records each sweep once', async () => {
+      const admin = await actor({ isAdmin: true });
+      const { order: done } = await buy(await actor({}), 100);
+      await pay(done.usdtAddress, 100);
+      await creditIfCovered(done.orderId);
+      const { order: open } = await buy(await actor({}), 100);
+      await pay(open.usdtAddress, 40);
+
+      const csv = await as(app, admin).get('/api/admin/usdt-deposits/sweep.csv');
+      expect(csv.status).toBe(200);
+      expect(csv.headers['content-type']).toMatch(/text\/csv/);
+      const line = csv.text.split('\n').find((l) => l.includes(done.orderId));
+      expect(line).toContain(done.usdtAddress);
+      expect(line).toContain(String((await db.usdtDeposits.depositFor(done.orderId)).derivationIndex));
+      expect(csv.text).not.toContain(open.orderId);
+
+      expect((await as(app, admin).post(`/api/admin/usdt-deposits/${done.orderId}/sweep`).send({ txHash: '0x12' })).status).toBe(400);
+      expect((await as(app, admin).post(`/api/admin/usdt-deposits/${open.orderId}/sweep`).send({ txHash: hex64() })).status).toBe(409);
+      expect((await as(app, admin).post(`/api/admin/usdt-deposits/${done.orderId}/sweep`).send({ txHash: hex64() })).body.success).toBe(true);
+      expect((await as(app, admin).post(`/api/admin/usdt-deposits/${done.orderId}/sweep`).send({ txHash: hex64() })).status).toBe(409);
+      expect((await as(app, admin).get('/api/admin/usdt-deposits/sweep.csv')).text).not.toContain(done.orderId);
+    });
+
+    it('records the sweep tool results file line by line', async () => {
+      const admin = await actor({ isAdmin: true });
+      const a = await latePaid(100);
+      const b = await latePaid(100);
+      const res = await as(app, admin).post('/api/admin/usdt-deposits/sweeps').send({
+        results: `orderId,txHash\n${a.orderId},${hex64()}\n${b.orderId},not-a-hash\n`,
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.recorded).toBe(1);
+      expect(res.body.results.find((r) => r.orderId === b.orderId)).toMatchObject({ recorded: false });
+      expect((await db.usdtDeposits.listDeposits({ filter: 'UNSWEPT', limit: 5000 })).rows.find((r) => r.orderId === a.orderId)).toBeUndefined();
+      expect((await as(app, admin).post('/api/admin/usdt-deposits/sweeps').send({ results: '' })).status).toBe(400);
+    });
   });
 });

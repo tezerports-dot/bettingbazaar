@@ -400,3 +400,23 @@ export async function depositTotals() {
     usdtUnswept: Number(r.unswept_micro) / 1e6,
   };
 }
+
+/**
+ * What the offline sweep tool moves out (scripts/usdt-sweep.mjs): every address
+ * whose order has ended, holding coins not yet recorded as swept. An open order
+ * is left alone, so a sweep never races the credit. Oldest first.
+ */
+export async function sweepCandidates() {
+  const { rows } = await pgQuery(
+    `SELECT a.order_id, o.usdt_pay_address AS address, a.key_id, a.derivation_index, o.state,
+            COALESCE((SELECT SUM(t.amount_micro) FROM usdt_deposit_transfers t WHERE t.order_id = a.order_id), 0) AS received_micro
+       FROM usdt_deposit_addresses a JOIN order_states o ON o.order_id = a.order_id
+      WHERE a.swept_at IS NULL AND o.state NOT IN ('PENDING_QUEUE', 'PROCESSING')
+        AND EXISTS (SELECT 1 FROM usdt_deposit_transfers t WHERE t.order_id = a.order_id)
+      ORDER BY a.created_at, a.order_id`,
+    [], 'usdt_sweep_candidates');
+  return rows.map((r) => ({
+    orderId: r.order_id, address: r.address, keyId: r.key_id, derivationIndex: r.derivation_index,
+    state: r.state, usdtReceived: Number(r.received_micro) / 1e6,
+  }));
+}

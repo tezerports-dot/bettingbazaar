@@ -30,11 +30,13 @@ import { LoadingSpinner } from '../../components/LoadingSpinner';
 import type { SupervisorRail, TeamMemberView, TeamRedFlag, TeamSupervisor, TeamView } from '../../types';
 import { poolExposureLine } from '../../types';
 
-/** Mirrors SUPERVISOR_RAILS in database/repositories/teams.js (§5). */
+/**
+ * Mirrors SETTABLE_SUPERVISOR_RAILS in database/repositories/teams.js (§5). No
+ * USDT: USDT buys are paid to the platform, never to a team (owner, 2026-10-18).
+ */
 const RAILS: Array<{ value: SupervisorRail; label: string }> = [
   { value: 'CASH',     label: 'CASH — ATM cash link' },
   { value: 'UPI_BANK', label: 'UPI_BANK — UPI link or bank account' },
-  { value: 'USDT',     label: 'USDT — buy only' },
 ];
 
 const STRENGTH: Record<TeamView['strength'], { label: string; cls: string }> = {

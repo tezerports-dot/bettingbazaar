@@ -167,7 +167,7 @@ describePg('admin directory — players and merchants tables', () => {
     expect(res.body.summary).toMatchObject({ merchantId: team.supervisorId, role: 'SUPERVISOR' });
     // The choices the page's controls offer, from their owners (§32 S25).
     expect(res.body.choices.routingPriority).toEqual({ MIN: 1, MAX: 5, DEFAULT: 3 });
-    expect(res.body.choices.supervisorRails).toEqual(['CASH', 'UPI_BANK', 'USDT']);
+    expect(res.body.choices.supervisorRails).toEqual(['CASH', 'UPI_BANK']);
   });
 
   it('refuses the merchants table without the merchants area', async () => {

@@ -84,6 +84,8 @@ export const STAFF_PERMISSIONS = Object.freeze([
     description: 'The dispute queue and stalled payouts, and the decision to release or refund.' },
   { key: 'canManageUtr', group: 'payments', label: 'Payment references (UTR)',
     description: 'The UTR registry: look a reference up, flag or clear it, resolve a contested one.' },
+  { key: 'canManageUsdtDeposits', group: 'payments', label: 'USDT deposits', money: true,
+    description: 'USDT buys paid to the platform: every deposit address and what arrived, mark late or overpaid money handled, and the sweep file and its record.' },
   { key: 'canManagePaymentSystem', group: 'payments', label: 'Payment system',
     description: 'Payment gateway settings and the gateway test.' },
   { key: 'canManageBusinessPolicy', group: 'payments', label: 'Business policy', money: true,

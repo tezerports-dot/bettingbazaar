@@ -1,13 +1,11 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
- * The merchant panel's settlement-rail vocabulary — money, payout addresses and
- * who the merchant is shown.
+ * The merchant panel's settlement-rail vocabulary — money and who the merchant
+ * is shown.
  *
  * A merchant is INR-only or USDT-only, and almost every screen worded around
  * that distinction reads it from here. The functions under test decide:
  *   - how much money is displayed and in which unit,
- *   - whether a TRC-20 payout address is well-formed (mirrors the backend rule
- *     that actually gates the transfer),
  *   - and whether the merchant is shown the counterparty's name at all, which is
  *     a privacy boundary, not a formatting choice.
  * All pure functions; typed fixtures stand in for the backend payloads.
@@ -16,7 +14,7 @@ import { describe, it, expect } from 'vitest';
 import {
   RAIL, railOf, railOfOrder, isUsdt, railCopy,
   formatMoney, formatMoneyCompact, formatTokens, tokenColumn,
-  isUsdtAddress, receivingAddressFor, truncateMiddle, counterpartyOf,
+  truncateMiddle, counterpartyOf,
 } from './rail';
 import type { MerchantProfile, PaymentOrder } from '../types';
 
@@ -96,85 +94,11 @@ describe('formatTokens — a token figure is BB on either rail', () => {
 });
 
 describe('tokenColumn — the second figure beside the amount', () => {
-  it('shows the BB credit on INR', () => {
-    expect(tokenColumn(order({ tokenAmount: 500 }), RAIL.INR)).toEqual({ label: 'Credited as', value: '500 BB' });
-  });
-
-  it('shows THE ORDER’S OWN network on USDT, not a literal', () => {
-    // This asserted 'TRC-20' against an order carrying no chain at all, so it
-    // passed against a hardcoded string — every USDT order in the panel
-    // announced Tron, a BEP-20 one included, and its merchant would then be
-    // watching the wrong wallet for a payment that is not coming. §25.3: the
-    // address and its network always travel together, and a network stated
-    // from anywhere but the order is not the order's.
-    expect(tokenColumn(order({ currency: 'USDT', usdtChain: 'TRC20' } as Partial<PaymentOrder>), RAIL.USDT))
-      .toEqual({ label: 'Network', value: 'Tron (TRC-20)' });
-    expect(tokenColumn(order({ currency: 'USDT', usdtChain: 'BEP20' } as Partial<PaymentOrder>), RAIL.USDT))
-      .toEqual({ label: 'Network', value: 'BNB Smart Chain (BEP-20)' });
-  });
-
-  it('says nothing rather than guessing when an order names no chain', () => {
-    // A USDT order without a chain cannot exist — `order_states` refuses one by
-    // CHECK — so this is the malformed case, and the honest answer is a dash.
-    // Defaulting to either chain here is how the literal got in.
-    expect(tokenColumn(order({ currency: 'USDT' }), RAIL.USDT)).toEqual({ label: 'Network', value: '—' });
-  });
-});
-
-describe('isUsdtAddress — gates where a player is told to send', () => {
-  const TRON = 'TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE';
-  const BNB  = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0';
-
-  it('accepts a well-formed address on its own chain', () => {
-    // Same rules the backend enforces; mirrored only for immediate feedback.
-    expect(isUsdtAddress('TRC20', TRON)).toBe(true);
-    expect(isUsdtAddress('TRC20', `  ${TRON}  `)).toBe(true); // trimmed
-    expect(isUsdtAddress('BEP20', BNB)).toBe(true);
-    // EIP-55 mixed case is a checksum, not part of the address — refusing a
-    // lower-case one would reject the form most wallets copy.
-    expect(isUsdtAddress('BEP20', BNB.toLowerCase())).toBe(true);
-  });
-
-  it('REFUSES the other chain’s address — the mistake that loses the money', () => {
-    expect(isUsdtAddress('TRC20', BNB)).toBe(false);
-    expect(isUsdtAddress('BEP20', TRON)).toBe(false);
-  });
-
-  it('rejects a malformed one', () => {
-    expect(isUsdtAddress('TRC20', '')).toBe(false);
-    expect(isUsdtAddress('TRC20', TRON.slice(0, -1))).toBe(false);          // one short
-    expect(isUsdtAddress('TRC20', `B${TRON.slice(1)}`)).toBe(false);        // wrong prefix
-    expect(isUsdtAddress('TRC20', `TO${TRON.slice(2)}`)).toBe(false);       // base58-ambiguous O
-    expect(isUsdtAddress('BEP20', BNB.slice(2))).toBe(false);               // no 0x
-    expect(isUsdtAddress('BEP20', `${BNB}ff`)).toBe(false);                 // too long
-  });
-});
-
-describe('receivingAddressFor — which of the merchant’s addresses this order uses', () => {
-  const merchant = {
-    usdtAddressTrc20: 'TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE',
-    usdtAddressBep20: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0',
-  };
-
-  it('picks the address for the ORDER’s chain, not "the USDT address"', () => {
-    // A merchant may hold both. Showing the wrong one tells a player to send on
-    // a network where that address does not exist, and the tokens are gone.
-    expect(receivingAddressFor(merchant, 'TRC20')?.address).toBe(merchant.usdtAddressTrc20);
-    expect(receivingAddressFor(merchant, 'BEP20')?.address).toBe(merchant.usdtAddressBep20);
-  });
-
-  it('names the NETWORK alongside it, always', () => {
-    expect(receivingAddressFor(merchant, 'TRC20')?.label).toMatch(/Tron/);
-    expect(receivingAddressFor(merchant, 'BEP20')?.label).toMatch(/BNB/);
-  });
-
-  it('returns nothing when the merchant holds no address on that chain', () => {
-    // Rendering a blank as a destination is how somebody sends to an empty
-    // string. Absent means absent.
-    expect(receivingAddressFor({ usdtAddressTrc20: merchant.usdtAddressTrc20 }, 'BEP20')).toBeNull();
-    expect(receivingAddressFor(merchant, null)).toBeNull();
-    expect(receivingAddressFor(merchant, 'SOLANA')).toBeNull();
-    expect(receivingAddressFor(null, 'TRC20')).toBeNull();
+  it('shows the BB credit, on either rail', () => {
+    expect(tokenColumn(order({ tokenAmount: 500 }))).toEqual({ label: 'Credited as', value: '500 BB' });
+    // A USDT order's chain is not sent to a merchant: the platform receives it
+    // (owner, 2026-10-18), so the panel has no network to state.
+    expect(tokenColumn(order({ currency: 'USDT', tokenAmount: 9000 }))).toEqual({ label: 'Credited as', value: '9,000 BB' });
   });
 });
 
@@ -211,9 +135,11 @@ describe('railCopy — every rail-dependent string in one place', () => {
   it('gives INR and USDT distinct, complete copy', () => {
     const inr = railCopy('INR'); const usdt = railCopy('USDT');
     expect(inr.proofLabel).toBe('UTR');
-    expect(usdt.proofLabel).toBe('Tx ID');
+    expect(usdt.proofLabel).toBe('Tx hash');
     expect(inr.credentialsLabel).toBe('Bank account');
-    expect(usdt.credentialsLabel).toBe('TRC-20 wallet');
+    // A merchant on the old USDT rail serves nothing and holds no address.
+    expect(usdt.credentialsLabel).toMatch(/no orders/);
+    expect(usdt.credentialsLabel).not.toMatch(/TRC|BEP|wallet/);
     // No field is left blank except the INR network note (there is no network).
     for (const [k, v] of Object.entries(usdt)) expect(v, `USDT.${k}`).toBeTruthy();
   });

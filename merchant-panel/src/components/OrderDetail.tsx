@@ -8,7 +8,7 @@ import React from 'react';
 import { ArrowDownLeft, ArrowUpRight, Check, QrCode, ShieldCheck, X } from 'lucide-react';
 import { OrderStatus, type MerchantProfile, type PaymentAccount, type PaymentOrder } from '../types';
 import { mayWorkOrder } from '../utils/actor';
-import { counterpartyOf, formatMoney, railCopy, railOf, receivingAddressFor, tokenColumn } from '../utils/rail';
+import { counterpartyOf, formatMoney, railCopy, railOf, tokenColumn } from '../utils/rail';
 import { formatCountdown, secondsLeft, URGENT_SECONDS } from '../hooks/useCountdown';
 import { Banner, Button, CopyInline, Panel, StatusPill } from './ui';
 import { accountNamed, viewOnlyReason, type OrderActions } from './OrderRow';
@@ -35,7 +35,7 @@ export const OrderDetail: React.FC<{
   const isDeposit = order.type === 'DEPOSIT';
   const accent = isDeposit ? 'var(--dep)' : 'var(--wd)';
   const accentBg = isDeposit ? 'var(--dep-bg)' : 'var(--wd-bg)';
-  const token = tokenColumn(order, rail);
+  const token = tokenColumn(order);
   const counterparty = counterpartyOf(order);
 
   const remaining = secondsLeft(order.expiresAt, now);
@@ -84,12 +84,9 @@ export const OrderDetail: React.FC<{
     }
   } else if (isDeposit) {
     if (rail === 'USDT') {
-      // The network comes from the ORDER, not from a constant. The player chose
-      // it, and a merchant watching the wrong explorer sees no payment and
-      // concludes they were not paid.
-      const receiving = receivingAddressFor(merchant, order.usdtChain);
-      if (receiving) paymentRows.push({ label: 'Your USDT address', value: receiving.address });
-      paymentRows.push({ label: 'Network', value: receiving?.label ?? 'Not set for this network' });
+      // A USDT buy is paid to an address the platform made for the order and is
+      // credited by itself (owner, 2026-10-18); no merchant receives it.
+      paymentRows.push({ label: 'Paid to', value: 'The platform, not you' });
     } else if (order.paymentMode === 'CASH_ATM') {
       // Paid to the cash machine this member scans (Step 2d), never to them.
       paymentRows.push({ label: 'Cash machine QR', value: order.cashLink ? 'Scanned — the player can pay it' : 'Not scanned yet' });
@@ -105,8 +102,6 @@ export const OrderDetail: React.FC<{
       if (ifsc) paymentRows.push({ label: 'IFSC', value: ifsc });
       if (bankName) paymentRows.push({ label: 'Bank', value: bankName });
     }
-  } else if (rail === 'USDT') {
-    paymentRows.push({ label: 'Network', value: 'TRC-20' });
   } else {
     const bank = order.userBankDetails;
     if (bank?.accountHolderName) paymentRows.push({ label: 'Holder', value: bank.accountHolderName });
@@ -116,7 +111,7 @@ export const OrderDetail: React.FC<{
   }
 
   const paySectionLabel = isDeposit
-    ? (rail === 'USDT' ? 'Deposit address — user sends here'
+    ? (rail === 'USDT' ? 'Payment — paid to the platform'
       : order.paymentMode === 'CASH_ATM' ? 'Payment — user pays the cash machine'
       : 'Payment — user transfers to your account')
     : copy.payoutDestinationLabel;
@@ -291,11 +286,6 @@ export const OrderDetail: React.FC<{
                 style={{ width: '100%', borderRadius: 12, border: '1px solid var(--border)', display: 'block' }}
               />
             </a>
-          )}
-          {rail === 'USDT' && (
-            <Banner tone="dep" icon={<ShieldCheck size={18} style={{ color: 'var(--dep)', flexShrink: 0, marginTop: 1 }} />}>
-              On-chain transfer — verify this hash on a Tron explorer before releasing.
-            </Banner>
           )}
         </div>
       )}

@@ -1216,6 +1216,51 @@ export const chat = {
   },
 };
 
+// ─── USDT DEPOSITS ─────────────────────────────────────────────────────────
+// USDT buys paid to the platform on BNB Smart Chain (`canManageUsdtDeposits`;
+// backend/domains/payment/usdtDeposit.admin.routes.js). The shapes mirror
+// `toDeposit`, `transfersFor`, `depositTotals` (database/repositories/
+// usdtDeposits.js) and `watcherStatus` (usdtDeposit.service.js) (§5).
+export interface UsdtDeposit {
+  orderId: string; userId: string; username: string | null;
+  address: string; derivationIndex: number; keyId: string;
+  state: string; createdAt: string; expiresAt: string | null; creditedAt: string | null;
+  usdtRequired: number; usdtReceived: number; tokens: number; transfers: number; lastSeenAt: string | null;
+  attention: 'LATE' | 'OVERPAID' | 'AFTER_CREDIT' | null;
+  sweptAt: string | null; sweptTxHash: string | null; sweptBy: string | null;
+}
+export interface UsdtTransfer {
+  txHash: string; logIndex: number; from: string; usdt: number; blockNumber: number;
+  orderStateAtArrival: string; seenAt: string;
+  handledAt: string | null; handledBy: string | null; handledNote: string | null;
+}
+export interface UsdtDepositTotals {
+  waiting: number; credited: number; creditedTokens: number; usdtReceived: number; usdtUnswept: number;
+}
+export interface UsdtWatcherStatus {
+  configured: boolean; nextBlock: number | null; headBlock: number | null;
+  lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null;
+}
+export interface UsdtDepositsResponse {
+  success: boolean; filters: string[]; filter: string; total: number; page: number; pages: number;
+  deposits: UsdtDeposit[]; totals: UsdtDepositTotals; watcher: UsdtWatcherStatus;
+}
+export const usdtDeposits = {
+  list: async (filter: string, page = 1, limit = 50) =>
+    (await api.get<UsdtDepositsResponse>('/api/admin/usdt-deposits', { params: { filter, page, limit } })).data,
+  transfers: async (orderId: string) =>
+    (await api.get<{ success: boolean; transfers: UsdtTransfer[] }>(`/api/admin/usdt-deposits/${encodeURIComponent(orderId)}/transfers`)).data,
+  markHandled: async (orderId: string, note: string) =>
+    (await api.post<{ success: boolean; marked: number }>(`/api/admin/usdt-deposits/${encodeURIComponent(orderId)}/handled`, { note })).data,
+  recordSweep: async (orderId: string, txHash: string) =>
+    (await api.post<{ success: boolean }>(`/api/admin/usdt-deposits/${encodeURIComponent(orderId)}/sweep`, { txHash })).data,
+  /** The sweep tool's results file, pasted whole. */
+  recordSweeps: async (results: string) =>
+    (await api.post<{ success: boolean; recorded: number; results: Array<{ orderId: string; recorded: boolean; reason: string | null }> }>(
+      '/api/admin/usdt-deposits/sweeps', { results })).data,
+  downloadSweepFile: () => downloadCsv('/api/admin/usdt-deposits/sweep.csv', {}, 'usdt-sweep.csv'),
+};
+
 export default {
   auth,
   analytics,
@@ -1238,6 +1283,7 @@ export default {
   system,
   disputes,
   utr,
+  usdtDeposits,
   errorReports,
   appAssets,
   orderActions,

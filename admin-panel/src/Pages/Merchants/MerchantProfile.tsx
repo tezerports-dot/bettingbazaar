@@ -131,9 +131,11 @@ export const MerchantProfile: React.FC = () => {
   const resume = async () => {
     if (await run('resume', () => api.merchants.resumeAssignment(id), 'Assignment resumed', 'Failed to resume assignment')) setResumeChecked(false);
   };
-  const saveRail = (next: 'INR' | 'USDT') => run('rail',
-    () => api.put(`/api/admin/merchants/${id}/capabilities`, { merchantType: next }).then((r) => r.data),
-    next === 'USDT' ? 'Now a USDT merchant. Existing bank details were cleared.' : 'Now an INR merchant. The USDT addresses were cleared.',
+  // Only ever back to INR: no merchant is put on USDT any more, since USDT buys
+  // are paid to the platform (owner, 2026-10-18; the route refuses it).
+  const moveToInr = () => run('rail',
+    () => api.put(`/api/admin/merchants/${id}/capabilities`, { merchantType: 'INR' }).then((r) => r.data),
+    'Now an INR merchant. They add their bank account in their panel.',
     'Failed to change the payment details');
 
   return (
@@ -229,18 +231,13 @@ export const MerchantProfile: React.FC = () => {
           </Section>
         )}
 
-        <Section title="Payment details" sub="Which details this merchant keeps: a bank account, or USDT wallet addresses, never both. Switching clears the old ones; the merchant re-enters them in their panel. Which orders they are offered is decided by their team's rail.">
-          <div className="grid grid-cols-2 gap-2" role="group" aria-label="Payment details">
-            {(['INR', 'USDT'] as const).map((option) => (
-              <button key={option} type="button" disabled={!!busy || rail === option} aria-pressed={rail === option}
-                onClick={() => void saveRail(option)}
-                className={`py-2 rounded-lg text-sm font-medium border transition-colors disabled:cursor-default ${
-                  rail === option ? 'bg-gold-500/15 border-gold-500/60 text-gold-300' : 'bg-dark-800 border-dark-600 text-gray-400 hover:text-gray-200'}`}>
-                {option === 'INR' ? 'INR · bank account' : 'USDT · wallet addresses'}
-              </button>
-            ))}
-          </div>
-        </Section>
+        {rail === 'USDT' && (
+          <Section title="Payment details" sub="This merchant is still on USDT, which no longer takes orders: USDT buys are paid to the platform directly. Move them to INR to give them work; they then add their bank account in their panel.">
+            <button type="button" className="btn-primary disabled:opacity-50" disabled={!!busy} onClick={() => void moveToInr()}>
+              {busy === 'rail' ? 'Moving…' : 'Move to INR · bank account'}
+            </button>
+          </Section>
+        )}
 
         {canTeams && choices && (role === 'SUPERVISOR' || role === 'UNASSIGNED') && (
           <Section title="Supervisor role" sub="A supervisor runs agent teams on one rail and takes no orders themselves. An agent in a team, or a merchant account, cannot be one.">

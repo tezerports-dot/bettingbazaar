@@ -1,7 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 /**
- * Settlement rail. A merchant is INR-only (bank account) or USDT-only (TRC-20) —
+ * Settlement rail. A merchant is INR-only (bank account) or, on a row from before
+ * USDT buys went to the platform (owner, 2026-10-18), USDT —
  * never both. Mirrors the backend enum on Merchant.acceptedCurrencies and
  * PaymentOrder.currency (backend/domains/merchant/merchantCurrency.js,
  * MERCHANT_CURRENCIES). GOVERNANCE §4: this is the panel's only declaration of
@@ -102,10 +103,6 @@ export interface PaymentOrder {
   // 2d); null until they scan. Sent by merchantOrderView.js.
   cashLink?: string | null;
   cashLinkAt?: string | null;
-  // On a USDT order, the chain the PLAYER chose to send on. The merchant has to
-  // watch the right network — a payment on BNB Smart Chain never appears in a
-  // Tron explorer — and it decides which of their addresses is shown.
-  usdtChain?: 'TRC20' | 'BEP20';
   
   // Token and pricing (REAL from backend)
   tokenAmount: number;
@@ -197,13 +194,6 @@ export interface MerchantProfile {
   // GET /api/merchant/profile surfaces both the array and this scalar.
   merchantType?: MerchantRail;
   acceptedCurrencies?: MerchantRail[];
-  // One address PER CHAIN. They are separate networks — USDT sent to a Tron
-  // address from a BEP-20 wallet is gone — so a merchant holds an address for
-  // each chain they will be paid on, and receives orders only on those.
-  usdtAddressTrc20?: string;
-  usdtAddressBep20?: string;
-  /** Which chains this merchant can actually be paid on. Derived by the server. */
-  usdtChains?: ('TRC20' | 'BEP20')[];
   
   // Preferences (REAL from backend)
   acceptsDeposits?: boolean;
@@ -420,6 +410,8 @@ export interface Settlement {
 // ── Supervisors and teams (redesign Step 2a) ─────────────────────────────────
 // Mirrors database/repositories/teams.js (`toTeam`, `toMember`) and the
 // GET /api/merchant/team response — §5: change them together.
+// USDT only on a team from before USDT buys went to the platform (owner,
+// 2026-10-18); no new one can be made and it serves no order.
 export type SupervisorRail = 'CASH' | 'UPI_BANK' | 'USDT';
 export interface Team {
   teamId: string; supervisorId: string; supervisorName: string; supervisorRef: string;

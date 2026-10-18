@@ -345,7 +345,7 @@ router.get('/merchants/:merchantId/profile', authenticate, hasPermission('canMan
       // supervisor can run.
       choices: {
         routingPriority: db.merchants.ROUTING_PRIORITY,
-        supervisorRails: db.teams.SUPERVISOR_RAILS,
+        supervisorRails: db.teams.SETTABLE_SUPERVISOR_RAILS,
       },
     });
   } catch (error) {

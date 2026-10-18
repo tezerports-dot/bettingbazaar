@@ -2,7 +2,8 @@
 //
 // Settlement-rail vocabulary for the merchant panel.
 //
-// A merchant is INR-only (bank account) or USDT-only (TRC-20) — never both. The
+// A merchant is INR-only (bank account) or, on a row from before USDT buys went
+// to the platform (owner, 2026-10-18), USDT — never both. The
 // backend authority is `Merchant.acceptedCurrencies`, which holds exactly one
 // entry, surfaced on the profile payload as `merchantType`
 // (backend/domains/merchant/merchantCurrency.js). This module is the mirror
@@ -54,13 +55,6 @@ interface RailCopy {
 // their team's pool does (PROJECT_STATUS §3.10), and the server sends no
 // balance for a merchant. Deleted with the tiles that rendered them.
 
-// `networkNote` was declared here and set on both rails — 'TRC-20 network' on
-// the USDT one — and READ BY NOTHING. A constant with no consumer is §3, and
-// this one was also wrong: a merchant serving a BEP-20 order would have been
-// told Tron by it. Deleted rather than corrected, because the chain belongs to
-// the ORDER (`tokenColumn` reads `order.usdtChain`) and a rail-level copy
-// string cannot know it.
-
 
 const COPY: Record<MerchantRail, RailCopy> = {
   INR: {
@@ -74,10 +68,12 @@ const COPY: Record<MerchantRail, RailCopy> = {
   USDT: {
     unit: 'USDT',
     name: 'USDT',
-    credentialsLabel: 'TRC-20 wallet',
-    proofLabel: 'Tx ID',
+    // USDT buys are paid to the platform and credited by themselves (CLAUDE.md
+    // §25); a merchant on this rail serves nothing and holds no address.
+    credentialsLabel: 'no orders (USDT retired)',
+    proofLabel: 'Tx hash',
     proofSectionLabel: 'On-chain proof',
-    payoutDestinationLabel: 'Send USDT to user address',
+    payoutDestinationLabel: 'No USDT sell rail',
   },
 };
 
@@ -121,9 +117,7 @@ export function formatMoneyCompact(amount: number | undefined | null, rail: Merc
  *
  * ── The unit does not change with the rail. The rail is not the unit ───────
  * Every token count on this platform is BB tokens, whether the order settled in
- * rupees or in USDT. On a USDT buy the player sends USDT straight to the
- * member's own address — off-platform, between two people — and the platform's
- * side of it is only the token movement (from the team's pool). So a figure
+ * rupees or in USDT. So a figure
  * counted in tokens is rendered in BB on both rails, never with the rail's
  * currency suffix: "900,000 USDT" for 900,000 tokens at ₹90 per USDT is a
  * ninety-fold overstatement, CLAUDE.md trap 15 in the line a human reads.
@@ -134,66 +128,15 @@ export function formatTokens(amount: number | undefined | null): string {
 }
 
 /**
- * The BB token figure shown beside the money amount. On the INR rail tokens are
- * 1:1 with rupees (fixed since 2026-07-08) and worth stating; on the USDT rail
- * the second column shows the network instead, since the token count is not the
- * useful number there.
+ * The BB token figure shown beside the money amount. Tokens are 1:1 with rupees
+ * (fixed since 2026-07-08). A USDT order's chain is not sent to a merchant: the
+ * platform, not a member, receives it (CLAUDE.md §25).
  */
-export function tokenColumn(order: PaymentOrder, rail: MerchantRail): { label: string; value: string } {
-  if (rail === RAIL.USDT) {
-    // THE ORDER'S OWN CHAIN. This was the literal 'TRC-20', so every USDT order
-    // in the panel announced Tron — including a BEP-20 order, whose merchant
-    // would then be watching the wrong wallet for a payment that is not coming.
-    // `CLAUDE.md` §25.3: the address and its network always travel together,
-    // and a network stated from anywhere but the order is not the order's.
-    const chain = (order as { usdtChain?: string }).usdtChain as UsdtChain | undefined;
-    return { label: 'Network', value: chain ? USDT_CHAIN_INFO[chain]?.label ?? chain : '—' };
-  }
+export function tokenColumn(order: PaymentOrder): { label: string; value: string } {
   return {
     label: 'Credited as',
     value: `${(Number(order.tokenAmount) || 0).toLocaleString('en-IN')} BB`,
   };
-}
-
-/**
- * The chains USDT is served on, and how to recognise an address on each.
- *
- * The same rules the backend enforces (backend/domains/merchant/
- * merchantCurrency.js). Mirrored here ONLY to give immediate feedback in the
- * address form; the backend remains the authority and rejects anything
- * malformed regardless of what this panel allows.
- *
- * Two chains and not one, because they are separate networks: USDT sent to a
- * Tron address from a BEP-20 wallet is gone. A merchant holds an address for
- * each chain they are willing to be paid on, and receives orders only on those.
- */
-export const USDT_CHAINS = ['TRC20', 'BEP20'] as const;
-export type UsdtChain = typeof USDT_CHAINS[number];
-
-export const USDT_CHAIN_INFO: Record<UsdtChain, {
-  label: string; field: 'usdtAddressTrc20' | 'usdtAddressBep20'; pattern: RegExp; hint: string;
-}> = {
-  // Base58 excludes 0, O, I and l so visually similar characters cannot be
-  // confused. Case-SENSITIVE: base58 case is part of the address.
-  TRC20: {
-    label: 'Tron (TRC-20)',
-    field: 'usdtAddressTrc20',
-    pattern: /^T[1-9A-HJ-NP-Za-km-z]{33}$/,
-    hint: '34 characters starting with “T”',
-  },
-  // An ordinary EVM address. Case is NOT checked — EIP-55 mixed case is a
-  // checksum, and refusing a lower-case one would reject the form most wallets
-  // copy.
-  BEP20: {
-    label: 'BNB Smart Chain (BEP-20)',
-    field: 'usdtAddressBep20',
-    pattern: /^0x[0-9a-fA-F]{40}$/,
-    hint: '“0x” followed by 40 hexadecimal characters',
-  },
-};
-
-export function isUsdtAddress(chain: UsdtChain, value: string): boolean {
-  return USDT_CHAIN_INFO[chain]?.pattern.test((value || '').trim()) ?? false;
 }
 
 /** Middle-ellipsis for long addresses and hashes that must stay recognisable. */
@@ -225,20 +168,3 @@ export function counterpartyOf(order: PaymentOrder): { name: string; identified:
   return { name: reference ? `Order ${reference}` : 'Order', identified: false };
 }
 
-
-/**
- * The merchant's own receiving address for ONE order.
- *
- * Keyed on the order's chain, not on "the merchant's USDT address" — there is
- * no such single thing any more. A merchant may hold both, and showing the
- * wrong one tells a player to send on a network the address does not exist on.
- */
-export function receivingAddressFor(
-  merchant: { usdtAddressTrc20?: string; usdtAddressBep20?: string } | null | undefined,
-  chain: string | null | undefined,
-): { address: string; label: string } | null {
-  const info = USDT_CHAIN_INFO[chain as UsdtChain];
-  if (!info) return null;
-  const address = (merchant?.[info.field] || '').trim();
-  return address ? { address, label: info.label } : null;
-}

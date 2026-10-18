@@ -28,6 +28,7 @@ export const PERMISSION_KEYS = [
   'canManageCommission',
   'canResolveDisputes',
   'canManageUtr',
+  'canManageUsdtDeposits',
   'canManagePaymentSystem',
   'canManageBusinessPolicy',
   'canManageGames',
