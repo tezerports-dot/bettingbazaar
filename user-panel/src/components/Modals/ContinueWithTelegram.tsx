@@ -31,14 +31,28 @@
  * (`telegram.appUrl`, `tg://resolve`), so Telegram opens at once instead of a
  * browser tab at t.me's "Open in Telegram" page first. If this page is still
  * in front a moment later (no Telegram on the phone), the https link opens
- * instead (`openTelegram`). A laptop keeps the https link and the QR.
+ * instead (`openTelegram`). A laptop also goes to `tg://` first, which opens
+ * Telegram Desktop where it is installed, instead of a t.me tab whose page
+ * then asks to open it; the window losing focus to Telegram counts as taken
+ * over, and with nothing installed a pressed button opens the https link. The
+ * QR stays.
+ *
+ * ── One tap, not two ───────────────────────────────────────────────────────
+ * The captcha is solved while the button is on screen (`warmCaptchaToken`),
+ * so the tap waits only for the server. When the step comes back Telegram is
+ * opened straight away (`opensAtOnce`): on a HANDOFF, and on a laptop, where
+ * the number stays in view beside Telegram. A MATCH on a phone or tablet keeps
+ * its "Open Telegram" button: Telegram would cover the number to choose. The
+ * request is bounded (TELEGRAM_START_TIMEOUT_MS, realBackend.ts), so the
+ * button never spins for minutes.
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useGame } from '../../services/GameContext';
 import { useTelegramPoll } from '../../hooks/useTelegramPoll';
 import { storedReferralCode } from '../../services/referralCapture';
 import { isNativeShell } from '../../services/nativeLifecycle';
 import { qrPath } from '../PayLinkQr';
+import { warmCaptchaToken } from '../../services/captcha';
 import type { SignInStep, TelegramDelivery } from '../../services/backend.interface';
 
 type Waiting = Extract<SignInStep, { kind: 'telegram' }>;
@@ -67,20 +81,47 @@ function touchScreen(): boolean {
 
 /**
  * Open Telegram at `appUrl`, falling back to `url` when nothing took over:
- * the page is still visible after APP_LINK_FALLBACK_MS. Leaving for Telegram
- * hides the page, which cancels the fallback.
+ * the page is still visible and focused after APP_LINK_FALLBACK_MS. Leaving
+ * for Telegram hides the page (a phone) or takes the window's focus (a laptop,
+ * where Telegram Desktop or the browser's "Open Telegram?" prompt comes to the
+ * front), which cancels the fallback.
  */
-export function openTelegram(appUrl: string, url: string): void {
+export function openTelegram(appUrl: string, url: string, { fallback = true } = {}): void {
+  if (!fallback) { window.location.href = appUrl; return; }
   let left = false;
   const onHide = () => { if (document.visibilityState === 'hidden') left = true; };
+  const onBlur = () => { left = true; };
   document.addEventListener('visibilitychange', onHide);
   window.addEventListener('pagehide', onHide);
+  window.addEventListener('blur', onBlur);
   window.setTimeout(() => {
     document.removeEventListener('visibilitychange', onHide);
     window.removeEventListener('pagehide', onHide);
+    window.removeEventListener('blur', onBlur);
     if (!left && document.visibilityState === 'visible') window.open(url, '_blank', 'noopener,noreferrer');
   }, APP_LINK_FALLBACK_MS);
   window.location.href = appUrl;
+}
+
+/**
+ * Whether Telegram is opened as soon as the step arrives, without a second tap:
+ * a HANDOFF (no number to read), or a MATCH on a laptop, where Telegram opens
+ * beside the page and the number stays in view. A MATCH on a touch screen waits
+ * for "Open Telegram", so the number is read first.
+ */
+export function opensAtOnce(delivery: TelegramDelivery | undefined, touch = touchScreen()): boolean {
+  return delivery === 'HANDOFF' || (delivery === 'MATCH' && !touch);
+}
+
+/**
+ * Open the step's Telegram link the fastest way this device allows. Opened on
+ * its own (`auto`) on a laptop, only the app address is tried: a laptop with no
+ * Telegram Desktop scans the QR, and a t.me tab would take it out of view.
+ */
+function openStep(telegram: Waiting['telegram'], { auto = false } = {}): void {
+  if (!telegram?.url) return;
+  if (telegram.appUrl) openTelegram(telegram.appUrl, telegram.url, { fallback: !auto || touchScreen() });
+  else if (!auto) window.open(telegram.url, '_blank', 'noopener,noreferrer');
 }
 
 const NOTE: React.CSSProperties = { margin: 0, fontSize: 12, color: 'var(--text2)', lineHeight: 1.6, textAlign: 'center' };
@@ -111,6 +152,10 @@ const ContinueWithTelegram: React.FC<Props> = ({ onDone }) => {
   const [error, setError] = useState('');
   const [handedOff, setHandedOff] = useState('');
 
+  // Solve the captcha while the button is on screen, and again after a failed
+  // try (its token was spent), so the tap waits only for the server.
+  useEffect(() => { if (!waiting) warmCaptchaToken(); }, [waiting, error]);
+
   const start = async () => {
     if (busy) return;
     setBusy(true); setError(''); setHandedOff('');
@@ -118,7 +163,10 @@ const ContinueWithTelegram: React.FC<Props> = ({ onDone }) => {
       const step = await signInWithTelegram({
         delivery: deliveryHere(), referralCode: storedReferralCode() || undefined,
       });
-      if (step.kind === 'telegram') setWaiting(step);
+      if (step.kind === 'telegram') {
+        setWaiting(step);
+        if (opensAtOnce(step.delivery)) openStep(step.telegram, { auto: true });
+      }
       else if (step.kind === 'unavailable') setError(step.message);
       else onDone();
     } catch (err) {
@@ -170,10 +218,9 @@ const ContinueWithTelegram: React.FC<Props> = ({ onDone }) => {
           {waiting.telegram?.url && (
             <a href={waiting.telegram.url} target="_blank" rel="noopener noreferrer" style={BUTTON}
               onClick={(e) => {
-                const appUrl = waiting.telegram?.appUrl;
-                if (!appUrl || !touchScreen()) return; // a laptop: the https link as it is
+                if (!waiting.telegram?.appUrl) return; // no app address: the https link as it is
                 e.preventDefault();
-                openTelegram(appUrl, waiting.telegram!.url);
+                openStep(waiting.telegram);
               }}>
               Open Telegram{waiting.telegram.botUsername ? ` (@${waiting.telegram.botUsername.replace(/^@/, '')})` : ''}
             </a>

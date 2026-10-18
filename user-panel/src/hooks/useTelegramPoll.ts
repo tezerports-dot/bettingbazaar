@@ -48,7 +48,16 @@ export function useTelegramPoll(
       } finally { busy.current = false; }
     };
     const id = window.setInterval(tick, TELEGRAM_POLL_MS);
-    return () => { stopped = true; window.clearInterval(id); };
+    // Back from Telegram after Verify: ask at once rather than at the next
+    // tick, so the sign-in lands the moment the page is in front again.
+    const onBack = () => { if (document.visibilityState === 'visible') void tick(); };
+    document.addEventListener('visibilitychange', onBack);
+    window.addEventListener('focus', onBack);
+    return () => {
+      stopped = true; window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onBack);
+      window.removeEventListener('focus', onBack);
+    };
   }, [poll]);
 }
 

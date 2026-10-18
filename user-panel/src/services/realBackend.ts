@@ -200,6 +200,16 @@ class SSEEventBridge extends EventTarget {
  * A sign-in refused for its captcha says WHY the browser had no token (the
  * Cloudflare code), so the player, or whoever runs the site, can act on it.
  */
+/** How long "Continue with Telegram" waits for the server before saying so. */
+export const TELEGRAM_START_TIMEOUT_MS = 15_000;
+
+/** A signal that aborts after `ms` (AbortSignal.timeout, which older WebViews lack, by hand). */
+function timeoutSignal(ms: number): AbortSignal {
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(new DOMException('The request timed out.', 'TimeoutError')), ms);
+  return controller.signal;
+}
+
 function explainCaptcha(err: unknown): never {
   const why = captchaFailure();
   if (why && (err as { code?: string })?.code === 'CAPTCHA_REQUIRED') (err as Error).message = why;
@@ -353,10 +363,19 @@ export class RealBackend implements Backend {
     // when it is the site's own address, else MATCH (`deliveryFor`), so an app
     // left on a retired address is never waiting for a session sent elsewhere.
     const returnOrigin = returnOriginHere();
+    // Bounded: a request that hangs must end in a sentence the player can act
+    // on, not a button that spins for minutes.
     const res = await this.request<{ challengeToken?: string; telegram?: TelegramBlock; message?: string;
       delivery?: TelegramDelivery; matchNumber?: number | null }>(
-      '/v1/auth/login/telegram', { method: 'POST', body: JSON.stringify({ ...opts, returnOrigin, captchaToken }) })
-      .catch(explainCaptcha);
+      '/v1/auth/login/telegram', { method: 'POST', body: JSON.stringify({ ...opts, returnOrigin, captchaToken }),
+        signal: timeoutSignal(TELEGRAM_START_TIMEOUT_MS) })
+      .catch((err: unknown) => {
+        const name = (err as { name?: string })?.name;
+        if (name === 'TimeoutError' || name === 'AbortError') {
+          throw new Error('The server took too long to answer. Check your connection and press Continue with Telegram again.');
+        }
+        return explainCaptcha(err);
+      });
     if (!res.challengeToken) {
       return { kind: 'unavailable', message: res.message || 'Telegram sign-in is not available right now.' };
     }

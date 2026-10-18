@@ -17,8 +17,10 @@ let stored: string | null = null;
 vi.mock('../../services/referralCapture', () => ({ storedReferralCode: () => stored }));
 let native = false;
 vi.mock('../../services/nativeLifecycle', () => ({ isNativeShell: () => native }));
+const warmCaptchaToken = vi.fn();
+vi.mock('../../services/captcha', () => ({ warmCaptchaToken: () => warmCaptchaToken() }));
 
-const { default: ContinueWithTelegram, deliveryHere, openTelegram, APP_LINK_FALLBACK_MS } = await import('./ContinueWithTelegram');
+const { default: ContinueWithTelegram, deliveryHere, openTelegram, opensAtOnce, APP_LINK_FALLBACK_MS } = await import('./ContinueWithTelegram');
 
 const STEP = (delivery: 'MATCH' | 'HANDOFF', matchNumber: number | null) => ({
   kind: 'telegram', challengeToken: 'chal-1', delivery, matchNumber,
@@ -29,7 +31,7 @@ const ua = navigator.userAgent;
 const setUa = (v: string) => Object.defineProperty(window.navigator, 'userAgent', { value: v, configurable: true });
 
 beforeEach(() => {
-  signInWithTelegram.mockReset(); pollTelegramStep.mockReset();
+  signInWithTelegram.mockReset(); pollTelegramStep.mockReset(); warmCaptchaToken.mockReset();
   stored = null; native = false; setUa(ua);
 });
 afterEach(() => { vi.useRealTimers(); setUa(ua); });
@@ -77,6 +79,15 @@ describe('Continue with Telegram', () => {
     expect(onDone).not.toHaveBeenCalled();
   });
 
+  it('solves the captcha while the button is on screen, and again after a failed try', async () => {
+    signInWithTelegram.mockRejectedValue(new Error('Please complete the verification challenge and try again.'));
+    render(<ContinueWithTelegram onDone={vi.fn()} />);
+    expect(warmCaptchaToken).toHaveBeenCalledTimes(1);
+    await act(async () => { await userEvent.click(screen.getByRole('button', { name: /continue with telegram/i })); });
+    await screen.findByRole('alert');
+    expect(warmCaptchaToken).toHaveBeenCalledTimes(2);
+  });
+
   it('shows a refusal as the server words it', async () => {
     signInWithTelegram.mockRejectedValue(new Error('Telegram verification is not available right now. Please try again later.'));
     render(<ContinueWithTelegram onDone={vi.fn()} />);
@@ -105,6 +116,21 @@ describe('opening the Telegram app', () => {
     vi.restoreAllMocks();
   });
 
+  it('a laptop: the window losing focus to Telegram Desktop cancels the https fallback', () => {
+    openTelegram(APP, WEB);
+    expect(href).toBe(APP);
+    window.dispatchEvent(new Event('blur'));
+    vi.advanceTimersByTime(APP_LINK_FALLBACK_MS);
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it('without a fallback goes to the app address only', () => {
+    openTelegram(APP, WEB, { fallback: false });
+    expect(href).toBe(APP);
+    vi.advanceTimersByTime(APP_LINK_FALLBACK_MS * 2);
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
   it('goes to the app address, and opens nothing else once Telegram has taken over', () => {
     openTelegram(APP, WEB);
     expect(href).toBe(APP);
@@ -120,5 +146,59 @@ describe('opening the Telegram app', () => {
     expect(window.open).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
     expect(window.open).toHaveBeenCalledWith(WEB, '_blank', 'noopener,noreferrer');
+  });
+});
+
+describe('one tap opens Telegram', () => {
+  it('opens at once on a HANDOFF and on a laptop, but waits on a phone that must read its number first', () => {
+    expect(opensAtOnce('HANDOFF', true)).toBe(true);
+    expect(opensAtOnce('HANDOFF', false)).toBe(true);
+    expect(opensAtOnce('MATCH', false)).toBe(true);
+    expect(opensAtOnce('MATCH', true)).toBe(false);
+    expect(opensAtOnce(undefined, false)).toBe(false);
+  });
+
+  const APP = 'tg://resolve?domain=bb_bot&startapp=cabc';
+  const realLocation = window.location;
+  let href = '';
+  beforeEach(() => {
+    href = '';
+    Object.defineProperty(window, 'location', { configurable: true, value: { set href(v: string) { href = v; }, get href() { return href; }, origin: realLocation.origin } });
+    vi.spyOn(window, 'open').mockImplementation(() => null);
+  });
+  afterEach(() => {
+    Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+    vi.restoreAllMocks();
+  });
+
+  it('a laptop: the one press opens the Telegram app, with no t.me tab and the number and QR still shown', async () => {
+    setUa('Mozilla/5.0 (Windows NT 10.0) Chrome/130');
+    const step = STEP('MATCH', 47);
+    signInWithTelegram.mockResolvedValue({ ...step, telegram: { ...step.telegram, appUrl: APP } });
+    pollTelegramStep.mockResolvedValue('pending');
+    render(<ContinueWithTelegram onDone={vi.fn()} />);
+    await userEvent.click(screen.getByRole('button', { name: /continue with telegram/i }));
+    expect((await screen.findByTestId('match-number')).textContent).toBe('47');
+    expect(href).toBe(APP);
+    expect(screen.getByRole('img', { name: /qr code that opens telegram/i })).toBeTruthy();
+    await new Promise((r) => setTimeout(r, APP_LINK_FALLBACK_MS + 100));
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it('an iPhone: the number is shown first, and Telegram waits for the Open Telegram press', async () => {
+    setUa('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Safari');
+    const realMatch = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ matches: q.includes('coarse'), media: q })) as unknown as typeof window.matchMedia;
+    try {
+      const step = STEP('MATCH', 12);
+      signInWithTelegram.mockResolvedValue({ ...step, telegram: { ...step.telegram, appUrl: APP } });
+      pollTelegramStep.mockResolvedValue('pending');
+      render(<ContinueWithTelegram onDone={vi.fn()} />);
+      await userEvent.click(screen.getByRole('button', { name: /continue with telegram/i }));
+      expect((await screen.findByTestId('match-number')).textContent).toBe('12');
+      expect(href).toBe('');
+      await userEvent.click(screen.getByRole('link', { name: /open telegram/i }));
+      expect(href).toBe(APP);
+    } finally { window.matchMedia = realMatch; }
   });
 });
