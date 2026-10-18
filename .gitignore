@@ -66,3 +66,6 @@ graphify-out/
 # a stray 1x1 test upload here once replaced the real header logo and app icon.
 backend/app-assets/
 deploy/vps/gateway/gateway.json
+
+# APKs downloaded by scripts/codespace-update.sh --apk
+/apk/
