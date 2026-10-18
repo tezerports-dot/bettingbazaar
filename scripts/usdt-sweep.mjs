@@ -9,11 +9,14 @@
  * that ever holds the recovery phrase; the server holds only the account xpub
  * (`USDT_BEP20_XPUB`) and cannot spend.
  *
- *   1. Admin › USDT Deposits › Download sweep file  (usdt-sweep.csv)
- *   2. USDT_SWEEP_MNEMONIC="twelve or twenty-four words" \
- *      USDT_TREASURY_ADDRESS=0x…  BSC_RPC_URL=https://… \
+ *   1. Admin › USDT Deposits › Download sweep file  (usdt-sweep.csv). It names
+ *      your final wallet (set on the same page), where the USDT goes.
+ *   2. USDT_SWEEP_MNEMONIC="twelve or twenty-four words"  BSC_RPC_URL=https://… \
  *      node scripts/usdt-sweep.mjs usdt-sweep.csv            (a dry run: the plan)
  *      node scripts/usdt-sweep.mjs usdt-sweep.csv --send     (signs and sends)
+ *      Before sending it prints the final wallet and asks you to type its last
+ *      6 characters, so a file changed on a broken-into server sends nothing
+ *      (or pass --confirm <last 6>). USDT_TREASURY_ADDRESS, if set, must match it.
  *   3. Admin › USDT Deposits › paste usdt-sweep-results.csv › Record results
  *
  * For each line it derives the key at m/44'/60'/0'/0/<derivationIndex> and
@@ -35,6 +38,7 @@
  */
 import { pbkdf2Sync } from 'node:crypto';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HDKey } from '@scure/bip32';
@@ -151,11 +155,39 @@ export function parseSweepFile(text) {
     if (i < 0) throw new Error(`The sweep file has no "${name}" column. Download it again from Admin › USDT Deposits.`);
     return i;
   };
-  const [o, a, k, d] = ['orderId', 'address', 'keyId', 'derivationIndex'].map(col);
+  const [o, a, k, d, w] = ['orderId', 'address', 'keyId', 'derivationIndex', 'finalWallet'].map(col);
   return lines.slice(1).map((l) => {
     const c = cells(l);
-    return { orderId: c[o], address: String(c[a]).toLowerCase(), keyId: c[k], derivationIndex: Number(c[d]) };
+    return {
+      orderId: c[o], address: String(c[a]).toLowerCase(), keyId: c[k], derivationIndex: Number(c[d]),
+      finalWallet: String(c[w]).toLowerCase(),
+    };
   });
+}
+
+/**
+ * Where this run sends: the one final wallet the sweep file names, which
+ * `USDT_TREASURY_ADDRESS` (when set on this machine) must equal. Throws when
+ * the file names none, or more than one, or they disagree.
+ */
+export function destinationFor(rows, envAddress) {
+  const named = [...new Set(rows.map((r) => r.finalWallet))];
+  if (named.length > 1) throw new Error(`The sweep file names ${named.length} different final wallets. Download it again.`);
+  const fromFile = named[0];
+  const local = String(envAddress ?? '').trim().toLowerCase();
+  if (fromFile !== undefined && !ADDRESS_RE.test(fromFile)) {
+    throw new Error('The sweep file has no valid final wallet. Set it on Admin › USDT Deposits and download the file again.');
+  }
+  if (local && fromFile !== undefined && local !== fromFile) {
+    throw new Error(`The sweep file sends to ${fromFile}, but USDT_TREASURY_ADDRESS here is ${local}. Nothing was sent.`);
+  }
+  return fromFile ?? local;
+}
+
+/** Whether `typed` is the last 6 characters of `address` (any case). */
+export function confirmsAddress(address, typed) {
+  const want = String(address).toLowerCase().slice(-6);
+  return String(typed ?? '').trim().toLowerCase() === want;
 }
 
 // ── The chain ────────────────────────────────────────────────────────────────
@@ -193,7 +225,7 @@ async function waitForReceipt(rpc, hash, { pollMs = 3000, timeoutMs = 180_000 } 
  */
 export async function runSweep({ rows, account, treasury, rpc, send = false, log = console.log, onSwept = () => {}, pollMs, timeoutMs }) {
   const to = String(treasury ?? '').toLowerCase();
-  if (!ADDRESS_RE.test(to)) throw new Error('USDT_TREASURY_ADDRESS must be a BSC address: 0x followed by 40 hexadecimal characters.');
+  if (!ADDRESS_RE.test(to)) throw new Error('The final wallet must be a BSC address: 0x followed by 40 hexadecimal characters.');
   const keyId = keyIdOf(account);
   const gas = gasKey(account);
   const gasAddress = addressOf(gas);
@@ -280,9 +312,9 @@ async function main(argv) {
   const send = argv.includes('--send');
   const outAt = argv.indexOf('--out');
   const outFile = resolve(outAt >= 0 ? argv[outAt + 1] : 'usdt-sweep-results.csv');
-  const input = argv.find((a, i) => !a.startsWith('--') && argv[i - 1] !== '--out');
+  const input = argv.find((a, i) => !a.startsWith('--') && argv[i - 1] !== '--out' && argv[i - 1] !== '--confirm');
   if (!input) {
-    console.error('usage: node scripts/usdt-sweep.mjs <usdt-sweep.csv> [--send] [--out results.csv]');
+    console.error('usage: node scripts/usdt-sweep.mjs <usdt-sweep.csv> [--send [--confirm <last 6 of the final wallet>]] [--out results.csv]');
     return 2;
   }
   if (process.env.NODE_ENV === 'production') {
@@ -300,9 +332,24 @@ async function main(argv) {
   console.log(`Account ${keyIdOf(account)} · gas wallet ${gasAddress} holds ${gasBnb} BNB · ${send ? 'SENDING' : 'dry run (add --send to sweep)'}`);
 
   const rows = parseSweepFile(readFileSync(resolve(input), 'utf8'));
+  const to = destinationFor(rows, process.env.USDT_TREASURY_ADDRESS);
+  console.log(`USDT goes to your final wallet: ${to}`);
+  if (send) {
+    const confirmAt = argv.indexOf('--confirm');
+    let typed = confirmAt >= 0 ? argv[confirmAt + 1] : null;
+    if (typed === null && process.stdin.isTTY) {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      typed = await rl.question('Check it is YOUR wallet. Type its last 6 characters to send: ');
+      rl.close();
+    }
+    if (!confirmsAddress(to, typed)) {
+      console.error('Not confirmed: nothing was sent. If that is not your wallet, do not sweep; fix it on Admin › USDT Deposits.');
+      return 2;
+    }
+  }
   if (send && !existsSync(outFile)) writeFileSync(outFile, 'orderId,txHash\n');
   const lines = await runSweep({
-    rows, account, treasury: process.env.USDT_TREASURY_ADDRESS, rpc, send,
+    rows, account, treasury: to, rpc, send,
     onSwept: (orderId, hash) => appendFileSync(outFile, `${orderId},${hash}\n`),
   });
   const count = (s) => lines.filter((l) => l.status === s).length;

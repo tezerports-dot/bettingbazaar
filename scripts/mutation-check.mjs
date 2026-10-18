@@ -3723,6 +3723,20 @@ const MUTATIONS = [
     from: `    .filter((l) => !l.removed && String(l.address).toLowerCase() === BSC_USDT_CONTRACT)`,
     to: `    .filter((l) => String(l.address).toLowerCase() === BSC_USDT_CONTRACT)`,
   },
+  {
+    id: 'M483', file: 'backend/domains/payment/usdtDeposit.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/usdtPlatformDepositPg.test.js',
+    why: 'a sub-admin with the USDT area can point every sweep at their own wallet',
+    from: `router.put('/usdt-deposits/final-wallet', authenticate, isAdmin, async (req, res) => {`,
+    to: `router.put('/usdt-deposits/final-wallet', authenticate, AREA, async (req, res) => {`,
+  },
+  {
+    id: 'M484', file: 'scripts/usdt-sweep.mjs', config: UNIT,
+    test: 'backend/tests/unit/usdtSweep.test.js',
+    why: 'the sweep sends to the wallet in the downloaded file even when this machine names a different one',
+    from: `  if (local && fromFile !== undefined && local !== fromFile) {`,
+    to: `  if (false) {`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

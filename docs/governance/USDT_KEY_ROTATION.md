@@ -12,9 +12,13 @@ Code: `backend/domains/payment/usdtBsc.js` (derivation, `keyIdOf`), `database/re
 | `USDT_BEP20_XPUB` (account key at m/44'/60'/0') | Server environment | Can list our addresses. Cannot spend. |
 | Deposit address per order (m/44'/60'/0'/0/<index>) | Derived for one order, never reused | One order's USDT until it is swept |
 | Gas wallet (m/44'/60'/0'/1/0) | Same phrase | The small BNB kept on it for sweeps |
-| Treasury address (`USDT_TREASURY_ADDRESS`) | A separate wallet, ideally a hardware wallet | Where swept USDT rests. Keep its phrase apart from the deposit phrase. |
+| Final wallet (Admin › USDT Deposits › Final wallet) | Your own wallet, ideally a hardware wallet; only a full admin can change it, and every change is alerted and kept in its history | Where swept USDT rests. Keep its phrase apart from the deposit phrase. The sweep tool shows it and asks for its last 6 characters before sending, so check it is yours every time. |
 
 So a hacked server leaks no spending key. Every order already gets a fresh address that is used once. What "rotating" changes is the phrase behind new addresses.
+
+## Changing the final wallet
+
+Paste the new address on Admin › USDT Deposits › Final wallet and press Change wallet. The next sweep file carries it, and the tool asks you to confirm it. Earlier wallets stay listed under "Earlier wallets". Changing it moves nothing already swept.
 
 ## When to rotate
 

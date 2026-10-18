@@ -5131,3 +5131,26 @@ CREATE TABLE IF NOT EXISTS usdt_chain_cursors (
 );
 ALTER TABLE usdt_chain_cursors DROP CONSTRAINT IF EXISTS usdt_chain_cursors_shape;
 ALTER TABLE usdt_chain_cursors ADD CONSTRAINT usdt_chain_cursors_shape CHECK (chain = 'BEP20' AND next_block >= 0);
+
+-- The owner's own wallet, where the offline sweep tool sends swept USDT
+-- (owner, 2026-10-18). Append-only: the newest row is the one in use, and
+-- every earlier one stays as the history of who changed it and when. Written
+-- only by `setFinalWallet` (database/repositories/usdtDeposits.js), a full
+-- admin's change; the sweep tool also asks the person running it to confirm it.
+CREATE TABLE IF NOT EXISTS usdt_final_wallets (
+  id          BIGSERIAL PRIMARY KEY,
+  chain       TEXT NOT NULL DEFAULT 'BEP20',
+  address     TEXT NOT NULL,
+  set_by      TEXT NOT NULL,
+  set_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE usdt_final_wallets DROP CONSTRAINT IF EXISTS usdt_final_wallets_shape;
+ALTER TABLE usdt_final_wallets ADD CONSTRAINT usdt_final_wallets_shape
+  CHECK (chain = 'BEP20' AND address ~ '^0x[0-9a-f]{40}$' AND address <> '0x0000000000000000000000000000000000000000');
+CREATE OR REPLACE FUNCTION bb_usdt_final_wallet_frozen() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'usdt_final_wallets is append-only: set a new final wallet instead' USING ERRCODE = 'check_violation';
+END $$;
+DROP TRIGGER IF EXISTS usdt_final_wallets_frozen ON usdt_final_wallets;
+CREATE TRIGGER usdt_final_wallets_frozen
+  BEFORE UPDATE OR DELETE ON usdt_final_wallets FOR EACH ROW EXECUTE FUNCTION bb_usdt_final_wallet_frozen();

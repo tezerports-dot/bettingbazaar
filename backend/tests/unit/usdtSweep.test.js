@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   seedFromMnemonic, accountFromSeed, depositKey, gasKey, addressOf, signLegacyTx, rlp,
-  transferData, balanceOfData, parseSweepFile, runSweep, accountSummary,
+  transferData, balanceOfData, parseSweepFile, runSweep, accountSummary, destinationFor, confirmsAddress,
 } from '../../../scripts/usdt-sweep.mjs';
 import { BSC_USDT_CONTRACT, keyIdOf, parseAccountXpub } from '../../domains/payment/usdtBsc.js';
 
@@ -70,9 +70,31 @@ describe('transactions', () => {
 
 describe('the sweep file', () => {
   it('reads the admin’s CSV by its column names', () => {
-    const rows = parseSweepFile('orderId,address,keyId,derivationIndex,usdtReceived,state\nORD-1,0xABC,ab12,7,100,COMPLETED\n');
-    expect(rows).toEqual([{ orderId: 'ORD-1', address: '0xabc', keyId: 'ab12', derivationIndex: 7 }]);
+    const rows = parseSweepFile('orderId,address,keyId,derivationIndex,usdtReceived,state,finalWallet\nORD-1,0xABC,ab12,7,100,COMPLETED,0xAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAb\n');
+    expect(rows).toEqual([{ orderId: 'ORD-1', address: '0xabc', keyId: 'ab12', derivationIndex: 7, finalWallet: '0xabababababababababababababababababababab' }]);
     expect(() => parseSweepFile('orderId,address\nx,y')).toThrow(/keyId/);
+    expect(() => parseSweepFile('orderId,address,keyId,derivationIndex\nx,y,z,1')).toThrow(/finalWallet/);
+  });
+
+  it('sends only to the one final wallet the file names, and never to one this machine disagrees with', () => {
+    const w = '0xabababababababababababababababababababab';
+    const other = `0x${'c'.repeat(40)}`;
+    expect(destinationFor([{ finalWallet: w }, { finalWallet: w }], '')).toBe(w);
+    expect(destinationFor([{ finalWallet: w }], w.toUpperCase().replace('0X', '0x'))).toBe(w);
+    expect(() => destinationFor([{ finalWallet: w }, { finalWallet: other }], '')).toThrow(/2 different/);
+    expect(() => destinationFor([{ finalWallet: w }], other)).toThrow(/Nothing was sent/);
+    expect(() => destinationFor([{ finalWallet: 'undefined' }], '')).toThrow(/no valid final wallet/);
+    // An empty file sweeps nothing; the local setting, if any, is shown.
+    expect(destinationFor([], other)).toBe(other);
+  });
+
+  it('takes the last 6 characters of the final wallet, in any case, as the confirmation', () => {
+    const w = '0xabababababababababababababababababababab';
+    expect(confirmsAddress(w, w.slice(-6).toUpperCase())).toBe(true);
+    expect(confirmsAddress(w, ` ${w.slice(-6)} `)).toBe(true);
+    expect(confirmsAddress(w, w.slice(-5))).toBe(false);
+    expect(confirmsAddress(w, null)).toBe(false);
+    expect(confirmsAddress(w, '')).toBe(false);
   });
 });
 
@@ -163,6 +185,6 @@ describe('runSweep', () => {
 
   it('refuses a treasury that is not an address before touching the chain', async () => {
     await expect(runSweep({ rows: [], account, treasury: 'T123', rpc: async () => { throw new Error('called'); } }))
-      .rejects.toThrow(/USDT_TREASURY_ADDRESS/);
+      .rejects.toThrow(/final wallet must be a BSC address/);
   });
 });

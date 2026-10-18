@@ -342,11 +342,15 @@ describePg('USDT buys paid to the platform on BSC', () => {
       const { order: open } = await buy(await actor({}), 100);
       await pay(open.usdtAddress, 40);
 
+      const wallet = `0x${'c'.repeat(40)}`;
+      expect((await as(app, admin).put('/api/admin/usdt-deposits/final-wallet').send({ address: wallet.toUpperCase().replace('0X', '0x') })).status).toBe(200);
       const csv = await as(app, admin).get('/api/admin/usdt-deposits/sweep.csv');
       expect(csv.status).toBe(200);
+      expect(csv.text.split('\n')[0]).toContain('finalWallet');
       expect(csv.headers['content-type']).toMatch(/text\/csv/);
       const line = csv.text.split('\n').find((l) => l.includes(done.orderId));
       expect(line).toContain(done.usdtAddress);
+      expect(line).toContain(wallet);
       expect(line).toContain(String((await db.usdtDeposits.depositFor(done.orderId)).derivationIndex));
       expect(csv.text).not.toContain(open.orderId);
 
@@ -355,6 +359,37 @@ describePg('USDT buys paid to the platform on BSC', () => {
       expect((await as(app, admin).post(`/api/admin/usdt-deposits/${done.orderId}/sweep`).send({ txHash: hex64() })).body.success).toBe(true);
       expect((await as(app, admin).post(`/api/admin/usdt-deposits/${done.orderId}/sweep`).send({ txHash: hex64() })).status).toBe(409);
       expect((await as(app, admin).get('/api/admin/usdt-deposits/sweep.csv')).text).not.toContain(done.orderId);
+    });
+
+    it('lets only a full admin set the final wallet, keeps every change, and refuses what is not an address', async () => {
+      const admin = await actor({ isAdmin: true });
+      const granted = await actor({ isSubAdmin: true, permissions: { canManageUsdtDeposits: true } });
+      const first = `0x${'1a'.repeat(20)}`;
+      const second = `0x${'2b'.repeat(20)}`;
+
+      const sub = await as(app, granted).put('/api/admin/usdt-deposits/final-wallet').send({ address: first });
+      expect(sub.status).toBe(403);
+      expect((await db.usdtDeposits.finalWallet())?.address).not.toBe(first);
+      expect((await as(app, granted).get('/api/admin/usdt-deposits')).body.mayChangeFinalWallet).toBe(false);
+
+      for (const address of ['', '0x123', `0x${'g'.repeat(40)}`, `0x${'0'.repeat(40)}`, `${'1'.repeat(42)}`]) {
+        const bad = await as(app, admin).put('/api/admin/usdt-deposits/final-wallet').send({ address });
+        expect(bad.status).toBe(400);
+        expect(bad.body.code).toBe('INVALID_FINAL_WALLET');
+      }
+
+      const set = await as(app, admin).put('/api/admin/usdt-deposits/final-wallet').send({ address: `  ${first.toUpperCase().replace('0X', '0x')} ` });
+      expect(set.body).toMatchObject({ changed: true, finalWallet: { address: first, setBy: `admin:${admin.userId}` } });
+      expect((await as(app, admin).put('/api/admin/usdt-deposits/final-wallet').send({ address: first })).body.changed).toBe(false);
+      expect((await as(app, admin).put('/api/admin/usdt-deposits/final-wallet').send({ address: second })).body.changed).toBe(true);
+
+      const page = await as(app, admin).get('/api/admin/usdt-deposits');
+      expect(page.body.mayChangeFinalWallet).toBe(true);
+      expect(page.body.finalWallet.address).toBe(second);
+      expect(page.body.finalWalletHistory.slice(0, 2).map((w) => w.address)).toEqual([second, first]);
+      // The history cannot be rewritten, by anyone.
+      await expect(pgQuery('UPDATE usdt_final_wallets SET address = $1 WHERE address = $2', [first, second])).rejects.toThrow(/append-only/);
+      await expect(pgQuery('DELETE FROM usdt_final_wallets WHERE address = $1', [second])).rejects.toThrow(/append-only/);
     });
 
     it('records the sweep tool results file line by line', async () => {

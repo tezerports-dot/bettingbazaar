@@ -2,8 +2,8 @@
 /**
  * USDT deposits paid to the platform (owner, 2026-10-18: BSC only, one address
  * per order). The ONE writer of `usdt_deposit_addresses`,
- * `usdt_deposit_transfers` and `usdt_chain_cursors` (schema.sql, "USDT
- * DEPOSITS TO THE PLATFORM").
+ * `usdt_deposit_transfers`, `usdt_chain_cursors` and `usdt_final_wallets`
+ * (schema.sql, "USDT DEPOSITS TO THE PLATFORM").
  *
  * ── The life of a USDT buy ──────────────────────────────────────────────────
  * 1. `openUsdtBuy`: the order and the address derived for it alone are written
@@ -419,4 +419,51 @@ export async function sweepCandidates() {
     orderId: r.order_id, address: r.address, keyId: r.key_id, derivationIndex: r.derivation_index,
     state: r.state, usdtReceived: Number(r.received_micro) / 1e6,
   }));
+}
+
+// ── The final wallet ─────────────────────────────────────────────────────────
+
+/** A BSC address as typed: 0x and 40 hexadecimal characters, any case. */
+export const FINAL_WALLET_RE = /^0x[0-9a-fA-F]{40}$/;
+
+const toFinalWallet = (r) => (r ? { address: r.address, setBy: r.set_by, setAt: r.set_at } : null);
+
+/** The wallet swept USDT goes to now (the newest row), or null when none is set. */
+export async function finalWallet() {
+  const { rows } = await pgQuery(
+    'SELECT address, set_by, set_at FROM usdt_final_wallets ORDER BY id DESC LIMIT 1', [], 'usdt_final_wallet');
+  return toFinalWallet(rows[0]);
+}
+
+/** Every final wallet ever set, newest first: who changed it and when. */
+export async function finalWalletHistory({ limit = 20 } = {}) {
+  const { rows } = await pgQuery(
+    'SELECT address, set_by, set_at FROM usdt_final_wallets ORDER BY id DESC LIMIT $1',
+    [Math.max(1, Math.min(Number(limit) || 20, 100))], 'usdt_final_wallet_history');
+  return rows.map(toFinalWallet);
+}
+
+/**
+ * Set the owner's wallet the sweep sends to. A new row, never an edit, so the
+ * history stays. Saving the address already in use writes nothing.
+ * @returns {Promise<{changed: boolean, wallet: object}>}
+ */
+export async function setFinalWallet({ address, actor }) {
+  const text = String(address ?? '').trim();
+  if (!FINAL_WALLET_RE.test(text) || /^0x0{40}$/i.test(text)) {
+    throw Object.assign(new Error('Enter your BEP-20 wallet address: 0x followed by 40 letters and numbers (0-9, a-f).'),
+      { status: 400, code: 'INVALID_FINAL_WALLET' });
+  }
+  const lower = text.toLowerCase();
+  return withTransaction(async (client) => {
+    // One change at a time, so two admins saving at once cannot both think theirs is current.
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('usdt_final_wallet'))");
+    const { rows: [now] } = await client.query(
+      'SELECT address, set_by, set_at FROM usdt_final_wallets ORDER BY id DESC LIMIT 1');
+    if (now?.address === lower) return { changed: false, wallet: toFinalWallet(now) };
+    const { rows: [row] } = await client.query(
+      'INSERT INTO usdt_final_wallets (address, set_by) VALUES ($1, $2) RETURNING address, set_by, set_at',
+      [lower, String(actor)]);
+    return { changed: true, wallet: toFinalWallet(row) };
+  });
 }

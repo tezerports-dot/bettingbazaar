@@ -132,6 +132,8 @@ export const ADMIN_ONLY_AREAS = Object.freeze([
     routes: ['POST /users/:userId/queue-manager'] },
   { area: 'Staff authenticators', why: 'Resetting a staff account\'s authenticator lets whoever holds its password enrol a new one; a holder could take over any staff account whose password they know.',
     routes: ['POST /staff/:userId/reset-authenticator'] },
+  { area: 'USDT final wallet', why: 'It decides where every swept USDT goes; a holder could point the platform\'s money at their own wallet.',
+    routes: ['PUT /usdt-deposits/final-wallet'] },
 ]);
 
 /**

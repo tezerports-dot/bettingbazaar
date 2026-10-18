@@ -9,15 +9,16 @@
  *     with a note once an admin has refunded or adjusted it;
  *   - the coins still sitting on deposit addresses, which the offline sweep tool
  *     (scripts/usdt-sweep.mjs) moves out: download its input, record its output;
- *   - whether the watcher is reading the chain at all.
+ *   - whether the watcher is reading the chain at all;
+ *   - the owner's own wallet every sweep sends to, changed by a full admin.
  *
  * The list's filters and every figure are the server's (§2, §5): this screen
  * adds nothing up.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { Coins, Copy, Download, RefreshCw } from 'lucide-react';
+import { Coins, Copy, Download, RefreshCw, Wallet } from 'lucide-react';
 import toast from 'react-hot-toast';
-import api, { type UsdtDeposit, type UsdtDepositsResponse, type UsdtTransfer } from '../../services/api';
+import api, { type UsdtDeposit, type UsdtDepositsResponse, type UsdtFinalWallet, type UsdtTransfer } from '../../services/api';
 import { EmptyState } from '../../components/EmptyState';
 import { LoadingSpinner } from '../../components/LoadingSpinner';
 
@@ -48,6 +49,79 @@ const Tile: React.FC<{ label: string; value: React.ReactNode }> = ({ label, valu
     <p className="text-sm text-gray-100 font-medium mt-0.5">{value}</p>
   </div>
 );
+
+/** Same check as the server's (`FINAL_WALLET_RE`, usdtDeposits.js), so a typo is caught before saving (§11 display mirror). */
+const LOOKS_LIKE_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+/** Where every sweep sends: the owner's own BEP-20 wallet, and who changed it when. */
+const FinalWalletCard: React.FC<{
+  wallet: UsdtFinalWallet | null; history: UsdtFinalWallet[]; isAdmin: boolean; onChanged: () => void;
+}> = ({ wallet, history, isAdmin, onChanged }) => {
+  const [address, setAddress] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState('');
+  const typed = address.trim();
+  const isNew = wallet ? typed.toLowerCase() !== wallet.address : true;
+
+  const save = async () => {
+    setSaving(true); setProblem('');
+    try {
+      const r = await api.usdtDeposits.setFinalWallet(typed);
+      toast.success(r.changed ? 'Final wallet saved' : 'That is already your final wallet');
+      setAddress(''); onChanged();
+    } catch (e) { setProblem(messageOf(e, 'Could not save the final wallet.')); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="card p-4 space-y-3">
+      <h3 className="text-sm font-semibold text-gray-100 flex items-center gap-2"><Wallet size={16} /> Final wallet</h3>
+      <p className="text-xs text-gray-400">
+        Your own BNB Smart Chain (BEP-20) wallet. Each buy is paid to its own address first; every sweep then sends the USDT here.
+        Before sending, the sweep tool shows this address and asks you to type its last 6 characters.
+      </p>
+      {wallet ? (
+        <div className="text-sm">
+          <button type="button" className="font-mono text-gray-100 break-all hover:text-gold-300 text-left" onClick={() => copy(wallet.address, 'Address')}>
+            {wallet.address}
+          </button>
+          <p className="text-xs text-gray-500 mt-0.5">Set {when(wallet.setAt)} by {wallet.setBy}</p>
+        </div>
+      ) : (
+        <p role="status" className="text-sm text-amber-400">Not set yet. Nothing can be swept until it is.</p>
+      )}
+      {isAdmin ? (
+        <div className="space-y-1">
+          <label htmlFor="final-wallet" className="block text-xs text-gray-400">{wallet ? 'Change to a new wallet' : 'Your wallet address'}</label>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input id="final-wallet" value={address} onChange={(e) => setAddress(e.target.value)} spellCheck={false}
+              className="input flex-1 font-mono" placeholder="0x…" autoComplete="off" />
+            <button type="button" className="btn-primary disabled:opacity-50" disabled={saving || !LOOKS_LIKE_ADDRESS.test(typed) || !isNew}
+              onClick={() => void save()}>
+              {saving ? 'Saving…' : wallet ? 'Change wallet' : 'Save wallet'}
+            </button>
+          </div>
+          {typed && !LOOKS_LIKE_ADDRESS.test(typed) && (
+            <p className="text-xs text-amber-400">A BEP-20 address is 0x followed by 40 letters and numbers.</p>
+          )}
+        </div>
+      ) : (
+        <p className="text-xs text-gray-500">Only a full admin can change it.</p>
+      )}
+      {problem && <p role="alert" className="text-sm text-red-400">{problem}</p>}
+      {history.length > 1 && (
+        <details className="text-xs text-gray-400">
+          <summary className="cursor-pointer">Earlier wallets</summary>
+          <ul className="mt-1 space-y-0.5">
+            {history.slice(1).map((h) => (
+              <li key={`${h.address}:${h.setAt}`} className="font-mono break-all">{h.address} <span className="font-sans text-gray-500">· {when(h.setAt)} by {h.setBy}</span></li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+};
 
 /** One deposit's transfers and the two things an admin may do to it. */
 const DepositDetail: React.FC<{ deposit: UsdtDeposit; onChanged: () => void }> = ({ deposit, onChanged }) => {
@@ -197,6 +271,12 @@ export const UsdtDeposits: React.FC = () => {
           </div>
         )}
       </div>
+
+      {data && (
+        <FinalWalletCard wallet={data.finalWallet} history={data.finalWalletHistory ?? []}
+          // The server's answer to "is this a full admin", the only staff who may change it (ADMIN_ONLY_AREAS).
+          isAdmin={data.mayChangeFinalWallet} onChanged={() => void load()} />
+      )}
 
       <div className="card p-4 space-y-3">
         <h3 className="text-sm font-semibold text-gray-100">Sweep</h3>

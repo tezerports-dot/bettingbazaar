@@ -1241,9 +1241,12 @@ export interface UsdtWatcherStatus {
   configured: boolean; activeKeyId: string | null; nextBlock: number | null; headBlock: number | null;
   lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null;
 }
+/** The owner's own wallet the sweep sends to (`usdt_final_wallets`, newest row in use). */
+export interface UsdtFinalWallet { address: string; setBy: string; setAt: string }
 export interface UsdtDepositsResponse {
   success: boolean; filters: string[]; filter: string; total: number; page: number; pages: number;
   deposits: UsdtDeposit[]; totals: UsdtDepositTotals; watcher: UsdtWatcherStatus;
+  finalWallet: UsdtFinalWallet | null; finalWalletHistory: UsdtFinalWallet[]; mayChangeFinalWallet: boolean;
 }
 export const usdtDeposits = {
   list: async (filter: string, page = 1, limit = 50) =>
@@ -1259,6 +1262,9 @@ export const usdtDeposits = {
     (await api.post<{ success: boolean; recorded: number; results: Array<{ orderId: string; recorded: boolean; reason: string | null }> }>(
       '/api/admin/usdt-deposits/sweeps', { results })).data,
   downloadSweepFile: () => downloadCsv('/api/admin/usdt-deposits/sweep.csv', {}, 'usdt-sweep.csv'),
+  /** Full admins only. */
+  setFinalWallet: async (address: string) =>
+    (await api.put<{ success: boolean; changed: boolean; finalWallet: UsdtFinalWallet }>('/api/admin/usdt-deposits/final-wallet', { address })).data,
 };
 
 export default {

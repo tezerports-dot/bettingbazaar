@@ -1517,6 +1517,9 @@ address*; background in RULES_BACKGROUND §25.
   USDT Deposits for the three numbers.
 - **Sweep:** `scripts/usdt-sweep.mjs`, offline, with the recovery phrase; gas
   from the phrase's own m/44'/60'/0'/1/0.
+- **Final wallet:** where every sweep sends, the owner's own BEP-20 wallet,
+  pasted on Admin › USDT Deposits by a full admin (history kept, change
+  alerted); the tool asks for its last 6 characters before sending.
 - **Removed:** merchant USDT addresses (columns dropped), the merchant rail
   altogether (`accepted_currencies`, `merchant_type` dropped; every merchant is
   INR), USDT supervisors and teams (moved to UPI_BANK by the schema, refused by
@@ -1527,7 +1530,7 @@ address*; background in RULES_BACKGROUND §25.
   phrase (`docs/governance/USDT_KEY_ROTATION.md`, test in usdtPlatformDepositPg).
 
 **To switch it on:** set `USDT_BEP20_XPUB` (the account xpub at m/44'/60'/0'
-of a phrase kept offline) and `BSC_RPC_URL`. Deploy with no agent USDT buy open.
+of a phrase kept offline) and `BSC_RPC_URL`, and paste the final wallet. Deploy with no agent USDT buy open.
 USDT teams and merchants are removed outright (owner, 2026-10-18: "completely
 remove", the platform being a test setup).
 

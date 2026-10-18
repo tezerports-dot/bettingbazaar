@@ -9,17 +9,19 @@
  *   - mark money the server could not credit (late, overpaid, after credit) as
  *     dealt with, with a note saying how;
  *   - download what the offline sweep tool moves out, and record its sweep
- *     transactions back, one at a time or as the tool's results file.
+ *     transactions back, one at a time or as the tool's results file;
+ *   - set the owner's own wallet the sweep sends to (full admins only).
  *
  * Nothing here credits a player: the watcher does that, and a late payment is
  * settled by an admin elsewhere (a balance adjustment or a refund on chain),
  * then marked handled here. All of it asks `canManageUsdtDeposits`.
  */
-import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { respondError, refusal } from '../../shared/httpError.js';
 import { toCsv } from '../reporting/csv.util.js';
 import { watcherStatus } from './usdtDeposit.service.js';
+import { sendAlert } from '../../services/alerting.service.js';
 
 const router = express.Router();
 const AREA = hasPermission('canManageUsdtDeposits');
@@ -33,16 +35,19 @@ router.get('/usdt-deposits', authenticate, AREA, async (req, res) => {
     const filter = String(req.query.filter ?? 'ALL').toUpperCase();
     const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
     const page = Math.max(1, Number(req.query.page) || 1);
-    const [list, totals, watcher] = await Promise.all([
+    const [list, totals, watcher, finalWallets] = await Promise.all([
       db.usdtDeposits.listDeposits({ filter, limit, offset: (page - 1) * limit }),
       db.usdtDeposits.depositTotals(),
       watcherStatus(),
+      db.usdtDeposits.finalWalletHistory(),
     ]);
     res.json({
       success: true,
       filters: db.usdtDeposits.DEPOSIT_FILTERS, filter,
       total: list.total, page, pages: Math.max(1, Math.ceil(list.total / limit)),
       deposits: list.rows, totals, watcher,
+      finalWallet: finalWallets[0] ?? null, finalWalletHistory: finalWallets,
+      mayChangeFinalWallet: req.user?.isAdmin === true,
     });
   } catch (error) {
     respondError(res, error, 'GET /admin/usdt-deposits', { message: 'Could not load the USDT deposits.' });
@@ -54,12 +59,18 @@ router.get('/usdt-deposits', authenticate, AREA, async (req, res) => {
 // the mnemonic offline, derive the key; it checks every address against it.
 router.get('/usdt-deposits/sweep.csv', authenticate, AREA, async (req, res) => {
   try {
+    const wallet = await db.usdtDeposits.finalWallet();
+    if (!wallet) {
+      throw refusal(409, 'FINAL_WALLET_NOT_SET',
+        'Set your final wallet first (Admin › USDT Deposits › Final wallet): it is where the sweep sends the USDT.');
+    }
     const rows = await db.usdtDeposits.sweepCandidates();
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="usdt-sweep.csv"');
     res.send(toCsv(rows.map((r) => ({
       orderId: r.orderId, address: r.address, keyId: r.keyId,
       derivationIndex: r.derivationIndex, usdtReceived: r.usdtReceived, state: r.state,
+      finalWallet: wallet.address,
     }))));
   } catch (error) {
     respondError(res, error, 'GET /admin/usdt-deposits/sweep.csv', { message: 'Could not build the sweep file.' });
@@ -128,6 +139,23 @@ router.post('/usdt-deposits/sweeps', authenticate, AREA, async (req, res) => {
     res.json({ success: true, recorded: results.filter((r) => r.recorded).length, results });
   } catch (error) {
     respondError(res, error, 'POST /admin/usdt-deposits/sweeps', { message: 'Could not record the sweeps.' });
+  }
+});
+
+// ─── PUT /api/admin/usdt-deposits/final-wallet ───────────────────────────────
+// The owner's own BEP-20 wallet, where every sweep sends. Full admins only:
+// whoever sets it decides where the platform's USDT goes. A change is alerted,
+// and the sweep tool shows the address and asks for it to be confirmed.
+router.put('/usdt-deposits/final-wallet', authenticate, isAdmin, async (req, res) => {
+  try {
+    const { changed, wallet } = await db.usdtDeposits.setFinalWallet({ address: req.body?.address, actor: `admin:${req.userId}` });
+    if (changed) {
+      sendAlert('usdt-final-wallet-changed', 'The USDT final wallet was changed',
+        { address: wallet.address, by: wallet.setBy }).catch(() => {});
+    }
+    res.json({ success: true, changed, finalWallet: wallet });
+  } catch (error) {
+    respondError(res, error, 'PUT /admin/usdt-deposits/final-wallet', { message: 'Could not save the final wallet.' });
   }
 });
 

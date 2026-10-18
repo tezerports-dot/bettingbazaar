@@ -11,7 +11,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 const { usdtDeposits } = vi.hoisted(() => ({
   usdtDeposits: {
     list: vi.fn(), transfers: vi.fn(), markHandled: vi.fn(), recordSweep: vi.fn(),
-    recordSweeps: vi.fn(), downloadSweepFile: vi.fn(),
+    recordSweeps: vi.fn(), downloadSweepFile: vi.fn(), setFinalWallet: vi.fn(),
   },
 }));
 vi.mock('../../services/api', () => ({ default: { usdtDeposits } }));
@@ -30,6 +30,7 @@ const page = (over: Record<string, unknown> = {}) => ({
   deposits: [LATE],
   totals: { waiting: 2, credited: 5, creditedTokens: 45000, usdtReceived: 600, usdtUnswept: 100 },
   watcher: { configured: true, activeKeyId: '7b2f9c1d0e4a5b68', nextBlock: 101, headBlock: 120, lastOkAt: '2026-10-18T07:00:00Z', lastError: null, lastErrorAt: null },
+  finalWallet: null, finalWalletHistory: [], mayChangeFinalWallet: true,
   ...over,
 });
 
@@ -85,5 +86,39 @@ describe('USDT Deposits', () => {
     fireEvent.change(screen.getByLabelText(/Sweep results/), { target: { value: `orderId,txHash\nORD-LATE,${hash}` } });
     fireEvent.click(screen.getByRole('button', { name: 'Record results' }));
     expect(await screen.findByText('1 recorded.')).toBeInTheDocument();
+  });
+
+  it('saves the final wallet the admin pastes, and shows the one in use with its history', async () => {
+    const mine = `0x${'ab'.repeat(20)}`;
+    usdtDeposits.setFinalWallet.mockResolvedValue({ success: true, changed: true, finalWallet: { address: mine, setBy: 'admin:a1', setAt: '2026-10-18T08:00:00Z' } });
+    render(<UsdtDeposits />);
+    expect(await screen.findByText(/Nothing can be swept until it is/)).toBeInTheDocument();
+    const input = screen.getByLabelText('Your wallet address');
+    const save = screen.getByRole('button', { name: 'Save wallet' });
+    fireEvent.change(input, { target: { value: '0x123' } });
+    expect(save).toBeDisabled();
+    fireEvent.change(input, { target: { value: ` ${mine} ` } });
+    fireEvent.click(save);
+    await waitFor(() => expect(usdtDeposits.setFinalWallet).toHaveBeenCalledWith(mine));
+    await waitFor(() => expect(usdtDeposits.list).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows the wallet in use, earlier ones, and no change control to anyone but a full admin', async () => {
+    const now = { address: `0x${'cd'.repeat(20)}`, setBy: 'admin:a1', setAt: '2026-10-18T08:00:00Z' };
+    const before = { address: `0x${'ef'.repeat(20)}`, setBy: 'admin:a2', setAt: '2026-10-17T08:00:00Z' };
+    usdtDeposits.list.mockResolvedValue(page({ finalWallet: now, finalWalletHistory: [now, before], mayChangeFinalWallet: false }));
+    render(<UsdtDeposits />);
+    expect(await screen.findByText(now.address)).toBeInTheDocument();
+    expect(screen.getByText(before.address, { exact: false })).toBeInTheDocument();
+    expect(screen.getByText('Only a full admin can change it.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Change wallet' })).toBeNull();
+  });
+
+  it('shows why a final wallet was refused', async () => {
+    usdtDeposits.setFinalWallet.mockRejectedValueOnce({ response: { data: { message: 'Admin access required.' } } });
+    render(<UsdtDeposits />);
+    fireEvent.change(await screen.findByLabelText('Your wallet address'), { target: { value: `0x${'12'.repeat(20)}` } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save wallet' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Admin access required.');
   });
 });
