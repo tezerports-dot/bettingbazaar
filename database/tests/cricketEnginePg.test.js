@@ -9,7 +9,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import * as cricket from '../repositories/cricket.js';
 import { applyLiveState, openPublishedPolls } from '../../backend/domains/cricket/cricketEngine.service.js';
-import { pollIdFor, POLL_KINDS } from '../../backend/domains/cricket/cricketPolls.js';
+import { pollIdFor } from '../../backend/domains/cricket/cricketPolls.js';
 import { fundWallet } from './_funding.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;

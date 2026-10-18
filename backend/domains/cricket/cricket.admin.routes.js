@@ -78,14 +78,18 @@ router.put('/cricket/feed-token', authenticate, ALLOWED, async (req, res) => {
 
 router.post('/cricket/sync', authenticate, ALLOWED, async (req, res) => {
   try {
-    const result = await syncFixtures();
-    if (result.skipped) throw refusal(409, 'CRICKET_FEED_NOT_SET', 'Save the data token first.');
+    if (!(await db.cricket.getFeed()).tokenSet) throw refusal(409, 'CRICKET_FEED_NOT_SET', 'Save the data token first.');
+    let result;
+    try {
+      result = await syncFixtures();
+    } catch {
+      // syncFixtures recorded the provider's answer on the feed row, which
+      // this page shows; the response names no host or body (F-008).
+      throw refusal(502, 'FEED_FAILED', 'The cricket feed did not answer. Its last error is shown under the data feed.');
+    }
     await openPublishedPolls();
     res.json({ success: true, ...result, feed: await db.cricket.getFeed() });
   } catch (error) {
-    if (!error.status) {
-      return res.status(502).json({ success: false, code: 'FEED_FAILED', message: `The cricket feed did not answer: ${error.message}` });
-    }
     return respondError(res, error, 'POST /admin/cricket/sync', { message: 'Could not read the fixtures.' });
   }
 });

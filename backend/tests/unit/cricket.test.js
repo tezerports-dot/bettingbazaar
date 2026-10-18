@@ -21,6 +21,15 @@ describe('cricket odds', () => {
     expect(odds).toEqual({ A: 288, B: 144, TIE: 1440 });
   });
 
+  it('open an empty poll at (1 − spread) × options, whatever the seed', () => {
+    for (const n of [2, 3, 4, 10]) {
+      const pools = Object.fromEntries(Array.from({ length: n }, (_, i) => [`O${i}`, 0]));
+      for (const seedPaise of [100, 50_000]) {
+        expect(Object.values(displayOddsX100({ spreadBp: 1000, seedPaise, pools }))).toEqual(Array(n).fill(90 * n));
+      }
+    }
+  });
+
   it('never show below 1.01', () => {
     expect(displayOddsX100({ spreadBp: 1000, seedPaise: 1, pools: { A: 1_000_000, B: 0 } }).A).toBe(MIN_ODDS_X100);
   });

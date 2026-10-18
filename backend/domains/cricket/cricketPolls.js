@@ -32,8 +32,6 @@ export const BALL_OUTCOMES = Object.freeze([
   { key: 'NO_BALL', label: 'No ball' },
   { key: 'WICKET', label: 'Wicket' },
 ]);
-const BALL_KEYS = new Set(BALL_OUTCOMES.map((o) => o.key));
-export const isBallOutcome = (k) => BALL_KEYS.has(k);
 
 /**
  * One delivery's outcome from the feed's facts: a wicket (any dismissal, a

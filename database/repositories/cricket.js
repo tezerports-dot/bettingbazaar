@@ -375,13 +375,6 @@ export async function overRuns(matchId, innings, overNo) {
   return { runs: num(rows[0].runs), deliveries: num(rows[0].balls) };
 }
 
-export async function getDelivery(matchId, seq) {
-  const { rows } = await pgQuery('SELECT * FROM cricket_deliveries WHERE match_id = $1 AND seq = $2',
-    [String(matchId), seq], 'cricket_delivery_get');
-  const r = rows[0];
-  return r ? { seq: num(r.seq), innings: num(r.innings), overNo: num(r.over_no), outcome: r.outcome, runs: num(r.runs), feedAt: r.feed_at, receivedAt: r.received_at } : null;
-}
-
 export async function lastDelivery(matchId) {
   const { rows } = await pgQuery(
     'SELECT * FROM cricket_deliveries WHERE match_id = $1 ORDER BY seq DESC LIMIT 1', [String(matchId)], 'cricket_delivery_last');

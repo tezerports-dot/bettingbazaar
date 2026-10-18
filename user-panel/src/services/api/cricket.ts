@@ -39,7 +39,7 @@ export const matches = (): Promise<{ success: boolean; matches: CricketMatch[] }
   apiClient.get('/api/v1/cricket/matches', DISPLAY);
 
 export const myBets = (matchId?: string): Promise<{ success: boolean; bets: CricketBet[] }> =>
-  apiClient.get(`/api/v1/cricket/me/bets${matchId ? `?matchId=${encodeURIComponent(matchId)}` : ''}`);
+  apiClient.get(`/api/v1/cricket/me/bets?matchId=${encodeURIComponent(matchId ?? '')}`);
 
 export const quoteBet = (pollId: string, optionKey: string, stake: number): Promise<{ oddsX100: number; potentialPaise: number; delaySec: number }> =>
   apiClient.post('/api/v1/cricket/quote/bet', { pollId, optionKey, stake });

@@ -130,6 +130,7 @@ describePg('cricket opinion polls', () => {
       expect(worst).toBeGreaterThanOrEqual(bound);
     }
     expect(placed).toBeGreaterThan(0);
+    expect(placed + suspended).toBe(60);
   });
 
   it('refuses at commit a book a writer pushed past the bound (bb_cricket_book_bound)', async () => {
