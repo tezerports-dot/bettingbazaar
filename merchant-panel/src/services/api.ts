@@ -537,18 +537,10 @@ export const setCashReady = async (ready: boolean): Promise<boolean> => {
 // PROFILE UPDATE (FIX M6)
 // =======================================================================
 
-// The backend enforces rail exclusivity on this endpoint: an INR merchant may
-// send bankDetails, a USDT merchant may send only the wallet addresses. Sending a field for the wrong rail is a 400, not a silent no-op
-// (backend/domains/merchant/merchant.routes.js PUT /profile).
-//
-// The two addresses are independent: send one to set it, send an empty string
-// to clear that chain, omit it to leave it alone. Clearing the LAST one is
-// refused — a merchant with no address receives no orders, and that is worth
-// saying rather than accepting silently.
+// Bank details only: a merchant holds no USDT address, since USDT buys are paid
+// to the platform (owner, 2026-10-18).
 export const updateProfile = async (data: {
-  bankDetails?: { accountHolderName?: string; bankName?: string; accountNo?: string; ifsc?: string };
-  usdtAddressTrc20?: string;
-  usdtAddressBep20?: string;
+  bankDetails: { accountHolderName?: string; bankName?: string; accountNo?: string; ifsc?: string };
 }): Promise<any> => {
   const result = await request<any>(ENDPOINTS.PROFILE.UPDATE, {
     method: 'PUT',

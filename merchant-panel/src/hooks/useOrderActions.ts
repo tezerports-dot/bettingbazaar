@@ -36,7 +36,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api } from '../services/api';
-import { railCopy, type MerchantRail } from '../utils/rail';
+import { PAYMENT_COPY } from '../utils/rail';
 import type { PaymentOrder } from '../types';
 import type { ConfirmRequest } from '../components/ui';
 import type { OrderActions } from '../components/OrderRow';
@@ -47,7 +47,6 @@ export const MIN_UTR_LENGTH = 12;
 const orderRef = (order: PaymentOrder): string => String(order._id || order.id || order.orderId);
 
 export function useOrderActions(
-  rail: MerchantRail,
   onChanged: () => Promise<void> | void,
 ) {
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
@@ -59,7 +58,6 @@ export function useOrderActions(
   // A sell a merchant account serves: paid FROM one of its accounts, chosen
   // with the UTR in its own dialog (owner, 2026-10-11).
   const [payoutTarget, setPayoutTarget] = useState<PaymentOrder | null>(null);
-  const copy = railCopy(rail);
 
   /**
    * Run one action and say whether it WORKED.
@@ -105,7 +103,7 @@ export function useOrderActions(
       // it does not re-send it, because the route reads the row.
       const utr = (order.utrNumber || '').trim();
       if (!utr) {
-        toast.error(`The user has not submitted their ${copy.proofLabel} yet.`);
+        toast.error(`The user has not submitted their ${PAYMENT_COPY.proofLabel} yet.`);
         return;
       }
       // There is NO payment-screenshot check here, deliberately.
@@ -118,7 +116,7 @@ export function useOrderActions(
       // for. The merchant's release button did not work, at all, for anyone.
       setConfirmRequest({
         title: 'Release tokens to the user?',
-        body: `Confirm the full amount reached your ${rail === 'USDT' ? 'wallet' : 'account'}. Tokens credit to the user immediately and this cannot be reversed.`,
+        body: `Confirm the full amount reached your account. Tokens credit to the user immediately and this cannot be reversed.`,
         confirmLabel: 'Confirm & release',
         tone: 'ok',
         onConfirm: () => run(
@@ -165,7 +163,7 @@ export function useOrderActions(
 
     // Replaced by the screen that owns the detail drawer.
     onOpen: () => undefined,
-  }), [copy.proofLabel, rail, run]);
+  }), [run]);
 
   /**
    * Send the rejection.

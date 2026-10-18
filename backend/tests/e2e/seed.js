@@ -2,9 +2,9 @@
 import { db } from '#db';
 import { pgQuery } from '#db/client.js';
 import { createMerchant, approveMerchant, setOnline } from '#db/repositories/merchants.js';
-import { setSupervisorRole, createTeam, addMember, approveMember, TEAM_SIZE } from '#db/repositories/teams.js';
+import { setSupervisorRole, createTeam, addMember, approveMember, TEAM_SIZE, SUPERVISOR_RAILS } from '#db/repositories/teams.js';
 import { createRequest, fulfilRequest, getPool } from '#db/repositories/teamPools.js';
-import { setCashReady, RAILS } from '#db/repositories/teamRouting.js';
+import { setCashReady } from '#db/repositories/teamRouting.js';
 import { getTreasuryBalances, ACCOUNTS } from '#db/repositories/treasury.js';
 import { rid } from './harness.js';
 import { encryptField } from '../../domains/identity/fieldCrypto.util.js';
@@ -13,12 +13,6 @@ import crypto from 'node:crypto';
 
 const mob = () => String(6000000000 + Math.floor(Math.random() * 3999999999));
 
-// `merchants_usdt_trc20_unique` / `..._bep20_unique`: two merchants may not hold
-// the same address (§25 — the address IS where the player's USDT lands). So the
-// driver mints a fresh one per merchant rather than reusing a literal.
-const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-export const trc20 = () => 'T' + Array.from({ length: 33 }, () => B58[Math.floor(Math.random() * B58.length)]).join('');
-export const bep20 = () => '0x' + Array.from({ length: 40 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
 
 /**
  * Give one actor the Telegram link a verified account HAS (Step 3).
@@ -86,8 +80,7 @@ export async function seedPlayer({ balancePaise = 0, verified = true, boardRules
  * would let it carry on asserting against tokens nobody was given.
  */
 export async function seedMerchant({
-  currency = 'INR', approve = true, online = true,
-  usdtAddressTrc20 = null, usdtAddressBep20 = null,
+  approve = true, online = true,
   verified = true, tokensPaise, cashDenominationPaise,
 } = {}) {
   if (tokensPaise !== undefined || cashDenominationPaise !== undefined) {
@@ -104,11 +97,8 @@ export async function seedMerchant({
   const accountNo = String(100000000000 + Math.floor(Math.random() * 899999999999));
   const merchant = await createMerchant({
     name, username: name, mobile, email: `${name}@example.test`,
-    currency, status: 'PENDING',
-    bankDetails: currency === 'INR'
-      ? { accountNo, ifsc: 'HDFC0000001', accountHolderName: name, bankName: 'HDFC Bank' }
-      : null,
-    usdtAddressTrc20, usdtAddressBep20,
+    status: 'PENDING',
+    bankDetails: { accountNo, ifsc: 'HDFC0000001', accountHolderName: name, bankName: 'HDFC Bank' },
   });
   const id = merchant._id ?? merchant.merchantId;
 
@@ -208,13 +198,12 @@ export async function fundTeam(team, tokens) {
 export async function seedTeam({
   rail = 'UPI_BANK', poolTokens = 0, include = [], online = null, ready = [], exclusive = true,
 } = {}) {
-  if (!RAILS[rail]) throw new Error(`seedTeam: unknown rail ${rail}`);
+  if (!SUPERVISOR_RAILS.includes(rail)) throw new Error(`seedTeam: a team runs on ${SUPERVISOR_RAILS.join(' or ')}, not ${rail}`);
   if (include.length > TEAM_SIZE) throw new Error(`seedTeam: a team has ${TEAM_SIZE} members, not ${include.length}`);
-  const currency = rail === RAILS.USDT ? 'USDT' : 'INR';
 
   // The supervisor does no transactions (owner, 2026-10-02) — offline, and
   // never a member: `team_roles_disjoint` refuses one account being both.
-  const supervisor = await seedMerchant({ currency, online: false });
+  const supervisor = await seedMerchant({ online: false });
   const role = await setSupervisorRole(supervisor.merchantId, { rail });
   if (!role.ok) throw new Error(`seedTeam: supervisor refused: ${role.reason}`);
   const made = await createTeam({ supervisorId: supervisor.merchantId, name: rid(`team-${rail}`) });
@@ -223,12 +212,7 @@ export async function seedTeam({
 
   const members = [...include];
   while (members.length < TEAM_SIZE) {
-    // A USDT member holds an address on BOTH chains unless the scenario
-    // brings its own, so the padding can serve either network.
-    members.push(await seedMerchant({
-      currency, online: false,
-      ...(rail === RAILS.USDT ? { usdtAddressTrc20: trc20(), usdtAddressBep20: bep20() } : {}),
-    }));
+    members.push(await seedMerchant({ online: false }));
   }
   for (const m of members) {
     const added = await addMember({ teamId, supervisorId: supervisor.merchantId, merchantRef: m.merchantId, actor: supervisor.merchantId });

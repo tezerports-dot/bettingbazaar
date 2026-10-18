@@ -171,7 +171,7 @@ async function seed() {
   await step('merchants', `
     INSERT INTO merchants (merchant_id, name, public_ref, username, mobile, password_hash,
                            status, merchant_approval_status, is_online, accepts_deposits,
-                           accepts_withdrawals, accepted_currencies,
+                           accepts_withdrawals,
                            bank_account_holder_name,
                            min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
                            max_concurrent_orders, created_at)
@@ -180,7 +180,7 @@ async function seed() {
            '$argon2id$v=19$m=65536,t=3,p=4$loadtestloadtest$loadtestloadtestloadtestloadtestloadtest',
            CASE WHEN i % 23 = 0 THEN 'INACTIVE' ELSE 'ACTIVE' END,
            CASE WHEN i % 17 = 0 THEN 'PENDING' ELSE 'APPROVED' END,
-           (i % 3 <> 0), true, true, ARRAY['INR'],
+           (i % 3 <> 0), true, true,
            'Load Merchant ' || i,
            50000, 100000000, 50000, 100000000, 5,
            now() - (i % 200) * interval '1 day'

@@ -29,7 +29,12 @@ import { textHasAMobile } from '../../backend/domains/identity/mobileInText.js';
 
 export const MAX_TEAMS = 4;
 export const TEAM_SIZE = 10;
-export const SUPERVISOR_RAILS = Object.freeze(['CASH', 'UPI_BANK', 'USDT']);
+/**
+ * The rails a supervisor (and so a team) runs on. No USDT: USDT buys are paid
+ * to the platform (owner, 2026-10-18), and the row refuses one
+ * (`merchants_supervisor_rail`).
+ */
+export const SUPERVISOR_RAILS = Object.freeze(['CASH', 'UPI_BANK']);
 
 const newTeamId = () => `team_${randomBytes(10).toString('hex')}`;
 
@@ -309,55 +314,12 @@ export async function addMember({ teamId, supervisorId, merchantRef, actor }) {
   }
 }
 
-/**
- * The settlement currency a team's rail needs of its members: USDT for a USDT
- * team, INR for a cash or UPI/bank team.
- */
-export const memberCurrencyFor = (rail) => (rail === 'USDT' ? 'USDT' : 'INR');
-
-/**
- * An approved member settles on their team's rail (owner, 2026-10-14).
- *
- * Routing picks a team's members by the SUPERVISOR's rail, but a member's own
- * `accepted_currencies` decided which credentials their Profile would take. A
- * member left on INR in a USDT team could never save a wallet address, so no
- * USDT buy could ever be routed to them and every one waited at "Finding a
- * merchant" until it expired. Approval now puts the member on the team's rail,
- * in the approving transaction, and clears the other rail's credentials the
- * way the admin's rail switch does (they would sit in its unique indexes and
- * could be snapshotted onto an order). A no-op when the rail already matches.
- */
-async function alignMemberRailWithin(client, merchantId, supervisorRail) {
-  const currency = memberCurrencyFor(supervisorRail);
-  await client.query(
-    `UPDATE merchants
-        SET accepted_currencies = ARRAY[$2]::text[],
-            bank_account_no          = CASE WHEN $2 = 'USDT' THEN NULL ELSE bank_account_no END,
-            bank_ifsc                = CASE WHEN $2 = 'USDT' THEN NULL ELSE bank_ifsc END,
-            bank_account_holder_name = CASE WHEN $2 = 'USDT' THEN NULL ELSE bank_account_holder_name END,
-            usdt_address_trc20       = CASE WHEN $2 = 'INR' THEN NULL ELSE usdt_address_trc20 END,
-            usdt_address_bep20       = CASE WHEN $2 = 'INR' THEN NULL ELSE usdt_address_bep20 END
-      WHERE merchant_id = $1 AND accepted_currencies[1] IS DISTINCT FROM $2`,
-    [String(merchantId), currency]);
-}
-
-/** The rail of the team a merchant is in (pending or approved), or null. */
-export async function teamRailOf(merchantId) {
-  const { rows } = await pgQuery(
-    `SELECT s.supervisor_rail FROM team_members tm
-       JOIN teams t ON t.team_id = tm.team_id
-       JOIN merchants s ON s.merchant_id = t.supervisor_id
-      WHERE tm.merchant_id = $1`, [String(merchantId)], 'teams_rail_of_member');
-  return rows[0]?.supervisor_rail ?? null;
-}
-
 /** An admin approves a pending member. Refused if the team already has TEAM_SIZE approved. */
 export async function approveMember({ merchantId, actor }) {
   return withTransaction(async (client) => {
     const { rows } = await client.query(
-      `SELECT t.team_id, s.supervisor_rail FROM team_members tm
+      `SELECT t.team_id FROM team_members tm
          JOIN teams t ON t.team_id = tm.team_id
-         JOIN merchants s ON s.merchant_id = t.supervisor_id
         WHERE tm.merchant_id = $1 AND tm.status = 'PENDING'
         FOR UPDATE OF t`, [String(merchantId)]);
     if (!rows[0]) return { ok: false, reason: 'not_pending' };
@@ -368,7 +330,6 @@ export async function approveMember({ merchantId, actor }) {
     await client.query(
       `UPDATE team_members SET status = 'APPROVED', approved_by = $2, approved_at = now()
         WHERE merchant_id = $1`, [String(merchantId), String(actor)]);
-    await alignMemberRailWithin(client, merchantId, rows[0].supervisor_rail);
     return { ok: true, teamId };
   });
 }
@@ -400,17 +361,16 @@ export async function removeMember({ merchantId, supervisorId = null, onlyPendin
  * never a supervisor or a member, kind and owner fixed.
  *
  * INSIDE the caller's transaction, so the admin's "create a merchant account"
- * writes the login, the merchant and its team together. The owner must be an
- * INR merchant (a merchant account serves INR only; USDT is always agents').
+ * writes the login, the merchant and its team together. A merchant account
+ * serves INR only, as every merchant does.
  * Returns { ok: true, teamId } or { ok: false, reason }.
  */
 export async function createDirectTeamWithin(client, { merchantId, name = null }) {
   const { rows: m } = await client.query(
-    `SELECT name, accepted_currencies, is_supervisor FROM merchants WHERE merchant_id = $1 FOR UPDATE`,
+    `SELECT name, is_supervisor FROM merchants WHERE merchant_id = $1 FOR UPDATE`,
     [String(merchantId)]);
   if (!m[0]) return { ok: false, reason: 'not_found' };
   if (m[0].is_supervisor) return { ok: false, reason: 'is_supervisor' };
-  if (!(m[0].accepted_currencies ?? []).includes('INR')) return { ok: false, reason: 'not_inr' };
   const { rows: member } = await client.query('SELECT 1 FROM team_members WHERE merchant_id = $1', [String(merchantId)]);
   if (member[0]) return { ok: false, reason: 'is_member' };
   const { rows: existing } = await client.query('SELECT team_id FROM teams WHERE owner_merchant_id = $1', [String(merchantId)]);

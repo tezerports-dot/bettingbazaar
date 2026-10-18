@@ -14,7 +14,7 @@ export default async function run() {
 
   // ══ 1. Admin SUSPENDS a merchant ══════════════════════════════════════════
   {
-    const m = await seedMerchant({ currency: 'INR' });
+    const m = await seedMerchant();
     const mT = merchantToken(m);
 
     const before = await GET(mT, '/api/merchant/profile');
@@ -62,7 +62,7 @@ export default async function run() {
 
   // ══ 3. The assignment PAUSE is not a suspension, and has no timer ══════════
   {
-    const m = await seedMerchant({ currency: 'INR' });
+    const m = await seedMerchant();
     const mT = merchantToken(m);
     await pgQuery(
       `UPDATE merchants SET assignment_paused_at = now(), consecutive_expiries = 3,

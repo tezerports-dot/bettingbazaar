@@ -5,15 +5,12 @@
 // tokens — their team's pool does (PROJECT_STATUS §3.10) — so there is no
 // wallet card here.
 //
-// The payment-details section is the one place the settlement rail is fully
-// visible: an INR merchant edits a bank account (no UPI handle: a UPI_BANK buy
-// is paid into it, and nobody is shown a handle, CLAUDE.md §2 and §24), a USDT
-// merchant edits an address per chain. Which rail this merchant is on is assigned by an admin
-// (Merchant.acceptedCurrencies) and is read-only here — the backend rejects a
-// request that carries the other rail's fields, so this is a real boundary and
-// not merely a hidden form.
-import React, { useEffect, useMemo, useState } from 'react';
-import { Copy, Edit3, LogOut, Save } from 'lucide-react';
+// The payment-details section is where a merchant edits their bank account (no
+// UPI handle: a UPI_BANK buy is paid into it, and nobody is shown a handle,
+// CLAUDE.md §2 and §24). USDT buys are paid to the platform, never to a
+// merchant (owner, 2026-10-18, CLAUDE.md §25), so there is no USDT address.
+import React, { useEffect, useState } from 'react';
+import { Edit3, LogOut, Save } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
 import { availabilityOf } from '../utils/availability';
@@ -21,12 +18,9 @@ import { actorOf, ROLE_LABEL } from '../utils/actor';
 import { api } from '../services/api';
 import { useViewport } from '../hooks/useViewport';
 import { SUCCESS_MESSAGES } from '../constants';
+import { formatTokens } from '../utils/rail';
 import {
-  formatTokens, railOf,
-  USDT_CHAINS, USDT_CHAIN_INFO, isUsdtAddress, type UsdtChain,
-} from '../utils/rail';
-import {
-  Banner, Button, Card, CardTitle, Field, Toggle, Verified, cardStyle, copyText, inputStyle,
+  Button, Card, CardTitle, Field, Toggle, Verified, cardStyle, copyText, inputStyle,
 } from '../components/ui';
 
 /**
@@ -63,8 +57,6 @@ export const SubMemberProfile: React.FC = () => {
 const OwnerProfileSettings: React.FC = () => {
   const { merchant, logout, refreshProfile } = useAuth();
   const { isMobile } = useViewport();
-  const rail = railOf(merchant);
-  const isUsdt = rail === 'USDT';
   // Online, paused, or a supervisor with no switch at all: one helper (§5).
   const availability = availabilityOf(merchant);
 
@@ -77,8 +69,6 @@ const OwnerProfileSettings: React.FC = () => {
     bankName: '',
     accountNo: '',
     ifsc: '',
-    usdtAddressTrc20: '',
-    usdtAddressBep20: '',
   });
 
   const [prefs, setPrefs] = useState({ acceptsDeposits: true, acceptsWithdrawals: true });
@@ -92,8 +82,6 @@ const OwnerProfileSettings: React.FC = () => {
       bankName: merchant.bankDetails?.bankName ?? merchant.settlementDetails?.bankName ?? '',
       accountNo: merchant.bankDetails?.accountNo ?? merchant.settlementDetails?.accountNumber ?? '',
       ifsc: merchant.bankDetails?.ifsc ?? merchant.settlementDetails?.ifsc ?? '',
-      usdtAddressTrc20: merchant.usdtAddressTrc20 ?? '',
-      usdtAddressBep20: merchant.usdtAddressBep20 ?? '',
     });
     setPrefs({
       acceptsDeposits: merchant.acceptsDeposits ?? merchant.orderPreferences?.acceptDeposits ?? true,
@@ -101,63 +89,17 @@ const OwnerProfileSettings: React.FC = () => {
     });
   }, [merchant]);
 
-  /**
-   * One error per chain, and a separate one for holding none.
-   *
-   * A blank field CLEARS that chain — a merchant who stops serving a network
-   * needs a way to say so. What is refused is clearing the last one: with no
-   * address, no order can be assigned, and a merchant who quietly stopped
-   * receiving work would have no way to find out why.
-   */
-  const addressErrors = useMemo(() => {
-    if (!isUsdt || !editingPayment) return {} as Partial<Record<UsdtChain, string>>;
-    const out: Partial<Record<UsdtChain, string>> = {};
-    for (const chain of USDT_CHAINS) {
-      const value = form[USDT_CHAIN_INFO[chain].field].trim();
-      if (!value) continue;
-      if (!isUsdtAddress(chain, value)) {
-        out[chain] = `That is not a ${USDT_CHAIN_INFO[chain].label} address — ${USDT_CHAIN_INFO[chain].hint}.`;
-      }
-    }
-    return out;
-  }, [isUsdt, editingPayment, form]);
-
-  const holdsNoAddress = isUsdt
-    && !form.usdtAddressTrc20.trim() && !form.usdtAddressBep20.trim();
-
   const savePayment = async () => {
-    if (isUsdt) {
-      if (Object.keys(addressErrors).length) {
-        toast.error('Fix the wallet address before saving. USDT sent to a wrong address cannot be recovered.');
-        return;
-      }
-      if (holdsNoAddress) {
-        toast.error('Keep at least one wallet address — with none, no order can be assigned to you.');
-        return;
-      }
-    }
     setSavingPayment(true);
     try {
-      // Only the fields for this merchant's rail are sent — the backend rejects
-      // the other rail's fields outright.
-      await api.updateProfile(
-        isUsdt
-          ? {
-              // Both chains, every time: an empty string CLEARS that chain, and
-              // sending only the one being edited would leave the panel unable
-              // to remove an address at all.
-              usdtAddressTrc20: form.usdtAddressTrc20.trim(),
-              usdtAddressBep20: form.usdtAddressBep20.trim(),
-            }
-          : {
-              bankDetails: {
-                accountHolderName: form.accountHolderName.trim(),
-                bankName: form.bankName.trim(),
-                accountNo: form.accountNo.trim(),
-                ifsc: form.ifsc.trim().toUpperCase(),
-              },
-            }
-      );
+      await api.updateProfile({
+        bankDetails: {
+          accountHolderName: form.accountHolderName.trim(),
+          bankName: form.bankName.trim(),
+          accountNo: form.accountNo.trim(),
+          ifsc: form.ifsc.trim().toUpperCase(),
+        },
+      });
       await refreshProfile();
       setEditingPayment(false);
       toast.success(SUCCESS_MESSAGES.PROFILE_UPDATED);
@@ -220,11 +162,8 @@ const OwnerProfileSettings: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: perfColumns, gap: 11 }}>
           {[
             { label: 'Completed orders', value: merchant?.totalOrdersCompleted !== undefined ? String(merchant.totalOrdersCompleted) : '—', tone: 'var(--text)' },
-            // TOKENS, not the rail's currency. `merchants.total_deposit_amount_paise`
-            // is fed `order.tokenAmount` by recordCompletedOrder, so on the USDT rail
-            // `formatMoney(..., rail)` printed a token count with a USDT suffix —
-            // a 50,000-token deposit read "50,000 USDT" for about 555 USDT of work.
-            // CLAUDE.md trap 15, in the line a human reads.
+            // TOKENS: `merchants.total_deposit_amount_paise` is fed
+            // `order.tokenAmount` by recordCompletedOrder.
             { label: 'Deposits processed', value: merchant?.totalDepositAmount !== undefined ? formatTokens(merchant.totalDepositAmount) : '—', tone: 'var(--dep)' },
             { label: 'Withdrawals processed', value: merchant?.totalWithdrawalAmount !== undefined ? formatTokens(merchant.totalWithdrawalAmount) : '—', tone: 'var(--wd)' },
             { label: 'Merchant rating', value: merchant?.rating !== undefined ? `${merchant.rating.toFixed(1)} ★` : '—', tone: 'var(--text)' },
@@ -253,17 +192,17 @@ const OwnerProfileSettings: React.FC = () => {
         </div>
       </Card>
 
-      {/* Payment details — the rail-specific section */}
+      {/* Payment details */}
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 3 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
             <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--text)' }}>Payment details</span>
             <span style={{
               fontSize: 10, fontWeight: 800, padding: '3px 8px', borderRadius: 7, letterSpacing: '.03em',
-              color: isUsdt ? 'var(--dep)' : 'var(--brand)',
-              background: isUsdt ? 'var(--dep-bg)' : 'var(--brand-bg)',
+              color: 'var(--brand)',
+              background: 'var(--brand-bg)',
             }}>
-              {isUsdt ? 'USDT · TRC-20 / BEP-20' : 'INR · bank account'}
+              INR · bank account
             </span>
           </div>
           {!editingPayment && (
@@ -276,57 +215,10 @@ const OwnerProfileSettings: React.FC = () => {
           )}
         </div>
         <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', marginBottom: 15 }}>
-          {isUsdt
-            ? 'Players send USDT to the address for the network they chose'
-            : 'Users pay here for deposits · you receive settlements here'}
+          Users pay here for deposits · you receive settlements here
         </div>
 
-        {!editingPayment && (isUsdt ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
-            {/* One row per chain. A merchant may hold either, both, or neither
-                — and which they hold decides which orders reach them, so it is
-                shown as two separate facts rather than one "wallet address". */}
-            {USDT_CHAINS.map((chain) => {
-              const info = USDT_CHAIN_INFO[chain];
-              const address = merchant?.[info.field] || '';
-              return (
-                <div key={chain} style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-                  padding: '13px 15px', background: 'var(--dep-bg)', borderRadius: 13,
-                }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--dep)' }}>{info.label}</div>
-                    <div className="bb-mono" style={{ fontSize: 14, fontWeight: 700, color: address ? 'var(--text)' : 'var(--muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {address || 'Not set — no orders on this network'}
-                    </div>
-                  </div>
-                  {address && (
-                    <button
-                      onClick={() => copyText(address, `${info.label} address`)}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 700, color: 'var(--dep)',
-                        background: 'var(--surface)', border: 0, padding: '8px 12px', borderRadius: 9, cursor: 'pointer', flexShrink: 0,
-                      }}
-                    >
-                      <Copy size={13} /> Copy
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-            {!merchant?.usdtAddressTrc20 && !merchant?.usdtAddressBep20 ? (
-              <Banner tone="warn" title="Add a wallet address">
-                You cannot take USDT orders until at least one address is saved.
-              </Banner>
-            ) : (
-              <Banner tone="warn">
-                You are offered orders <strong style={{ color: 'var(--text)' }}>only on the networks you hold an
-                address for</strong>. The player chooses the network, sends USDT to that address, and submits the
-                transaction ID for you to verify.
-              </Banner>
-            )}
-          </div>
-        ) : (
+        {!editingPayment && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
             {/* A bank account only. A UPI ID row stood above this, saved and
                 copied into every order, and nothing ever read it: a UPI_BANK
@@ -350,54 +242,9 @@ const OwnerProfileSettings: React.FC = () => {
               </div>
             </div>
           </div>
-        ))}
+        )}
 
-        {editingPayment && (isUsdt ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
-            {/* One field per chain, each independently clearable. A blank field
-                means "I do not serve this network"; clearing BOTH is refused,
-                because a merchant with no address silently receives nothing. */}
-            {USDT_CHAINS.map((chain) => {
-              const info = USDT_CHAIN_INFO[chain];
-              return (
-                <Field
-                  key={chain}
-                  label={`${info.label} address`}
-                  error={addressErrors[chain]}
-                  hint={`${info.hint}. Leave blank if you do not accept USDT on this network. USDT sent to a wrong address cannot be recovered — check it character by character.`}
-                >
-                  <input
-                    value={form[info.field]}
-                    onChange={(e) => setForm((f) => ({ ...f, [info.field]: e.target.value }))}
-                    placeholder={info.hint}
-                    spellCheck={false}
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    className="bb-mono"
-                    style={inputStyle}
-                  />
-                </Field>
-              );
-            })}
-            {holdsNoAddress && (
-              <Banner tone="warn" title="Keep at least one address">
-                With no address on either network, no order can be assigned to you.
-              </Banner>
-            )}
-            <div style={{ display: 'flex', gap: 10 }}>
-              <Button
-                onClick={savePayment}
-                busy={savingPayment}
-                disabled={Object.keys(addressErrors).length > 0 || holdsNoAddress}
-              >
-                <Save size={15} /> Save wallet addresses
-              </Button>
-              <Button variant="outline" tone="neutral" onClick={() => setEditingPayment(false)} style={{ borderColor: 'var(--border)', color: 'var(--text)' }}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        ) : (
+        {editingPayment && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
             <div style={{ display: 'grid', gridTemplateColumns: twoColumns, gap: 12 }}>
               <Field label="Account holder">
@@ -434,7 +281,7 @@ const OwnerProfileSettings: React.FC = () => {
               </Button>
             </div>
           </div>
-        ))}
+        )}
       </Card>
 
       {/* Order preferences: a member's. A supervisor takes no orders (CLAUDE.md
@@ -497,7 +344,7 @@ const OwnerProfileSettings: React.FC = () => {
           <div style={{ background: 'var(--surface-2)', borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)' }}>Settlement rail</span>
             <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
-              {isUsdt ? 'USDT · TRC-20 / BEP-20' : 'INR · bank account'}
+              INR · bank account
             </span>
           </div>
           <Button variant="outline" tone="danger" full onClick={logout} style={{ marginTop: 2 }}>

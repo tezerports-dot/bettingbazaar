@@ -8,11 +8,10 @@
 // (GET /merchant/orders) and GET /merchant/earnings/weekly — nothing here is a
 // placeholder series (GOVERNANCE §2: no invented business figures).
 import React, { useEffect, useMemo, useState } from 'react';
-import { useAuth } from '../services/AuthContext';
 import { api } from '../services/api';
 import { useOrders } from '../hooks/useOrders';
 import { useViewport } from '../hooks/useViewport';
-import { formatMoney, formatMoneyCompact, formatTokens, railOf } from '../utils/rail';
+import { formatMoney, formatMoneyCompact, formatTokens } from '../utils/rail';
 import { OrderStatus } from '../types';
 import { Card, CardTitle, ErrorState, SegmentedControl, Skeleton, cardStyle } from '../components/ui';
 import OrderReportTable from '../components/OrderReportTable';
@@ -33,10 +32,8 @@ function dayKey(value: string | number | Date): string {
 }
 
 const HistoryViews: React.FC = () => {
-  const { merchant } = useAuth();
   const { orders, state, reload } = useOrders();
   const { isMobile } = useViewport();
-  const rail = railOf(merchant);
 
   const [tab, setTab] = useState<Tab>('volume');
   const [weekly, setWeekly] = useState<WeeklyPoint[] | null>(null);
@@ -56,12 +53,10 @@ const HistoryViews: React.FC = () => {
     [orders]
   );
 
-  // ── These stay in the ORDER's currency, and that is correct ──────────────
-  // They sum `order.fiatAmount`, which is what the PLAYER SENT — rupees on the
-  // INR rail, USDT on a USDT order — so `formatMoney(…, rail)` is the right
-  // formatter. Safe to add up only because a merchant settles on exactly one
-  // rail (§2), so every order in this list shares a currency; the same sum
-  // across merchants is trap 15 and is why the SERVER aggregates tokens.
+  // ── These are in rupees, and that is correct ───────────────────────────
+  // They sum `order.fiatAmount`, which is what the PLAYER SENT. Every order a
+  // merchant serves is INR (USDT buys are paid to the platform, §25), so the
+  // sum shares one currency.
   //
   // EARNINGS are the opposite: team commission is paid into the team's pool in
   // platform TOKENS and each share is recorded in tokens (2e), so those render
@@ -130,7 +125,7 @@ const HistoryViews: React.FC = () => {
         <div style={{ ...cardStyle, padding: 16 }}>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--muted)' }}>Total volume</div>
           <div className="bb-mono" style={{ fontSize: 22, fontWeight: 700, color: 'var(--text)', letterSpacing: '-1px', marginTop: 3 }}>
-            {formatMoneyCompact(totals.volume, rail)}
+            {formatMoneyCompact(totals.volume)}
           </div>
           <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--muted)', marginTop: 2 }}>
             {completed.length} completed orders
@@ -148,9 +143,9 @@ const HistoryViews: React.FC = () => {
         <div style={{ ...cardStyle, padding: 16 }}>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--muted)' }}>Deposits · Withdrawals</div>
           <div className="bb-mono" style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-.5px', marginTop: 5 }}>
-            <span style={{ color: 'var(--dep)' }}>{formatMoneyCompact(totals.deposits, rail)}</span>
+            <span style={{ color: 'var(--dep)' }}>{formatMoneyCompact(totals.deposits)}</span>
             <span style={{ color: 'var(--muted)' }}> · </span>
-            <span style={{ color: 'var(--wd)' }}>{formatMoneyCompact(totals.withdrawals, rail)}</span>
+            <span style={{ color: 'var(--wd)' }}>{formatMoneyCompact(totals.withdrawals)}</span>
           </div>
         </div>
       </div>
@@ -177,11 +172,11 @@ const HistoryViews: React.FC = () => {
               <div key={day.key} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, height: '100%', justifyContent: 'flex-end' }}>
                 <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: '100%', width: '100%', justifyContent: 'center' }}>
                   <div
-                    title={`Deposits ${formatMoney(day.deposits, rail)}`}
+                    title={`Deposits ${formatMoney(day.deposits)}`}
                     style={{ width: '44%', maxWidth: 26, height: `${Math.max(2, (day.deposits / volumeMax) * 100)}%`, borderRadius: '5px 5px 2px 2px', background: 'var(--dep)', transition: 'height .4s ease' }}
                   />
                   <div
-                    title={`Withdrawals ${formatMoney(day.withdrawals, rail)}`}
+                    title={`Withdrawals ${formatMoney(day.withdrawals)}`}
                     style={{ width: '44%', maxWidth: 26, height: `${Math.max(2, (day.withdrawals / volumeMax) * 100)}%`, borderRadius: '5px 5px 2px 2px', background: 'var(--wd)', transition: 'height .4s ease' }}
                   />
                 </div>

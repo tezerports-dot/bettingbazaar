@@ -887,17 +887,6 @@ CREATE TABLE IF NOT EXISTS merchants (
   accepts_deposits    BOOLEAN NOT NULL DEFAULT TRUE,
   accepts_withdrawals BOOLEAN NOT NULL DEFAULT TRUE,
 
-  -- ── The rail, and why it is still an array ────────────────────────────────
-  -- A merchant settles on EXACTLY ONE rail. The array shape is kept because it
-  -- is what merchantScoring and the admin capabilities route already filter on;
-  -- the cardinality is enforced by a CHECK, so the "exactly one" rule is a
-  -- property of the row rather than of a validator that update operators skip.
-  accepted_currencies TEXT[] NOT NULL DEFAULT ARRAY['INR'],
-  -- The scalar view panels want. A GENERATED column, not a stored copy and not
-  -- an application-layer virtual: derived in the database, so it cannot drift
-  -- from the array and cannot be written independently of it.
-  merchant_type TEXT GENERATED ALWAYS AS (accepted_currencies[1]) STORED,
-
   -- ── Payment credentials. Money is sent to these ───────────────────────────
   -- A bank account on the INR rail, never a UPI handle (CLAUDE.md §2 "How each
   -- rail is paid", §24): `bank_upi_id` is dropped below.
@@ -905,10 +894,6 @@ CREATE TABLE IF NOT EXISTS merchants (
   bank_name                TEXT,
   bank_account_no          TEXT,
   bank_ifsc                TEXT,
-  -- TRC-20 (Tron), base58 and CASE-SENSITIVE. Uppercasing corrupts an address
-  -- and USDT sent to a corrupted address is unrecoverable, so the format is
-  -- checked by the row rather than trusted to the caller.
-  usdt_wallet_address      TEXT,
 
   -- ── Limits and thresholds, in integer paise ───────────────────────────────
   -- The document store held these as rupee floats. Every one of them is
@@ -959,16 +944,6 @@ CREATE TABLE IF NOT EXISTS merchants (
     status IN ('ACTIVE', 'SUSPENDED', 'INACTIVE', 'PENDING', 'REJECTED')),
   CONSTRAINT merchants_approval_known CHECK (
     merchant_approval_status IN ('PENDING', 'APPROVED', 'REJECTED', 'SUSPENDED')),
-  -- Exactly one rail, and a known one.
-  --
-  -- `cardinality`, NOT `array_length`: array_length returns NULL for an empty
-  -- array, `NULL = 1` is NULL, and a CHECK is satisfied by anything that is not
-  -- FALSE — so the first draft of this constraint accepted a merchant on NO
-  -- rail, whose merchant_type was then NULL and who matched no assignment
-  -- query. cardinality returns 0.
-  CONSTRAINT merchants_one_rail CHECK (
-    cardinality(accepted_currencies) = 1
-    AND accepted_currencies[1] IN ('INR', 'USDT')),
   -- A suspended merchant without a reason is a suspension nobody can appeal.
   CONSTRAINT merchants_suspension_has_reason CHECK (
     status <> 'SUSPENDED' OR (suspension_reason IS NOT NULL AND suspension_reason <> '')),
@@ -989,6 +964,17 @@ ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_pending_secret;
 ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_last_counter;
 ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_enrolled_at;
 ALTER TABLE merchants DROP COLUMN IF EXISTS backup_codes;
+
+-- No merchant rail (owner, 2026-10-18). A merchant used to settle on INR or
+-- USDT (`accepted_currencies`, its scalar `merchant_type`); USDT buys are now
+-- paid to the platform, so every merchant is INR and the column said nothing.
+-- Dropped, with the CHECK and the assignment index over them, before that index
+-- is made again below without the rail, so an existing database converges (S31).
+-- An order's own currency (`order_states.currency`) stays.
+DROP INDEX IF EXISTS merchants_assignable_idx;
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_one_rail;
+ALTER TABLE merchants DROP COLUMN IF EXISTS merchant_type;
+ALTER TABLE merchants DROP COLUMN IF EXISTS accepted_currencies;
 
 -- No UPI handle. `bank_upi_id` was written by Profile and copied into each
 -- order's snapshot, and nothing ever read it: a UPI_BANK buy is paid into the
@@ -1012,9 +998,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS merchants_mobile_unique
 CREATE UNIQUE INDEX IF NOT EXISTS merchants_username_unique
   ON merchants (lower(username)) WHERE username IS NOT NULL AND username <> '';
 
--- The assignment query: online, active, accepting this direction, on this rail.
+-- The assignment query: online, active.
 CREATE INDEX IF NOT EXISTS merchants_assignable_idx
-  ON merchants (status, is_online, merchant_type)
+  ON merchants (status, is_online)
   WHERE status = 'ACTIVE' AND is_online;
 
 -- `public_ref` is immutable. Enforced here because a schema-level flag is
@@ -2812,81 +2798,21 @@ CREATE INDEX IF NOT EXISTS order_states_queued_idx
   ON order_states (assignment_priority DESC, created_at ASC)
   WHERE state = 'PENDING_QUEUE';
 
--- ── A USDT merchant holds an address PER CHAIN ──────────────────────────────
+-- ── No merchant holds a USDT address (owner, 2026-10-18) ────────────────────
 --
--- USDT is one token on several blockchains, and they are not interchangeable:
--- USDT sent to a TRC-20 address from a BEP-20 wallet is gone. So the player
--- chooses the chain THEY hold funds on, and is shown only the address that can
--- receive them.
---
--- `usdt_wallet_address` was ONE column with a TRC-20 CHECK on it, which made
--- Tron the only chain a merchant could serve and made "which chain is this?" a
--- question the schema could not answer. Two columns say it instead: a merchant
--- may hold one, the other, or both, and the assignment query filters on the
--- chain the order asked for.
-ALTER TABLE merchants ADD COLUMN IF NOT EXISTS usdt_address_trc20 TEXT;
-ALTER TABLE merchants ADD COLUMN IF NOT EXISTS usdt_address_bep20 TEXT;
-
--- Carry the existing addresses across before the old column goes. Its CHECK was
--- the TRC-20 format, so every value in it is a Tron address by construction.
---
--- Guarded on the column still existing: this file is applied REPEATEDLY and
--- every statement in it has to be idempotent. A bare UPDATE naming a dropped
--- column is a hard error on the second run, which fails the whole schema apply
--- — and the second run is every run after the first deployment.
-DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.columns
-              WHERE table_name = 'merchants' AND column_name = 'usdt_wallet_address') THEN
-    UPDATE merchants
-       SET usdt_address_trc20 = usdt_wallet_address
-     WHERE usdt_wallet_address IS NOT NULL AND usdt_address_trc20 IS NULL;
-    ALTER TABLE merchants DROP COLUMN usdt_wallet_address;
-  END IF;
-END $$;
-
-DO $$ BEGIN
-  -- 34 base58 characters beginning with T. Base58 excludes 0, O, I and l so
-  -- visually similar characters cannot be confused.
-  ALTER TABLE merchants ADD CONSTRAINT merchants_usdt_trc20_format CHECK (
-    usdt_address_trc20 IS NULL
-    OR usdt_address_trc20 ~ '^T[1-9A-HJ-NP-Za-km-z]{33}$');
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN
-  -- BEP-20 is an EVM chain, so the address is the ordinary 20-byte hex form.
-  -- Case is not checked: EIP-55 mixed-case is a CHECKSUM, and rejecting a
-  -- lower-case address would refuse the form most wallets copy.
-  ALTER TABLE merchants ADD CONSTRAINT merchants_usdt_bep20_format CHECK (
-    usdt_address_bep20 IS NULL
-    OR usdt_address_bep20 ~ '^0x[0-9a-fA-F]{40}$');
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
--- ── Why there is NO "a USDT merchant must hold an address" constraint ───────
---
--- It was written and backed out. A merchant is created, an admin puts them on
--- the USDT rail, and only THEN do they enter a wallet address — so a row-level
--- check refuses the middle step of the ordinary signup, and the migration fails
--- outright on every merchant already on the rail without one.
---
--- It could not be right anyway. The question is not "does this merchant hold an
--- address" but "does this merchant hold an address ON THE CHAIN THIS ORDER
--- ASKED FOR", and a row cannot see the order. The guard belongs in the
--- assignment query, where it is per-chain and where a merchant with no address
--- is simply not a candidate. The merchant panel says so on their own screen, so
--- the symptom is visible rather than silent.
-
--- A wallet address is an IDENTITY, for the same reason a bank account is: two
--- merchants sharing one means money routed to either arrives at one, and no
--- record afterwards can say which was intended.
-CREATE UNIQUE INDEX IF NOT EXISTS merchants_usdt_trc20_unique
-  ON merchants (usdt_address_trc20) WHERE usdt_address_trc20 IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS merchants_usdt_bep20_unique
-  ON merchants (usdt_address_bep20) WHERE usdt_address_bep20 IS NOT NULL;
+-- USDT buys are paid to an address the PLATFORM derives for each order (see
+-- "USDT DEPOSITS TO THE PLATFORM" below), so the merchant address columns, their
+-- format checks and unique indexes are gone. Dropping a column drops its
+-- constraints and indexes with it; IF EXISTS keeps the file re-runnable.
+ALTER TABLE merchants DROP COLUMN IF EXISTS usdt_wallet_address;
+ALTER TABLE merchants DROP COLUMN IF EXISTS usdt_address_trc20;
+ALTER TABLE merchants DROP COLUMN IF EXISTS usdt_address_bep20;
 
 -- ── The chain a USDT order is being paid on ────────────────────────────────
 --
--- Chosen by the PLAYER at creation, from the chain they hold funds on, and
--- fixed for the life of the order: the merchant snapshot carries the address
--- for this chain and nothing else, and a chain that changed after assignment
--- would point a player at an address on a network they cannot reach.
+-- Fixed for the life of the order. Every USDT buy since 2026-10-18 is BEP20
+-- (`usdtDeposits.openUsdtBuy`); TRC20 stays allowed for the orders written
+-- before then, which this CHECK must keep accepting on every later update.
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS usdt_chain TEXT;
 
 DO $$ BEGIN
@@ -2902,14 +2828,6 @@ DO $$ BEGIN
     CHECK ((currency = 'USDT') = (usdt_chain IS NOT NULL));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
--- The assignment path for a USDT buy: merchants on this rail holding an address
--- on the chain the order asked for.
-CREATE INDEX IF NOT EXISTS merchants_usdt_trc20_live_idx
-  ON merchants (status, merchant_approval_status)
-  WHERE usdt_address_trc20 IS NOT NULL;
-CREATE INDEX IF NOT EXISTS merchants_usdt_bep20_live_idx
-  ON merchants (status, merchant_approval_status)
-  WHERE usdt_address_bep20 IS NOT NULL;
 
 -- ── The chain a USDT order pays on cannot move ─────────────────────────────
 --
@@ -3588,13 +3506,20 @@ ALTER TABLE merchants ADD CONSTRAINT merchants_routing_priority_range
 ALTER TABLE merchants ADD COLUMN IF NOT EXISTS is_supervisor BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE merchants ADD COLUMN IF NOT EXISTS supervisor_rail TEXT;
 ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_supervisor_rail;
+-- ── No team is on USDT (owner, 2026-10-18) ─────────────────────────────────
+-- USDT buys are paid to the platform ("USDT DEPOSITS TO THE PLATFORM" below),
+-- so the USDT team is gone, not kept for an admin. Convergent (§32 S31): a
+-- USDT team's supervisor is moved to UPI_BANK before the CHECK that no longer
+-- admits USDT goes back on. Its members hold no bank details yet, so routing
+-- offers them no UPI/bank order until they add them (`routingCandidates`).
+UPDATE merchants SET supervisor_rail = 'UPI_BANK' WHERE supervisor_rail = 'USDT';
 -- `IS NOT NULL` is load-bearing: `NULL IN (…)` is NULL, a CHECK passes
 -- anything that is not FALSE, and the first draft therefore admitted a
 -- supervisor with NO rail — measured by teamsPg before it shipped.
 ALTER TABLE merchants ADD CONSTRAINT merchants_supervisor_rail CHECK (
   (NOT is_supervisor AND supervisor_rail IS NULL)
   OR (is_supervisor AND supervisor_rail IS NOT NULL
-      AND supervisor_rail IN ('CASH', 'UPI_BANK', 'USDT')));
+      AND supervisor_rail IN ('CASH', 'UPI_BANK')));
 
 CREATE TABLE IF NOT EXISTS teams (
   team_id       TEXT PRIMARY KEY,
@@ -4115,24 +4040,6 @@ CREATE OR REPLACE TRIGGER merchants_log_online_insert
 -- as the end of its stretch.
 UPDATE merchants SET is_online = FALSE, last_online_toggle = now() WHERE is_supervisor AND is_online;
 
--- An approved team member settles on the team's rail (`teams.approveMember`,
--- owner 2026-10-14): USDT in a USDT team, INR in a cash or UPI/bank team, with
--- the other rail's credentials cleared. Convergent (§32 S31) for members
--- approved before the rule, whose Profile refused the credentials their team's
--- orders need, so nothing on that rail was ever routed to them.
-UPDATE merchants m
-   SET accepted_currencies = ARRAY[x.currency]::text[],
-       bank_account_no          = CASE WHEN x.currency = 'USDT' THEN NULL ELSE m.bank_account_no END,
-       bank_ifsc                = CASE WHEN x.currency = 'USDT' THEN NULL ELSE m.bank_ifsc END,
-       bank_account_holder_name = CASE WHEN x.currency = 'USDT' THEN NULL ELSE m.bank_account_holder_name END,
-       usdt_address_trc20       = CASE WHEN x.currency = 'INR' THEN NULL ELSE m.usdt_address_trc20 END,
-       usdt_address_bep20       = CASE WHEN x.currency = 'INR' THEN NULL ELSE m.usdt_address_bep20 END
-  FROM (SELECT tm.merchant_id, CASE WHEN s.supervisor_rail = 'USDT' THEN 'USDT' ELSE 'INR' END AS currency
-          FROM team_members tm
-          JOIN teams t ON t.team_id = tm.team_id
-          JOIN merchants s ON s.merchant_id = t.supervisor_id
-         WHERE tm.status = 'APPROVED' AND s.supervisor_rail IS NOT NULL) x
- WHERE m.merchant_id = x.merchant_id AND m.accepted_currencies[1] IS DISTINCT FROM x.currency;
 ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_supervisor_never_online;
 ALTER TABLE merchants ADD CONSTRAINT merchants_supervisor_never_online
   CHECK (NOT (is_supervisor AND is_online));
@@ -5096,3 +5003,154 @@ ALTER TABLE dispute_compensations ADD CONSTRAINT dispute_compensations_rule CHEC
 CREATE INDEX IF NOT EXISTS dispute_compensations_merchant_idx ON dispute_compensations (merchant_id, created_at DESC);
 CREATE OR REPLACE TRIGGER dispute_compensations_append_only
   BEFORE UPDATE OR DELETE ON dispute_compensations FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- USDT DEPOSITS TO THE PLATFORM (owner, 2026-10-18: BSC only, one address per order)
+-- A USDT buy is paid to an address the platform derived for that order alone
+-- from its account xpub (`order_states.usdt_pay_address`; the derivation is in
+-- `usdt_deposit_addresses`), watched on chain, and
+-- credited by the server when enough confirmed USDT has arrived. Every
+-- transfer seen arriving at one of those addresses is kept
+-- (`usdt_deposit_transfers`), whatever became of the order. All of it is
+-- written only by database/repositories/usdtDeposits.js (the address with the
+-- order, in `openUsdtBuy`); the chain is reached only
+-- through backend/domains/payment/usdtBsc.js. The server holds the xpub, never
+-- a private key: the coins are swept offline by scripts/usdt-sweep.mjs.
+-- ════════════════════════════════════════════════════════════════════════════
+CREATE SEQUENCE IF NOT EXISTS usdt_deposit_index_seq AS INTEGER MINVALUE 0 START 0 MAXVALUE 2147483647 NO CYCLE;
+
+-- Where the player pays: on the order itself, written with the row and never
+-- changed. The derivation behind it (key and index) and the sweep stamp are
+-- the address row's.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS usdt_pay_address TEXT;
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_usdt_pay_address_shape;
+ALTER TABLE order_states ADD CONSTRAINT order_states_usdt_pay_address_shape CHECK (
+  usdt_pay_address IS NULL OR (usdt_pay_address ~ '^0x[0-9a-f]{40}$' AND currency = 'USDT'));
+CREATE UNIQUE INDEX IF NOT EXISTS order_states_usdt_pay_address_unique
+  ON order_states (usdt_pay_address) WHERE usdt_pay_address IS NOT NULL;
+CREATE OR REPLACE FUNCTION bb_usdt_pay_address_frozen() RETURNS trigger AS $$
+BEGIN
+  IF NEW.usdt_pay_address IS DISTINCT FROM OLD.usdt_pay_address THEN
+    RAISE EXCEPTION 'order % pays to % and that never changes', OLD.order_id, OLD.usdt_pay_address;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER order_states_usdt_pay_address_frozen
+  BEFORE UPDATE OF usdt_pay_address ON order_states FOR EACH ROW EXECUTE FUNCTION bb_usdt_pay_address_frozen();
+
+CREATE TABLE IF NOT EXISTS usdt_deposit_addresses (
+  order_id          TEXT PRIMARY KEY REFERENCES order_states (order_id),
+  chain             TEXT NOT NULL,
+  key_id            TEXT NOT NULL,
+  derivation_index  INTEGER NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Set when an admin records the coins swept out, once.
+  swept_at          TIMESTAMPTZ,
+  swept_tx_hash     TEXT,
+  swept_by          TEXT
+);
+ALTER TABLE usdt_deposit_addresses DROP CONSTRAINT IF EXISTS usdt_deposit_addresses_shape;
+ALTER TABLE usdt_deposit_addresses ADD CONSTRAINT usdt_deposit_addresses_shape CHECK (
+  chain = 'BEP20'
+  AND key_id ~ '^[0-9a-f]{16}$'
+  AND derivation_index >= 0
+  AND ((swept_at IS NULL AND swept_tx_hash IS NULL AND swept_by IS NULL)
+    OR (swept_at IS NOT NULL AND swept_tx_hash ~ '^0x[0-9a-f]{64}$' AND swept_by IS NOT NULL)));
+CREATE UNIQUE INDEX IF NOT EXISTS usdt_deposit_addresses_index_unique ON usdt_deposit_addresses (key_id, derivation_index);
+
+-- The derivation never changes; the only later write is the sweep stamp, once.
+CREATE OR REPLACE FUNCTION bb_usdt_address_frozen() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'usdt_deposit_addresses rows are never deleted'; END IF;
+  IF NEW.order_id IS DISTINCT FROM OLD.order_id OR NEW.chain IS DISTINCT FROM OLD.chain
+     OR NEW.key_id IS DISTINCT FROM OLD.key_id OR NEW.derivation_index IS DISTINCT FROM OLD.derivation_index
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'a USDT deposit address is fixed once derived (order %)', OLD.order_id;
+  END IF;
+  IF OLD.swept_at IS NOT NULL THEN
+    RAISE EXCEPTION 'USDT deposit address of order % is already recorded as swept', OLD.order_id;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER usdt_deposit_addresses_frozen
+  BEFORE UPDATE OR DELETE ON usdt_deposit_addresses FOR EACH ROW EXECUTE FUNCTION bb_usdt_address_frozen();
+
+CREATE TABLE IF NOT EXISTS usdt_deposit_transfers (
+  chain          TEXT NOT NULL,
+  tx_hash        TEXT NOT NULL,
+  log_index      INTEGER NOT NULL,
+  order_id       TEXT NOT NULL REFERENCES usdt_deposit_addresses (order_id),
+  from_address   TEXT NOT NULL,
+  amount_micro   BIGINT NOT NULL,
+  block_number   BIGINT NOT NULL,
+  -- The order's state when the transfer was seen: whether it could count.
+  order_state_at_arrival TEXT NOT NULL,
+  seen_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- An admin's note that a transfer the server could not credit was dealt with.
+  handled_at     TIMESTAMPTZ,
+  handled_by     TEXT,
+  handled_note   TEXT,
+  PRIMARY KEY (chain, tx_hash, log_index)
+);
+ALTER TABLE usdt_deposit_transfers DROP CONSTRAINT IF EXISTS usdt_deposit_transfers_shape;
+ALTER TABLE usdt_deposit_transfers ADD CONSTRAINT usdt_deposit_transfers_shape CHECK (
+  chain = 'BEP20'
+  AND tx_hash ~ '^0x[0-9a-f]{64}$'
+  AND from_address ~ '^0x[0-9a-f]{40}$'
+  AND amount_micro >= 0 AND log_index >= 0 AND block_number >= 0
+  AND ((handled_at IS NULL AND handled_by IS NULL AND handled_note IS NULL)
+    OR (handled_at IS NOT NULL AND handled_by IS NOT NULL AND length(btrim(handled_note)) BETWEEN 1 AND 500)));
+CREATE INDEX IF NOT EXISTS usdt_deposit_transfers_order_idx ON usdt_deposit_transfers (order_id);
+CREATE INDEX IF NOT EXISTS usdt_deposit_transfers_open_idx ON usdt_deposit_transfers (seen_at DESC) WHERE handled_at IS NULL;
+
+-- A transfer is a fact about the chain: only the handled note is written later, once.
+CREATE OR REPLACE FUNCTION bb_usdt_transfer_frozen() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'usdt_deposit_transfers rows are never deleted'; END IF;
+  IF (to_jsonb(NEW) - 'handled_at' - 'handled_by' - 'handled_note')
+     IS DISTINCT FROM (to_jsonb(OLD) - 'handled_at' - 'handled_by' - 'handled_note') THEN
+    RAISE EXCEPTION 'a USDT transfer record is never edited (% #%)', OLD.tx_hash, OLD.log_index;
+  END IF;
+  IF OLD.handled_at IS NOT NULL THEN
+    RAISE EXCEPTION 'USDT transfer % #% is already marked handled', OLD.tx_hash, OLD.log_index;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER usdt_deposit_transfers_frozen
+  BEFORE UPDATE OR DELETE ON usdt_deposit_transfers FOR EACH ROW EXECUTE FUNCTION bb_usdt_transfer_frozen();
+
+-- How far the watcher has read the chain: the next block to read. One row per chain.
+CREATE TABLE IF NOT EXISTS usdt_chain_cursors (
+  chain       TEXT PRIMARY KEY,
+  next_block  BIGINT NOT NULL,
+  head_block  BIGINT,
+  last_ok_at  TIMESTAMPTZ,
+  last_error  TEXT,
+  last_error_at TIMESTAMPTZ,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE usdt_chain_cursors DROP CONSTRAINT IF EXISTS usdt_chain_cursors_shape;
+ALTER TABLE usdt_chain_cursors ADD CONSTRAINT usdt_chain_cursors_shape CHECK (chain = 'BEP20' AND next_block >= 0);
+
+-- The owner's own wallet, where the offline sweep tool sends swept USDT
+-- (owner, 2026-10-18). Append-only: the newest row is the one in use, and
+-- every earlier one stays as the history of who changed it and when. Written
+-- only by `setFinalWallet` (database/repositories/usdtDeposits.js), a full
+-- admin's change; the sweep tool also asks the person running it to confirm it.
+CREATE TABLE IF NOT EXISTS usdt_final_wallets (
+  id          BIGSERIAL PRIMARY KEY,
+  chain       TEXT NOT NULL DEFAULT 'BEP20',
+  address     TEXT NOT NULL,
+  set_by      TEXT NOT NULL,
+  set_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE usdt_final_wallets DROP CONSTRAINT IF EXISTS usdt_final_wallets_shape;
+ALTER TABLE usdt_final_wallets ADD CONSTRAINT usdt_final_wallets_shape
+  CHECK (chain = 'BEP20' AND address ~ '^0x[0-9a-f]{40}$' AND address <> '0x0000000000000000000000000000000000000000');
+CREATE OR REPLACE FUNCTION bb_usdt_final_wallet_frozen() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'usdt_final_wallets is append-only: set a new final wallet instead' USING ERRCODE = 'check_violation';
+END $$;
+DROP TRIGGER IF EXISTS usdt_final_wallets_frozen ON usdt_final_wallets;
+CREATE TRIGGER usdt_final_wallets_frozen
+  BEFORE UPDATE OR DELETE ON usdt_final_wallets FOR EACH ROW EXECUTE FUNCTION bb_usdt_final_wallet_frozen();

@@ -201,7 +201,7 @@ export async function playerRow(userId) {
 const MERCHANT_SQL = `
   SELECT m.merchant_id, m.user_id, m.name, m.username, m.mobile, m.status,
          m.merchant_approval_status, m.is_online, m.is_supervisor, m.supervisor_rail,
-         m.merchant_type, m.accepts_deposits, m.accepts_withdrawals, m.routing_priority,
+         ms.supervisor_rail AS team_rail, m.accepts_deposits, m.accepts_withdrawals, m.routing_priority,
          m.lost_disputes, m.high_risk_at, m.assignment_paused_at, m.created_at,
          m.total_processed_volume_paise AS processed_paise,
          m.total_orders_completed       AS completed_orders,
@@ -222,6 +222,7 @@ const MERCHANT_SQL = `
     LEFT JOIN teams dt ON dt.kind = 'DIRECT' AND dt.owner_merchant_id = m.merchant_id
     LEFT JOIN team_members tm ON tm.merchant_id = m.merchant_id
     LEFT JOIN teams mt ON mt.team_id = tm.team_id
+    LEFT JOIN merchants ms ON ms.merchant_id = mt.supervisor_id
     LEFT JOIN LATERAL (
       SELECT SUM(tp.available_paise) AS available_paise, SUM(tp.held_paise) AS held_paise,
              COUNT(*) AS teams
@@ -251,7 +252,9 @@ function toMerchantRow(r) {
     merchantApprovalStatus: r.merchant_approval_status,
     isOnline: Boolean(r.is_online),
     role: r.role,
-    rail: r.is_supervisor ? (r.supervisor_rail ?? null) : r.merchant_type,
+    // The rail a supervisor runs, or an agent's team runs; null for a merchant
+    // account or an agent in no team (merchants have no rail of their own).
+    rail: r.is_supervisor ? (r.supervisor_rail ?? null) : (r.team_rail ?? null),
     acceptsDeposits: Boolean(r.accepts_deposits),
     acceptsWithdrawals: Boolean(r.accepts_withdrawals),
     routingPriority: Number(r.routing_priority),

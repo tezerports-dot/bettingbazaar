@@ -52,8 +52,8 @@ import ReportsPage from './ReportsPage';
 import Layout from '../../components/Layout';
 import { ROUTES } from '../../constants';
 
-const OWNER = { id: 'm-1', isOnline: true, acceptedCurrencies: ['INR'], status: 'ACTIVE', username: 'Shop', actor: { isOwner: true }, isMerchantAccount: true };
-const AGENT = { id: 'a-1', isOnline: true, acceptedCurrencies: ['INR'], status: 'ACTIVE', username: 'Agent', actor: { isOwner: true }, isMerchantAccount: false };
+const OWNER = { id: 'm-1', isOnline: true, status: 'ACTIVE', username: 'Shop', actor: { isOwner: true }, isMerchantAccount: true };
+const AGENT = { id: 'a-1', isOnline: true, status: 'ACTIVE', username: 'Agent', actor: { isOwner: true }, isMerchantAccount: false };
 const AUDITOR = {
   ...OWNER, isMerchantAccount: true,
   actor: { isOwner: false, staffId: 'mst_1', name: 'Asha', roles: ['AUDIT'], depositAccountIds: [], withdrawalAccountIds: [] },

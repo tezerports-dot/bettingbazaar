@@ -34,7 +34,6 @@ describe('a merchant opened from the leaderboard', () => {
   // Exactly what stats.merchantLeaderboard and merchantAnalytics.service send.
   const ROW = { merchantId: 'MRC-1', username: 'ravi', completedOrders: 3, totalOrders: 4, completedVolume: 2200, isOnline: true };
   const STATS = {
-    currency: 'INR',
     depositsCompleted: 2, depositVolume: 1500, withdrawalsCompleted: 1, withdrawalVolume: 700,
     matchedCycleVolume: 700,
     bonusesIssued: 0, bonusTotal: 0,
@@ -92,14 +91,14 @@ describe('a merchant opened from the leaderboard', () => {
     expect(put).not.toHaveBeenCalled();
   });
 
-  it('labels a USDT merchant’s volume in USDT, never in rupees', async () => {
+  it('shows a merchant’s volume in rupees: every merchant serves INR', async () => {
     get.mockImplementation(routes({
-      'funding-stats': () => Promise.resolve({ data: { success: true, stats: { ...STATS, currency: 'USDT', depositVolume: 555.56, matchedCycleVolume: 555.56 } } }),
+      'funding-stats': () => Promise.resolve({ data: { success: true, stats: { ...STATS, depositVolume: 555.56, matchedCycleVolume: 555.56 } } }),
     }));
     const panel = await open();
     const funding = await within(panel).findByLabelText('Funding');
-    await waitFor(() => expect(funding).toHaveTextContent('555.56 USDT'));
-    expect(funding).not.toHaveTextContent('₹555.56');
+    await waitFor(() => expect(funding).toHaveTextContent('₹555.56'));
+    expect(funding).not.toHaveTextContent('USDT');
   });
 
   it('says the figures failed to load, and still shows the history', async () => {

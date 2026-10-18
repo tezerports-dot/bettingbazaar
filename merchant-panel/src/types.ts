@@ -1,14 +1,5 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
-/**
- * Settlement rail. A merchant is INR-only (bank account) or USDT-only (TRC-20) —
- * never both. Mirrors the backend enum on Merchant.acceptedCurrencies and
- * PaymentOrder.currency (backend/domains/merchant/merchantCurrency.js,
- * MERCHANT_CURRENCIES). GOVERNANCE §4: this is the panel's only declaration of
- * the rail names; utils/rail.ts holds the behaviour that goes with them.
- */
-export type MerchantRail = 'INR' | 'USDT';
-
 export enum OrderStatus {
   PENDING_QUEUE = 'PENDING_QUEUE',
   PROCESSING = 'PROCESSING',
@@ -87,11 +78,10 @@ export interface PaymentOrder {
   orderId: string;
   type: 'DEPOSIT' | 'WITHDRAWAL';
 
-  // Settlement rail this order runs on. Mirrors PaymentOrder.currency
-  // (backend/domains/payment/paymentOrder.model.js, enum ['INR','USDT'],
-  // schema default 'INR'). A merchant only ever receives orders on their own
-  // rail — see utils/rail.ts.
-  currency?: MerchantRail;
+  // The currency the order is paid in (`order_states.currency`,
+  // backend/domains/payment/orderCurrency.js). Always INR here: USDT buys are
+  // paid to the platform and never reach a merchant (CLAUDE.md §25).
+  currency?: 'INR';
 
   // The settlement PROCESS this order was born under, stamped at creation and
   // never rewritten. Not the same question as `currency`: that is what the
@@ -102,10 +92,6 @@ export interface PaymentOrder {
   // 2d); null until they scan. Sent by merchantOrderView.js.
   cashLink?: string | null;
   cashLinkAt?: string | null;
-  // On a USDT order, the chain the PLAYER chose to send on. The merchant has to
-  // watch the right network — a payment on BNB Smart Chain never appears in a
-  // Tron explorer — and it decides which of their addresses is shown.
-  usdtChain?: 'TRC20' | 'BEP20';
   
   // Token and pricing (REAL from backend)
   tokenAmount: number;
@@ -191,20 +177,6 @@ export interface MerchantProfile {
   status?: string;
   role?: string;
 
-  // ── Settlement rail (exclusive) ──────────────────────────────────────────
-  // 'INR' (bank account) or 'USDT' — never both. Backend authority is
-  // Merchant.acceptedCurrencies, which holds exactly one entry;
-  // GET /api/merchant/profile surfaces both the array and this scalar.
-  merchantType?: MerchantRail;
-  acceptedCurrencies?: MerchantRail[];
-  // One address PER CHAIN. They are separate networks — USDT sent to a Tron
-  // address from a BEP-20 wallet is gone — so a merchant holds an address for
-  // each chain they will be paid on, and receives orders only on those.
-  usdtAddressTrc20?: string;
-  usdtAddressBep20?: string;
-  /** Which chains this merchant can actually be paid on. Derived by the server. */
-  usdtChains?: ('TRC20' | 'BEP20')[];
-  
   // Preferences (REAL from backend)
   acceptsDeposits?: boolean;
   acceptsWithdrawals?: boolean;
@@ -346,9 +318,7 @@ export interface Earnings {
     /** Their shares actually recorded: `team_commission_shares` rows. */
     totalEarnings: number;
     /**
-     * Matched volume, in TOKENS on both rails — never the order's own currency,
-     * which on a USDT order is USDT and cannot be added to a rupee order
-     * (trap 15).
+     * Matched volume, in TOKENS (trap 15).
      */
     totalVolume: number;
     /** COMPLETED orders only. A PAID order is money that has not moved yet. */
@@ -420,7 +390,8 @@ export interface Settlement {
 // ── Supervisors and teams (redesign Step 2a) ─────────────────────────────────
 // Mirrors database/repositories/teams.js (`toTeam`, `toMember`) and the
 // GET /api/merchant/team response — §5: change them together.
-export type SupervisorRail = 'CASH' | 'UPI_BANK' | 'USDT';
+// No USDT team: USDT buys are paid to the platform (owner, 2026-10-18).
+export type SupervisorRail = 'CASH' | 'UPI_BANK';
 export interface Team {
   teamId: string; supervisorId: string; supervisorName: string; supervisorRef: string;
   name: string; rail: SupervisorRail; approvedCount: number; pendingCount: number; size: number;

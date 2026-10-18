@@ -52,7 +52,7 @@ describePg('team routes', () => {
     const m = await merchant();
     const bad = await as(adminApp, admin).put(`/merchants/${m.merchantId}/supervisor`).send({ rail: 'CHEQUE' });
     expect(bad.status).toBe(400);
-    expect(bad.body.message).toMatch(/CASH, UPI_BANK, USDT/);
+    expect(bad.body.message).toMatch(/CASH, UPI_BANK$/);
     expect((await as(adminApp, admin).put(`/merchants/${m.merchantId}/supervisor`).send({ rail: 'CASH' })).status).toBe(200);
     expect((await historyFor(m.merchantId)).map((a) => a.action)).toContain('SUPERVISOR_SET');
   });
@@ -192,11 +192,11 @@ describePg('team routes', () => {
   });
 
   it('the admin listing shows supervisors, teams and members', async () => {
-    const sup = await supervisor('USDT');
+    const sup = await supervisor('UPI_BANK');
     const teamId = (await as(merchantApp, sup).post('/supervisor/teams').send({ name: 'Echo' })).body.team.teamId;
     const res = await as(adminApp, admin).get('/teams');
     expect(res.status).toBe(200);
-    expect(res.body.supervisors.find((s) => s.merchantId === sup.merchantId)).toMatchObject({ rail: 'USDT' });
+    expect(res.body.supervisors.find((s) => s.merchantId === sup.merchantId)).toMatchObject({ rail: 'UPI_BANK' });
     expect(res.body.teams.find((t) => t.teamId === teamId)).toMatchObject({ name: 'Echo', strength: 'STOPPED', size: 10 });
   });
 });

@@ -27,21 +27,10 @@ const inr = (n: number) =>
 const bb = (n: number) => `${(n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })} BB`;
 
 /**
- * A volume in the MERCHANT's currency. Order volumes are summed in the order's
- * currency, and the server names which (`stats.currency`). A USDT merchant's
- * 555.56 rendered as "₹555.56" is the same lie trap 15 records for an order.
- */
-const inMerchantCurrency = (n: number, currency?: string) =>
-  currency === 'USDT'
-    ? `${(n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })} USDT`
-    : inr(n);
-
-/**
  * One merchant's funding picture, as `GET /merchant-platform/:id/funding-stats`
  * sends it (merchantAnalytics.service.js over stats.merchantFundingStats).
  */
 interface FundingStats {
-  currency: 'INR' | 'USDT';
   depositsCompleted: number; depositVolume: number;
   withdrawalsCompleted: number; withdrawalVolume: number;
   /** min(deposit volume, withdrawal volume): what went round a buy→sell cycle. */
@@ -174,12 +163,11 @@ export const MerchantPlatform: React.FC = () => {
               <p className="text-sm text-gray-500">Loading…</p>
             ) : (
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                <Figure label="Buys completed" value={`${stats.depositsCompleted} · ${inMerchantCurrency(stats.depositVolume, stats.currency)}`} />
-                <Figure label="Sells completed" value={`${stats.withdrawalsCompleted} · ${inMerchantCurrency(stats.withdrawalVolume, stats.currency)}`} />
-                <Figure label="Matched volume" value={inMerchantCurrency(stats.matchedCycleVolume, stats.currency)} />
+                <Figure label="Buys completed" value={`${stats.depositsCompleted} · ${inr(stats.depositVolume)}`} />
+                <Figure label="Sells completed" value={`${stats.withdrawalsCompleted} · ${inr(stats.withdrawalVolume)}`} />
+                <Figure label="Matched volume" value={inr(stats.matchedCycleVolume)} />
                 <Figure label="Success rate" value={`${Math.round((stats.successRate ?? 0) * 100)}%`} />
                 <Figure label="Avg response" value={`${(stats.avgResponseMinutes ?? 0).toFixed(1)} min`} />
-                <Figure label="Rail" value={stats.currency} />
               </div>
             )}
           </section>
@@ -196,7 +184,7 @@ export const MerchantPlatform: React.FC = () => {
                   <div key={d.day} className="flex justify-between gap-3 border-b border-dark-800 py-1">
                     <span className="text-gray-400 text-xs">{d.day}</span>
                     <span className="text-xs text-gray-300">{d.totalOrders} order{d.totalOrders === 1 ? '' : 's'}</span>
-                    <span className="font-mono text-xs text-gold-400/90">{inMerchantCurrency(d.totalVolume, stats?.currency)}</span>
+                    <span className="font-mono text-xs text-gold-400/90">{inr(d.totalVolume)}</span>
                   </div>
                 ))}
               </div>

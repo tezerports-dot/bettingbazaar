@@ -170,6 +170,7 @@ router.get('/analytics/financials.csv', authenticate, hasPermission('canViewAnal
         line(`Token ledger: ${k.kind}${k.profit ? '' : ' (not profit)'}`, o.operation, o.tokens, o.movements))),
       line('Token ledger', 'Net profit in tokens', t.netProfit),
       line('Token ledger cash check', 'Paid by teams for pool tokens', t.cash.receivedFromTeams),
+      line('Token ledger cash check', 'Paid by players in USDT (at ₹1 a token)', t.cash.receivedFromPlayersUsdt),
       line('Token ledger cash check', 'Paid back to teams', -t.cash.paidToTeams),
       line('Token ledger cash check', 'Tokens now in wallets and pools (owed back)', -t.outstandingNow.total),
     ]);

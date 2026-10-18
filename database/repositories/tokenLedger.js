@@ -22,8 +22,10 @@
  *   PLATFORM_COVER            sell refund is a cost until a person recovers it
  *   ADJUSTMENT                an admin's balance adjustment
  *   POOL_TRADE                tokens sold to or bought back from a team pool,
- *                             for the money in `admin_token_considerations`:
- *                             an exchange, never profit
+ *                             for the money in `admin_token_considerations`,
+ *                             or sold to a player for USDT received on chain
+ *                             (`USDT_BUY_PAID`, usdtDeposits.js): an exchange,
+ *                             never profit
  *   PLAYER_TRADE              a pool paying a buy or taking a sell: zero for
  *                             the platform
  *   COMPENSATION              a losing team's pool paying a player after a
@@ -63,6 +65,7 @@ export const MOVEMENTS_EXPORT_MAX = 200_000;
  * (promo.js), `WINNINGS_CREDITED` (wallets.creditWinnings), `PAYOUT_<pool>` and
  * `CLAWBACK_<pool>` (bonuses.core), `TEAM_COMMISSION`, `TEAM_SELL_REFUND_COVERED`,
  * `TEAM_POOL_SALE`/`_BUYBACK`, `TEAM_BUY_PAID`, `TEAM_SELL_*` (teamPools),
+ * `USDT_BUY_PAID` (usdtDeposits),
  * `ADMIN_ADJUSTMENT_<type>` (balanceAdjustments), `ALLOCATE_*`/`RETURN_*`
  * (treasury, platform to platform).
  */
@@ -74,7 +77,7 @@ export const KIND_SQL = `CASE
     WHEN operation = 'TEAM_COMMISSION' THEN 'COMMISSION'
     WHEN operation = 'TEAM_SELL_REFUND_COVERED' THEN 'PLATFORM_COVER'
     WHEN operation LIKE 'ADMIN\\_ADJUSTMENT\\_%' THEN 'ADJUSTMENT'
-    WHEN operation IN ('TEAM_POOL_SALE', 'TEAM_POOL_BUYBACK') THEN 'POOL_TRADE'
+    WHEN operation IN ('TEAM_POOL_SALE', 'TEAM_POOL_BUYBACK', 'USDT_BUY_PAID') THEN 'POOL_TRADE'
     WHEN operation = 'TEAM_BUY_PAID' OR operation LIKE 'TEAM\\_SELL\\_%' THEN 'PLAYER_TRADE'
     WHEN operation = 'DISPUTE_COMPENSATION' THEN 'COMPENSATION'
     WHEN operation LIKE 'ALLOCATE\\_%' OR operation LIKE 'RETURN\\_%' THEN 'INTERNAL'
@@ -111,7 +114,7 @@ const num = (v) => Number(v ?? 0);
  */
 export async function tokenProfit({ from = null, to = null } = {}) {
   const params = [from, to];
-  const [byOp, cash, outstanding] = await Promise.all([
+  const [byOp, cash, usdtCash, outstanding] = await Promise.all([
     pgQuery(
       `SELECT ${KIND_SQL} AS kind, operation,
               COUNT(*)::int AS movements,
@@ -126,6 +129,13 @@ export async function tokenProfit({ from = null, to = null } = {}) {
               COALESCE(SUM(inr_equivalent_paise) FILTER (WHERE direction = 'PAID'), 0)     AS paid
          FROM admin_token_considerations WHERE ${inWindow('created_at')}`,
       params, 'token_ledger_cash'),
+    // What players paid the platform in USDT, at the INR value they bought
+    // (their tokens, 1 token = ₹1; the USDT figure is on each order).
+    pgQuery(
+      `SELECT COALESCE(SUM(-amount_paise), 0) AS received
+         FROM treasury_entries
+        WHERE operation = 'USDT_BUY_PAID' AND account = 'TOKEN_SUPPLY' AND ${inWindow('created_at')}`,
+      params, 'token_ledger_cash_usdt'),
     // Tokens out in pools and wallets NOW: what the platform owes back.
     pgQuery(
       `SELECT COALESCE(SUM(balance_paise) FILTER (WHERE account = 'USER_FLOAT'), 0) AS wallets,
@@ -158,8 +168,9 @@ export async function tokenProfit({ from = null, to = null } = {}) {
     unclassifiedMovements: kinds.UNCLASSIFIED.movements,
     cash: {
       receivedFromTeams: paiseToRupees(num(c.received)),
+      receivedFromPlayersUsdt: paiseToRupees(num(usdtCash.rows[0].received)),
       paidToTeams: paiseToRupees(num(c.paid)),
-      net: paiseToRupees(num(c.received) - num(c.paid)),
+      net: paiseToRupees(num(c.received) + num(usdtCash.rows[0].received) - num(c.paid)),
     },
     // Not windowed: a balance is a balance now.
     outstandingNow: {

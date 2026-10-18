@@ -46,7 +46,6 @@ import {
   INR_TOKEN_RATE,
   adminToMerchantUsdtRate,
   merchantToUserUsdtRate,
-  rateForMerchant,
   tokensPerUsdt,
   tokensForUsdt,
   isSaneUsdtRate,
@@ -54,25 +53,9 @@ import {
   USDT_RATE_MAX_INR,
 } from '../../domains/configuration/tokenRates.js';
 
-const inrMerchant  = { acceptedCurrencies: ['INR'] };
-const usdtMerchant = { acceptedCurrencies: ['USDT'] };
-
 describe('the INR peg', () => {
   it('is one', () => {
     expect(INR_TOKEN_RATE).toBe(1);
-  });
-
-  it('is what an INR merchant settles at, whatever the USDT config says', () => {
-    // The peg does not move because somebody edited a USDT rate.
-    const config = { usdtPricing: { userMerchantBuyInr: 88, merchantAdminBuyInr: 90 } };
-    expect(rateForMerchant(inrMerchant, config)).toBe(1);
-  });
-
-  it('applies to a merchant with no rail recorded', () => {
-    // `merchantTypeOf` falls back to INR, and the peg must follow it — an
-    // unknown rail must not be priced as USDT.
-    expect(rateForMerchant({}, {})).toBe(1);
-    expect(rateForMerchant(null, {})).toBe(1);
   });
 });
 
@@ -86,13 +69,6 @@ describe('the USDT legs are separate', () => {
   it('keeps the spread — one rate for both would erase the merchant margin', () => {
     const config = { usdtPricing: { merchantAdminBuyInr: 90, userMerchantBuyInr: 95 } };
     expect(adminToMerchantUsdtRate(config)).not.toBe(merchantToUserUsdtRate(config));
-  });
-
-  it('prices a USDT merchant at the merchant-to-user leg, not the admin one', () => {
-    // Using `merchantAdminBuyInr` here would charge the player what the
-    // MERCHANT paid, and the merchant would earn nothing.
-    const config = { usdtPricing: { merchantAdminBuyInr: 90, userMerchantBuyInr: 95 } };
-    expect(rateForMerchant(usdtMerchant, config)).toBe(95);
   });
 });
 
@@ -111,17 +87,9 @@ describe('an unset merchant-to-user rate is refused, not guessed', () => {
   ]) {
     it(`returns null for ${label}`, () => {
       expect(merchantToUserUsdtRate(config)).toBeNull();
-      // And therefore refuses to price a USDT merchant's order at all.
-      expect(rateForMerchant(usdtMerchant, config)).toBeNull();
     });
   }
 
-  it('never substitutes the peg for a missing USDT rate', () => {
-    // The failure this is really about: 1 here means the platform sells tokens
-    // at one rupee each to a merchant settling in USDT, and eats the spread on
-    // every order with nothing reporting it.
-    expect(rateForMerchant(usdtMerchant, { usdtPricing: { userMerchantBuyInr: 0 } })).not.toBe(1);
-  });
 });
 
 describe('the rate that prices every USDT purchase is bounded', () => {

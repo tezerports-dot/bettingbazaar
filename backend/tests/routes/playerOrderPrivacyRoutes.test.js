@@ -68,7 +68,6 @@ describePg('what a player is told about a merchant', () => {
     merchantRef: 'Merchant #7731',
     merchantId: 'MER-7731',
     merchantName: 'Merchant #7731',
-    merchantType: 'INR',
     upiId: MERCHANT_UPI,
     mobile: MERCHANT_MOBILE,
     qrCodeUrl: MERCHANT_QR,
@@ -206,56 +205,44 @@ describePg('what a player is told about a merchant', () => {
     carriesNoCredential(res.body.order);
   });
 
-  it('gives a USDT player the address for THEIR chain, and no other', async () => {
-    // The sharpest case on this platform. A merchant may hold an address on
-    // both networks; the player chose one. Handing them the other — or both —
-    // is how tokens are sent to an address that does not exist on the chain
-    // they used, and no support desk recovers that.
+  it('gives a USDT player the platform address for their order, and never a merchant address', async () => {
+    // A USDT buy is paid to an address the platform derived for that order
+    // (owner, 2026-10-18). A merchant snapshot on an old row still holds the
+    // merchant's addresses; none of them may reach the player.
+    const platformAddress = `0x${Array.from({ length: 40 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('')}`;
     const player = await actor({});
     const orderId = oid();
     await createOrderRecord({
       orderId, userId: player.userId, type: 'DEPOSIT',
-      tokenAmountRupees: 50_000, fiatAmountRupees: 50_000,
-      state: 'PROCESSING', currency: 'USDT', usdtChain: 'BEP20',
+      tokenAmountRupees: 50_000, fiatAmountRupees: 500,
+      state: 'PROCESSING', currency: 'USDT', usdtChain: 'BEP20', usdtPayAddress: platformAddress,
     });
     await setOrderFields(orderId, {
-      merchantSnapshot: {
-        ...SNAPSHOT,
-        // What assignment writes: the chain this order named, and the address
-        // for it. The stored credentials for BOTH chains are on the row too.
-        usdtChain: 'BEP20',
-        usdtPayTo: MERCHANT_USDT_BEP20,
-        usdtChainLabel: 'BNB Smart Chain (BEP-20)',
-      },
+      merchantSnapshot: { ...SNAPSHOT, usdtChain: 'BEP20', usdtPayTo: MERCHANT_USDT_BEP20 },
     });
 
     const res = await as(app, player).get(`/order/${orderId}`);
     expect(res.status).toBe(200);
-
     // They CAN pay: the address and the network it belongs to, together.
-    expect(res.body.order.payTo.usdtAddress).toBe(MERCHANT_USDT_BEP20);
+    expect(res.body.order.payTo.usdtAddress).toBe(platformAddress);
     expect(res.body.order.payTo.usdtChain).toBe('BEP20');
-    // And the other chain's address is nowhere in the response.
     expect(JSON.stringify(res.body)).not.toContain(MERCHANT_USDT_TRC20);
+    expect(JSON.stringify(res.body)).not.toContain(MERCHANT_USDT_BEP20);
     withinTheAllowlist(res.body.order);
 
-    // Once the order has ended, not even their own chain's address: USDT sent
-    // to a member the order no longer has is not recoverable.
-    for (const state of ['COMPLETED', 'CANCELLED']) {
-      const endedId = oid();
-      await createOrderRecord({
-        orderId: endedId, userId: player.userId, type: 'DEPOSIT',
-        tokenAmountRupees: 50_000, fiatAmountRupees: 50_000,
-        state, currency: 'USDT', usdtChain: 'BEP20',
-      });
-      await setOrderFields(endedId, {
-        merchantSnapshot: { ...SNAPSHOT, usdtChain: 'BEP20', usdtPayTo: MERCHANT_USDT_BEP20, usdtChainLabel: 'BNB Smart Chain (BEP-20)' },
-      });
-      const ended = await as(app, player).get(`/order/${endedId}`);
-      expect(ended.status).toBe(200);
-      expect(ended.body.order.payTo?.usdtAddress).toBeUndefined();
-      expect(JSON.stringify(ended.body)).not.toContain(MERCHANT_USDT_BEP20);
-    }
+    // An order agents served before the change is shown no address at all.
+    const oldId = oid();
+    await createOrderRecord({
+      orderId: oldId, userId: player.userId, type: 'DEPOSIT',
+      tokenAmountRupees: 50_000, fiatAmountRupees: 500,
+      state: 'PROCESSING', currency: 'USDT', usdtChain: 'BEP20',
+    });
+    await setOrderFields(oldId, {
+      merchantSnapshot: { ...SNAPSHOT, usdtChain: 'BEP20', usdtPayTo: MERCHANT_USDT_BEP20 },
+    });
+    const old = await as(app, player).get(`/order/${oldId}`);
+    expect(old.body.order.payTo?.usdtAddress).toBeUndefined();
+    expect(JSON.stringify(old.body)).not.toContain(MERCHANT_USDT_BEP20);
   });
 
   it('keeps the snapshot ON THE ROW for the disputes desk', async () => {

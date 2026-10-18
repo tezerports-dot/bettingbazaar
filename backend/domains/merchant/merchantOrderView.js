@@ -82,12 +82,6 @@ export const MERCHANT_ORDER_FIELDS = Object.freeze([
   // member's own scan of a public machine; nothing about the player.
   'cashLink', 'cashLinkAt',
 
-  // On a USDT order, the chain the PLAYER chose. The merchant has to watch the
-  // right network: a payment on BNB Smart Chain never appears in a Tron
-  // explorer, and a merchant looking at the wrong one sees nothing and assumes
-  // they were not paid.
-  'usdtChain',
-
   // A merchant account's order (owner, 2026-10-11): who serves it
   // (AGENTS/MERCHANTS), the payment account a buy is paid into, and the one a
   // sell was paid from. The merchant's own accounts, by id.

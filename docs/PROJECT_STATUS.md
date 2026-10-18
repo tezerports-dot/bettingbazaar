@@ -1499,6 +1499,44 @@ to take a reason with no image.
   the row and CSV), `OrderReportTable` (3), `MerchantAccount` reports test;
   mutations MRT1–MRT4 KILLED.
 
+## 3.17 USDT buys paid to the platform on BNB Smart Chain, one address per order (owner, 2026-10-18) — **BUILT on `usdt-bsc-platform-deposits`**
+
+Replaces the agent USDT rail (§2.3) and Tron. CLAUDE.md §25 and §2 *A USDT buy's
+address*; background in RULES_BACKGROUND §25.
+
+- **Player:** picks an amount, gets an address made for that order alone (BSC,
+  shown with a QR, the amount, what has arrived and a countdown), sends, and is
+  credited by itself. Nothing to type, no Paid tap, no cancel; it expires after
+  `usdtDeposits.paymentWindowMinutes` (60).
+- **Server:** holds only the account xpub. A cron watcher reads USDT Transfer
+  logs of the real contract for the open (and recently closed) addresses and
+  credits once `confirmations` (15) deep. Late, overpaid and after-credit money
+  is held for an admin.
+- **Admin:** Admin › USDT Deposits (`canManageUsdtDeposits`): what needs a
+  person, mark handled with a note, the sweep file, recording sweeps; Settings ›
+  USDT Deposits for the three numbers.
+- **Sweep:** `scripts/usdt-sweep.mjs`, offline, with the recovery phrase; gas
+  from the phrase's own m/44'/60'/0'/1/0.
+- **Final wallet:** where every sweep sends, the owner's own BEP-20 wallet,
+  pasted on Admin › USDT Deposits by a full admin (history kept, change
+  alerted); the tool sends only after the address is pasted from the owner's own wallet app and matches.
+- **Removed:** merchant USDT addresses (columns dropped), the merchant rail
+  altogether (`accepted_currencies`, `merchant_type` dropped; every merchant is
+  INR), USDT supervisors and teams (moved to UPI_BANK by the schema, refused by
+  the row), USDT routing and caps, the Tron chain, and the admin's merchant
+  capabilities route (it existed for the rail; directions are the merchant's).
+- **Key rotation:** each address keeps its key id; swap `USDT_BEP20_XPUB` for a
+  new offline phrase's and old addresses stay watched and sweepable with the old
+  phrase (`docs/governance/USDT_KEY_ROTATION.md`, test in usdtPlatformDepositPg).
+
+**To switch it on:** set `USDT_BEP20_XPUB` (the account xpub at m/44'/60'/0'
+of a phrase kept offline) and `BSC_RPC_URL`, and paste the final wallet. Deploy with no agent USDT buy open.
+USDT teams and merchants are removed outright (owner, 2026-10-18: "completely
+remove", the platform being a test setup).
+
+**Not built:** a second BSC node cross-checked before crediting (offered to the
+owner); an automatic refund of late money (needs the key the server lacks).
+
 ## 4. How to pick this up
 
 1. Read `CLAUDE.md` end to end. It is the only rules file.

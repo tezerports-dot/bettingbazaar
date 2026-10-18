@@ -11,18 +11,11 @@
  * A member holds no tokens — their team's pool does (§3.10) — so there is no
  * balance here; the Team page shows the pool.
  */
-import { merchantTypeOf, usdtChainsHeldBy } from './merchantCurrency.js';
-
 /**
  * @param {object} merchant  a `merchants` row as the repository maps it
  * @param {object} [user]    the login row, whose username and mobile win
  */
 export function formatMerchant(merchant, user = null) {
-  // A merchant settles on exactly one rail; the panel renders the bank account
-  // OR the USDT addresses from this, never both (domains/merchant/merchantCurrency.js).
-  // merchantTypeOf() is used rather than the `merchantType` virtual so lean()
-  // documents (which carry no virtuals) format identically to hydrated ones.
-  const merchantType = merchantTypeOf(merchant);
   return {
     id:                   merchant._id,
     _id:                  merchant._id,
@@ -39,14 +32,7 @@ export function formatMerchant(merchant, user = null) {
     isOnline:             merchant.isOnline,
     acceptsDeposits:      merchant.acceptsDeposits,
     acceptsWithdrawals:   merchant.acceptsWithdrawals,
-    merchantType,
-    acceptedCurrencies:   merchant.acceptedCurrencies,
     bankDetails:          merchant.bankDetails,
-    // One per chain, and the list of chains they can actually be paid on
-    // — which is what decides whether any USDT order reaches them.
-    usdtAddressTrc20:     merchant.usdtAddressTrc20 || '',
-    usdtAddressBep20:     merchant.usdtAddressBep20 || '',
-    usdtChains:           usdtChainsHeldBy(merchant),
     limits:               merchant.limits,
     // Whether the platform has stopped sending them new buy orders (three
     // unpaid in a row, §2). A merchant was never told: the Dashboard read

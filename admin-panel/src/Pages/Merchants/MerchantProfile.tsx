@@ -26,7 +26,7 @@ import toast from 'react-hot-toast';
 interface Choices { routingPriority: { MIN: number; MAX: number; DEFAULT: number }; supervisorRails: SupervisorRail[] }
 
 /** UI names for the server's supervisor rails (teams.js SUPERVISOR_RAILS). §11. */
-const RAIL_LABEL: Record<string, string> = { CASH: 'Cash (ATM QR)', UPI_BANK: 'UPI / bank', USDT: 'USDT' };
+const RAIL_LABEL: Record<string, string> = { CASH: 'Cash (ATM QR)', UPI_BANK: 'UPI / bank' };
 
 const errorOf = (e: any, fallback: string) => e?.response?.data?.message || fallback;
 
@@ -101,7 +101,6 @@ export const MerchantProfile: React.FC = () => {
 
   const id = merchant._id;
   const role = summary?.role;
-  const rail = merchant.merchantType ?? merchant.acceptedCurrencies?.[0] ?? 'INR'; // schema default: ['INR']
 
   // Every action: the server's own sentence on a refusal, shown where the
   // admin pressed (§32 S14, S44), and the page re-read on success.
@@ -131,10 +130,6 @@ export const MerchantProfile: React.FC = () => {
   const resume = async () => {
     if (await run('resume', () => api.merchants.resumeAssignment(id), 'Assignment resumed', 'Failed to resume assignment')) setResumeChecked(false);
   };
-  const saveRail = (next: 'INR' | 'USDT') => run('rail',
-    () => api.put(`/api/admin/merchants/${id}/capabilities`, { merchantType: next }).then((r) => r.data),
-    next === 'USDT' ? 'Now a USDT merchant. Existing bank details were cleared.' : 'Now an INR merchant. The USDT addresses were cleared.',
-    'Failed to change the payment details');
 
   return (
     <div className="om-fade space-y-4">
@@ -228,19 +223,6 @@ export const MerchantProfile: React.FC = () => {
             </button>
           </Section>
         )}
-
-        <Section title="Payment details" sub="Which details this merchant keeps: a bank account, or USDT wallet addresses, never both. Switching clears the old ones; the merchant re-enters them in their panel. Which orders they are offered is decided by their team's rail.">
-          <div className="grid grid-cols-2 gap-2" role="group" aria-label="Payment details">
-            {(['INR', 'USDT'] as const).map((option) => (
-              <button key={option} type="button" disabled={!!busy || rail === option} aria-pressed={rail === option}
-                onClick={() => void saveRail(option)}
-                className={`py-2 rounded-lg text-sm font-medium border transition-colors disabled:cursor-default ${
-                  rail === option ? 'bg-gold-500/15 border-gold-500/60 text-gold-300' : 'bg-dark-800 border-dark-600 text-gray-400 hover:text-gray-200'}`}>
-                {option === 'INR' ? 'INR · bank account' : 'USDT · wallet addresses'}
-              </button>
-            ))}
-          </div>
-        </Section>
 
         {canTeams && choices && (role === 'SUPERVISOR' || role === 'UNASSIGNED') && (
           <Section title="Supervisor role" sub="A supervisor runs agent teams on one rail and takes no orders themselves. An agent in a team, or a merchant account, cannot be one.">

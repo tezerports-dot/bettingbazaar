@@ -32,7 +32,6 @@
  * player buying from a USDT merchant was priced at the INR peg regardless. §9 —
  * a field an operator can edit must wire to a real consumer.
  */
-import { MERCHANT_CURRENCY, merchantTypeOf } from '../merchant/merchantCurrency.js';
 
 /**
  * One token, one rupee. Not configurable — see the header.
@@ -156,21 +155,4 @@ export function tokensForUsdt(usdt, config) {
   const tokenPaise = units * ratePaise;
   if (!Number.isSafeInteger(tokenPaise) || tokenPaise <= 0) return null;
   return { tokens: tokenPaise / 100, tokenPaise, rate: ratePaise / 100 };
-}
-
-/**
- * The rate to stamp on an order, given the merchant who will settle it.
- *
- * An INR merchant settles at the peg. A USDT merchant settles at the
- * admin-configured merchant-to-user rate, and there is no fallback: if the
- * admin has not set one, this returns null and the caller must leave the order
- * unassigned rather than price it wrong.
- *
- * @returns {number|null} the rate, or null when a USDT rate is not configured
- */
-export function rateForMerchant(merchant, config) {
-  if (merchantTypeOf(merchant) === MERCHANT_CURRENCY.USDT) {
-    return merchantToUserUsdtRate(config);
-  }
-  return INR_TOKEN_RATE;
 }

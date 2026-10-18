@@ -20,7 +20,7 @@ interface TokenProfit {
   }[];
   netProfit: number;
   unclassifiedMovements: number;
-  cash: { receivedFromTeams: number; paidToTeams: number; net: number };
+  cash: { receivedFromTeams: number; receivedFromPlayersUsdt: number; paidToTeams: number; net: number };
   outstandingNow: { wallets: number; pools: number; total: number };
 }
 
@@ -118,6 +118,7 @@ export const TokenLedgerPanel: React.FC<{ start: string; end: string }> = ({ sta
         <div className="p-3 bg-dark-700 rounded-lg text-xs text-gray-400 space-y-1">
           <p className="font-medium text-gray-300">Cash check</p>
           <p>Paid by teams for pool tokens: {fmt(data.cash.receivedFromTeams)}</p>
+          <p>Paid by players in USDT (at ₹1 a token): {fmt(data.cash.receivedFromPlayersUsdt)}</p>
           <p>Paid back to teams: {fmt(-data.cash.paidToTeams)}</p>
           <p>Tokens now in wallets and pools, owed back at ₹1: {fmt(-data.outstandingNow.total)}</p>
           <p className="text-gray-300">Cash position if everyone cashed out now: {fmt(cashPosition)}</p>

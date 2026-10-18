@@ -25,7 +25,7 @@
 
 import { db } from '#db';
 import { getSystemConfig } from '#db/repositories/config.js';
-import { MERCHANT_CURRENCY } from '../merchant/merchantCurrency.js';
+import { ORDER_CURRENCY } from '../payment/orderCurrency.js';
 import {
   offeredSizes, railForSize, INR_ROUTING, usdtBuyBounds, isUsdtBuyAmount, USDT_BUY_STEP,
 } from '../merchant/denominations.js';
@@ -351,7 +351,7 @@ function assertSizeIsOffered({ tokenAmount, type, cfg }) {
 }
 
 async function assertBuyIsLegal({ userId, tokenAmount, usdtAmount, currency, cfg }) {
-  if (currency === MERCHANT_CURRENCY.USDT) {
+  if (currency === ORDER_CURRENCY.USDT) {
     // ── The USDT rail: whole steps of USDT, inside the admin's bounds ─────
     // Priced in what the player SENDS; the tokens they receive follow from the
     // admin's rate (`tokensForUsdt`).
@@ -370,8 +370,8 @@ async function assertBuyIsLegal({ userId, tokenAmount, usdtAmount, currency, cfg
   const open = await db.orders.countOpenDeposits(userId, { currency });
   if (open > 0) {
     throw Object.assign(
-      new Error(currency === MERCHANT_CURRENCY.USDT
-        ? 'You already have a USDT purchase in progress. Finish or cancel it before starting another.'
+      new Error(currency === ORDER_CURRENCY.USDT
+        ? 'You already have a USDT purchase in progress. Pay it, or wait for it to expire, before starting another.'
         : 'You already have a purchase in progress. Finish or cancel it before starting another.'),
       { status: 409, code: 'BUY_ALREADY_OPEN' },
     );

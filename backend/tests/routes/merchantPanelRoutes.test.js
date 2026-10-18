@@ -47,11 +47,11 @@ import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 import {
   createOrderRecord, getOrderRecord, setOrderFields, getMerchantOrder,
 } from '#db/repositories/orders.record.js';
-import { updateMerchant, getMerchant, pauseAssignment, resumeAssignment } from '#db/repositories/merchants.js';
+import { getMerchant, pauseAssignment, resumeAssignment } from '#db/repositories/merchants.js';
 import { updateUser } from '#db/repositories/users.js';
 import { getPool } from '#db/repositories/teamPools.js';
 import { PAYMENT_MODES } from '#db/repositories/orderRails.js';
-import { getSystemConfig, applySystemConfig } from '#db/repositories/config.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js';
 import {
   tryAssignMerchant, markOrderPaid, createWithdrawalOrder,
@@ -69,8 +69,6 @@ const describePg = pgConfigured() ? describe : describe.skip;
 const UPI_TOKENS = 50_000;
 // A cash denomination: the CASH rail.
 const CASH_TOKENS = 1_000;
-// The smallest USDT size (§25).
-const USDT_TOKENS = 50_000;
 
 describePg('merchant panel routes', () => {
   let app;
@@ -78,30 +76,14 @@ describePg('merchant panel routes', () => {
   let seq = 0;
   const teams = teamFixture();
   const players = [];
-  let priorPricing = null;
-
-  // A DIFFERENT wallet address every time. An address is UNIQUE across
-  // merchants — it is an identity, like a UPI id — so a constant collides with
-  // the row the PREVIOUS RUN of this suite left behind. The database is shared
-  // and never reset between files (trap 10).
-  const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-  const trc20 = () => `T${Array.from({ length: 33 },
-    () => BASE58[Math.floor(Math.random() * BASE58.length)]).join('')}`;
-  const bep20 = () => `0x${Array.from({ length: 40 },
-    () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('')}`;
 
   beforeAll(async () => {
     await applySchema();
     const mod = await import('../../domains/merchant/merchant.routes.js');
     app = mountRouter(mod.default);
-    // The USDT price is shared config, never reset between suites: the value
-    // found here is put back at the end (trap 10). 100 tokens per USDT.
-    priorPricing = (await getSystemConfig({ fresh: true }))?.usdtPricing ?? null;
-    await applySystemConfig({ usdtPricing: { userMerchantBuyInr: 100 } }, { actor: 'merchant-panel-suite' });
   }, 60_000);
 
   afterAll(async () => {
-    if (priorPricing) await applySystemConfig({ usdtPricing: priorPricing }, { actor: 'merchant-panel-suite' });
     await withTransaction(async (c) => {
       await c.query('SET LOCAL session_replication_role = replica');
       await c.query(
@@ -121,20 +103,13 @@ describePg('merchant panel routes', () => {
   // count against a cap and no earlier refusal bars them. Members come in
   // tens, a full team on the rail, its pool funded through the supervisor's
   // request and the admin's fulfilment.
-  const POOL = { UPI_BANK: 1_000_000, CASH: 50_000, USDT: 500_000 };
-  const bench = { UPI_BANK: [], CASH: [], USDT: [] };
+  const POOL = { UPI_BANK: 1_000_000, CASH: 50_000 };
+  const bench = { UPI_BANK: [], CASH: [] };
   const member = async (rail = 'UPI_BANK') => {
     if (!bench[rail].length) {
       const ms = [];
       for (let i = 0; i < 10; i += 1) {
         const m = await merchantActor();
-        if (rail === 'USDT') {
-          // The rail is the admin's to set; the addresses are what a USDT
-          // member keeps in Profile — both chains, so either order can reach them.
-          await updateMerchant(m.merchantId, {
-            acceptedCurrencies: ['USDT'], usdtAddressTrc20: trc20(), usdtAddressBep20: bep20(),
-          });
-        }
         ms.push(m);
       }
       const team = await teams.workingTeam({ rail, poolTokens: POOL[rail], include: ms.map((m) => m.merchantId) });
@@ -156,7 +131,7 @@ describePg('merchant panel routes', () => {
    */
   const buy = async ({
     to = null, owner = null, tokens = UPI_TOKENS, betting = null, reserve = null,
-    currency = 'INR', usdtChain = null, mayWait = false,
+    mayWait = false,
   } = {}) => {
     seq += 1;
     const who = owner || await player();
@@ -167,9 +142,7 @@ describePg('merchant panel routes', () => {
       orderId, userId: who.userId, type: 'DEPOSIT',
       tokenAmountRupees: tokens,
       depositAllocation: bet, reserveAllocation: res,
-      ...(currency === 'USDT'
-        ? { currency, usdtChain, fiatAmountRupees: tokens / 100, rateUsed: 100 }
-        : { fiatAmountRupees: tokens }),
+      fiatAmountRupees: tokens,
     });
     await teams.onlyOnline(to ? [to.merchantId] : []);
     const routed = await tryAssignMerchant(order);
@@ -335,24 +308,6 @@ describePg('merchant panel routes', () => {
     expect((await as(app, m).put('/preferences').send({ acceptsWithdrawals: true })).status).toBe(200);
     expect(await tryAssignMerchant(await getOrderRecord(s.orderId))).toBe(true);
     expect((await getOrderRecord(s.orderId)).merchantId).toBe(String(m.merchantId));
-  });
-
-  // ── The USDT chain ────────────────────────────────────────────────────────
-  // Routing requires an address on the order's chain and freezes it on the
-  // order as it starts it; the player is shown that one address. A member who
-  // clears it from Profile afterwards does not change where this order is
-  // paid (§25: address and network travel together).
-  it('starts a USDT buy with the address on its own chain, frozen on the order', async () => {
-    const usdt = await member('USDT');
-    const { orderId } = await buy({ to: usdt, tokens: USDT_TOKENS, currency: 'USDT', usdtChain: 'BEP20' });
-    const held = await getMerchant(usdt.merchantId);
-    const row = await getOrderRecord(orderId);
-    expect(row.state).toBe('PROCESSING');
-    expect(row.merchantSnapshot.usdtPayTo).toBe(held.usdtAddressBep20);
-    expect(row.merchantSnapshot.usdtPayTo).not.toBe(held.usdtAddressTrc20);
-
-    expect((await as(app, usdt).put('/profile').send({ usdtAddressBep20: '' })).status).toBe(200);
-    expect((await getOrderRecord(orderId)).merchantSnapshot.usdtPayTo).toBe(held.usdtAddressBep20);
   });
 
   it('DERIVES a member’s open-order count from the orders, not from a counter', async () => {

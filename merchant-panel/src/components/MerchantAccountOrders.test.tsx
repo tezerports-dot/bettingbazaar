@@ -24,10 +24,10 @@ const actions = (): OrderActions => ({
 });
 
 const sub = (roles: string[], depositAccountIds: string[] = [], withdrawalAccountIds: string[] = []): any => ({
-  acceptedCurrencies: ['INR'], isMerchantAccount: true,
+  isMerchantAccount: true,
   actor: { isOwner: false, staffId: 'mst_1', name: 'Asha', roles, depositAccountIds, withdrawalAccountIds },
 });
-const OWNER: any = { acceptedCurrencies: ['INR'], isMerchantAccount: true, actor: { isOwner: true } };
+const OWNER: any = { isMerchantAccount: true, actor: { isOwner: true } };
 
 const account = (accountId: string, label: string, over: Record<string, unknown> = {}): any => ({
   accountId, merchantId: 'm-1', kind: 'BANK', label, holderName: 'Shop Ltd', accountNo: `1234567890${accountId.slice(-2)}`,

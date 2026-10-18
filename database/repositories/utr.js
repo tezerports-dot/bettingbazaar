@@ -111,6 +111,38 @@ export async function claimUtr({ utr, orderId, userId = null, amountRupees = nul
 }
 
 /**
+ * Claim a reference inside a transaction somebody else holds — a chain
+ * transfer the server itself credits (`usdtDeposits.creditUsdtBuyWithin`),
+ * where the claim and the credit must commit together. The same three
+ * outcomes as `claimUtr`, on the caller's client; a duplicate is counted too.
+ */
+export async function claimUtrWithin(client, { utr, orderId, userId = null, amountRupees = null }) {
+  const normalized = normalizeUtr(utr);
+  if (!normalized) return { ok: false, reason: 'MISSING_UTR' };
+  if (!orderId) throw new Error('claimUtrWithin requires an orderId');
+  const { rows } = await client.query(
+    `INSERT INTO utr_registry (utr, order_id, user_id, amount_paise, status)
+     VALUES ($1, $2, $3, $4, 'ACTIVE')
+     ON CONFLICT (utr) DO NOTHING
+     RETURNING ${COLUMNS}`,
+    [normalized, String(orderId), userId ? String(userId) : null,
+      amountRupees === null ? null : rupeesToPaise(amountRupees)],
+  );
+  if (rows[0]) return { ok: true, entry: toEntry(rows[0]) };
+  const { rows: contested } = await client.query(
+    `UPDATE utr_registry SET duplicate_attempts = duplicate_attempts + 1, last_contested_at = now()
+      WHERE utr = $1 AND order_id <> $2
+      RETURNING ${COLUMNS}`,
+    [normalized, String(orderId)],
+  );
+  if (contested[0]) {
+    const entry = toEntry(contested[0]);
+    return { ok: false, reason: entry.status === UTR_STATUS.FRAUD ? 'FRAUD_FLAGGED' : 'DUPLICATE_UTR', entry };
+  }
+  return { ok: true, idempotent: true };
+}
+
+/**
  * Has this reference been used, and by whom?
  *
  * A READ, for showing a warning before a player commits. It is NOT the guard —

@@ -25,7 +25,6 @@ const REFUSED = Object.freeze({
   not_found: [404, 'No merchant has that ID.'],
   is_supervisor: [409, 'A supervisor cannot be a merchant account. Remove the supervisor role first.'],
   is_member: [409, 'That merchant is in a team. Remove them from it first.'],
-  not_inr: [409, 'A merchant account serves INR. Set the merchant\'s rail to INR first.'],
 });
 
 router.get('/merchant-accounts', authenticate, hasPermission(AREA), async (req, res) => {

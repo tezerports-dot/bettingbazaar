@@ -23,7 +23,6 @@
  * orders is a zero rather than a gap the chart interpolates across.
  */
 import { db } from '#db';
-import { merchantTypeOf } from './merchantCurrency.js';
 
 /**
  * Merchants ranked by completed volume over a window, with success rate, order
@@ -55,11 +54,6 @@ export async function getMerchantFundingStats(merchantId) {
     isOnline: merchant.isOnline,
     successRate: merchant.successRate,
     avgResponseMinutes: merchant.avgResponseMinutes,
-    // The volumes above are summed in the ORDER's currency, which for one
-    // merchant is their one rail (§2) — so a screen must say WHICH: a USDT
-    // merchant's 555.56 is USDT, and "₹555.56" beside it is trap 15's display
-    // mouth. Named here so the screen never has to guess.
-    currency: merchantTypeOf(merchant),
   };
 }
 

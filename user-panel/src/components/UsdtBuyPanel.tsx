@@ -1,35 +1,26 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
- * Buying tokens with USDT, from a merchant.
+ * Buying tokens with USDT, paid to the platform on BNB Smart Chain.
  *
- * ── What this rail is ──────────────────────────────────────────────────────
+ * ── What this rail is (owner, 2026-10-18) ──────────────────────────────────
  * A USDT buy is chosen in what the player SENDS — a whole number of 100 USDT
- * between the admin's minimum and maximum (Step 2d) — to a USDT team member's
- * wallet, with the transaction ID submitted after. What they RECEIVE is that
- * many USDT times the admin's rate, in platform tokens.
- *
- * There is no payment processor. The counterparty is a person.
+ * between the admin's minimum and maximum (Step 2d). The order gets an address
+ * of its own on BNB Smart Chain; the player sends the USDT there, and the
+ * server credits the tokens by itself once the full amount has arrived. There
+ * is no merchant and nothing to submit: no transaction ID, no "I've paid".
  *
  * ── The one mistake this screen exists to prevent ──────────────────────────
  * USDT is one token on several blockchains and they are NOT interchangeable.
- * Tokens sent to a Tron address from a BNB Smart Chain wallet are gone — no
- * support desk recovers them. So:
- *
- *   • the player picks the network FIRST, before an order exists;
- *   • they are shown the address for that network and no other;
- *   • the network is named next to the address every single time, never once
- *     at the top of a screen the address is scrolled away from;
- *   • the transaction ID is checked against that network's shape before it is
- *     submitted, because a hash from the wrong chain is proof of a payment the
- *     merchant is not watching for.
+ * So the network is named beside the address every time, and the player is
+ * told plainly that USDT on any other network cannot be recovered.
  *
  * ── Every rule comes from the server ───────────────────────────────────────
- * The amounts, the networks, the address, the acceptable hash. This panel ships
- * inside an Android build, so anything it decides is a suggestion the client is
- * free to decline — and a second place stating a money rule is a place it can
- * drift.
+ * The amounts, the network, the address, the deadline and what has arrived.
+ * This panel ships inside an Android build, so anything it decides is a
+ * suggestion the client is free to decline.
  */
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import QRCode from 'qrcode';
 import { payments } from '../services/api';
 
 export interface UsdtChainOption { chain: string; label: string }
@@ -39,7 +30,6 @@ export interface UsdtPayTo {
   usdtAddress?: string;
   usdtChain?: string;
   usdtChainLabel?: string;
-  merchantRef?: string;
   expiresAt?: string;
 }
 
@@ -49,44 +39,70 @@ export interface UsdtOrder {
   /** Platform tokens the player receives. */
   tokenAmount: number;
   /**
-   * What the player SENDS, in the order's own currency — so on a USDT order,
-   * USDT. The same field the INR rails carry rupees in, read according to
-   * `currency`, because one value with one name cannot drift from itself.
-   *
-   * It is the order's OWN quote, fixed at creation from the rate live at that
-   * moment. Never recomputed here: the rate is admin-editable, and a screen
-   * that re-derived it would show a price the order does not hold.
+   * What the player SENDS, in the order's own currency — on a USDT order, USDT.
+   * The order's OWN quote, fixed at creation. Never recomputed here.
    */
   fiatAmount?: number | null;
   usdtChain?: string;
   payTo?: UsdtPayTo | null;
-  /** Whether the player may still cancel it (the server's `canCancel`). */
-  canCancel?: boolean;
+  /** USDT that has arrived at the order's address so far (the server's count). */
+  usdtReceived?: number;
+  expiresAt?: string;
 }
 
-/**
- * The transaction-id shapes, mirrored from the server
- * (backend/domains/merchant/merchantCurrency.js) for immediate feedback only.
- * The server refuses anything malformed regardless of what this allows.
- */
-const TX_SHAPE: Record<string, { pattern: RegExp; hint: string }> = {
-  TRC20: { pattern: /^[0-9a-fA-F]{64}$/, hint: '64 hexadecimal characters' },
-  BEP20: { pattern: /^0x[0-9a-fA-F]{64}$/i, hint: '“0x” followed by 64 hexadecimal characters' },
-};
-
 const fmtTokens = (n: number) => `${Number(n || 0).toLocaleString('en-IN')} tokens`;
+const fmtUsdt = (n: number) => `${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 6 })} USDT`;
 
 /** The USDT buy bounds, from the server (`SystemConfig.usdtBuy`). */
 export interface UsdtBuyBounds { minUsdt: number; maxUsdt: number; stepUsdt: number }
 
 /**
  * What a player receives for `usdt`, in tokens — the server's `tokensForUsdt`:
- * the rate taken to the paisa and multiplied in integer paise, so the figure on
- * the screen is the one the order will record. Display only; the server prices
- * the order.
+ * the rate taken to the paisa and multiplied in integer paise. Display only;
+ * the server prices the order.
  */
 const tokensFor = (usdt: number, rate: number | null) =>
   (rate && rate > 0 ? (usdt * Math.round(rate * 100)) / 100 : null);
+
+/** How often an open order is asked what has arrived. The server reads the chain every 20 seconds. */
+const POLL_MS = 5000;
+
+/** mm:ss until `iso`, or null once it has passed. */
+function useCountdown(iso?: string) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!iso) return undefined;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [iso]);
+  if (!iso) return null;
+  const left = new Date(iso).getTime() - now;
+  if (!Number.isFinite(left) || left <= 0) return null;
+  const m = Math.floor(left / 60000);
+  const s = Math.floor((left % 60000) / 1000);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+/** Copy `text`, and say so only once the clipboard actually took it. */
+const CopyButton: React.FC<{ text: string; label: string }> = ({ text, label }) => {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={async () => {
+        try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+        catch { setCopied(false); }
+      }}
+      style={{
+        flexShrink: 0, padding: '6px 10px', borderRadius: 9, border: '1px solid var(--line)',
+        background: 'transparent', color: 'var(--text)', fontWeight: 700, fontSize: 11, cursor: 'pointer',
+      }}
+    >
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  );
+};
 
 export const UsdtBuyPanel: React.FC<{
   /** The USDT a buy may be — min, max and step, in whole USDT — from the server. */
@@ -96,30 +112,57 @@ export const UsdtBuyPanel: React.FC<{
    * rate — and then nothing here can be priced, so nothing is offered.
    */
   tokensPerUsdt: number | null;
-  /** The networks, from the server. */
+  /** The network(s), from the server. One today: BNB Smart Chain. */
   chains: UsdtChainOption[];
   /** An order already in flight, if the player has one. */
   order?: UsdtOrder | null;
-  /** Called after an order is created or paid, so the screen above refreshes. */
+  /** Called after an order is created or finishes, so the screen above refreshes. */
   onChanged?: () => void;
-  /** Cancels the order on the server; resolves true when it is gone. */
-  onCancel?: (orderId: string) => Promise<boolean>;
-}> = ({ bounds, tokensPerUsdt, chains, order = null, onChanged, onCancel }) => {
+}> = ({ bounds, tokensPerUsdt, chains, order = null, onChanged }) => {
   const [usdtText, setUsdtText] = useState('');
-  const [chain, setChain] = useState<string | null>(null);
-  const [txId, setTxId] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // What the poll has learned about the open order since the list was read.
+  const [live, setLive] = useState<Partial<UsdtOrder>>({});
+  const [qr, setQr] = useState<string | null>(null);
 
   const box: React.CSSProperties = {
     background: 'var(--surface3)', border: '1px solid var(--line)',
     borderRadius: 12, padding: 14, marginBottom: 12,
   };
-  const chosenChain = order?.payTo?.usdtChain ?? order?.usdtChain ?? chain;
-  const shape = chosenChain ? TX_SHAPE[chosenChain] : undefined;
-  const txError = txId.trim() && shape && !shape.pattern.test(txId.trim())
-    ? `That is not a ${order?.payTo?.usdtChainLabel ?? 'valid'} transaction ID — ${shape.hint}.`
-    : '';
+  const network = chains[0];
+
+  const current = order ? { ...order, ...live, payTo: live.payTo ?? order.payTo } : null;
+  const address = current?.payTo?.usdtAddress;
+  const countdown = useCountdown(current?.payTo?.expiresAt ?? current?.expiresAt);
+
+  // ── Ask the server what has arrived, while the order is open ──────────────
+  useEffect(() => {
+    setLive({});
+    if (!order?.orderId) return undefined;
+    let stopped = false;
+    const tick = async () => {
+      try {
+        const res: any = await payments.orderStatus(order.orderId);
+        if (stopped || !res) return;
+        setLive({ status: res.status, payTo: res.payTo ?? undefined, usdtReceived: res.usdtReceived, expiresAt: res.expiresAt });
+        if (res.status && res.status !== 'PROCESSING') onChanged?.();
+      } catch { /* transient: the next tick asks again */ }
+    };
+    const t = setInterval(tick, POLL_MS);
+    return () => { stopped = true; clearInterval(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order?.orderId]);
+
+  // ── The address as a QR, for a wallet app's scanner ───────────────────────
+  useEffect(() => {
+    if (!address) { setQr(null); return; }
+    let cancelled = false;
+    QRCode.toDataURL(address, { margin: 1, width: 180 })
+      .then((url) => { if (!cancelled) setQr(url); })
+      .catch(() => { if (!cancelled) setQr(null); });
+    return () => { cancelled = true; };
+  }, [address]);
 
   // The amount typed, judged as the server will judge it: whole steps of USDT
   // between the bounds. Said as it is typed, so the button is never a dead end
@@ -136,71 +179,46 @@ export const UsdtBuyPanel: React.FC<{
   };
 
   const create = async () => {
-    if (!amountOk || !chain) return;
+    if (!amountOk || !network) return;
     setBusy(true); setError('');
     try {
-      await payments.createUsdtBuy(usdt, chain);
+      await payments.createUsdtBuy(usdt, network.chain);
       onChanged?.();
     } catch (e: any) {
       setError(e?.message || 'Could not start a USDT purchase');
     } finally { setBusy(false); }
   };
 
-  const submitHash = async () => {
-    if (!order || !txId.trim() || txError) return;
-    setBusy(true); setError('');
-    try {
-      await payments.markPaid(order.orderId, txId.trim());
-      onChanged?.();
-    } catch (e: any) {
-      // Said in full. "This transaction ID has already been used for another
-      // order" is the whole answer — a player retyping it will never succeed,
-      // and a vague error has them do exactly that.
-      setError(e?.message || 'Could not submit that transaction ID');
-    } finally { setBusy(false); }
-  };
-
   // ── An order in flight ──────────────────────────────────────────────────
-  if (order) {
-    const payTo = order.payTo;
-    // Two states that must not look alike: waiting for a merchant, and having
-    // an address to send to. An empty address rendered as a destination is how
-    // somebody sends tokens into nothing.
+  if (current) {
+    const payTo = current.payTo;
+    // An order with no address to show (one an agent served before the change,
+    // or one that has just closed). An empty address rendered as a destination
+    // is how somebody sends USDT into nothing, so nothing is shown to send to.
     if (!payTo?.usdtAddress || !payTo?.usdtChain) {
       return (
         <div style={box}>
           <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--text)', marginBottom: 6 }}>
-            Finding a merchant
+            USDT purchase in progress
           </div>
           <div style={{ fontSize: 11, color: 'var(--text3)' }}>
-            We are matching you with a merchant who accepts USDT on your chosen network.
-            You will be shown their address here — do not send anything until then.
+            This purchase has no address to send to. Do not send anything for it. Check Payment Orders,
+            or contact support if you already sent USDT.
           </div>
-          {/* Cancel HERE, not only under Payment Orders: until a merchant
-              accepts, nothing has been asked of either side. */}
-          {order.canCancel && onCancel && (
-            <button
-              type="button"
-              onClick={async () => { setBusy(true); try { await onCancel(order.orderId); } finally { setBusy(false); } }}
-              disabled={busy}
-              style={{
-                marginTop: 12, width: '100%', padding: 11, borderRadius: 11, cursor: 'pointer',
-                fontWeight: 800, fontSize: 12, color: 'var(--red)', background: 'none',
-                border: '1px solid color-mix(in srgb,var(--red) 40%,transparent)', opacity: busy ? 0.5 : 1,
-              }}
-            >
-              {busy ? 'Cancelling…' : 'Cancel this purchase'}
-            </button>
-          )}
         </div>
       );
     }
 
+    const owed = Number(current.fiatAmount ?? 0);
+    const received = Number(current.usdtReceived ?? 0);
+    const remaining = Math.max(0, owed - received);
     return (
       <div style={box}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
           <span style={{ fontWeight: 800, fontSize: 13, color: 'var(--text)' }}>Send USDT</span>
-          <span style={{ fontSize: 10, color: 'var(--text3)' }}>{payTo.merchantRef}</span>
+          <span role="timer" style={{ fontSize: 11, fontWeight: 700, color: countdown ? 'var(--text2)' : 'var(--red)' }}>
+            {countdown ? `Time left ${countdown}` : 'Time is up'}
+          </span>
         </div>
 
         {/* The NETWORK, first and loudest. Sending on the wrong one is the
@@ -219,85 +237,58 @@ export const UsdtBuyPanel: React.FC<{
             {payTo.usdtChainLabel ?? payTo.usdtChain}
           </div>
           <div style={{ fontSize: 10.5, color: 'var(--text3)', marginTop: 4 }}>
-            Send on this network only. USDT sent on a different network cannot be recovered.
+            Send USDT on this network only. USDT sent on any other network, or any other coin, cannot be recovered.
           </div>
         </div>
 
         <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text2)' }}>
-          Address
+          Address for this purchase only
         </div>
-        <div
-          className="font-grotesk"
-          style={{ fontSize: 12, wordBreak: 'break-all', color: 'var(--text)', marginTop: 3, marginBottom: 10 }}
-        >
-          {payTo.usdtAddress}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 3, marginBottom: 10 }}>
+          <div className="font-grotesk" style={{ flex: 1, minWidth: 0, fontSize: 12, wordBreak: 'break-all', color: 'var(--text)' }}>
+            {payTo.usdtAddress}
+          </div>
+          <CopyButton text={payTo.usdtAddress} label="Copy address" />
         </div>
+        {qr && (
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+            <img src={qr} alt="QR code of the address" width={160} height={160} style={{ borderRadius: 8, background: '#fff' }} />
+          </div>
+        )}
 
         {/* What leaves their wallet, first — it is the number they type into
-            it — and what arrives here, second. The SEND figure is the order's
-            own quote, fixed when it was created; recomputing it from a rate
-            read now would show a price the order will not honour. */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: 'var(--text2)', marginBottom: 4 }}>
+            it — and what arrives here, second. The order's own quote. */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, color: 'var(--text2)', marginBottom: 4 }}>
           <span>You send</span>
-          <b style={{ color: 'var(--gold-ink)' }}>
-            {order.fiatAmount === undefined || order.fiatAmount === null
-              ? '—'
-              : `${Number(order.fiatAmount).toLocaleString('en-IN')} USDT`}
-          </b>
+          <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <b style={{ color: 'var(--gold-ink)' }}>{fmtUsdt(owed)}</b>
+            <CopyButton text={String(owed)} label="Copy amount" />
+          </span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text2)', marginBottom: 4 }}>
+          <span>You receive</span>
+          <b style={{ color: 'var(--text)' }}>{fmtTokens(current.tokenAmount)}</b>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text2)', marginBottom: 12 }}>
-          <span>You receive</span>
-          <b style={{ color: 'var(--text)' }}>{Number(order.tokenAmount).toLocaleString('en-IN')} tokens</b>
+          <span>Received so far</span>
+          <b style={{ color: 'var(--text)' }}>{fmtUsdt(received)}</b>
         </div>
 
-        {order.status === 'PAID' ? (
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--gold-ink)' }}>
-            Transaction ID submitted — the merchant is confirming it.
-          </div>
-        ) : (
-          <>
-            <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text2)', marginBottom: 6 }}>
-              Transaction ID
-            </div>
-            <input
-              value={txId}
-              onChange={(e) => setTxId(e.target.value)}
-              placeholder={shape?.hint ?? 'Transaction ID'}
-              spellCheck={false}
-              autoCapitalize="none"
-              autoCorrect="off"
-              className="font-grotesk"
-              style={{
-                width: '100%', padding: '11px 12px', borderRadius: 10, fontSize: 12,
-                border: `1px solid ${txError ? 'var(--red)' : 'var(--line)'}`,
-                background: 'var(--surface2)', color: 'var(--text)', marginBottom: 6,
-              }}
-            />
-            {txError && <p style={{ color: 'var(--red)', fontSize: 11, marginBottom: 8 }}>{txError}</p>}
-            {error && <p style={{ color: 'var(--red)', fontSize: 11, marginBottom: 8 }}>{error}</p>}
-            <button
-              onClick={submitHash}
-              disabled={busy || !txId.trim() || Boolean(txError)}
-              style={{
-                width: '100%', padding: 13, borderRadius: 12, border: 'none', cursor: 'pointer',
-                fontWeight: 800, fontSize: 14, color: 'var(--on-gold)',
-                background: 'var(--gold-metal)',
-                opacity: (busy || !txId.trim() || txError) ? 0.5 : 1,
-              }}
-            >
-              {busy ? '⏳ Submitting…' : "I've sent it"}
-            </button>
-          </>
-        )}
+        <div role="status" style={{ fontSize: 11, color: 'var(--text3)' }}>
+          {received > 0 && remaining > 0
+            ? `${fmtUsdt(remaining)} still to send. You can send it in more than one transfer.`
+            : 'Your tokens are added by themselves once the full amount arrives, usually within a minute or two. There is nothing to submit.'}
+        </div>
+        {error && <p style={{ color: 'var(--red)', fontSize: 11, marginTop: 8 }}>{error}</p>}
       </div>
     );
   }
 
-  // ── No order yet: pick an amount and a network ──────────────────────────
+  // ── No order yet: pick an amount ──────────────────────────────────────────
   //
   // With no rate there is no price, and offering sizes that cannot be priced is
   // how a player picks one and is refused. Say so instead.
-  if (!tokensPerUsdt || tokensPerUsdt <= 0) {
+  if (!tokensPerUsdt || tokensPerUsdt <= 0 || !network) {
     return (
       <div style={box}>
         <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--text)', marginBottom: 6 }}>USDT is not available right now</div>
@@ -312,7 +303,7 @@ export const UsdtBuyPanel: React.FC<{
     <div style={box}>
       <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--text)', marginBottom: 4 }}>Buy with USDT</div>
       <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 12 }}>
-        Buy platform tokens by sending USDT to a merchant. 1 USDT = {tokensPerUsdt.toLocaleString('en-IN')} tokens.
+        Send USDT on {network.label} and your tokens are added by themselves. 1 USDT = {tokensPerUsdt.toLocaleString('en-IN')} tokens.
       </div>
 
       <label htmlFor="usdt-amount" style={{ display: 'block', fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text2)', marginBottom: 8 }}>
@@ -337,44 +328,22 @@ export const UsdtBuyPanel: React.FC<{
           : `${bounds.minUsdt.toLocaleString('en-IN')} to ${bounds.maxUsdt.toLocaleString('en-IN')} USDT, in steps of ${bounds.stepUsdt}.`)}
       </div>
 
-      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text2)', marginBottom: 8 }}>
-        Network you will send from
-      </div>
-      {/* Chosen BEFORE the order exists, because it decides which merchants can
-          serve it. Asking afterwards would mean reassigning the order. */}
-      <div role="radiogroup" aria-label="Network" style={{ display: 'grid', gap: 8, marginBottom: 8 }}>
-        {chains.map((option) => (
-          <button
-            key={option.chain} type="button" role="radio" aria-checked={chain === option.chain}
-            onClick={() => setChain(option.chain)}
-            style={{
-              padding: '12px 14px', borderRadius: 12, cursor: 'pointer', fontWeight: 700, fontSize: 13,
-              textAlign: 'left',
-              border: chain === option.chain ? '2px solid var(--gold)' : '1px solid var(--line)',
-              background: chain === option.chain ? 'var(--gold-soft, rgba(var(--brand-primary-rgb), .12))' : 'transparent',
-              color: chain === option.chain ? 'var(--gold-ink)' : 'var(--text)',
-            }}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
       <div style={{ fontSize: 10.5, color: 'var(--text3)', marginBottom: 14 }}>
-        Choose the network your wallet actually holds USDT on. Tokens sent on the wrong network cannot be recovered.
+        Only USDT on {network.label} can be received. USDT sent on another network cannot be recovered.
       </div>
 
       {error && <p style={{ color: 'var(--red)', fontSize: 11, marginBottom: 10 }}>{error}</p>}
       <button
         onClick={create}
-        disabled={busy || !amountOk || !chain}
+        disabled={busy || !amountOk}
         style={{
           width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer',
           fontWeight: 800, fontSize: 15, color: 'var(--on-gold)',
           background: 'var(--gold-metal)',
-          opacity: (busy || !amountOk || !chain) ? 0.5 : 1,
+          opacity: (busy || !amountOk) ? 0.5 : 1,
         }}
       >
-        {busy ? '⏳ Creating order…' : 'Continue'}
+        {busy ? '⏳ Creating order…' : 'Get my payment address'}
       </button>
     </div>
   );

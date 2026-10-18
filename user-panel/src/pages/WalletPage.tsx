@@ -920,7 +920,6 @@ const WalletPage: React.FC = () => {
                         chains={rail.usdtChains}
                         order={activeUsdtOrder as any}
                         onChanged={() => { loadMeta(); loadOrders(); }}
-                        onCancel={(orderId) => cancelOrder(orderId)}
                       />
                     </div>
                   )}

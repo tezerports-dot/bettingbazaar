@@ -24,7 +24,7 @@
  * somebody who submitted a Tron hash reads as a different system's error, and
  * they will submit it again.
  */
-import { MERCHANT_CURRENCY, USDT_CHAIN_SPEC, isUsdtTxHash } from '../merchant/merchantCurrency.js';
+import { ORDER_CURRENCY } from './orderCurrency.js';
 import { markUTRAsUsed, normalizeUTR } from '../../middleware/utrValidation.js';
 
 /** The minimum length of a bank UTR. Twelve is the shortest a bank issues. */
@@ -33,29 +33,17 @@ const MIN_UTR_LENGTH = 12;
 /**
  * What this order's payment reference is called and what it must look like.
  *
- * Derived from the ORDER — its currency and, on USDT, its chain — never from
- * what the submitter says it is. A caller who could name its own format could
+ * Derived from the ORDER's currency, never from what the submitter says it is. A caller who could name its own format could
  * submit anything.
  */
 export function referenceSpecFor(order) {
-  if (order?.currency === MERCHANT_CURRENCY.USDT) {
-    const chain = USDT_CHAIN_SPEC[order?.usdtChain];
-    // A USDT order with no chain cannot say what a valid hash looks like. It is
-    // refused rather than falling back to the bank rule, which would accept a
-    // twelve-character string as proof of a blockchain transfer.
-    if (!chain) {
-      return {
-        label: 'transaction ID',
-        valid: () => false,
-        hint: 'This order names no network, so its transaction ID cannot be checked. Contact support.',
-      };
-    }
+  // A USDT buy is confirmed by the chain watcher (owner, 2026-10-18): nobody
+  // submits a reference for one, so none is ever valid.
+  if (order?.currency === ORDER_CURRENCY.USDT) {
     return {
       label: 'transaction ID',
-      // One owner of "a well-formed hash on THIS chain" (merchantCurrency.js),
-      // not a second reading of its pattern here.
-      valid: (value) => isUsdtTxHash(order.usdtChain, value),
-      hint: `Enter the ${chain.label} transaction ID — ${chain.txLabel}.`,
+      valid: () => false,
+      hint: 'USDT payments are confirmed automatically once they arrive. There is nothing to submit.',
     };
   }
   return {

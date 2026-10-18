@@ -23,7 +23,6 @@ const actions = (): OrderActions => ({
 // `upiId` is PLANTED: the server sends no UPI handle. It stays as an unknown
 // key the row must not render.
 const MERCHANT: any = {
-  acceptedCurrencies: ['INR'],
   bankDetails: { upiId: '9876501234@ybl', accountNo: '50100123456789', ifsc: 'HDFC0000123', bankName: 'HDFC Bank', accountHolderName: 'Ravi Kumar' },
 };
 

@@ -15,7 +15,6 @@ import { useMerchantAccount } from '../hooks/useMerchantAccount';
 import { isMerchantAccountSession } from '../utils/actor';
 import { useNow } from '../hooks/useCountdown';
 import { useViewport } from '../hooks/useViewport';
-import { railOf } from '../utils/rail';
 import type { PaymentOrder } from '../types';
 import OrderRow from '../components/OrderRow';
 import OrderDetail from '../components/OrderDetail';
@@ -33,7 +32,6 @@ const OrderManagement: React.FC = () => {
   const { orders, state, counts, reload } = useOrders();
   const now = useNow();
   const { isMobile } = useViewport();
-  const rail = railOf(merchant);
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('ALL');
@@ -44,7 +42,7 @@ const OrderManagement: React.FC = () => {
           rejectTarget, rejectBusy, dismissReject, submitPaymentNotReceived,
           scanTarget, scanBusy, dismissScan, sendCashLink,
           payoutTarget, dismissPayout, submitPayoutFrom } =
-    useOrderActions(rail, reload);
+    useOrderActions(reload);
   // A merchant account's payment accounts: which one a buy is paid into, and
   // the choices a sell is marked paid from (owner, 2026-10-11).
   const merchantAccount = isMerchantAccountSession(merchant);

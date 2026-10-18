@@ -25,6 +25,8 @@ import { paiseToRupees } from '../../shared/money.js';
 import { notify } from '../communication/communication.service.js';
 import { sendAlert } from '../../services/alerting.service.js';
 import * as pg from '#db/repositories/wallets.js';
+import { UsdtCreditRefused } from '#db/repositories/usdtDeposits.js';
+import { completeOrder } from '../payment/orderLifecycle.service.js';
 import { applyAdjustment, listAdjustments, ADJUSTABLE_FIELDS } from '#db/repositories/balanceAdjustments.js';
 
 /** Pockets an admin may adjust by hand. Re-exported so routes validate against
@@ -164,6 +166,42 @@ export async function completeBuy(orderId, { actor = 'deposit-credit', requireSt
       { orderId: String(orderId), reason: bonus.refused }).catch(() => {});
   }
   return done;
+}
+
+/**
+ * A USDT buy paid on chain to the platform's own address (owner, 2026-10-18):
+ * the order's COMPLETED transition and the credit out of the platform's
+ * holding commit together (`usdtDeposits.creditUsdtBuyWithin`, run inside the
+ * transition under the order's lock). Not covered yet, or refused: nothing
+ * moved, and the answer says why.
+ * @returns {Promise<{ok:boolean, idempotent?:boolean, reason?:string, detail?:object, order?:object, credit?:object}>}
+ */
+export async function completeUsdtBuy(orderId, { actor = 'usdt-watcher' } = {}) {
+  let credit = null;
+  let moved;
+  try {
+    moved = await completeOrder(orderId, {
+      expectFrom: 'PROCESSING', actor, reason: 'USDT received on chain',
+      within: async (client) => { credit = await db.usdtDeposits.creditUsdtBuyWithin(client, orderId, { actor }); },
+    });
+  } catch (e) {
+    if (e instanceof UsdtCreditRefused) return { ok: false, reason: e.reason, detail: e.detail };
+    throw e;
+  }
+  if (!moved.ok) return { ok: false, reason: moved.reason, status: moved.status };
+  if (moved.idempotent || !credit) return { ok: true, idempotent: true, order: moved.order };
+  if (credit.balances) pushBalances(credit.userId, { balances: rupeeBalances(credit.balances) });
+  const bonus = credit.firstDepositBonus;
+  if (bonus?.paid) {
+    notify({
+      userId: credit.userId, type: 'SUCCESS', title: 'First deposit bonus',
+      message: `₹${paiseToRupees(bonus.amountPaise)} is in your General balance. Play it and it unlocks into withdrawable winnings; see Wallet › General for how.`,
+    }).catch((e) => console.warn('[completeUsdtBuy] first deposit bonus notice failed:', e?.message));
+  } else if (bonus?.refused) {
+    sendAlert(`first-deposit-bonus-refused:${orderId}`, 'First deposit bonus refused; the buy completed without it',
+      { orderId: String(orderId), reason: bonus.refused }).catch(() => {});
+  }
+  return { ok: true, order: moved.order, credit };
 }
 
 /**

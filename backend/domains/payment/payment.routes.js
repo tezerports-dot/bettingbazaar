@@ -43,8 +43,15 @@ const router = express.Router();
  * sent before it existed — the merchant's UPI handle, their QR, and their bank
  * account number, IFSC and account-holder name, on every deposit.
  */
-function forPlayer(order) {
-  return toPlayerOrderView(order);
+function forPlayer(order, extras) {
+  return toPlayerOrderView(order, extras);
+}
+
+/** On a USDT buy, what has arrived at its address so far (for `usdtReceived`). */
+async function usdtExtras(order) {
+  if (order?.currency !== 'USDT' || order?.type !== 'DEPOSIT') return {};
+  const deposit = await db.usdtDeposits.depositFor(order.orderId);
+  return deposit ? { usdtReceivedMicro: deposit.receivedMicro } : {};
 }
 
 /**
@@ -74,8 +81,9 @@ router.post('/deposit/create', authenticatePlayer, depositCreateLimiter, async (
  *
  * ── Why this is a separate route from `/deposit/create` ────────────────────
  * It is a different rail with different rules — priced in whole steps of 100
- * USDT, and a chain the player must choose — and the two are not
- * interchangeable. One route
+ * USDT, paid to an address the platform derives for the order on BNB Smart
+ * Chain and credited when the USDT arrives (owner, 2026-10-18) — and the two
+ * are not interchangeable. One route
  * branching on a body field would make "which rail am I on" a question every
  * reader of the handler has to answer, and the failure mode is a request that
  * silently lands on the wrong one.
@@ -94,11 +102,12 @@ router.post('/usdt/deposit/create',
         // In whole USDT — what the player sends (Step 2d). The tokens are the
         // server's to work out from the admin's rate, never the client's.
         usdtAmount: Number(req.body.usdtAmount),
-        usdtChain: req.body.usdtChain,
+        // Optional: BNB Smart Chain when absent, refused by name when another.
+        usdtChain: req.body.usdtChain ?? undefined,
         provider: 'USDT',
       });
       const profile = await switchToVip(req.user.userId);
-      res.json({ success: true, message: 'USDT purchase created. Waiting for a merchant.', ...result, profile });
+      res.json({ success: true, message: 'USDT purchase created. Send the USDT to the address shown.', ...result, profile });
     } catch (err) {
       return respondError(res, err, 'POST /payment/usdt/deposit/create');
     }
@@ -293,7 +302,7 @@ router.get('/order/:orderId', authenticatePlayer, orderAccessGuard, async (req, 
   try {
     const order = req.p2pOrder;
 
-    res.json({ success: true, order: forPlayer(order) });
+    res.json({ success: true, order: forPlayer(order, await usdtExtras(order)) });
   } catch (err) {
     console.error('GET /payment/order/:orderId error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch order' });
@@ -336,12 +345,13 @@ router.get('/order/:orderId/status', authenticatePlayer, orderAccessGuard, async
     // that fires most often. Through the projection like everything else: `payTo`
     // is the payment link and an opaque reference, and nothing about who the
     // merchant is.
-    const view = forPlayer(order);
+    const view = forPlayer(order, await usdtExtras(order));
     res.json({
       success: true,
       status:          view.status,
       expiresAt:       view.expiresAt,
       payTo:           view.payTo ?? null,
+      usdtReceived:    view.usdtReceived,
       canCancel:       view.canCancel,
       utrNumber:       view.utrNumber,
       proofScreenshot: proofVisible ? order.proofScreenshot : null,

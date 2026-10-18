@@ -674,70 +674,61 @@ const MUTATIONS = [
     from: `      payTo:           view.payTo ?? null,`,
     to: `      payTo:           order.merchantSnapshot,`,
   },
-  // ── B7: the USDT merchant rail, and one payment claimed once ─────────────
+  // ── B7: a USDT buy is the platform's, and one payment claimed once ───────
   {
-    // Retargeted 2026-10-02 (Step 2c): routing is to team members now.
     id: 'M143', file: 'database/repositories/teamRouting.js', config: PG,
     test: 'database/tests/teamRoutingPg.test.js',
-    why: 'the chain filter goes, so a USDT order is offered to a member with no address on that network: the player sends to a chain the address does not exist on and the tokens are gone',
-    from: "        ${chainColumn ? `AND m.${chainColumn} IS NOT NULL AND m.${chainColumn} <> ''` : ''}",
-    to: "        ${''}",
-  },
-  {
-    id: 'M144', file: 'database/repositories/teamRouting.js', config: PG,
-    test: 'database/tests/teamRoutingPg.test.js',
-    why: 'an unknown chain matches nobody SILENTLY instead of throwing, which reads on a screen as "nobody is free" and has a player wait through a malformed request',
-    from: "    if (!chainColumn) throw new TypeError(`routingCandidates: unknown usdtChain '${order.usdtChain}'`);",
-    to: "    if (!chainColumn) chainColumn = 'usdt_address_trc20';",
+    why: 'a USDT buy is offered to members again, though it is paid to the platform: a member is handed an order whose money never reaches them',
+    from: "  if (rail === RAILS.USDT) {\n    throw new TypeError(`routingCandidates: order ${order.orderId} is a USDT buy, which no member serves`);",
+    to: "  if (false) {\n    throw new TypeError(`routingCandidates: order ${order.orderId} is a USDT buy, which no member serves`);",
   },
   {
     id: 'M145', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
-    why: 'a USDT buy with no chain is admitted, so it matches no merchant and sits in the queue until it expires while the screen says "waiting for a merchant"',
-    from: `  if (currency === MERCHANT_CURRENCY.USDT && !isUsdtChain(usdtChain)) {`,
+    test: 'backend/tests/routes/usdtBuyPricingPg.test.js',
+    why: 'a USDT buy naming another chain is admitted, so the player is shown a BSC address while holding funds on a network that cannot reach it',
+    from: `  if (currency === ORDER_CURRENCY.USDT && !isUsdtChain(usdtChain)) {`,
     to: `  if (false) {`,
   },
   {
     id: 'M146', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
-    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
-    why: 'any USDT amount is accepted, so the admin bounds and the 100-USDT step stop holding and a member is asked for a sum the screen never offered',
+    test: 'backend/tests/routes/usdtBuyPricingPg.test.js',
+    why: 'any USDT amount is accepted, so the admin bounds and the 100-USDT step stop holding and a player is quoted a sum the screen never offered',
     from: `    if (!isUsdtBuyAmount(usdtAmount, bounds)) {`,
     to: `    if (false) {`,
   },
   {
     id: 'M147', file: 'backend/domains/payment/paymentReference.js', config: PG,
-    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
+    test: 'backend/tests/routes/paymentRoutes.test.js',
     why: 'the registry refusal is swallowed, so one real payment can be claimed on two orders — the defect this whole registry exists to prevent',
     from: `  if (!claimed.ok) {`,
     to: `  if (false) {`,
   },
   {
     id: 'M148', file: 'backend/domains/payment/paymentReference.js', config: PG,
-    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
-    why: 'a transaction id of any shape is accepted, so a bank UTR or a hash from the wrong chain is taken as proof of a payment nobody can find',
+    test: 'backend/tests/routes/paymentRoutes.test.js',
+    why: 'a reference of any shape is accepted, so a too-short UTR is taken as proof of a payment nobody can find',
     from: `  if (!normalized || !spec.valid(normalized)) {`,
     to: `  if (!normalized) {`,
   },
   {
     id: 'M149', file: 'backend/domains/payment/playerOrderView.js', config: PG,
     test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
-    why: 'the player is handed the merchant’s address for BOTH chains instead of the one their own order named, so half of them send on a network that address does not exist on',
-    from: `  if (accepted && isBuy && snapshot.usdtPayTo && snapshot.usdtChain) {
-    view.usdtAddress = snapshot.usdtPayTo;`,
-    to: `  if (accepted && isBuy && (snapshot.usdtAddressTrc20 || snapshot.usdtAddressBep20)) {
-    view.usdtAddress = snapshot.usdtAddressTrc20 || snapshot.usdtAddressBep20;
-    view.usdtAddressBep20 = snapshot.usdtAddressBep20;`,
+    why: 'a USDT buy is shown the merchant snapshot path instead of its own platform address, so the player is told to pay nowhere',
+    from: `  const platform = platformUsdtPayTo(order);
+  if (platform) return platform;`,
+    to: `  const platform = undefined;
+  if (platform) return platform;`,
   },
   {
     id: 'M152', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
+    test: 'backend/tests/routes/usdtBuyPricingPg.test.js',
     why: 'a USDT purchase with no rate set is priced at the INR peg instead of refused, so 50,000 tokens are sold for 50,000 USDT and a player might take it',
     from: `    if (quoted === null) {`,
     to: `    if (false) {`,
   },
   {
     id: 'M153', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
+    test: 'backend/tests/routes/usdtBuyPricingPg.test.js',
     why: 'the tokens stop coming from the rate, so a player who sends 100 USDT is credited 100 tokens — the USDT and the tokens become the same number',
     from: `    tokenAmount = quoted.tokens;`,
     to: `    tokenAmount = usdtAmount;`,
@@ -761,8 +752,10 @@ const MUTATIONS = [
     id: 'M156', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
     why: 'the one order insert stops writing the tamper tag, so every live order is untagged and the guard mounted on every order route checks nothing',
-    from: `    paymentMode, inrRouting, usdtChain, deriveOrderHmac(orderId)];`,
-    to: `    paymentMode, inrRouting, usdtChain, null];`,
+    from: `    paymentMode, inrRouting, usdtChain, usdtPayAddress ? String(usdtPayAddress).toLowerCase() : null,
+    deriveOrderHmac(orderId)];`,
+    to: `    paymentMode, inrRouting, usdtChain, usdtPayAddress ? String(usdtPayAddress).toLowerCase() : null,
+    null];`,
   },
   {
     id: 'M165', file: 'backend/middleware/order-crypto-access.js', config: PG,
@@ -1537,13 +1530,6 @@ const MUTATIONS = [
     to: `const isAdjustment = () => false;`,
   },
   // ── The Merchant Platform's per-merchant figures (2026-10-01) ───────────
-  {
-    id: 'M271', file: 'backend/domains/merchant/merchantAnalytics.service.js', config: PG,
-    test: 'backend/tests/routes/merchantPlatformStatsPg.test.js',
-    why: 'a USDT merchant\'s volume is labelled as rupees on the admin screen',
-    from: `    currency: merchantTypeOf(merchant),`,
-    to: `    currency: 'INR',`,
-  },
   // ── A create is a create (2026-10-01) ───────────────────────────────────
   {
     id: 'M272', file: 'backend/domains/gameRegistry/gameRegistry.routes.js', config: PG,
@@ -2256,9 +2242,12 @@ const MUTATIONS = [
   {
     id: 'M373', file: 'backend/domains/payment/playerOrderView.js', config: PG,
     test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
-    why: 'an ended USDT buy still shows the chain address: a payment to a member the order no longer has, which nobody can reverse',
-    from: "  if (accepted && isBuy && snapshot.usdtPayTo && snapshot.usdtChain) {\n",
-    to: "  if (isBuy && snapshot.usdtPayTo && snapshot.usdtChain) {\n",
+    why: 'the order\'s USDT address is a column anyone could pass through; the projection must keep it inside payTo with its network',
+    from: `  return {
+    usdtAddress: order.usdtPayAddress,
+    usdtChain: order.usdtChain,`,
+    to: `  return {
+    usdtAddress: order.usdtPayAddress,`,
   },
   {
     id: 'M375', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
@@ -3705,6 +3694,77 @@ const MUTATIONS = [
     to: "            expectMerchant: req.merchantId,\n            set: {\n                rejectedBy:",
   },
 
+  // ── USDT buys paid to the platform on BSC (owner, 2026-10-18) ─────────────
+  {
+    id: 'M479', file: 'database/repositories/usdtDeposits.js', config: PG,
+    test: 'backend/tests/routes/usdtPlatformDepositPg.test.js',
+    why: 'a part payment is credited as if it were the whole: 60 USDT buys 100 USDT of tokens',
+    from: `  if (receivedMicro < requiredMicro) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M480', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/usdtPlatformDepositPg.test.js',
+    why: 'expiry cancels a USDT buy whose money already arrived but was not yet credited, so the player paid and got nothing',
+    from: `        if ((await creditIfCovered(order.orderId)).credited) continue;`,
+    to: `        if (false) continue;`,
+  },
+  {
+    id: 'M481', file: 'database/repositories/usdtDeposits.js', config: PG,
+    test: 'backend/tests/routes/usdtPlatformDepositPg.test.js',
+    why: 'the movement stops taking the tokens from supply, so a USDT buy credits a wallet with tokens the books never issued',
+    from: `    legs: { [ACCOUNTS.TOKEN_SUPPLY]: -amount, [ACCOUNTS.USER_FLOAT]: amount },`,
+    to: `    legs: { [ACCOUNTS.USER_FLOAT]: amount },`,
+  },
+  {
+    id: 'M482', file: 'backend/domains/payment/usdtBsc.js', config: UNIT,
+    test: 'backend/tests/unit/usdtBsc.test.js',
+    why: 'a log from a block reorganised away is counted, so a payment that no longer exists is credited',
+    from: `    .filter((l) => !l.removed && String(l.address).toLowerCase() === BSC_USDT_CONTRACT)`,
+    to: `    .filter((l) => String(l.address).toLowerCase() === BSC_USDT_CONTRACT)`,
+  },
+  {
+    id: 'M483', file: 'backend/domains/payment/usdtDeposit.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/usdtPlatformDepositPg.test.js',
+    why: 'a sub-admin with the USDT area can point every sweep at their own wallet',
+    from: `router.put('/usdt-deposits/final-wallet', authenticate, isAdmin, async (req, res) => {`,
+    to: `router.put('/usdt-deposits/final-wallet', authenticate, AREA, async (req, res) => {`,
+  },
+  {
+    id: 'M484', file: 'scripts/usdt-sweep.mjs', config: UNIT,
+    test: 'backend/tests/unit/usdtSweep.test.js',
+    why: 'the sweep sends to the wallet in the downloaded file even when this machine names a different one',
+    from: `  if (local && fromFile !== undefined && local !== fromFile) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M485', file: 'scripts/usdt-sweep.mjs', config: UNIT,
+    test: 'backend/tests/unit/usdtSweep.test.js',
+    why: 'a vanity address sharing the last 6 characters of the owner\'s wallet passes the sweep confirmation',
+    from: `  return ADDRESS_RE.test(want) && String(typed ?? '').trim().toLowerCase() === want;`,
+    to: `  return String(typed ?? '').trim().toLowerCase() === want.slice(-6);`,
+  },
+  {
+    id: 'M486', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/usdtPlatformDepositPg.test.js',
+    why: 'a USDT buy lapses while the watcher is behind, so money sent in time is an unpaid buy against the player',
+    from: `        if (!(await usdtBuyMayLapse(order.expiresAt))) continue;`,
+    to: `        if (false) continue;`,
+  },
+  {
+    id: 'M487', file: 'backend/domains/payment/usdtDeposit.service.js', config: PG,
+    test: 'backend/tests/routes/usdtPlatformDepositPg.test.js',
+    why: 'blocks a node answered empty the first time are never read again, so that payment is never seen',
+    from: `    let from = cursor ? Math.max(0, start - RESCAN_BLOCKS) : start;`,
+    to: `    let from = start;`,
+  },
+  {
+    id: 'M488', file: 'database/repositories/usdtDeposits.js', config: PG,
+    test: 'backend/tests/routes/usdtPlatformDepositPg.test.js',
+    why: 'one transaction paying two buys credits only the first; the second is refused as a reused reference',
+    from: "export const paymentReferenceOf = (t) => `${String(t.tx_hash ?? t.txHash).toLowerCase()}:${Number(t.log_index ?? t.logIndex)}`;",
+    to: "export const paymentReferenceOf = (t) => `${String(t.tx_hash ?? t.txHash).toLowerCase()}`;",
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

@@ -137,6 +137,9 @@ export function toOrder(r) {
     // else, and a chain that moved after assignment would point a player at an
     // address on a network they cannot reach.
     usdtChain: r.usdt_chain ?? null,
+    // On a USDT buy, the address derived for this order alone that the player
+    // pays to (owner, 2026-10-18). Never changes.
+    usdtPayAddress: r.usdt_pay_address ?? null,
 
     // Who serves it, for an INR order: AGENTS (supervisors' teams) or
     // MERCHANTS (merchant accounts), stamped at creation from the admin's
@@ -329,6 +332,10 @@ async function newOrderStatement({
   // would hand a player an address on a network they did not choose — and USDT
   // sent on the wrong network is gone. A trigger refuses the update too.
   usdtChain = null,
+  // A USDT buy's own receiving address (owner, 2026-10-18), derived for this
+  // order alone. Named for the same reason as the chain: frozen by trigger
+  // (`order_states_usdt_pay_address_frozen`), never SETTABLE.
+  usdtPayAddress = null,
   ...detail
 }) {
   if (!orderId) throw new Error('createOrderRecord requires an orderId');
@@ -355,9 +362,10 @@ async function newOrderStatement({
   });
   const paymentMode = paymentModeFor({ currency: detail.currency, tokenAmountPaise: tokenPaise, inrRouting });
   const columns = ['order_id', 'user_id', 'order_type', 'state', 'token_amount_paise', 'fiat_amount_paise',
-    'payment_mode', 'inr_routing', 'usdt_chain', 'order_hmac'];
+    'payment_mode', 'inr_routing', 'usdt_chain', 'usdt_pay_address', 'order_hmac'];
   const params = [String(orderId), String(userId), type, state, tokenPaise, rupeesToPaise(fiatAmountRupees),
-    paymentMode, inrRouting, usdtChain, deriveOrderHmac(orderId)];
+    paymentMode, inrRouting, usdtChain, usdtPayAddress ? String(usdtPayAddress).toLowerCase() : null,
+    deriveOrderHmac(orderId)];
 
   // The same allowlist `setOrderFields` uses, so a field this create accepts is
   // one an update accepts and vice versa — and an unknown one is refused here

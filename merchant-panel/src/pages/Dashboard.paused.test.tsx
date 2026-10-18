@@ -38,7 +38,7 @@ vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() 
 import Dashboard from './Dashboard';
 
 const show = (merchant: Record<string, unknown>) => {
-  auth.merchant = { id: 'm-1', merchantId: 'm-1', isOnline: true, acceptedCurrencies: ['INR'], ...merchant };
+  auth.merchant = { id: 'm-1', merchantId: 'm-1', isOnline: true, ...merchant };
   return render(<MemoryRouter><Dashboard /></MemoryRouter>);
 };
 

@@ -62,15 +62,13 @@ export async function merchantStats() {
        COUNT(*)::int                                                     AS total,
        COUNT(*) FILTER (WHERE status = 'ACTIVE' AND is_online)::int      AS active,
        COUNT(*) FILTER (WHERE status = 'SUSPENDED')::int                 AS suspended,
-       COUNT(*) FILTER (WHERE merchant_approval_status = 'PENDING')::int AS pending_approval,
-       COUNT(*) FILTER (WHERE merchant_type = 'INR')::int                AS inr,
-       COUNT(*) FILTER (WHERE merchant_type = 'USDT')::int               AS usdt
+       COUNT(*) FILTER (WHERE merchant_approval_status = 'PENDING')::int AS pending_approval
      FROM merchants`, [], 'stats_merchants',
   );
   const r = rows[0];
   return {
     total: r.total, active: r.active, suspended: r.suspended,
-    pendingApproval: r.pending_approval, inr: r.inr, usdt: r.usdt,
+    pendingApproval: r.pending_approval,
   };
 }
 

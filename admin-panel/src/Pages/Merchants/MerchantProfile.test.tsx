@@ -40,7 +40,7 @@ const SUMMARY = (role: string, extra: Record<string, unknown> = {}) => ({
   processedPaise: 2_345_000, completedOrders: 12, pool: { availablePaise: 700_000, heldPaise: 0, teams: 1 },
   commission: { todayPaise: 1_600, monthPaise: 9_900, totalPaise: 12_000 }, ...extra,
 });
-const CHOICES = { routingPriority: { MIN: 1, MAX: 5, DEFAULT: 3 }, supervisorRails: ['CASH', 'UPI_BANK', 'USDT'] };
+const CHOICES = { routingPriority: { MIN: 1, MAX: 5, DEFAULT: 3 }, supervisorRails: ['CASH', 'UPI_BANK'] };
 
 const profile = (role = 'AGENT', merchant: Record<string, unknown> = {}) =>
   merchants.getProfile.mockResolvedValue({ success: true, data: { ...MERCHANT, ...merchant }, summary: SUMMARY(role), choices: CHOICES });
@@ -87,11 +87,12 @@ describe('merchant page', () => {
     expect(screen.queryByRole('button', { name: 'Resume assignment' })).toBeNull();
   });
 
-  it('switches the payment details through the capabilities route', async () => {
-    put.mockResolvedValue({ data: { success: true } });
+  it('offers no way onto USDT: merchants have no rail', async () => {
+    // USDT buys are paid to the platform (owner, 2026-10-18): no merchant takes them.
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: /USDT · wallet addresses/ }));
-    await waitFor(() => expect(put).toHaveBeenCalledWith('/api/admin/merchants/MRC-1/capabilities', { merchantType: 'USDT' }));
+    await screen.findByRole('heading', { name: 'ravi' });
+    expect(screen.queryByRole('button', { name: /USDT|Move to INR/ })).toBeNull();
+    expect(screen.queryByRole('option', { name: /USDT/ })).toBeNull();
   });
 
   it('suspends with the reason typed beside the button', async () => {

@@ -92,6 +92,18 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'How many buy orders in a row may expire unpaid at the same agent before orders stop being sent to them. It is not a suspension; an admin or their next completed order clears it.',
     example: '3: if three players in a row cannot pay one agent, that agent stops getting buys until someone checks their QR or bank.',
   },
+  'usdtDeposits.paymentWindowMinutes': {
+    what: 'How long a player has to send the USDT for a buy to its own address before the order expires.',
+    example: '60: an order opened at 10:00 expires at 11:00 if not enough USDT has arrived by then.',
+  },
+  'usdtDeposits.confirmations': {
+    what: 'How many BNB Smart Chain blocks must follow a USDT transfer before it counts and the tokens are credited.',
+    example: '15 (about 10 to 45 seconds on BSC). More is safer against a chain reorganisation, and slower.',
+  },
+  'usdtDeposits.lateWatchHours': {
+    what: 'How long after a USDT buy ends its address is still watched, so money sent late is recorded for an admin to sort out.',
+    example: '72: a payment arriving two days after the order expired still shows on Admin › USDT Deposits.',
+  },
   'usdtBuy.minUsdt': {
     what: 'The smallest USDT buy a player may place. Must be a multiple of 100.',
     example: '200: a 100 USDT buy is refused; 200 and up are allowed.',
@@ -108,10 +120,6 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'How many open UPI or bank orders one agent may hold at the same time.',
     example: '3: a fourth UPI order waits for another agent or for one of the three to finish.',
   },
-  'teamRouting.concurrency.USDT': {
-    what: 'How many open USDT orders one agent may hold at the same time.',
-    example: '3',
-  },
   'teamRouting.assignmentWaitSeconds': {
     what: 'How long an order may wait in the queue for a free agent before it expires and the player is told nobody was available.',
     example: '1500 (25 minutes): an order nobody could take by then expires; nothing is charged.',
@@ -123,10 +131,6 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
   'teamRouting.processingWindowSeconds.UPI_BANK': {
     what: 'Once a UPI or bank order is assigned to an agent, how long it has to be completed before it expires.',
     example: '900 (15 minutes).',
-  },
-  'teamRouting.processingWindowSeconds.USDT': {
-    what: 'Once a USDT order is assigned to an agent, how long it has to be completed before it expires.',
-    example: '1800 (30 minutes), to allow for slow blockchain confirmations.',
   },
   'teamRouting.utrSubmitSeconds': {
     what: 'Extra seconds a player gets to type the payment reference after the order window, so a payment made at the last moment is not lost.',
