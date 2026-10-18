@@ -5,6 +5,14 @@ The app is one portable Docker image (see `Dockerfile`, `CLAUDE.md` §17) and a
 plan is a **single Shinjiru dedicated box** (`VPS_UBUNTU_SETUP.md`); the rest
 exist so a platform move is configuration, not a project.
 
+## After every merge to `main` — the same commands each time
+- **Server:** `cd /var/www/bettingbazaar && git pull origin main && bash deploy/vps/update.sh`
+  (pulls, warns about settings new to `.env.template` since the last deploy,
+  rebuilds and restarts the stack, checks `migrate` and `/health/ready`).
+- **Codespace:** `bash scripts/codespace-update.sh` (pull, install, lint, unit
+  tests, build); add `--apk` to also run the **Android release** workflow and
+  download the signed APK into `./apk/`.
+
 ## Going live — start at `../docs/GO_LIVE_RUNBOOK.md`
 The ordered, non-coder runbook: a Shinjiru dedicated box, PostgreSQL as the
 money authority from day one, the built-in manual (merchant) payment system, the
