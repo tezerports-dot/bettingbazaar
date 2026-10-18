@@ -318,10 +318,14 @@ export const SYSTEM_CONFIG_SPEC = group({
   // (seed × options), per poll kind, in whole tokens.
   cricket: group({
     enabled: b(false),
+    // While the game is off, players still see its tab, opening a full-screen
+    // "coming soon" image (Branding.cricketComingSoonImageUrl; owner, 2026-10-18).
+    comingSoon: b(true),
     spreadPercent: n(10, 0, 50),
     claimMarginPercent: n(5, 0, 50),
     rtpBoostPoints: n(5, 0, 50),
     inPlayDelaySec: int(5, 0, 30),
+    claimHoldSec: int(2, 0, 60),
     nextBallWindowSec: int(12, 3, 60),
     tossCloseMinutes: int(30, 0, 240),
     momVoidHours: int(24, 1, 168),
@@ -501,6 +505,8 @@ export const BRANDING_SPEC = group({
   betCardDelhiImageUrl: s(''), betCardBombayImageUrl: s(''),
   // ── The board's Refer & Earn card (desktop/tablet side column) ────────────
   referPromoImageUrl: s(''),
+  // ── The Cricket tab while the game is off (coming soon), full screen ────
+  cricketComingSoonImageUrl: s(''),
 });
 
 /**

@@ -676,20 +676,29 @@ function priceClaims(bets, books, { claimMarginBp, feeBp }) {
 
 const claimableWhere = `b.user_id = $1 AND b.status = 'OPEN' AND p.status = 'OPEN' AND (p.closes_at IS NULL OR p.closes_at > now())`;
 
-async function claimableBets(run, userId, { matchId = null, betIds = null }) {
-  const params = [String(userId)];
+/**
+ * A player's claimable bets. A bet placed less than `holdSec` seconds before
+ * the claim was pressed (`pressedAt`; now for a quote) is left out of a match's Claim all, and named by id it
+ * refuses the claim (CLAIM_TOO_SOON), so nobody places and claims in one
+ * instant (owner, 2026-10-18).
+ *
+ * @returns {{bets: object[], tooSoon: boolean}}
+ */
+async function claimableBets(run, userId, { matchId = null, betIds = null, holdSec = 0, pressedAt = null }) {
+  const params = [String(userId), holdSec, pressedAt];
   let where = claimableWhere;
   if (matchId) { params.push(String(matchId)); where += ` AND b.match_id = $${params.length}`; }
   if (betIds) { params.push(betIds.map(String)); where += ` AND b.bet_id = ANY($${params.length})`; }
   const { rows } = await run(
-    `SELECT b.* FROM cricket_bets b JOIN cricket_polls p ON p.poll_id = b.poll_id
+    `SELECT b.*, b.placed_at > COALESCE($3::timestamptz, now()) - make_interval(secs => $2::int) AS too_soon
+       FROM cricket_bets b JOIN cricket_polls p ON p.poll_id = b.poll_id
       WHERE ${where} ORDER BY b.poll_id, b.bet_id`, params, 'cricket_claimable');
-  return rows;
+  return { bets: rows.filter((r) => !r.too_soon), tooSoon: rows.some((r) => r.too_soon) };
 }
 
 /** A quote for claiming (a read, not binding): each position and the total. */
-export async function quoteClaims({ userId, matchId = null, betIds = null, claimMarginBp, feeBp }) {
-  const bets = await claimableBets(pgQuery, userId, { matchId, betIds });
+export async function quoteClaims({ userId, matchId = null, betIds = null, holdSec = 0, claimMarginBp, feeBp }) {
+  const { bets } = await claimableBets(pgQuery, userId, { matchId, betIds, holdSec });
   if (!bets.length) return { lines: [], totalNetPaise: 0, totalStakePaise: 0 };
   const pollIds = [...new Set(bets.map((b) => b.poll_id))];
   const { rows: polls } = await pgQuery('SELECT * FROM cricket_polls WHERE poll_id = ANY($1)', [pollIds], 'cricket_claim_quote_polls');
@@ -716,14 +725,15 @@ function summarise(lines) {
  * is paid the whole claim or nothing.
  *
  * @returns {ok:true, claimed, totalNetPaise, balances} | {ok:false, reason, quote?}
- *   reasons: NOTHING_TO_CLAIM, POLL_CLOSED, EVENT_DURING_DELAY, QUOTE_CHANGED
+ *   reasons: NOTHING_TO_CLAIM, CLAIM_TOO_SOON, POLL_CLOSED, EVENT_DURING_DELAY, QUOTE_CHANGED
  */
-export async function claimPositions({ userId, matchId = null, betIds = null, minTotalNetPaise, requestedAt, claimMarginBp, feeBp }) {
+export async function claimPositions({ userId, matchId = null, betIds = null, holdSec = 0, minTotalNetPaise, requestedAt, claimMarginBp, feeBp }) {
   return inTx(async (client) => {
     const ctx = await lockWalletWithin(client, userId);
     const run = (sql, params) => client.query(sql, params);
-    const candidates = await claimableBets(run, userId, { matchId, betIds });
-    if (!candidates.length) return refuse('NOTHING_TO_CLAIM');
+    const { bets: candidates, tooSoon } = await claimableBets(run, userId, { matchId, betIds, holdSec, pressedAt: requestedAt });
+    if (betIds && tooSoon) return refuse('CLAIM_TOO_SOON');
+    if (!candidates.length) return refuse(tooSoon ? 'CLAIM_TOO_SOON' : 'NOTHING_TO_CLAIM');
     if (betIds && candidates.length !== new Set(betIds).size) return refuse('POLL_CLOSED');
 
     const pollIds = [...new Set(candidates.map((b) => b.poll_id))].sort();

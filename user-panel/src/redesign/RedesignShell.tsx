@@ -74,7 +74,7 @@ export const useShell = (): ShellContextValue => {
 type Needs = 'casino' | 'crash' | 'sports' | 'cricket';
 const CATEGORIES: { title: string; sub: string; icon: string; accent: string; path: string; needs?: Needs }[] = [
   { title: 'DELHI BAZAAR', sub: 'vs Bombay', icon: '🎯', accent: 'var(--gold)', path: '/' },
-  // Shown while Admin › Cricket's switch is on (owner, 2026-10-18).
+  // Shown while Admin › Cricket's switch is on, or as coming soon (owner, 2026-10-18).
   { title: 'CRICKET', sub: 'Live opinion odds', icon: '🏏', accent: 'var(--green)', path: '/cricket', needs: 'cricket' },
   { title: 'CASH OR CRASH', sub: 'Take the flight', icon: '✈️', accent: '#60a5fa', path: '/crash', needs: 'crash' },
   { title: 'CASINO', sub: 'Play to win big', icon: '🃏', accent: '#a78bfa', path: '/casino', needs: 'casino' },
@@ -216,7 +216,8 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   // pages read, so the row and the page cannot disagree about whether a
   // category exists (§2, §5).
   const { anyCasino, anyCrash, anySports } = useGameProviders();
-  const anyCricket = useCricketSettings().enabled;
+  const cricketSettings = useCricketSettings();
+  const anyCricket = cricketSettings.enabled || cricketSettings.comingSoon;
   const has: Record<Needs, boolean> = { casino: anyCasino, crash: anyCrash, sports: anySports, cricket: anyCricket };
   // The bottom bar: the admin's pages in their order, a provider page only
   // while that provider is on, then Menu.

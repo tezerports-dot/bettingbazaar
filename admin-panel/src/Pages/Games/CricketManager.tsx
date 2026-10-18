@@ -37,7 +37,7 @@ interface ReportRow {
   feesPaise: number; houseNetPaise: number;
 }
 interface Settings {
-  enabled: boolean; spreadPercent: number; claimMarginPercent: number; rtpBoostPoints: number;
+  enabled: boolean; comingSoon: boolean; claimHoldSec: number; spreadPercent: number; claimMarginPercent: number; rtpBoostPoints: number;
   inPlayDelaySec: number; nextBallWindowSec: number; tossCloseMinutes: number; momVoidHours: number;
   minStakeRupees: number; maxStakeRupees: number;
   seedRupees: { matchResult: number; toss: number; manOfMatch: number; over: number; ball: number };
@@ -47,11 +47,12 @@ const rupees = (p: number) => `₹${(p / 100).toLocaleString('en-IN', { maximumF
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—');
 const day = (d: Date) => d.toISOString().slice(0, 10);
 
-const NUMBER_FIELDS: Array<[keyof Omit<Settings, 'enabled' | 'seedRupees'>, string]> = [
+const NUMBER_FIELDS: Array<[keyof Omit<Settings, 'enabled' | 'comingSoon' | 'seedRupees'>, string]> = [
   ['spreadPercent', 'Spread %'],
   ['claimMarginPercent', 'Claim margin %'],
   ['rtpBoostPoints', 'Spread cut while the RTP fund is above zero (points)'],
   ['inPlayDelaySec', 'In-play delay (seconds)'],
+  ['claimHoldSec', 'A new bet can be claimed after (seconds)'],
   ['nextBallWindowSec', 'Next-ball window (seconds)'],
   ['tossCloseMinutes', 'Toss poll closes before the start (minutes)'],
   ['momVoidHours', 'Man of the match void after (hours)'],
@@ -102,6 +103,16 @@ const SettingsCard: React.FC = () => {
             <SettingHelp path="cricket.enabled" />
           </div>
         </div>
+        {!form.enabled && (
+          <div className="flex items-start gap-3">
+            <input id="cricket-coming-soon" type="checkbox" className="mt-1" checked={form.comingSoon}
+              onChange={(e) => setForm({ ...form, comingSoon: e.target.checked })} />
+            <div>
+              <label htmlFor="cricket-coming-soon" className="label mb-0 cursor-pointer">While off, show the tab as coming soon (image on Admin › Images)</label>
+              <SettingHelp path="cricket.comingSoon" />
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {NUMBER_FIELDS.map(([k, label]) => (
             <div key={k}>

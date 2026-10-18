@@ -22,7 +22,7 @@ describePg('cricket routes', () => {
   beforeAll(async () => {
     await applySchema();
     baseline = await getConfig('system', { fresh: true });
-    await applyConfig({ scope: 'system', actor: 'test-setup', patch: { cricket: { enabled: true, inPlayDelaySec: 0 } } });
+    await applyConfig({ scope: 'system', actor: 'test-setup', patch: { cricket: { enabled: true, inPlayDelaySec: 0, claimHoldSec: 0 } } });
     pub = mountRouter((await import('../../domains/cricket/cricket.routes.js')).default);
     admin = mountRouter((await import('../../domains/cricket/cricket.admin.routes.js')).default);
     games = await actor({ isSubAdmin: true, permissions: { canManageGames: true } });
@@ -138,7 +138,7 @@ describePg('cricket routes', () => {
       const r = await as(pub, p1).post('/quote/bet').send({ pollId: 'x', optionKey: 'A', stake: 100 });
       expect(r.body.code).toBe('GAME_SWITCHED_OFF');
     } finally {
-      await applyConfig({ scope: 'system', actor: 'test', patch: { cricket: { enabled: true, inPlayDelaySec: 0 } } });
+      await applyConfig({ scope: 'system', actor: 'test', patch: { cricket: { enabled: true, inPlayDelaySec: 0, claimHoldSec: 0 } } });
     }
   });
 });

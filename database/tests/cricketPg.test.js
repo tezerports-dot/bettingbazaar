@@ -249,6 +249,32 @@ describePg('cricket opinion polls', () => {
     expect(again.reason).toBe('NOTHING_TO_CLAIM');
   });
 
+  it('refuses a claim pressed within the hold after its bet was placed, and leaves young bets out of Claim all', async () => {
+    const m = await match();
+    const pollId = await resultPoll(m);
+    const u = await player();
+    const old = await bet(u, pollId, 'A', 20_000);
+    await new Promise((r) => { setTimeout(r, 2100); });
+    const young = await bet(u, pollId, 'B', 20_000);
+    const at = new Date().toISOString();
+    const args = { userId: u, minTotalNetPaise: 0, requestedAt: at, holdSec: 2, claimMarginBp: MARGIN_BP, feeBp: FEE_BP };
+
+    const named = await cricket.claimPositions({ ...args, betIds: [young.bet.betId] });
+    expect(named.reason).toBe('CLAIM_TOO_SOON');
+    const mixed = await cricket.claimPositions({ ...args, betIds: [old.bet.betId, young.bet.betId] });
+    expect(mixed.reason).toBe('CLAIM_TOO_SOON');
+    const q = await cricket.quoteClaims({ userId: u, matchId: m.matchId, holdSec: 2, claimMarginBp: MARGIN_BP, feeBp: FEE_BP });
+    expect(q.lines.map((l) => l.betId)).toEqual([old.bet.betId]);
+    const all = await cricket.claimPositions({ ...args, matchId: m.matchId });
+    expect(all.claimed.map((l) => l.betId)).toEqual([old.bet.betId]);
+    // Only the young one left: Claim all says to wait, not that there is nothing.
+    expect((await cricket.claimPositions({ ...args, matchId: m.matchId })).reason).toBe('CLAIM_TOO_SOON');
+    // Pressed once the hold has passed, it is claimed.
+    const later = new Date(Date.now() + 3000).toISOString();
+    const ok = await cricket.claimPositions({ ...args, requestedAt: later, betIds: [young.bet.betId] });
+    expect(ok.ok).toBe(true);
+  });
+
   it('takes many players betting at once on one poll without breaking the book or losing a token', async () => {
     const m = await match();
     const pollId = await resultPoll(m, { seedPaise: 20_000 });

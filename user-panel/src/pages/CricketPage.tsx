@@ -252,6 +252,9 @@ const Positions: React.FC<{ match: CricketMatch; bets: CricketBet[]; onClaimed: 
         </div>
       )}
       {error && <p role="alert" style={{ color: 'var(--red)', fontSize: 12, margin: '10px 0 0' }}>{error}</p>}
+      {settings.claimHoldSec > 0 && (
+        <p style={{ fontSize: 11, color: 'var(--text3)', margin: '8px 0 0' }}>A new bet can be claimed {settings.claimHoldSec} s after it is placed.</p>
+      )}
       <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
         {bets.map((b) => {
           const row = rows.find((r) => r.b.betId === b.betId);
@@ -352,7 +355,7 @@ const MatchView: React.FC<{ m: CricketMatch; bets: CricketBet[]; onPick: (p: Cri
 };
 
 // ── Page ─────────────────────────────────────────────────────────────────────
-const CricketPage: React.FC = () => {
+const CricketLive: React.FC = () => {
   const navigate = useNavigate();
   const settings = useCricketSettings();
   const { isAuthenticated } = useGame();
@@ -422,5 +425,46 @@ const CricketPage: React.FC = () => {
     </ScreenShell>
   );
 };
+
+// ── Coming soon (the game switched off, the tab kept; owner, 2026-10-18) ─────
+/**
+ * The admin's full-screen picture (Branding.cricketComingSoonImageUrl, set on
+ * Admin › Images), drawn over the whole screen with a way back; with none, a
+ * plain line says it is coming.
+ */
+const ComingSoon: React.FC = () => {
+  const navigate = useNavigate();
+  const imageUrl: string = (() => {
+    try { return String(JSON.parse(localStorage.getItem('app_branding') || '{}').cricketComingSoonImageUrl || ''); } catch { return ''; }
+  })();
+  const [broken, setBroken] = useState(false);
+  const back = (
+    <button type="button" onClick={() => navigate('/')} aria-label="Back to the boards"
+      style={{ position: 'absolute', top: 'max(12px, env(safe-area-inset-top))', left: 12, zIndex: 1, padding: '8px 14px', borderRadius: 999, border: '1px solid var(--line2)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+      ← Back
+    </button>
+  );
+  if (imageUrl && !broken) {
+    return (
+      <div role="dialog" aria-label="Cricket is coming soon" style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'var(--bg)' }}>
+        {back}
+        <img src={imageUrl} alt="Cricket is coming soon" onError={() => setBroken(true)}
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+      </div>
+    );
+  }
+  return (
+    <ScreenShell icon="🏏" title="Cricket" sub="Coming soon">
+      <div style={{ ...card, textAlign: 'center', padding: 28 }}>
+        <div style={{ fontSize: 40 }}>🏏</div>
+        <p style={{ color: 'var(--text)', fontSize: 18, fontWeight: 800, margin: '8px 0 4px' }}>Cricket is coming soon</p>
+        <p style={{ color: 'var(--text2)', fontSize: 13, margin: '0 0 14px' }}>Back your opinion on live matches, ball by ball. Watch this space.</p>
+        <button type="button" onClick={() => navigate('/')} style={{ ...goldButton, width: 'auto', padding: '10px 18px', fontSize: 13 }}>Back to the boards</button>
+      </div>
+    </ScreenShell>
+  );
+};
+
+const CricketPage: React.FC = () => (useCricketSettings().enabled ? <CricketLive /> : <ComingSoon />);
 
 export default CricketPage;

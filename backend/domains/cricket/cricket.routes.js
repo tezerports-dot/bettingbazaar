@@ -42,6 +42,7 @@ const REFUSALS = Object.freeze({
   OPTION_SUSPENDED: [409, 'This option is not taking bets right now. Try a smaller stake or another option.'],
   ODDS_CHANGED: [409, 'The odds changed. Check the new odds and confirm again.'],
   QUOTE_CHANGED: [409, 'The figure changed. Check the new figure and confirm again.'],
+  CLAIM_TOO_SOON: [409, 'A new bet can be claimed a moment after it is placed. Try again in a second or two.'],
   NOTHING_TO_CLAIM: [409, 'There is nothing to claim: no open position in a poll still taking claims.'],
   insufficient: [400, 'Your balance is too low for this bet.'],
   BET_ID_TAKEN: [409, 'Send a new Idempotency-Key for a new bet.'],
@@ -155,7 +156,7 @@ function claimTarget(body) {
 router.post('/quote/claim', authenticatePlayer, async (req, res) => {
   try {
     const { cfg, s } = await liveSettings();
-    const q = await db.cricket.quoteClaims({ userId: req.user.userId, ...claimTarget(req.body), claimMarginBp: s.claimMarginBp, feeBp: feeBpOf(cfg) });
+    const q = await db.cricket.quoteClaims({ userId: req.user.userId, ...claimTarget(req.body), holdSec: s.claimHoldSec, claimMarginBp: s.claimMarginBp, feeBp: feeBpOf(cfg) });
     res.json({ success: true, ...q, delaySec: s.inPlayDelayMs / 1000, totalNet: rupees(q.totalNetPaise) });
   } catch (error) {
     return respondError(res, error, 'POST /v1/cricket/quote/claim', { message: 'Could not price the claim.' });
@@ -172,7 +173,7 @@ router.post('/claims', authenticatePlayer, betLimiter, async (req, res) => {
     await sleep(s.inPlayDelayMs);
     const r = await db.cricket.claimPositions({
       userId: req.user.userId, ...target, minTotalNetPaise: minTotal, requestedAt,
-      claimMarginBp: s.claimMarginBp, feeBp: feeBpOf(cfg),
+      holdSec: s.claimHoldSec, claimMarginBp: s.claimMarginBp, feeBp: feeBpOf(cfg),
     });
     if (!r.ok) return refused(res, r);
     for (const id of new Set(r.claimed.map((l) => l.pollId.split(':')[0]))) cricketOddsPublisher.markDirty(id);

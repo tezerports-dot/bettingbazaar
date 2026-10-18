@@ -37,6 +37,7 @@ const providers = vi.hoisted(() => ({
   enabledCasino: [], enabledCrash: [], enabledSports: [],
   providers: { casino: [], crash: [], sports: [] }, loading: false, refresh: vi.fn(),
 }));
+const crk = vi.hoisted(() => ({ enabled: false, comingSoon: false }));
 const footer = vi.hoisted(() => ({ pages: ['home', 'results', 'wallet', 'promo'] as string[] }));
 vi.mock('../services/GameProviderContext', () => ({
   useGameProviders: () => providers,
@@ -57,7 +58,7 @@ vi.mock('../services/GameContext', () => ({
   }),
   spendableBalance: () => 0,
   useFooterPages: () => footer.pages,
-  useCricketSettings: () => ({ enabled: false, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimMarginPercent: 5 }),
+  useCricketSettings: () => ({ ...crk, claimHoldSec: 2, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimMarginPercent: 5 }),
   useBoardExtras: () => ({ urgencyChips: true, closingWarnSeconds: 10, resultCelebration: true, bonusProgress: true, promoCards: false }),
   MY_PAYOUT_EVENT: 'bb:my-payout',
   MY_ROUND_EVENT: 'bb:my-round',
@@ -106,6 +107,17 @@ describe('the home category cards', () => {
     paint();
     expect(card(/DELHI BAZAAR/i)).not.toBeNull();
     expect(card(/CASINO/i)).toBeNull();
+  });
+
+  it('offers CRICKET while the game is on or shown as coming soon, and not otherwise', () => {
+    crk.enabled = false; crk.comingSoon = false;
+    const { unmount } = paint();
+    expect(card(/CRICKET/i)).toBeNull();
+    unmount();
+    crk.comingSoon = true;
+    paint();
+    expect(card(/CRICKET/i)).not.toBeNull();
+    crk.comingSoon = false;
   });
 });
 

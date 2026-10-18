@@ -57,6 +57,7 @@ export function brandingPayload(b) {
     betCardDelhiImageUrl:    b.betCardDelhiImageUrl,
     betCardBombayImageUrl:   b.betCardBombayImageUrl,
     referPromoImageUrl:      b.referPromoImageUrl,
+    cricketComingSoonImageUrl: b.cricketComingSoonImageUrl,
   };
 }
 

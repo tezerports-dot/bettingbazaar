@@ -204,6 +204,14 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'Seconds every cricket bet and claim waits before it is executed. A ball reported during the wait refuses it, so nobody can bet on a ball they have already seen on a faster stream.',
     example: '5: a bet pressed at 12:00:00 is executed at 12:00:05 unless a ball arrived in between.',
   },
+  'cricket.comingSoon': {
+    what: 'While cricket is switched off, show players the Cricket tab anyway, opening a full-screen "coming soon" image (set it on Admin › Images). Off hides the tab until the game is switched on.',
+    example: 'On: players see Cricket beside Delhi Bazaar and get the coming-soon picture when they tap it.',
+  },
+  'cricket.claimHoldSec': {
+    what: 'Seconds a new cricket bet must stand before it can be claimed, counted from when it was placed. Stops a bot from placing and claiming in the same instant.',
+    example: '2: a bet placed at 12:00:05 can be claimed from 12:00:07.',
+  },
   'cricket.nextBallWindowSec': {
     what: 'How long the next-ball poll takes bets after the previous ball\'s result arrives. Keep it well under the gap between balls (about 35 seconds).',
     example: '12: bets are taken for 12 seconds after each ball.',

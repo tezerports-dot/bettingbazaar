@@ -54,10 +54,12 @@ interface SysConfig {
 /** Mirrors `cricketPublicSettings` (backend/domains/cricket/cricketSettings.js). */
 export interface CricketSettings {
   enabled:            boolean;
+  comingSoon:         boolean;
   minStake:           number;
   maxStake:           number;
   inPlayDelaySec:     number;
   claimMarginPercent: number;
+  claimHoldSec:       number;
 }
 /** Mirrors `boardExtras` in database/spec/config.spec.js (systemConfigPayload.js). */
 export interface BoardExtras {
@@ -72,8 +74,8 @@ const DEFAULT_SYS_CONFIG: SysConfig = {
   footerPages: ['home', 'results', 'wallet', 'promo'], // schema default (config.spec.js footerPages)
   // schema defaults: true / 10 / true / true / true
   boardExtras: { urgencyChips: true, closingWarnSeconds: 10, resultCelebration: true, bonusProgress: true, promoCards: true },
-  // schema defaults (config.spec.js `cricket`): off, 10 to 50,000, 5 s, 5 %
-  cricket: { enabled: false, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimMarginPercent: 5 },
+  // schema defaults (config.spec.js `cricket`): off, coming soon, 10 to 50,000, 5 s, 5 %, 2 s
+  cricket: { enabled: false, comingSoon: true, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimMarginPercent: 5, claimHoldSec: 2 },
   winningsFeePercent: 1, // schema default: 1
 };
 import { useToast } from '../components/ui/Toast';

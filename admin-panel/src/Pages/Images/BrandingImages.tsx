@@ -44,6 +44,8 @@ export const PAGE_IMAGES: BrandingImageField[] = [
     ratio: null, upload: { w: 1200, h: 400 }, previewWidth: 420 },
   { key: 'referPageBannerUrl', label: 'Refer & Earn page banner', where: 'Top of the Refer & Earn page, behind the reward headline. Drawn to fill the banner and darkened at the bottom so the text stays readable; with none, the page draws its own gold banner.',
     examples: 'Laptop banner about 1040 × 280, phone about 360 × 260', ratio: null, upload: { w: 1600, h: 600 }, previewWidth: 420 },
+  { key: 'cricketComingSoonImageUrl', label: 'Cricket coming soon', where: 'The whole screen when a player taps Cricket while the game is switched off (Admin › Cricket › coming soon). Drawn to fill the screen, so keep the message in the middle; with none, the page says "coming soon" in text.',
+    examples: 'Phones (portrait) and laptops alike', ratio: { w: 9, h: 16 }, upload: { w: 1080, h: 1920 }, previewWidth: 200 },
 ];
 
 export const BrandingImages: React.FC<{ fields: BrandingImageField[]; title: string; intro: string }> = ({ fields, title, intro }) => {
