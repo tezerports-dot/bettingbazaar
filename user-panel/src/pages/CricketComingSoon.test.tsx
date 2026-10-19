@@ -12,7 +12,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 const navigate = vi.hoisted(() => vi.fn());
 vi.mock('react-router', async () => ({ ...(await vi.importActual<any>('react-router')), useNavigate: () => navigate }));
 vi.mock('../services/GameContext', () => ({
-  useCricketSettings: () => ({ enabled: false, comingSoon: true, claimHoldSec: 2, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimMarginPercent: 5, winningsFeePercent: 1 }),
+  useCricketSettings: () => ({ enabled: false, comingSoon: true, claimHoldSec: 2, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, winningsFeePercent: 1 }),
   useGame: () => ({ isAuthenticated: false }),
 }));
 vi.mock('../redesign/RedesignShell', () => ({ useShell: () => ({ openAuth: vi.fn() }) }));

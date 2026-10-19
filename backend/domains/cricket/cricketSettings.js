@@ -23,7 +23,6 @@ export function cricketSettingsOf(cfg) {
     enabled: val('enabled') === true,
     comingSoon: val('comingSoon') === true,
     spreadBp: toBp(val('spreadPercent')),
-    claimMarginBp: toBp(val('claimMarginPercent')),
     rtpBoostBp: toBp(val('rtpBoostPoints')),
     inPlayDelayMs: val('inPlayDelaySec') * 1000,
     claimHoldSec: val('claimHoldSec'),
@@ -48,9 +47,5 @@ export function cricketPublicSettings(cfg) {
     maxStake: s.maxStakePaise / 100,
     inPlayDelaySec: s.inPlayDelayMs / 1000,
     claimHoldSec: s.claimHoldSec,
-    // The player app works out each position's live value from the broadcast
-    // pools with this margin and `winningsFeePercent` (a §11 display mirror of
-    // `quoteClaim`); the server's quote is the figure that counts.
-    claimMarginPercent: s.claimMarginBp / 100,
   };
 }

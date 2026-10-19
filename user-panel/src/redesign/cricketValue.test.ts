@@ -8,20 +8,22 @@ import { describe, it, expect } from 'vitest';
 import { positionValuePaise, feeOn } from './cricketValue';
 
 describe('a cricket position value on screen', () => {
-  it('matches the server: payout × share without this stake, less margin and fee', () => {
+  it('matches the server: payout × share without this stake, less the fee', () => {
     const v = positionValuePaise(
       [{ key: 'A', poolPaise: 300_000 }, { key: 'B', poolPaise: 100_000 }],
-      { optionKey: 'A', stakePaise: 100_000, potentialPaise: 180_000 }, 5, 1,
+      { optionKey: 'A', stakePaise: 100_000, potentialPaise: 180_000 }, 1,
     );
-    expect(v).toBe(112_860);
+    // fair = 120,000; 1 % of it = 1,200.
+    expect(v).toBe(118_800);
   });
 
-  it('charges the fee only above the stake', () => {
-    expect(feeOn(10_000, 10_000, 1)).toBe(0);
-    expect(feeOn(20_000, 10_000, 1)).toBe(200);
+  it('charges the fee on the whole payout, stake and profit together', () => {
+    expect(feeOn(10_000, 1)).toBe(100);
+    expect(feeOn(20_000, 1)).toBe(200);
+    expect(feeOn(20_000, 0)).toBe(0);
   });
 
   it('is zero for an option it cannot find', () => {
-    expect(positionValuePaise([{ key: 'A', poolPaise: 1 }], { optionKey: 'Z', stakePaise: 1, potentialPaise: 2 }, 5, 1)).toBe(0);
+    expect(positionValuePaise([{ key: 'A', poolPaise: 1 }], { optionKey: 'Z', stakePaise: 1, potentialPaise: 2 }, 1)).toBe(0);
   });
 });

@@ -322,7 +322,6 @@ export const SYSTEM_CONFIG_SPEC = group({
     // "coming soon" image (Branding.cricketComingSoonImageUrl; owner, 2026-10-18).
     comingSoon: b(true),
     spreadPercent: n(10, 0, 50),
-    claimMarginPercent: n(0, 0, 50),
     rtpBoostPoints: n(5, 0, 50),
     inPlayDelaySec: int(5, 0, 30),
     claimHoldSec: int(2, 0, 60),

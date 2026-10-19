@@ -43,7 +43,7 @@ interface ReportRow {
   feesPaise: number; houseNetPaise: number;
 }
 interface Settings {
-  enabled: boolean; comingSoon: boolean; claimHoldSec: number; spreadPercent: number; claimMarginPercent: number; rtpBoostPoints: number;
+  enabled: boolean; comingSoon: boolean; claimHoldSec: number; spreadPercent: number; rtpBoostPoints: number;
   inPlayDelaySec: number; nextBallWindowSec: number; tossCloseMinutes: number;
   minStakeRupees: number; maxStakeRupees: number;
   seedRupees: Record<PollKey, number>;
@@ -58,7 +58,6 @@ const day = (d: Date) => d.toISOString().slice(0, 10);
 
 const NUMBER_FIELDS: Array<[keyof Omit<Settings, 'enabled' | 'comingSoon' | 'seedRupees' | 'polls'>, string]> = [
   ['spreadPercent', 'Spread %'],
-  ['claimMarginPercent', 'Claim margin %'],
   ['rtpBoostPoints', 'Spread cut while the RTP fund is above zero (points)'],
   ['inPlayDelaySec', 'In-play delay (seconds)'],
   ['claimHoldSec', 'A new bet can be claimed after (seconds)'],

@@ -315,7 +315,7 @@ const BetBox: React.FC<{ poll: CricketPoll; option: CricketOption | null; onPlac
       {option && inRange && (
         <div aria-live="polite" style={{ marginTop: 8 }}>
           {row(moved ? 'Odds moved to' : 'Odds', odds(shownOdds), 'var(--gold-ink)')}
-          {row('Pays if it wins', tokens(shownPays))}
+          {row(`Pays if it wins (before the ${settings.winningsFeePercent}% fee)`, tokens(shownPays))}
           {row('Profit if it wins', `+${tokens(shownPays - amount * 100)}`, 'var(--green)')}
         </div>
       )}
@@ -398,7 +398,7 @@ const PollPositions: React.FC<{ poll: CricketPoll; bets: CricketBet[]; onClaimed
   if (!bets.length) return null;
   const open = poll.status === 'OPEN';
   const live = bets.filter((b) => b.status === 'OPEN');
-  const values = new Map(live.map((b) => [b.betId, open ? positionValuePaise(poll.options, b, settings.claimMarginPercent, settings.winningsFeePercent) : null]));
+  const values = new Map(live.map((b) => [b.betId, open ? positionValuePaise(poll.options, b, settings.winningsFeePercent) : null]));
   const worth = live.reduce((t, b) => t + (values.get(b.betId) ?? 0), 0);
   const staked = live.reduce((t, b) => t + b.stakePaise, 0);
   return (
@@ -517,7 +517,7 @@ const MatchPositions: React.FC<{ match: CricketMatch; bets: CricketBet[]; onClai
   const pollsById = useMemo(() => new Map(match.polls.map((p) => [p.pollId, p])), [match.polls]);
   const claimable = bets.filter((b) => b.status === 'OPEN' && pollsById.get(b.pollId)?.status === 'OPEN');
   if (!claimable.length) return null;
-  const worth = claimable.reduce((t, b) => t + positionValuePaise(pollsById.get(b.pollId)!.options, b, settings.claimMarginPercent, settings.winningsFeePercent), 0);
+  const worth = claimable.reduce((t, b) => t + positionValuePaise(pollsById.get(b.pollId)!.options, b, settings.winningsFeePercent), 0);
   const staked = claimable.reduce((t, b) => t + b.stakePaise, 0);
   const net = worth - staked;
   return (

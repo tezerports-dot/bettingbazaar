@@ -192,10 +192,6 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'The house spread on cricket odds: odds = (100% − spread) × all money on the poll ÷ money on that option. It is the house\'s income on every bet.',
     example: '10: 1,000 on A, 2,000 on B and 200 on Tie show A 2.88, B 1.44, Tie 14.40.',
   },
-  'cricket.claimMarginPercent': {
-    what: 'What the house keeps when a player claims (cashes out) before a poll closes, as a percent of the position\'s current value. Off (0) by default: the spread is already taken when the bet is placed.',
-    example: '0: a position worth ₹1,000 at today\'s pool is claimed for ₹1,000; 5 would pay ₹950.',
-  },
   'cricket.rtpBoostPoints': {
     what: 'While the Cricket RTP fund is on and above zero, new polls open with the spread lowered by this many points, returning the house\'s extra wins to players.',
     example: '5: with a 10% spread, boosted polls open at 5%.',

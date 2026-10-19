@@ -69,34 +69,41 @@ describe('cricket odds', () => {
 });
 
 describe('the winnings fee', () => {
-  it('is charged only on a payout above the stake, and never takes it below the stake', () => {
-    expect(winningsFeePaise(20_000, 10_000, 100)).toBe(200);
-    expect(winningsFeePaise(10_000, 10_000, 100)).toBe(0);
-    expect(winningsFeePaise(9_000, 10_000, 100)).toBe(0);
-    expect(winningsFeePaise(10_050, 10_000, 100)).toBe(50);
+  it('is the percent of the whole payout, stake and profit together, rounded down', () => {
+    expect(winningsFeePaise(20_000, 100)).toBe(200);
+    expect(winningsFeePaise(10_050, 100)).toBe(100);
+    expect(winningsFeePaise(99, 100)).toBe(0);
+    expect(winningsFeePaise(0, 100)).toBe(0);
   });
 });
 
 describe('a claim', () => {
   const pools = { A: 300_000, B: 100_000 };
   const bet = { optionKey: 'A', stakePaise: 100_000, potentialPaise: 180_000 };
-  it("is the payout times the option's share without this stake, less the margin and the fee", () => {
+  it("is the payout times the option's share without this stake, less the fee on the whole of it", () => {
     const liabilities = { A: 180_000 + 200_000, B: 150_000 };
-    const q = quoteClaim({ book: book({ seedPaise: 0, optionCount: 2, stakesPaise: 400_000 }), pools, liabilities, bet, claimMarginBp: 500, feeBp: 100 });
-    // share = 200,000 / 300,000; fair = 120,000; less 5 % = 114,000; fee 1 % of 114,000 = 1,140.
-    expect(q).toEqual({ grossPaise: 114_000, feePaise: 1_140, netPaise: 112_860 });
+    const q = quoteClaim({ book: book({ seedPaise: 0, optionCount: 2, stakesPaise: 400_000 }), pools, liabilities, bet, feeBp: 100 });
+    // share = 200,000 / 300,000; fair = 120,000 (no claim margin); fee 1 % of 120,000 = 1,200.
+    expect(q).toEqual({ grossPaise: 120_000, feePaise: 1_200, netPaise: 118_800 });
+  });
+
+  it('takes the fee on a claim below the stake too', () => {
+    const q = quoteClaim({ book: book({ seedPaise: 0, optionCount: 2, stakesPaise: 400_000 }), pools: { A: 150_000, B: 250_000 },
+      liabilities: { A: 180_000, B: 150_000 }, bet, feeBp: 100 });
+    // share = 50,000 / 300,000; fair = 30,000 (below the 100,000 stake); fee 300.
+    expect(q).toEqual({ grossPaise: 30_000, feePaise: 300, netPaise: 29_700 });
   });
 
   it('is held to what the book can pay without breaking its bound', () => {
     const liabilities = { A: 180_000 + 200_000, B: 400_000 };
-    const q = quoteClaim({ book: book({ seedPaise: 0, optionCount: 2, stakesPaise: 400_000 }), pools, liabilities, bet, claimMarginBp: 500, feeBp: 100 });
+    const q = quoteClaim({ book: book({ seedPaise: 0, optionCount: 2, stakesPaise: 400_000 }), pools, liabilities, bet, feeBp: 100 });
     expect(q.netPaise).toBe(0);
   });
 
   it('never pays more than the potential payout', () => {
     const q = quoteClaim({
       book: book({ seedPaise: 0, optionCount: 2, stakesPaise: 10_100_000 }), pools: { A: 10_000_000, B: 100_000 },
-      liabilities: { A: 100_000, B: 0 }, bet: { optionKey: 'A', stakePaise: 50_000, potentialPaise: 100_000 }, claimMarginBp: 0, feeBp: 0,
+      liabilities: { A: 100_000, B: 0 }, bet: { optionKey: 'A', stakePaise: 50_000, potentialPaise: 100_000 }, feeBp: 0,
     });
     expect(q.grossPaise).toBeLessThanOrEqual(100_000);
   });

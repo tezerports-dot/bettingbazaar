@@ -27,7 +27,6 @@ const describePg = pgConfigured() ? describe : describe.skip;
 const RUN = Math.random().toString(36).slice(2, 8);
 let seq = 0;
 const FEE_BP = 100;        // 1 %, the schema default of winningsFeePercent
-const MARGIN_BP = 500;     // 5 %, the schema default of the claim margin
 const RESERVE_BP = 0;      // whole stake from deposit, so pockets are easy to read
 const past = () => new Date(Date.now() - 1000).toISOString();
 
@@ -232,12 +231,12 @@ describePg('cricket opinion polls', () => {
     // Others back A after, so the position is worth more.
     for (let i = 0; i < 3; i += 1) await bet(await player(), pollId, 'A', 50_000);
 
-    const q = await cricket.quoteClaims({ userId: u, matchId: m.matchId, claimMarginBp: MARGIN_BP, feeBp: FEE_BP });
+    const q = await cricket.quoteClaims({ userId: u, matchId: m.matchId, feeBp: FEE_BP });
     expect(q.lines).toHaveLength(2);
-    const tooMuch = await cricket.claimPositions({ userId: u, matchId: m.matchId, minTotalNetPaise: q.totalNetPaise + 1, requestedAt: new Date().toISOString(), claimMarginBp: MARGIN_BP, feeBp: FEE_BP });
+    const tooMuch = await cricket.claimPositions({ userId: u, matchId: m.matchId, minTotalNetPaise: q.totalNetPaise + 1, requestedAt: new Date().toISOString(), feeBp: FEE_BP });
     expect(tooMuch.reason).toBe('QUOTE_CHANGED');
     const before = await getBalancesPaise(u);
-    const r = await cricket.claimPositions({ userId: u, matchId: m.matchId, minTotalNetPaise: q.totalNetPaise, requestedAt: new Date().toISOString(), claimMarginBp: MARGIN_BP, feeBp: FEE_BP });
+    const r = await cricket.claimPositions({ userId: u, matchId: m.matchId, minTotalNetPaise: q.totalNetPaise, requestedAt: new Date().toISOString(), feeBp: FEE_BP });
     expect(r.ok).toBe(true);
     expect(r.claimed).toHaveLength(2);
     expect((await getBalancesPaise(u)).winningsBalance - before.winningsBalance).toBe(r.totalNetPaise);
@@ -245,7 +244,7 @@ describePg('cricket opinion polls', () => {
       const { worst, bound } = await worstBook(id);
       expect(worst).toBeGreaterThanOrEqual(bound);
     }
-    const again = await cricket.claimPositions({ userId: u, matchId: m.matchId, minTotalNetPaise: 0, requestedAt: new Date().toISOString(), claimMarginBp: MARGIN_BP, feeBp: FEE_BP });
+    const again = await cricket.claimPositions({ userId: u, matchId: m.matchId, minTotalNetPaise: 0, requestedAt: new Date().toISOString(), feeBp: FEE_BP });
     expect(again.reason).toBe('NOTHING_TO_CLAIM');
   });
 
@@ -257,13 +256,13 @@ describePg('cricket opinion polls', () => {
     await new Promise((r) => { setTimeout(r, 2100); });
     const young = await bet(u, pollId, 'B', 20_000);
     const at = new Date().toISOString();
-    const args = { userId: u, minTotalNetPaise: 0, requestedAt: at, holdSec: 2, claimMarginBp: MARGIN_BP, feeBp: FEE_BP };
+    const args = { userId: u, minTotalNetPaise: 0, requestedAt: at, holdSec: 2, feeBp: FEE_BP };
 
     const named = await cricket.claimPositions({ ...args, betIds: [young.bet.betId] });
     expect(named.reason).toBe('CLAIM_TOO_SOON');
     const mixed = await cricket.claimPositions({ ...args, betIds: [old.bet.betId, young.bet.betId] });
     expect(mixed.reason).toBe('CLAIM_TOO_SOON');
-    const q = await cricket.quoteClaims({ userId: u, matchId: m.matchId, holdSec: 2, claimMarginBp: MARGIN_BP, feeBp: FEE_BP });
+    const q = await cricket.quoteClaims({ userId: u, matchId: m.matchId, holdSec: 2, feeBp: FEE_BP });
     expect(q.lines.map((l) => l.betId)).toEqual([old.bet.betId]);
     const all = await cricket.claimPositions({ ...args, matchId: m.matchId });
     expect(all.claimed.map((l) => l.betId)).toEqual([old.bet.betId]);

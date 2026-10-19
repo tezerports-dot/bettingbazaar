@@ -16,7 +16,7 @@ vi.mock('../services/api', () => ({ cricket: api }));
 vi.mock('react-router', async () => ({ ...(await vi.importActual<any>('react-router')), useNavigate: () => vi.fn() }));
 vi.mock('../services/backend.service', () => ({ getBackend: () => ({ subscribeToCricket: () => () => {} }) }));
 vi.mock('../services/GameContext', () => ({
-  useCricketSettings: () => ({ enabled: true, comingSoon: false, claimHoldSec: 2, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimMarginPercent: 5, winningsFeePercent: 1 }),
+  useCricketSettings: () => ({ enabled: true, comingSoon: false, claimHoldSec: 2, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, winningsFeePercent: 1 }),
   useGame: () => ({ isAuthenticated: true }),
 }));
 vi.mock('../redesign/RedesignShell', () => ({ useShell: () => ({ openAuth: vi.fn() }) }));

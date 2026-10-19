@@ -682,12 +682,12 @@ export async function quoteBetNow({ pollId, optionKey, stakePaise }) {
  * against the book as the earlier claims leave it. Shared by the quote (a
  * read) and the claim (under the locks).
  */
-function priceClaims(bets, books, { claimMarginBp, feeBp }) {
+function priceClaims(bets, books, { feeBp }) {
   const lines = [];
   for (const bet of bets) {
     const b = books.get(bet.poll_id);
     const q = quoteClaim({
-      book: b.book, pools: b.pools, liabilities: b.liabilities, claimMarginBp, feeBp,
+      book: b.book, pools: b.pools, liabilities: b.liabilities, feeBp,
       bet: { optionKey: bet.option_key, stakePaise: num(bet.stake_paise), potentialPaise: num(bet.potential_paise) },
     });
     // The claim's effect on the book, for the next position on this poll.
@@ -722,14 +722,14 @@ async function claimableBets(run, userId, { matchId = null, betIds = null, holdS
 }
 
 /** A quote for claiming (a read, not binding): each position and the total. */
-export async function quoteClaims({ userId, matchId = null, betIds = null, holdSec = 0, claimMarginBp, feeBp }) {
+export async function quoteClaims({ userId, matchId = null, betIds = null, holdSec = 0, feeBp }) {
   const { bets } = await claimableBets(pgQuery, userId, { matchId, betIds, holdSec });
   if (!bets.length) return { lines: [], totalNetPaise: 0, totalStakePaise: 0 };
   const pollIds = [...new Set(bets.map((b) => b.poll_id))];
   const { rows: polls } = await pgQuery('SELECT * FROM cricket_polls WHERE poll_id = ANY($1)', [pollIds], 'cricket_claim_quote_polls');
   const { rows: opts } = await pgQuery('SELECT * FROM cricket_poll_options WHERE poll_id = ANY($1)', [pollIds], 'cricket_claim_quote_opts');
   const books = new Map(polls.map((p) => [p.poll_id, bookOf(p, opts.filter((o) => o.poll_id === p.poll_id))]));
-  const lines = priceClaims(bets, books, { claimMarginBp, feeBp });
+  const lines = priceClaims(bets, books, { feeBp });
   return summarise(lines);
 }
 
@@ -752,7 +752,7 @@ function summarise(lines) {
  * @returns {ok:true, claimed, totalNetPaise, balances} | {ok:false, reason, quote?}
  *   reasons: NOTHING_TO_CLAIM, CLAIM_TOO_SOON, POLL_CLOSED, EVENT_DURING_DELAY, QUOTE_CHANGED
  */
-export async function claimPositions({ userId, matchId = null, betIds = null, holdSec = 0, minTotalNetPaise, requestedAt, claimMarginBp, feeBp }) {
+export async function claimPositions({ userId, matchId = null, betIds = null, holdSec = 0, minTotalNetPaise, requestedAt, feeBp }) {
   return inTx(async (client) => {
     const ctx = await lockWalletWithin(client, userId);
     const run = (sql, params) => client.query(sql, params);
@@ -775,7 +775,7 @@ export async function claimPositions({ userId, matchId = null, betIds = null, ho
     const { rows: bets } = await client.query(
       `SELECT * FROM cricket_bets WHERE bet_id = ANY($1) AND status = 'OPEN' ORDER BY poll_id, bet_id FOR UPDATE`,
       [candidates.map((b) => b.bet_id)]);
-    const lines = priceClaims(bets, books, { claimMarginBp, feeBp });
+    const lines = priceClaims(bets, books, { feeBp });
     const quote = summarise(lines);
     if (quote.totalNetPaise < minTotalNetPaise) return refuse('QUOTE_CHANGED', { quote });
 
@@ -880,7 +880,7 @@ export async function endPoll({ pollId, winningOption = null, winningOptions = n
       } else if (winning.has(bet.option_key)) {
         // A dead heat pays the odds on the stake divided by the winners (rounded down).
         const gross = Math.floor(num(bet.potential_paise) / deadHeat);
-        fee = winningsFeePaise(gross, stake, feeBp);
+        fee = winningsFeePaise(gross, feeBp);
         paid = gross - fee; status = 'WON'; won += paid; fees += fee;
         const moved = await applyMovementWithin(ctx, {
           legs: [{ field: 'winningsBalance', deltaPaise: paid }],

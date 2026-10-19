@@ -39,8 +39,9 @@ claims − what it owes if that option wins* must stay at or above
 * the most the house can lose on one poll is its seed (seed per option ×
   options), set per poll kind on Admin › Cricket;
 * in an ordinary book the house keeps about the spread;
-* the 1 % winning fee (global) is taken on every winning payout and every
-  profitable claim, as on every other game.
+* the 1 % winning fee (global) is taken on the whole of every winning payout
+  and every claim, stake and profit together, as on the board games (owner,
+  2026-10-19).
 
 A seed of 1 token is too thin: the first real bet would meet the cap at once.
 The defaults are 500 tokens per option for match result and toss, 300 for
@@ -52,12 +53,12 @@ lose at most on a poll, and Admin › Cricket shows that figure.
 
 The value of an open position is
 
-    claim value = potential payout × q × (1 − claim margin)
+    claim value = potential payout × q
 
 where `q` is the option's current share of the pool once this position's own
-stake is taken out (`(P_i − stake) / (T − stake)`). The claim margin is an
-admin setting, off (0) by default: the spread is already taken on entry, so a
-bet claimed straight back loses about the spread (owner, 2026-10-19). The value is also held to the book cap above, and
+stake is taken out (`(P_i − stake) / (T − stake)`). There is no claim margin
+(owner, 2026-10-19, removed): the spread is taken on entry, so a bet claimed
+straight back loses about the spread. The value is also held to the book cap above, and
 never exceeds the potential payout. The player sees each position's live
 profit or loss and, per match, one **net** figure with one **Claim all**
 button.
@@ -107,7 +108,7 @@ loses: the XIs are known when these polls open.
 **Dead heat** (owner, 2026-10-19). Players level on both figures share the
 win, as bookmakers settle it: each winning bet is paid its odds on its stake
 divided by the number of winners (`cricket_bets.dead_heat`), less the winnings
-fee on any profit. It costs the house no more than one winner would (the book
+fee on that payout. It costs the house no more than one winner would (the book
 bound holds: the dead-heat payout is at most the largest single option's).
 An admin can settle any poll as a dead heat by ticking several options.
 
@@ -205,7 +206,7 @@ Admin › Cricket, in four tabs:
   filtered by format and date, grouped by series, with Publish and Publish the
   whole series, and Read fixtures now.
 * **Polls & settings:** the switch (off by default), which poll kinds run and
-  their seeds, spread, claim margin, in-play delay, windows, stakes.
+  their seeds, spread, in-play delay, windows, stakes.
 * **Data feed:** each provider's token and health, and which one lists the
   fixtures.
 * **Report:** what the house kept per poll.
