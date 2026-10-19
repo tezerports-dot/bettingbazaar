@@ -58,7 +58,7 @@ vi.mock('../services/GameContext', () => ({
   }),
   spendableBalance: () => 0,
   useFooterPages: () => footer.pages,
-  useCricketSettings: () => ({ ...crk, claimHoldSec: 2, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimMarginPercent: 5 }),
+  useCricketSettings: () => ({ ...crk, claimHoldSec: 2, minStake: 10, maxStake: 50000, inPlayDelaySec: 5 }),
   useBoardExtras: () => ({ urgencyChips: true, closingWarnSeconds: 10, resultCelebration: true, bonusProgress: true, promoCards: false }),
   MY_PAYOUT_EVENT: 'bb:my-payout',
   MY_ROUND_EVENT: 'bb:my-round',

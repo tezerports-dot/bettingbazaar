@@ -156,7 +156,7 @@ function claimTarget(body) {
 router.post('/quote/claim', authenticatePlayer, async (req, res) => {
   try {
     const { cfg, s } = await liveSettings();
-    const q = await db.cricket.quoteClaims({ userId: req.user.userId, ...claimTarget(req.body), holdSec: s.claimHoldSec, claimMarginBp: s.claimMarginBp, feeBp: feeBpOf(cfg) });
+    const q = await db.cricket.quoteClaims({ userId: req.user.userId, ...claimTarget(req.body), holdSec: s.claimHoldSec, feeBp: feeBpOf(cfg) });
     res.json({ success: true, ...q, delaySec: s.inPlayDelayMs / 1000, totalNet: rupees(q.totalNetPaise) });
   } catch (error) {
     return respondError(res, error, 'POST /v1/cricket/quote/claim', { message: 'Could not price the claim.' });
@@ -173,7 +173,7 @@ router.post('/claims', authenticatePlayer, betLimiter, async (req, res) => {
     await sleep(s.inPlayDelayMs);
     const r = await db.cricket.claimPositions({
       userId: req.user.userId, ...target, minTotalNetPaise: minTotal, requestedAt,
-      holdSec: s.claimHoldSec, claimMarginBp: s.claimMarginBp, feeBp: feeBpOf(cfg),
+      holdSec: s.claimHoldSec, feeBp: feeBpOf(cfg),
     });
     if (!r.ok) return refused(res, r);
     for (const id of new Set(r.claimed.map((l) => l.pollId.split(':')[0]))) cricketOddsPublisher.markDirty(id);

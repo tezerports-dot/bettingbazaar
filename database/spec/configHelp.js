@@ -192,10 +192,6 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'The house spread on cricket odds: odds = (100% − spread) × all money on the poll ÷ money on that option. It is the house\'s income on every bet.',
     example: '10: 1,000 on A, 2,000 on B and 200 on Tie show A 2.88, B 1.44, Tie 14.40.',
   },
-  'cricket.claimMarginPercent': {
-    what: 'What the house keeps when a player claims (cashes out) before a poll closes, as a percent of the position\'s current value.',
-    example: '5: a position worth ₹1,000 at today\'s pool is claimed for ₹950.',
-  },
   'cricket.rtpBoostPoints': {
     what: 'While the Cricket RTP fund is on and above zero, new polls open with the spread lowered by this many points, returning the house\'s extra wins to players.',
     example: '5: with a 10% spread, boosted polls open at 5%.',
@@ -220,10 +216,6 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'The toss poll closes this many minutes before the scheduled start, or at the toss if the feed reports it earlier.',
     example: '30: for a 19:30 start, toss bets close at 19:00.',
   },
-  'cricket.momVoidHours': {
-    what: 'Hours after a match ends to wait for the man of the match. If it has not arrived by then, or names a player not on the list, the poll is void and every open stake is returned.',
-    example: '24.',
-  },
   'cricket.minStakeRupees': {
     what: 'The smallest cricket bet, in tokens.',
     example: '10.',
@@ -240,17 +232,13 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'The house seed on every option of the toss poll, in tokens (four options).',
     example: '500: at most 2,000 on one toss poll.',
   },
-  'cricket.seedRupees.manOfMatch': {
-    what: 'The house seed on every player in the man-of-the-match poll, in tokens.',
-    example: '200: with 22 players, at most 4,400.',
-  },
   'cricket.seedRupees.topBatsman': {
-    what: 'The house seed on every player in the best-batsman poll (most runs in the match), in tokens.',
-    example: '200: with 22 players, at most 4,400.',
+    what: 'The house seed on every player in the best-batsman poll (most runs in the match), in tokens. Both full squads are listed plus "Any other player", so expect 30 to 50 options.',
+    example: '100: with 40 options, at most 4,000.',
   },
   'cricket.seedRupees.topBowler': {
-    what: 'The house seed on every player in the best-bowler poll (most wickets in the match), in tokens.',
-    example: '200: with 22 players, at most 4,400.',
+    what: 'The house seed on every player in the best-bowler poll (most wickets in the match), in tokens. Both full squads are listed plus "Any other player", so expect 30 to 50 options.',
+    example: '100: with 40 options, at most 4,000.',
   },
   'cricket.seedRupees.over': {
     what: 'The house seed on every option of a next-over odd / even / zero poll, in tokens.',
@@ -260,6 +248,22 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'The house seed on every option of a next-ball poll, in tokens (ten options: 0 to 5 runs, 6+, wide, no ball, wicket).',
     example: '100: at most 1,000 per ball.',
   },
+  'cricket.seedRupees.powerplay': {
+    what: 'The house seed on every runs range of a powerplay poll (runs in the first 6 overs of a T20, 10 of an ODI, 3 of a T10), in tokens.',
+    example: '300: five ranges, at most 1,500 per innings.',
+  },
+  'cricket.seedRupees.mostSixes': {
+    what: 'The house seed on every option of the "which team hits more sixes" poll (team A, level, team B), in tokens.',
+    example: '300: at most 900 per match.',
+  },
+  'cricket.polls.toss': { what: 'Open a toss poll (who wins the toss and their choice) for each published match.', example: 'On.' },
+  'cricket.polls.matchResult': { what: 'Open a match-result poll for each published match: team A, Draw (a tie counts as a draw), team B.', example: 'On.' },
+  'cricket.polls.topBatsman': { what: 'Open a best-batsman poll (most runs in the match) when the teams are announced. Players level on runs and balls share the win (dead heat).', example: 'On.' },
+  'cricket.polls.topBowler': { what: 'Open a best-bowler poll (most wickets in the match) when the teams are announced. Players level on wickets and runs share the win (dead heat).', example: 'On.' },
+  'cricket.polls.mostSixes': { what: 'Open a "which team hits more sixes" poll when the teams are announced, settled from the scorecard at the result.', example: 'On.' },
+  'cricket.polls.powerplay': { what: 'Open a powerplay runs poll for each innings of a T20, ODI or T10. Takes bets until the innings\' first ball.', example: 'On.' },
+  'cricket.polls.over': { what: 'Open an odd / even / zero runs poll for every over.', example: 'On.' },
+  'cricket.polls.ball': { what: 'Open a next-ball poll after every ball. The fastest poll and the most sensitive to feed delay.', example: 'On.' },
   'redFlags.lowActivityPercent': {
     what: 'An agent is flagged once a day when both their completed orders and their online time are this many percent below their team\'s average. A flag only warns the supervisor and admins.',
     example: '25: a team average of 40 orders flags a member who did fewer than 30 and was also online 25% less.',

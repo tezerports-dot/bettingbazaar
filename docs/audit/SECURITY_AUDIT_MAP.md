@@ -3540,7 +3540,7 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 356 |
+| Route declarations in `backend/**` | 357 |
 | Reachable with **no auth middleware** | 44 |
 | Staff routes carrying an **area** (permission key) | 183 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 10 |
@@ -3638,7 +3638,7 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 161 | 0 | 0 |
+| `user-panel` | 162 | 0 | 0 |
 | `admin-panel` | 145 | 0 | 0 |
 | `merchant-panel` | 65 | 0 | 0 |
 

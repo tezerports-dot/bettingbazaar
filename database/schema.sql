@@ -5160,7 +5160,8 @@ CREATE TRIGGER usdt_final_wallets_frozen
 -- An in-house game. Matches come from one data feed the server alone reads
 -- (`cricket_feed`); an admin publishes a match (or follows a whole series) and
 -- sets the order players see them in. Each published match runs polls (toss,
--- result, next over, next ball, man of the match), each with options. Odds are
+-- result, next over, next ball, best batsman and bowler, sixes, powerplay),
+-- each with options. Odds are
 -- the pool ratio less the spread, fixed per bet when it is accepted. Every
 -- bet and claim keeps the poll's BOOK inside its bound, which the database
 -- holds at commit (`bb_cricket_book_bound`): for every option, what the house
@@ -5181,8 +5182,17 @@ CREATE TABLE IF NOT EXISTS cricket_feed (
   last_error    TEXT,
   last_error_at TIMESTAMPTZ
 );
+-- One row per data provider the platform can read (owner, 2026-10-19), each
+-- with its own token; the fixture list comes from the one marked active
+-- (`cricketFeed.js`, FEED_PROVIDERS).
+ALTER TABLE cricket_feed ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE cricket_feed DROP CONSTRAINT IF EXISTS cricket_feed_one_row;
-ALTER TABLE cricket_feed ADD CONSTRAINT cricket_feed_one_row CHECK (id = 1 AND provider = 'SPORTMONKS');
+ALTER TABLE cricket_feed DROP CONSTRAINT IF EXISTS cricket_feed_provider_known;
+ALTER TABLE cricket_feed ADD CONSTRAINT cricket_feed_provider_known CHECK (
+  (id = 1 AND provider = 'SPORTMONKS') OR (id = 2 AND provider = 'ENTITYSPORT'));
+CREATE UNIQUE INDEX IF NOT EXISTS cricket_feed_one_active ON cricket_feed ((TRUE)) WHERE active;
+INSERT INTO cricket_feed (id, provider) VALUES (1, 'SPORTMONKS'), (2, 'ENTITYSPORT') ON CONFLICT (id) DO NOTHING;
+UPDATE cricket_feed SET active = TRUE WHERE id = 1 AND NOT EXISTS (SELECT 1 FROM cricket_feed WHERE active);
 
 -- A series (the feed's season) the admin follows: every fixture of it the feed
 -- lists is published as it arrives.
@@ -5195,7 +5205,8 @@ CREATE TABLE IF NOT EXISTS cricket_series_follows (
 
 CREATE TABLE IF NOT EXISTS cricket_matches (
   match_id        TEXT PRIMARY KEY,
-  feed_fixture_id TEXT NOT NULL UNIQUE,
+  feed_provider   TEXT NOT NULL DEFAULT 'SPORTMONKS',
+  feed_fixture_id TEXT NOT NULL,
   series_id       TEXT,
   series_name     TEXT,
   format          TEXT NOT NULL DEFAULT 'OTHER',
@@ -5219,15 +5230,24 @@ CREATE TABLE IF NOT EXISTS cricket_matches (
   result          TEXT,
   man_of_match_id TEXT,
   lineup          JSONB NOT NULL DEFAULT '[]'::jsonb,
+  squads          JSONB NOT NULL DEFAULT '[]'::jsonb,
   score           JSONB NOT NULL DEFAULT '{}'::jsonb,
   last_event_at   TIMESTAMPTZ,
   finished_at     TIMESTAMPTZ,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Both teams' whole squads (every player a player poll names beside the XIs;
+-- owner, 2026-10-19), read once from the feed.
+ALTER TABLE cricket_matches ADD COLUMN IF NOT EXISTS squads JSONB NOT NULL DEFAULT '[]'::jsonb;
+-- The provider a match came from and is read from; its fixture id is unique per provider.
+ALTER TABLE cricket_matches ADD COLUMN IF NOT EXISTS feed_provider TEXT NOT NULL DEFAULT 'SPORTMONKS';
+ALTER TABLE cricket_matches DROP CONSTRAINT IF EXISTS cricket_matches_feed_fixture_id_key;
+CREATE UNIQUE INDEX IF NOT EXISTS cricket_matches_feed_fixture ON cricket_matches (feed_provider, feed_fixture_id);
 ALTER TABLE cricket_matches DROP CONSTRAINT IF EXISTS cricket_matches_shape;
 ALTER TABLE cricket_matches ADD CONSTRAINT cricket_matches_shape CHECK (
   format IN ('T20', 'T10', 'ODI', 'TEST', 'OTHER')
+  AND feed_provider IN ('SPORTMONKS', 'ENTITYSPORT')
   AND status IN ('SCHEDULED', 'LIVE', 'INNINGS_BREAK', 'FINISHED', 'ABANDONED')
   AND (toss_winner IS NULL OR toss_winner IN ('A', 'B'))
   AND (toss_elected IS NULL OR toss_elected IN ('BAT', 'BOWL'))
@@ -5274,7 +5294,7 @@ CREATE TABLE IF NOT EXISTS cricket_polls (
   closes_at        TIMESTAMPTZ,
   closed_at        TIMESTAMPTZ,
   settled_at       TIMESTAMPTZ,
-  winning_option   TEXT,
+  winning_options  TEXT[],
   void_reason      TEXT,
   stakes_paise       BIGINT NOT NULL DEFAULT 0,
   claims_paid_paise  BIGINT NOT NULL DEFAULT 0,
@@ -5284,15 +5304,30 @@ CREATE TABLE IF NOT EXISTS cricket_polls (
   UNIQUE (match_id, kind, innings, over_no, seq)
 );
 ALTER TABLE cricket_polls DROP CONSTRAINT IF EXISTS cricket_polls_shape;
+-- A poll is won by one option, or by several level ones (a dead heat; owner,
+-- 2026-10-19): `winning_options` replaced the single `winning_option`.
+-- The copy runs with the book-bound trigger immediate, so no deferred event is
+-- pending when the old column is dropped.
+ALTER TABLE cricket_polls ADD COLUMN IF NOT EXISTS winning_options TEXT[];
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'cricket_polls' AND column_name = 'winning_option') THEN
+    SET CONSTRAINTS cricket_polls_book_bound IMMEDIATE;
+    EXECUTE 'UPDATE cricket_polls SET winning_options = ARRAY[winning_option] WHERE winning_option IS NOT NULL AND winning_options IS NULL';
+    SET CONSTRAINTS cricket_polls_book_bound DEFERRED;
+  END IF;
+END $$;
+ALTER TABLE cricket_polls DROP COLUMN IF EXISTS winning_option;
 ALTER TABLE cricket_polls ADD CONSTRAINT cricket_polls_shape CHECK (
-  kind IN ('TOSS', 'MATCH_RESULT', 'OVER', 'BALL', 'MOM', 'TOP_BATSMAN', 'TOP_BOWLER')
+  kind IN ('TOSS', 'MATCH_RESULT', 'OVER', 'BALL', 'MOM', 'TOP_BATSMAN', 'TOP_BOWLER', 'POWERPLAY', 'MOST_SIXES')
+  -- 'MOM' only on polls opened before the man of the match poll was removed (owner, 2026-10-19)
   AND status IN ('OPEN', 'CLOSED', 'SETTLED', 'VOID')
   AND spread_bp BETWEEN 0 AND 5000 AND seed_paise > 0 AND option_count >= 2
   AND stakes_paise >= 0 AND claims_paid_paise >= 0 AND won_paid_paise >= 0
   AND fees_paise >= 0 AND refunded_paise >= 0
   AND (status <> 'OPEN' OR closed_at IS NULL)
   AND (status NOT IN ('SETTLED', 'VOID') OR (closed_at IS NOT NULL AND settled_at IS NOT NULL))
-  AND ((status = 'SETTLED') = (winning_option IS NOT NULL))
+  AND ((status = 'SETTLED') = (winning_options IS NOT NULL))
+  AND (winning_options IS NULL OR cardinality(winning_options) >= 1)
   AND ((status = 'VOID') = (void_reason IS NOT NULL))
   AND (status <> 'VOID' OR won_paid_paise = 0));
 CREATE INDEX IF NOT EXISTS cricket_polls_match_idx ON cricket_polls (match_id, status);
@@ -5329,12 +5364,16 @@ CREATE TABLE IF NOT EXISTS cricket_bets (
   status          TEXT NOT NULL DEFAULT 'OPEN',
   paid_paise      BIGINT NOT NULL DEFAULT 0,
   fee_paise       BIGINT NOT NULL DEFAULT 0,
+  dead_heat       INTEGER NOT NULL DEFAULT 1,
   requested_at    TIMESTAMPTZ NOT NULL,
   placed_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   ended_at        TIMESTAMPTZ,
   FOREIGN KEY (poll_id, option_key) REFERENCES cricket_poll_options(poll_id, option_key)
 );
 ALTER TABLE cricket_bets DROP CONSTRAINT IF EXISTS cricket_bets_shape;
+-- How many options won the bet's poll together (a dead heat): a winning bet is
+-- paid its odds on its stake divided by this (owner, 2026-10-19).
+ALTER TABLE cricket_bets ADD COLUMN IF NOT EXISTS dead_heat INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE cricket_bets ADD CONSTRAINT cricket_bets_shape CHECK (
   stake_paise > 0 AND odds_x100 >= 101
   AND potential_paise = (stake_paise * odds_x100) / 100
@@ -5346,7 +5385,8 @@ ALTER TABLE cricket_bets ADD CONSTRAINT cricket_bets_shape CHECK (
   AND (status <> 'OPEN' OR (paid_paise = 0 AND fee_paise = 0))
   AND (status <> 'LOST' OR (paid_paise = 0 AND fee_paise = 0))
   AND (status <> 'VOID' OR (paid_paise = stake_paise AND fee_paise = 0))
-  AND (status <> 'WON' OR paid_paise + fee_paise = potential_paise)
+  AND dead_heat >= 1 AND (status = 'WON' OR dead_heat = 1)
+  AND (status <> 'WON' OR paid_paise + fee_paise = potential_paise / dead_heat)
   AND (status <> 'CLAIMED' OR paid_paise + fee_paise <= potential_paise));
 CREATE INDEX IF NOT EXISTS cricket_bets_user_idx ON cricket_bets (user_id, match_id, placed_at DESC);
 CREATE INDEX IF NOT EXISTS cricket_bets_poll_open_idx ON cricket_bets (poll_id) WHERE status = 'OPEN';
@@ -5358,8 +5398,8 @@ BEGIN
   IF OLD.status <> 'OPEN' THEN
     RAISE EXCEPTION 'cricket bet % already ended (%)', OLD.bet_id, OLD.status USING ERRCODE = 'check_violation';
   END IF;
-  IF (to_jsonb(NEW) - 'status' - 'paid_paise' - 'fee_paise' - 'ended_at')
-     IS DISTINCT FROM (to_jsonb(OLD) - 'status' - 'paid_paise' - 'fee_paise' - 'ended_at') THEN
+  IF (to_jsonb(NEW) - 'status' - 'paid_paise' - 'fee_paise' - 'dead_heat' - 'ended_at')
+     IS DISTINCT FROM (to_jsonb(OLD) - 'status' - 'paid_paise' - 'fee_paise' - 'dead_heat' - 'ended_at') THEN
     RAISE EXCEPTION 'cricket bet % : only its ending is written', OLD.bet_id USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;

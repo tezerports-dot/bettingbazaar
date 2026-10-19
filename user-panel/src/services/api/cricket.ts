@@ -9,13 +9,16 @@
 import apiClient from '../apiClient';
 
 export interface CricketTeam { id: string; name: string; code: string | null; logo: string | null }
+/** backend/domains/cricket/cricketPolls.js POLL_KINDS. */
+export type CricketPollKind = 'TOSS' | 'MATCH_RESULT' | 'TOP_BATSMAN' | 'TOP_BOWLER' | 'MOST_SIXES' | 'POWERPLAY' | 'OVER' | 'BALL';
 export interface CricketOption { key: string; label: string; poolPaise: number; oddsX100: number }
 export interface CricketPoll {
-  pollId: string; matchId: string; kind: 'TOSS' | 'MATCH_RESULT' | 'MOM' | 'TOP_BATSMAN' | 'TOP_BOWLER' | 'OVER' | 'BALL';
+  pollId: string; matchId: string; kind: CricketPollKind;
   innings: number; overNo: number; seq: number; title: string;
   status: 'OPEN' | 'CLOSED' | 'SETTLED' | 'VOID';
   spreadBp: number; seedPaise: number; closesAt: string | null;
-  winningOption: string | null; voidReason: string | null; options: CricketOption[];
+  /** One winning option, or several level ones (a dead heat); null until settled. */
+  winningOptions: string[] | null; voidReason: string | null; options: CricketOption[];
 }
 export interface CricketScore { innings?: { innings: number; team: 'A' | 'B' | null; runs: number; wickets: number; overs: number }[]; note?: string | null }
 export interface CricketMatch {
@@ -27,6 +30,8 @@ export interface CricketBet {
   betId: string; pollId: string; matchId: string; optionKey: string; optionLabel: string; pollTitle: string;
   pollKind: string; pollStatus: string; stakePaise: number; oddsX100: number; potentialPaise: number;
   status: 'OPEN' | 'CLAIMED' | 'WON' | 'LOST' | 'VOID'; paidPaise: number; feePaise: number; placedAt: string; matchName: string;
+  /** How many options shared the win (a dead heat): a winning bet is paid its odds on its stake ÷ this. 1 otherwise. */
+  deadHeat: number;
 }
 export interface ClaimQuote {
   lines: { betId: string; pollId: string; optionKey: string; stakePaise: number; grossPaise: number; feePaise: number; netPaise: number }[];

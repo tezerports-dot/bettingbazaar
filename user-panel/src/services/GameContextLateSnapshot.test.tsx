@@ -62,7 +62,7 @@ describe('a snapshot that arrived before the board subscribed', () => {
 // load showed Cricket as "coming soon" while it was switched on).
 describe('a system config that arrived before the context subscribed', () => {
   it('is applied on mount, not left at the defaults', () => {
-    bridge.last.set('system_config', { cricket: { enabled: true, comingSoon: false, minStake: 10, maxStake: 50000, inPlayDelaySec: 1, claimMarginPercent: 5, claimHoldSec: 2 } });
+    bridge.last.set('system_config', { cricket: { enabled: true, comingSoon: false, minStake: 10, maxStake: 50000, inPlayDelaySec: 1, claimHoldSec: 2 } });
     const Cricket = () => { const c = useCricketSettings(); return <p>{`cricket ${c.enabled} ${c.inPlayDelaySec}`}</p>; };
     render(<GameProvider><Cricket /></GameProvider>);
     expect(screen.getByText('cricket true 1')).toBeTruthy();

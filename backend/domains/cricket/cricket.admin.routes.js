@@ -6,8 +6,9 @@
  * `/api/admin/system/config` like every other setting; this file holds what
  * is not a setting.
  *
- *   GET  /cricket                         the feed's health, followed series, matches
- *   PUT  /cricket/feed-token              { token } (empty clears), stored encrypted
+ *   GET  /cricket                         the feeds' health, providers, followed series, matches
+ *   PUT  /cricket/feed-token              { provider, token } (empty clears), stored encrypted
+ *   PUT  /cricket/feed-provider           { provider } the one the fixture list is read from
  *   POST /cricket/sync                    read the fixture list now
  *   POST /cricket/matches/:id/publish     players see it; its toss and result polls open
  *   POST /cricket/matches/:id/unpublish   refused once anyone has bet on it
@@ -15,7 +16,7 @@
  *   POST /cricket/series/:id/follow       { seriesName } publish the series, now and later
  *   DELETE /cricket/series/:id/follow
  *   GET  /cricket/matches/:id/polls       every poll with its book
- *   POST /cricket/polls/:pollId/settle    { winningOption }
+ *   POST /cricket/polls/:pollId/settle    { winningOptions: [key, …] } (several: a dead heat)
  *   POST /cricket/polls/:pollId/void      { reason }
  *   GET  /cricket/report(.csv)?from&to    the house's result per ended poll
  */
@@ -25,6 +26,7 @@ import { encryptField } from '../identity/fieldCrypto.util.js';
 import { respondError, refusal } from '../../shared/httpError.js';
 import { toCsv } from '../reporting/csv.util.js';
 import { syncFixtures, openPublishedPolls, endPollByAdmin } from './cricketEngine.service.js';
+import { FEED_PROVIDERS, feedProviderList } from './cricketFeed.js';
 import { cricketOddsPublisher } from './cricketOddsPublisher.js';
 
 const router = express.Router();
@@ -56,7 +58,7 @@ router.get('/cricket', authenticate, ALLOWED, async (req, res) => {
     const [feed, follows, matches] = await Promise.all([
       db.cricket.getFeed(), db.cricket.listFollows(), db.cricket.listMatchesForAdmin({ sinceHours: req.query.sinceHours }),
     ]);
-    res.json({ success: true, feed, follows, matches });
+    res.json({ success: true, feed, feedProviders: feedProviderList(), follows, matches });
   } catch (error) {
     return respondError(res, error, 'GET /admin/cricket', { message: 'Could not load cricket.' });
   }
@@ -64,15 +66,29 @@ router.get('/cricket', authenticate, ALLOWED, async (req, res) => {
 
 router.put('/cricket/feed-token', authenticate, ALLOWED, async (req, res) => {
   try {
+    const provider = typeof req.body?.provider === 'string' ? req.body.provider : 'SPORTMONKS';
+    if (!FEED_PROVIDERS[provider]) throw refusal(400, 'UNKNOWN_PROVIDER', 'Pick one of the listed data providers.');
     const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
     if (token && !/^[A-Za-z0-9]{20,200}$/.test(token)) {
       throw refusal(400, 'INVALID_TOKEN', 'Paste the API token exactly as the provider shows it (letters and digits).');
     }
-    const feed = await db.cricket.setFeedToken({ tokenEnc: token ? encryptField(token) : null, by: req.user.userId });
-    await audit(req, token ? 'CRICKET_FEED_TOKEN_SET' : 'CRICKET_FEED_TOKEN_CLEARED', 'feed', {});
+    const feed = await db.cricket.setFeedToken({ provider, tokenEnc: token ? encryptField(token) : null, by: req.user.userId });
+    await audit(req, token ? 'CRICKET_FEED_TOKEN_SET' : 'CRICKET_FEED_TOKEN_CLEARED', provider, {});
     res.json({ success: true, feed });
   } catch (error) {
     return respondError(res, error, 'PUT /admin/cricket/feed-token', { message: 'Could not save the token.' });
+  }
+});
+
+router.put('/cricket/feed-provider', authenticate, ALLOWED, async (req, res) => {
+  try {
+    const provider = typeof req.body?.provider === 'string' ? req.body.provider : '';
+    if (!FEED_PROVIDERS[provider]) throw refusal(400, 'UNKNOWN_PROVIDER', 'Pick one of the listed data providers.');
+    await db.cricket.setActiveFeed(provider);
+    await audit(req, 'CRICKET_FEED_PROVIDER_SET', provider, {});
+    res.json({ success: true, feed: await db.cricket.getFeed() });
+  } catch (error) {
+    return respondError(res, error, 'PUT /admin/cricket/feed-provider', { message: 'Could not switch the data provider.' });
   }
 });
 
@@ -171,7 +187,7 @@ const ENDED_REFUSALS = Object.freeze({
 async function endByAdmin(req, res, how, action) {
   const before = await db.cricket.getPoll(req.params.pollId);
   if (!before) throw refusal(404, 'POLL_NOT_FOUND', 'No such poll.');
-  if (how.winningOption && !before.options.some((o) => o.key === how.winningOption)) {
+  if (how.winningOptions && !how.winningOptions.every((k) => before.options.some((o) => o.key === k))) {
     throw refusal(400, 'UNKNOWN_OPTION', 'That option is not in this poll.');
   }
   const r = await endPollByAdmin({ pollId: before.pollId, ...how });
@@ -180,14 +196,17 @@ async function endByAdmin(req, res, how, action) {
     throw refusal(status, r.reason, message);
   }
   await audit(req, action, before.pollId, { ...how, bets: r.payouts.length });
-  res.json({ success: true, status: r.status, winningOption: r.winningOption, bets: r.payouts.length });
+  res.json({ success: true, status: r.status, winningOptions: r.winningOptions, bets: r.payouts.length });
 }
 
 router.post('/cricket/polls/:pollId/settle', authenticate, ALLOWED, async (req, res) => {
   try {
-    const winningOption = typeof req.body?.winningOption === 'string' ? req.body.winningOption : '';
-    if (!winningOption) throw refusal(400, 'INVALID_OPTION', 'Pick the winning option.');
-    await endByAdmin(req, res, { winningOption }, 'CRICKET_POLL_SETTLED');
+    const raw = Array.isArray(req.body?.winningOptions) ? req.body.winningOptions : [];
+    const winningOptions = [...new Set(raw.filter((k) => typeof k === 'string' && k))];
+    if (!winningOptions.length || winningOptions.length > 10) {
+      throw refusal(400, 'INVALID_OPTION', 'Pick the winning option (several only for a dead heat).');
+    }
+    await endByAdmin(req, res, { winningOptions }, 'CRICKET_POLL_SETTLED');
   } catch (error) {
     return respondError(res, error, 'POST /admin/cricket/polls/:pollId/settle', { message: 'Could not settle the poll.' });
   }

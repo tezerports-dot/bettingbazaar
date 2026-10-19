@@ -11,10 +11,10 @@
 export interface PoolOption { key: string; poolPaise: number }
 export interface Position { optionKey: string; stakePaise: number; potentialPaise: number }
 
-/** Mirror of `winningsFeePaise`: only on a payout above the stake, never below it. */
-export function feeOn(grossPaise: number, stakePaise: number, feePercent: number): number {
-  if (grossPaise <= stakePaise || feePercent <= 0) return 0;
-  return Math.min(Math.floor((grossPaise * Math.round(feePercent * 100)) / 10000), grossPaise - stakePaise);
+/** Mirror of `winningsFeePaise`: on the whole payout, stake and profit together, rounded down. */
+export function feeOn(grossPaise: number, feePercent: number): number {
+  if (grossPaise <= 0 || feePercent <= 0) return 0;
+  return Math.floor((grossPaise * Math.round(feePercent * 100)) / 10000);
 }
 
 /**
@@ -22,14 +22,14 @@ export function feeOn(grossPaise: number, stakePaise: number, feePercent: number
  * (each option's `poolPaise` is the seed plus live stakes, as the server
  * sends it).
  */
-export function positionValuePaise(options: PoolOption[], pos: Position, claimMarginPercent: number, feePercent: number): number {
+export function positionValuePaise(options: PoolOption[], pos: Position, feePercent: number): number {
   const total = options.reduce((t, o) => t + o.poolPaise, 0) - pos.stakePaise;
   const mine = options.find((o) => o.key === pos.optionKey);
   if (!mine || total <= 0) return 0;
   const onOption = Math.max(0, mine.poolPaise - pos.stakePaise);
   const fair = Math.floor((pos.potentialPaise * onOption) / total);
-  const gross = Math.min(pos.potentialPaise, Math.floor((fair * (10000 - Math.round(claimMarginPercent * 100))) / 10000));
-  return gross - feeOn(gross, pos.stakePaise, feePercent);
+  const gross = Math.min(pos.potentialPaise, fair);
+  return gross - feeOn(gross, feePercent);
 }
 
 /**

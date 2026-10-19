@@ -66,14 +66,13 @@ export function quoteBet({ spreadBp, book, pools, liabilities, optionKey, stakeP
 }
 
 /**
- * The winnings fee (the platform's global percent) on a payout: charged only
- * on a payout above the stake, and never so much that it takes the player
- * below their stake.
+ * The winnings fee (the platform's global percent) on a payout: on the whole
+ * payout, stake and profit together, rounded down, as on the board games
+ * (`computeWinningsPayout`; owner, 2026-10-19).
  */
-export function winningsFeePaise(grossPaise, stakePaise, feeBp) {
-  if (grossPaise <= stakePaise || feeBp <= 0) return 0;
-  const fee = num((big(grossPaise) * big(feeBp)) / big(BP));
-  return Math.min(fee, grossPaise - stakePaise);
+export function winningsFeePaise(grossPaise, feeBp) {
+  if (grossPaise <= 0 || feeBp <= 0) return 0;
+  return num((big(grossPaise) * big(feeBp)) / big(BP));
 }
 
 /**
@@ -81,19 +80,20 @@ export function winningsFeePaise(grossPaise, stakePaise, feeBp) {
  * potentialPaise }. Returns the gross value, the fee and what reaches the
  * player (net), all held to the poll's bound after the claim.
  */
-export function quoteClaim({ book, pools, liabilities, bet, claimMarginBp, feeBp }) {
+export function quoteClaim({ book, pools, liabilities, bet, feeBp }) {
   const { optionKey, stakePaise, potentialPaise } = bet;
   const total = totalPool(book.seedPaise, pools) - stakePaise;
   const onOption = book.seedPaise + pools[optionKey] - stakePaise;
   const fair = total <= 0 ? 0 : num((big(potentialPaise) * big(Math.max(0, onOption))) / big(total));
-  let gross = Math.min(potentialPaise, num((big(fair) * big(BP - claimMarginBp)) / big(BP)));
+  // No margin on a claim: the spread was taken when the bet was placed (owner, 2026-10-19).
+  let gross = Math.min(potentialPaise, fair);
   // After the claim, every option's room must stay ≥ 0 with what the house pays.
   const after = { ...liabilities, [optionKey]: liabilities[optionKey] - potentialPaise };
   const maxPay = Math.min(...Object.values(after).map((l) => roomOn(book, l)));
-  let fee = winningsFeePaise(gross, stakePaise, feeBp);
+  let fee = winningsFeePaise(gross, feeBp);
   if (gross - fee > maxPay) {
     gross = Math.max(0, maxPay);
-    fee = winningsFeePaise(gross, stakePaise, feeBp);
+    fee = winningsFeePaise(gross, feeBp);
   }
   return { grossPaise: gross, feePaise: fee, netPaise: gross - fee };
 }

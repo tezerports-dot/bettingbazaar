@@ -8,14 +8,14 @@ why.
 
 ## 1. How the odds work
 
-Every poll has options (Side A wins, Tie, Side B wins…). The house puts a seed
+Every poll has options (Side A wins, Draw, Side B wins…). The house puts a seed
 on every option when the poll opens. The odds shown for option *i* are
 
     odds_i = (1 − spread) × T / P_i
 
 where `T` is all money on the poll (seeds included) and `P_i` the money on
-that option. With a 10 % spread and 1,000 on A, 2,000 on B and 200 on Tie the
-odds read A 2.88, B 1.44, Tie 14.40, which is the owner's example.
+that option. With a 10 % spread and 1,000 on A, 2,000 on B and 200 on Draw the
+odds read A 2.88, B 1.44, Draw 14.40, which is the owner's example.
 
 **A bet's odds are fixed when it is accepted** and are worked out with the
 bet's own stake already in the pool, so a big stake moves its own price. That
@@ -39,23 +39,26 @@ claims − what it owes if that option wins* must stay at or above
 * the most the house can lose on one poll is its seed (seed per option ×
   options), set per poll kind on Admin › Cricket;
 * in an ordinary book the house keeps about the spread;
-* the 1 % winning fee (global) is taken on every winning payout and every
-  profitable claim, as on every other game.
+* the 1 % winning fee (global) is taken on the whole of every winning payout
+  and every claim, stake and profit together, as on the board games (owner,
+  2026-10-19).
 
 A seed of 1 token is too thin: the first real bet would meet the cap at once.
-The defaults are 500 tokens per option for match result and toss, 200 for man
-of the match and overs, 100 for the next ball. They are what the house can
+The defaults are 500 tokens per option for match result and toss, 300 for
+powerplay and more sixes, 200 for overs, 100 for each player in the player
+polls (30 to 50 options) and for the next ball. They are what the house can
 lose at most on a poll, and Admin › Cricket shows that figure.
 
 ## 2. Claims (cash out) and live profit
 
 The value of an open position is
 
-    claim value = potential payout × q × (1 − claim margin)
+    claim value = potential payout × q
 
 where `q` is the option's current share of the pool once this position's own
-stake is taken out (`(P_i − stake) / (T − stake)`). The claim margin is an
-admin setting (default 5 %). The value is also held to the book cap above, and
+stake is taken out (`(P_i − stake) / (T − stake)`). There is no claim margin
+(owner, 2026-10-19, removed): the spread is taken on entry, so a bet claimed
+straight back loses about the spread. The value is also held to the book cap above, and
 never exceeds the potential payout. The player sees each position's live
 profit or loss and, per match, one **net** figure with one **Claim all**
 button.
@@ -89,9 +92,29 @@ lock (a few milliseconds each); different polls never wait for each other.
 | Match result | when the match is published | when the result arrives | official result, Super Over included; abandoned or no result: void, stakes back |
 | Next over: odd / even / zero | when the over before it starts | when this over's first ball arrives | runs conceded in the over, extras included; 0 is "Zero", not "Even" |
 | Next ball | when the previous delivery's result arrives | after `nextBallWindowSec` (12 s), or when the next delivery arrives | the delivery's result |
-| Man of the match | when the playing XIs arrive (after the toss) | when the result arrives | the official award; not announced in 24 h or not on the list: void |
-| Best batsman | when the playing XIs arrive (after the toss), every player of both XIs | when the result arrives | most runs in the match (innings added up); level on runs, fewer balls faced; still level, nobody scored, or no scorecard: void, stakes back |
-| Best bowler | as best batsman | when the result arrives | most wickets in the match; level on wickets, fewer runs conceded; still level, no wicket to a bowler, or no scorecard: void, stakes back |
+| Best batsman | when the playing XIs arrive (after the toss) | when the result arrives | most runs in the match (innings added up); level on runs, fewer balls faced; still level: a dead heat. Void only with no scorecard or no run scored |
+| Best bowler | as best batsman | when the result arrives | most wickets in the match; level on wickets, fewer runs conceded; still level: a dead heat. Void only with no scorecard or no wicket to a bowler |
+| More sixes | as best batsman | when the result arrives | team A, Level or team B, from the scorecard's sixes |
+| Powerplay runs | innings 1 at the toss, innings 2 at the innings break (T20, ODI, T10 only) | at the innings' first ball | runs conceded in overs 1–6 (T20), 1–10 (ODI) or 1–3 (T10), extras included, in ranges (T20 and ODI: under 40, 40–49, 50–59, 60–69, 70+) |
+
+**Player polls never refund for a missing name** (owner, 2026-10-19). The man
+of the match, best batsman and best bowler polls list both teams' whole squads
+(the playing XIs first, then the rest of each squad, marked "squad", so an
+impact or concussion substitute is there), read once from the provider before
+the toss, then **Any other player** last. A named winner on neither squad wins
+"Any other player". A bet on a squad player who never takes the field simply
+loses: the XIs are known when these polls open.
+
+**Dead heat** (owner, 2026-10-19). Players level on both figures share the
+win, as bookmakers settle it: each winning bet is paid its odds on its stake
+divided by the number of winners (`cricket_bets.dead_heat`), less the winnings
+fee on that payout. It costs the house no more than one winner would (the book
+bound holds: the dead-heat payout is at most the largest single option's).
+An admin can settle any poll as a dead heat by ticking several options.
+
+**Which polls run** is the admin's (`SystemConfig.cricket.polls`, one switch
+per kind on Admin › Cricket › Polls & settings). A kind switched off opens no
+new poll; polls already open run to their end.
 
 **Why overs close before they start.** Pool odds do not know the score. An
 over poll still open at the fifth ball would pay pool odds on a result anyone
@@ -120,7 +143,9 @@ same claim (`claimPositions`), the first naming that poll's bets.
 opinion from "2, 4, 6…", so the three options are Odd, Even (2 or more) and
 Zero.
 
-**Test matches** get a fourth match-result option, Draw.
+The match result has three options in every format: team A, Draw, team B. A tie
+settles on Draw (owner, 2026-10-19). There is no man of the match poll (removed
+the same day).
 
 **Only three ball and three over polls on screen** (owner, 2026-10-18). The
 match screen shows, for next ball and for overs, the last one settled, the one
@@ -146,21 +171,47 @@ default 5 points), and the boosted payouts draw the fund down.
 
 ## 5. Data feed
 
-Provider: **Sportmonks Cricket API v2** (from €29 a month, ball by ball,
-fixtures by season, toss, playing XI, man of the match). Only the server calls
-it, through one adapter (`backend/domains/cricket/cricketFeed.js`); players
-read our own API and SSE. The API token is saved on Admin › Cricket,
-encrypted, and never sent back. One cron polls live matches every 4 s and the
-fixture list every 10 minutes, so one plan serves any number of players.
+Two providers (owner, 2026-10-19), each an adapter in
+`backend/domains/cricket/feeds/` behind one door
+(`backend/domains/cricket/cricketFeed.js`, `FEED_PROVIDERS`):
+
+* **Sportmonks Cricket API v2** (ball by ball, fixtures by season, toss,
+  playing XI, squads by season).
+* **EntitySport Cricket API v2** (an Indian provider built for fantasy apps;
+  Pro plan for IPL and T20 leagues; scorecard, squads with the XIs marked,
+  innings commentary). Built from its documented sample answers and not yet
+  run against a live account: watch the first match's feed health.
+
+Others compared (2026-10-19): CricketData.org is cheapest but names the toss
+winner by team name, marks no XI; Roanuz and
+Sportradar quote prices only on request; Goalserve is an option at about
+$125 a month. Adding one is a new adapter and a row in `cricket_feed`.
+
+Each provider's token is saved on Admin › Cricket › Data feed, encrypted, and
+never sent back. The fixture list is read from the provider marked active; a
+match is always read from the provider it came from
+(`cricket_matches.feed_provider`), so switching never strands a match under
+way. Only the server calls a provider; players read our own API and SSE. One
+cron polls live matches every 4 s and the fixture list every 10 minutes, so
+one plan serves any number of players.
 
 ## 6. Admin
 
-Admin › Cricket: the switch (off by default), spread, claim margin, in-play
-delay, windows, seeds per poll kind, the API token; a list of upcoming
-fixtures to publish one by one or a whole series at once; the published
-matches in order (drag up and down; unordered ones go by start time); each
-match's polls with real money per option and the book; void a poll. Admin ›
-Boards' RTP card gains the Cricket fund.
+Admin › Cricket, in four tabs:
+
+* **Matches:** the published matches in order (up and down; unordered ones go
+  by start time), each with its polls, real money per option and the book,
+  settle (several options for a dead heat) and void; then every fixture the
+  active provider lists for two weeks, searched by team, series or ground,
+  filtered by format and date, grouped by series, with Publish and Publish the
+  whole series, and Read fixtures now.
+* **Polls & settings:** the switch (off by default), which poll kinds run and
+  their seeds, spread, in-play delay, windows, stakes.
+* **Data feed:** each provider's token and health, and which one lists the
+  fixtures.
+* **Report:** what the house kept per poll.
+
+Admin › Boards' RTP card gains the Cricket fund.
 
 ## 7. Wallet and books
 

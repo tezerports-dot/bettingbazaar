@@ -58,47 +58,63 @@ async function inTx(fn) {
 
 // ── The feed's token and health ──────────────────────────────────────────────
 
-/** What the admin may see of the feed: never the token. */
+const toFeedRow = (r) => ({
+  provider: r.provider,
+  active: r.active === true,
+  tokenSet: !!r.token_enc,
+  setBy: r.set_by ?? null,
+  setAt: r.set_at ?? null,
+  lastOkAt: r.last_ok_at ?? null,
+  lastError: r.last_error ?? null,
+  lastErrorAt: r.last_error_at ?? null,
+});
+
+/**
+ * What the admin may see of the feeds, never a token: the active provider's
+ * row (whose fixture list is read) and every provider's, with `anyTokenSet`
+ * (a match keeps being read from its own provider).
+ */
 export async function getFeed() {
-  const { rows } = await pgQuery('SELECT * FROM cricket_feed WHERE id = 1', [], 'cricket_feed_read');
-  const r = rows[0];
-  return {
-    provider: r?.provider ?? 'SPORTMONKS',
-    tokenSet: !!r?.token_enc,
-    setBy: r?.set_by ?? null,
-    setAt: r?.set_at ?? null,
-    lastOkAt: r?.last_ok_at ?? null,
-    lastError: r?.last_error ?? null,
-    lastErrorAt: r?.last_error_at ?? null,
-  };
+  const { rows } = await pgQuery('SELECT * FROM cricket_feed ORDER BY id', [], 'cricket_feed_read');
+  const providers = rows.map(toFeedRow);
+  const active = providers.find((p) => p.active) ?? providers[0] ?? toFeedRow({ provider: 'SPORTMONKS', active: true });
+  return { ...active, providers, anyTokenSet: providers.some((p) => p.tokenSet) };
 }
 
-/** The stored ciphertext, for the feed adapter alone (it decrypts). */
-export async function feedTokenCiphertext() {
-  const { rows } = await pgQuery('SELECT token_enc FROM cricket_feed WHERE id = 1', [], 'cricket_feed_token');
+/** The stored ciphertext of one provider's token, for the feed door alone (it decrypts). */
+export async function feedTokenCiphertext(provider) {
+  const { rows } = await pgQuery('SELECT token_enc FROM cricket_feed WHERE provider = $1', [String(provider)], 'cricket_feed_token');
   return rows[0]?.token_enc ?? null;
 }
 
-/** Save (or clear, with null) the encrypted token. */
-export async function setFeedToken({ tokenEnc, by }) {
-  await pgQuery(
-    `INSERT INTO cricket_feed (id, token_enc, set_by, set_at) VALUES (1, $1, $2, now())
-     ON CONFLICT (id) DO UPDATE SET token_enc = EXCLUDED.token_enc, set_by = EXCLUDED.set_by,
-       set_at = EXCLUDED.set_at, last_error = NULL, last_error_at = NULL`,
-    [tokenEnc, String(by)], 'cricket_feed_set',
+/** Save (or clear, with null) one provider's encrypted token. */
+export async function setFeedToken({ provider, tokenEnc, by }) {
+  const { rowCount } = await pgQuery(
+    `UPDATE cricket_feed SET token_enc = $2, set_by = $3, set_at = now(), last_error = NULL, last_error_at = NULL
+      WHERE provider = $1`,
+    [String(provider), tokenEnc, String(by)], 'cricket_feed_set',
   );
-  return getFeed();
+  return rowCount ? getFeed() : null;
 }
 
-/** The feed's last answer, for the admin page. */
-export async function recordFeedResult({ ok, error = null }) {
+/** Make one provider the one the fixture list is read from. */
+export async function setActiveFeed(provider) {
+  return inTx(async (client) => {
+    const { rows } = await client.query('SELECT 1 FROM cricket_feed WHERE provider = $1', [String(provider)]);
+    if (!rows[0]) return { commit: false, value: false };
+    await client.query('UPDATE cricket_feed SET active = FALSE WHERE active AND provider <> $1', [String(provider)]);
+    await client.query('UPDATE cricket_feed SET active = TRUE WHERE provider = $1', [String(provider)]);
+    return { commit: true, value: true };
+  });
+}
+
+/** A provider's last answer, for the admin page. */
+export async function recordFeedResult({ provider, ok, error = null }) {
   await pgQuery(
     ok
-      ? `INSERT INTO cricket_feed (id, last_ok_at) VALUES (1, now())
-         ON CONFLICT (id) DO UPDATE SET last_ok_at = now()`
-      : `INSERT INTO cricket_feed (id, last_error, last_error_at) VALUES (1, $1, now())
-         ON CONFLICT (id) DO UPDATE SET last_error = EXCLUDED.last_error, last_error_at = now()`,
-    ok ? [] : [String(error).slice(0, 500)], 'cricket_feed_result',
+      ? 'UPDATE cricket_feed SET last_ok_at = now() WHERE provider = $1'
+      : 'UPDATE cricket_feed SET last_error = $2, last_error_at = now() WHERE provider = $1',
+    ok ? [String(provider)] : [String(provider), String(error).slice(0, 500)], 'cricket_feed_result',
   );
 }
 
@@ -137,6 +153,7 @@ function toMatch(r) {
   if (!r) return null;
   return {
     matchId: r.match_id,
+    feedProvider: r.feed_provider,
     feedFixtureId: r.feed_fixture_id,
     seriesId: r.series_id,
     seriesName: r.series_name,
@@ -153,13 +170,16 @@ function toMatch(r) {
     result: r.result,
     manOfMatchId: r.man_of_match_id,
     lineup: r.lineup ?? [],
+    squads: r.squads ?? [],
     score: r.score ?? {},
     lastEventAt: r.last_event_at,
     finishedAt: r.finished_at,
   };
 }
 
-export const matchIdFor = (feedFixtureId) => `CM${String(feedFixtureId).replace(/[^A-Za-z0-9]/g, '')}`;
+/** A match's own id: `CM` + the Sportmonks fixture id, `CE` + an EntitySport one. */
+const MATCH_ID_PREFIX = Object.freeze({ SPORTMONKS: 'CM', ENTITYSPORT: 'CE' });
+export const matchIdFor = (feedFixtureId, provider = 'SPORTMONKS') => `${MATCH_ID_PREFIX[provider] ?? 'CX'}${String(feedFixtureId).replace(/[^A-Za-z0-9]/g, '')}`;
 
 /**
  * Fixtures the feed lists, added or refreshed (names, start, series). A new
@@ -173,20 +193,21 @@ export async function upsertFixtures(fixtures) {
       `INSERT INTO cricket_matches
          (match_id, feed_fixture_id, series_id, series_name, format, team_a_id, team_a_name, team_a_code,
           team_a_logo, team_b_id, team_b_name, team_b_code, team_b_logo, venue, starts_at,
-          published, published_at, published_by)
+          published, published_at, published_by, feed_provider)
        SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
               f.series_id IS NOT NULL, CASE WHEN f.series_id IS NOT NULL THEN now() END,
-              CASE WHEN f.series_id IS NOT NULL THEN f.followed_by END
+              CASE WHEN f.series_id IS NOT NULL THEN f.followed_by END, $16
          FROM (SELECT NULL) x LEFT JOIN cricket_series_follows f ON f.series_id = $3
-       ON CONFLICT (feed_fixture_id) DO UPDATE SET
+       ON CONFLICT (feed_provider, feed_fixture_id) DO UPDATE SET
          series_id = EXCLUDED.series_id, series_name = EXCLUDED.series_name, format = EXCLUDED.format,
          team_a_name = EXCLUDED.team_a_name, team_a_code = EXCLUDED.team_a_code, team_a_logo = EXCLUDED.team_a_logo,
          team_b_name = EXCLUDED.team_b_name, team_b_code = EXCLUDED.team_b_code, team_b_logo = EXCLUDED.team_b_logo,
          venue = EXCLUDED.venue, starts_at = EXCLUDED.starts_at, updated_at = now()
        RETURNING (xmax = 0) AS inserted`,
-      [matchIdFor(f.feedId), String(f.feedId), f.seriesId ? String(f.seriesId) : null, f.seriesName ?? null,
+      [matchIdFor(f.feedId, f.provider ?? 'SPORTMONKS'), String(f.feedId), f.seriesId ? String(f.seriesId) : null, f.seriesName ?? null,
         f.format, String(f.teamA.id), f.teamA.name, f.teamA.code ?? null, f.teamA.logo ?? null,
-        String(f.teamB.id), f.teamB.name, f.teamB.code ?? null, f.teamB.logo ?? null, f.venue ?? null, f.startsAt],
+        String(f.teamB.id), f.teamB.name, f.teamB.code ?? null, f.teamB.logo ?? null, f.venue ?? null, f.startsAt,
+        f.provider ?? 'SPORTMONKS'],
       'cricket_fixture_upsert',
     );
     if (rows[0]?.inserted) added += 1;
@@ -241,17 +262,6 @@ export async function listMatchesToSync() {
   return rows.map(toMatch);
 }
 
-/** Finished matches whose man of the match is still awaited. */
-export async function listMatchesAwaitingMom() {
-  const { rows } = await pgQuery(
-    `SELECT m.* FROM cricket_matches m
-      WHERE m.published AND m.status = 'FINISHED'
-        AND EXISTS (SELECT 1 FROM cricket_polls p WHERE p.match_id = m.match_id AND p.kind = 'MOM' AND p.status IN ('OPEN', 'CLOSED'))
-      ORDER BY m.finished_at LIMIT 50`,
-    [], 'cricket_matches_mom',
-  );
-  return rows.map(toMatch);
-}
 
 export async function publishMatch(matchId, by) {
   const { rows } = await pgQuery(
@@ -323,6 +333,7 @@ export async function applyMatchFacts(matchId, facts) {
   if (facts.result) put('result', facts.result);
   if (facts.manOfMatchId) put('man_of_match_id', String(facts.manOfMatchId));
   if (facts.lineup) put('lineup', JSON.stringify(facts.lineup));
+  if (facts.squads) put('squads', JSON.stringify(facts.squads));
   if (facts.score) put('score', JSON.stringify(facts.score));
   if (facts.status === 'FINISHED' || facts.status === 'ABANDONED') sets.push('finished_at = COALESCE(finished_at, now())');
   if (facts.eventAt) { params.push(facts.eventAt); sets.push(`last_event_at = GREATEST(COALESCE(last_event_at, $${params.length}), $${params.length})`); }
@@ -377,6 +388,16 @@ export async function overRuns(matchId, innings, overNo) {
   return { runs: num(rows[0].runs), deliveries: num(rows[0].balls), legal: num(rows[0].legal) };
 }
 
+/** The runs conceded in an innings' first `overs` overs, extras included (a powerplay). */
+export async function inningsRuns(matchId, innings, overs) {
+  const { rows } = await pgQuery(
+    `SELECT COALESCE(SUM(runs), 0) AS runs, COUNT(*) AS balls FROM cricket_deliveries
+      WHERE match_id = $1 AND innings = $2 AND over_no < $3`,
+    [String(matchId), innings, overs], 'cricket_innings_runs',
+  );
+  return { runs: num(rows[0].runs), deliveries: num(rows[0].balls) };
+}
+
 export async function lastDelivery(matchId) {
   const { rows } = await pgQuery(
     'SELECT * FROM cricket_deliveries WHERE match_id = $1 ORDER BY seq DESC LIMIT 1', [String(matchId)], 'cricket_delivery_last');
@@ -404,7 +425,8 @@ function toPoll(r, options = []) {
     closesAt: r.closes_at,
     closedAt: r.closed_at,
     settledAt: r.settled_at,
-    winningOption: r.winning_option,
+    // One option, or several level ones sharing the win (a dead heat).
+    winningOptions: r.winning_options ?? null,
     voidReason: r.void_reason,
     options: options.map((o) => ({
       key: o.option_key, label: o.label,
@@ -461,11 +483,11 @@ const POLL_ORDER = `ORDER BY CASE kind WHEN 'BALL' THEN 0 WHEN 'OVER' THEN 1 WHE
  */
 export async function playerPolls(matchId) {
   return pollsWithOptions(
-    `match_id = $1 AND (kind IN ('TOSS', 'MATCH_RESULT', 'MOM', 'TOP_BATSMAN', 'TOP_BOWLER') OR status IN ('OPEN', 'CLOSED')
+    `match_id = $1 AND (kind IN ('TOSS', 'MATCH_RESULT', 'TOP_BATSMAN', 'TOP_BOWLER', 'MOST_SIXES', 'POWERPLAY') OR status IN ('OPEN', 'CLOSED')
        OR poll_id IN (SELECT DISTINCT ON (kind) poll_id FROM cricket_polls
                        WHERE match_id = $1 AND kind IN ('BALL', 'OVER') AND status IN ('SETTLED', 'VOID')
                        ORDER BY kind, innings DESC, over_no DESC, seq DESC))
-     ${POLL_ORDER} LIMIT 12`,
+     ${POLL_ORDER} LIMIT 16`,
     [String(matchId)], 'cricket_player');
 }
 
@@ -542,6 +564,7 @@ function toBet(r) {
     status: r.status,
     paidPaise: num(r.paid_paise),
     feePaise: num(r.fee_paise),
+    deadHeat: num(r.dead_heat ?? 1),
     placedAt: r.placed_at,
     endedAt: r.ended_at,
   };
@@ -659,12 +682,12 @@ export async function quoteBetNow({ pollId, optionKey, stakePaise }) {
  * against the book as the earlier claims leave it. Shared by the quote (a
  * read) and the claim (under the locks).
  */
-function priceClaims(bets, books, { claimMarginBp, feeBp }) {
+function priceClaims(bets, books, { feeBp }) {
   const lines = [];
   for (const bet of bets) {
     const b = books.get(bet.poll_id);
     const q = quoteClaim({
-      book: b.book, pools: b.pools, liabilities: b.liabilities, claimMarginBp, feeBp,
+      book: b.book, pools: b.pools, liabilities: b.liabilities, feeBp,
       bet: { optionKey: bet.option_key, stakePaise: num(bet.stake_paise), potentialPaise: num(bet.potential_paise) },
     });
     // The claim's effect on the book, for the next position on this poll.
@@ -699,14 +722,14 @@ async function claimableBets(run, userId, { matchId = null, betIds = null, holdS
 }
 
 /** A quote for claiming (a read, not binding): each position and the total. */
-export async function quoteClaims({ userId, matchId = null, betIds = null, holdSec = 0, claimMarginBp, feeBp }) {
+export async function quoteClaims({ userId, matchId = null, betIds = null, holdSec = 0, feeBp }) {
   const { bets } = await claimableBets(pgQuery, userId, { matchId, betIds, holdSec });
   if (!bets.length) return { lines: [], totalNetPaise: 0, totalStakePaise: 0 };
   const pollIds = [...new Set(bets.map((b) => b.poll_id))];
   const { rows: polls } = await pgQuery('SELECT * FROM cricket_polls WHERE poll_id = ANY($1)', [pollIds], 'cricket_claim_quote_polls');
   const { rows: opts } = await pgQuery('SELECT * FROM cricket_poll_options WHERE poll_id = ANY($1)', [pollIds], 'cricket_claim_quote_opts');
   const books = new Map(polls.map((p) => [p.poll_id, bookOf(p, opts.filter((o) => o.poll_id === p.poll_id))]));
-  const lines = priceClaims(bets, books, { claimMarginBp, feeBp });
+  const lines = priceClaims(bets, books, { feeBp });
   return summarise(lines);
 }
 
@@ -729,7 +752,7 @@ function summarise(lines) {
  * @returns {ok:true, claimed, totalNetPaise, balances} | {ok:false, reason, quote?}
  *   reasons: NOTHING_TO_CLAIM, CLAIM_TOO_SOON, POLL_CLOSED, EVENT_DURING_DELAY, QUOTE_CHANGED
  */
-export async function claimPositions({ userId, matchId = null, betIds = null, holdSec = 0, minTotalNetPaise, requestedAt, claimMarginBp, feeBp }) {
+export async function claimPositions({ userId, matchId = null, betIds = null, holdSec = 0, minTotalNetPaise, requestedAt, feeBp }) {
   return inTx(async (client) => {
     const ctx = await lockWalletWithin(client, userId);
     const run = (sql, params) => client.query(sql, params);
@@ -752,7 +775,7 @@ export async function claimPositions({ userId, matchId = null, betIds = null, ho
     const { rows: bets } = await client.query(
       `SELECT * FROM cricket_bets WHERE bet_id = ANY($1) AND status = 'OPEN' ORDER BY poll_id, bet_id FOR UPDATE`,
       [candidates.map((b) => b.bet_id)]);
-    const lines = priceClaims(bets, books, { claimMarginBp, feeBp });
+    const lines = priceClaims(bets, books, { feeBp });
     const quote = summarise(lines);
     if (quote.totalNetPaise < minTotalNetPaise) return refuse('QUOTE_CHANGED', { quote });
 
@@ -789,17 +812,20 @@ export async function claimPositions({ userId, matchId = null, betIds = null, ho
 // ── Settlement ───────────────────────────────────────────────────────────────
 
 /**
- * End a poll: settle it on `winningOption`, or void it (`voidReason`), paying
- * every OPEN bet in one transaction. A winning bet gets its payout less the
- * winnings fee into winnings; a losing one ends LOST; a void (or a bet pressed
+ * End a poll: settle it on `winningOptions` (one, or several level ones: a
+ * dead heat; `winningOption` names one), or void it (`voidReason`), paying
+ * every OPEN bet in one transaction. A winning bet gets its payout (divided by
+ * the number of winners in a dead heat) less the winnings fee into winnings; a losing one ends LOST; a void (or a bet pressed
  * at or after `voidPressedFrom`, the moment the decided delivery was recorded
  * by the feed) gets each part of its stake back to the pocket it came from.
  * Writes the poll's RTP entry. Idempotent: an ended poll answers `ENDED`.
  *
  * @returns {ok:true, payouts:[{userId, betId, paidPaise, status}]} | {ok:false, reason}
  */
-export async function endPoll({ pollId, winningOption = null, voidReason = null, voidPressedFrom = null, feeBp }) {
-  if ((winningOption === null) === (voidReason === null)) throw new Error('endPoll: name a winning option or a void reason, not both');
+export async function endPoll({ pollId, winningOption = null, winningOptions = null, voidReason = null, voidPressedFrom = null, feeBp }) {
+  let winners = winningOptions ?? (winningOption === null ? null : [winningOption]);
+  if (winners !== null && (!Array.isArray(winners) || !winners.length)) winners = null;
+  if ((winners === null) === (voidReason === null)) throw new Error('endPoll: name the winning options or a void reason, not both');
   // Close first, on its own: from here no bet or claim can reach this poll, so
   // the set of OPEN bets read below is the set settled.
   await pgQuery(`UPDATE cricket_polls SET status = 'CLOSED', closed_at = now() WHERE poll_id = $1 AND status = 'OPEN'`,
@@ -814,11 +840,15 @@ export async function endPoll({ pollId, winningOption = null, voidReason = null,
     const locked = await lockPollBook(client, pollId);
     if (!locked) return refuse('POLL_NOT_FOUND');
     if (['SETTLED', 'VOID'].includes(locked.row.status)) return refuse('ENDED');
-    if (winningOption !== null && !(winningOption in locked.pools)) {
-      // The fact names no option (a man of the match not on the list): void.
-      voidReason = 'The result is not one of the options';
-      winningOption = null;
+    if (winners !== null) {
+      winners = [...new Set(winners.map(String))].filter((k) => k in locked.pools);
+      // The fact names no option at all (never for a player poll, which has
+      // "Any other player"): void.
+      if (!winners.length) { voidReason = 'The result is not one of the options'; winners = null; }
     }
+    const winning = new Set(winners ?? []);
+    const deadHeat = Math.max(1, winning.size);
+    const winLabel = (winners ?? []).map((k) => locked.labels[k]).join(' / ');
     const { rows: bets } = await client.query(
       `SELECT * FROM cricket_bets WHERE poll_id = $1 AND status = 'OPEN' ORDER BY user_id, bet_id FOR UPDATE`, [String(pollId)]);
     const payouts = [];
@@ -847,14 +877,15 @@ export async function endPoll({ pollId, winningOption = null, voidReason = null,
           counterparty: { house: true, operation: 'CRICKET_REFUND', reason: 'Cricket refund', refModel: 'CricketBet', refId: bet.bet_id },
         });
         if (!moved.ok || moved.idempotent) return refuse(moved.refused ?? 'REFUND_REFUSED');
-      } else if (bet.option_key === winningOption) {
-        const gross = num(bet.potential_paise);
-        fee = winningsFeePaise(gross, stake, feeBp);
+      } else if (winning.has(bet.option_key)) {
+        // A dead heat pays the odds on the stake divided by the winners (rounded down).
+        const gross = Math.floor(num(bet.potential_paise) / deadHeat);
+        fee = winningsFeePaise(gross, feeBp);
         paid = gross - fee; status = 'WON'; won += paid; fees += fee;
         const moved = await applyMovementWithin(ctx, {
           legs: [{ field: 'winningsBalance', deltaPaise: paid }],
           ledger: [{ txId: `cricket_win_${bet.bet_id}`, field: 'winningsBalance', amountPaise: paid, type: 'CREDIT',
-            reason: `Cricket win: ${locked.labels[winningOption]}`, refId: bet.bet_id }],
+            reason: `Cricket win: ${winLabel}${deadHeat > 1 ? ` (dead heat of ${deadHeat})` : ''}`, refId: bet.bet_id }],
           counterparty: { house: true, operation: 'CRICKET_WIN', reason: 'Cricket win', refModel: 'CricketBet', refId: bet.bet_id },
         });
         if (!moved.ok || moved.idempotent) return refuse(moved.refused ?? 'PAYOUT_REFUSED');
@@ -862,20 +893,20 @@ export async function endPoll({ pollId, winningOption = null, voidReason = null,
         status = 'LOST';
       }
       await client.query(
-        `UPDATE cricket_bets SET status = $2, paid_paise = $3, fee_paise = $4, ended_at = now() WHERE bet_id = $1`,
-        [bet.bet_id, status, paid, fee]);
+        `UPDATE cricket_bets SET status = $2, paid_paise = $3, fee_paise = $4, dead_heat = $5, ended_at = now() WHERE bet_id = $1`,
+        [bet.bet_id, status, paid, fee, status === 'WON' ? deadHeat : 1]);
       payouts.push({ userId: bet.user_id, betId: bet.bet_id, status, paidPaise: paid, stakePaise: stake });
     }
 
     await client.query(
       `UPDATE cricket_poll_options SET pool_paise = 0, liability_paise = 0 WHERE poll_id = $1`, [String(pollId)]);
     const { rows: [ended] } = await client.query(
-      `UPDATE cricket_polls SET status = $2, winning_option = $3, void_reason = $4, settled_at = now(),
+      `UPDATE cricket_polls SET status = $2, winning_options = $3, void_reason = $4, settled_at = now(),
               closed_at = COALESCE(closed_at, now()),
               won_paid_paise = won_paid_paise + $5, fees_paise = fees_paise + $6,
               refunded_paise = refunded_paise + $7, stakes_paise = stakes_paise - $7
         WHERE poll_id = $1 RETURNING *`,
-      [String(pollId), voidReason !== null ? 'VOID' : 'SETTLED', winningOption, voidReason, won, fees, refunded]);
+      [String(pollId), voidReason !== null ? 'VOID' : 'SETTLED', winners, voidReason, won, fees, refunded]);
 
     // RTP (rtp.js): real stakes kept against what went back to players.
     if (num(ended.stakes_paise) > 0) {
@@ -884,7 +915,7 @@ export async function endPoll({ pollId, winningOption = null, voidReason = null,
         poolPaise: num(ended.stakes_paise), paidBackPaise: num(ended.won_paid_paise) + num(ended.claims_paid_paise),
       });
     }
-    return { commit: true, value: { ok: true, status: ended.status, winningOption, payouts, matchId: ended.match_id } };
+    return { commit: true, value: { ok: true, status: ended.status, winningOptions: winners, payouts, matchId: ended.match_id } };
   });
 }
 
@@ -918,10 +949,11 @@ export async function playerBets(userId, { matchId = null, limit = 200 } = {}) {
  */
 export async function pollReport({ from, to, limit = 5000 }) {
   const { rows } = await pgQuery(
-    `SELECT p.poll_id, p.match_id, p.kind, p.title, p.status, p.winning_option, p.settled_at,
+    `SELECT p.poll_id, p.match_id, p.kind, p.title, p.status, p.winning_options, p.settled_at,
             p.stakes_paise, p.claims_paid_paise, p.won_paid_paise, p.fees_paise, p.refunded_paise,
             m.team_a_name, m.team_b_name,
-            (SELECT o.label FROM cricket_poll_options o WHERE o.poll_id = p.poll_id AND o.option_key = p.winning_option) AS winner_label,
+            (SELECT string_agg(o.label, ' / ' ORDER BY o.sort) FROM cricket_poll_options o
+              WHERE o.poll_id = p.poll_id AND o.option_key = ANY(p.winning_options)) AS winner_label,
             (SELECT COUNT(*) FROM cricket_bets b WHERE b.poll_id = p.poll_id) AS bets
        FROM cricket_polls p JOIN cricket_matches m ON m.match_id = p.match_id
       WHERE p.status IN ('SETTLED', 'VOID') AND p.settled_at >= $1 AND p.settled_at < $2
@@ -929,7 +961,7 @@ export async function pollReport({ from, to, limit = 5000 }) {
     [from, to, Math.min(Math.max(Number(limit) || 5000, 1), 50000)], 'cricket_poll_report');
   return rows.map((r) => ({
     pollId: r.poll_id, matchId: r.match_id, match: `${r.team_a_name} v ${r.team_b_name}`,
-    kind: r.kind, title: r.title, status: r.status, winningOption: r.winning_option, winnerLabel: r.winner_label ?? r.winning_option, settledAt: r.settled_at,
+    kind: r.kind, title: r.title, status: r.status, winningOptions: r.winning_options ?? null, winnerLabel: r.winner_label ?? null, settledAt: r.settled_at,
     bets: num(r.bets), stakesPaise: num(r.stakes_paise), claimsPaidPaise: num(r.claims_paid_paise),
     wonPaidPaise: num(r.won_paid_paise), feesPaise: num(r.fees_paise), refundedPaise: num(r.refunded_paise),
     houseNetPaise: num(r.stakes_paise) - num(r.claims_paid_paise) - num(r.won_paid_paise),
