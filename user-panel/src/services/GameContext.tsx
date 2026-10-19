@@ -31,6 +31,7 @@ import { CycleType, GameState, User, Bet, BettingSide, GameCycle, PlayProfile, B
 import { analyticsWindowFor } from '../constants';
 import { platform } from './api';
 import { getBackend, setCdnBaseUrl } from './backend.service';
+import { hasStaleRound, mayReopen, HIDDEN_LONG_MS } from './realtimeWatchdog';
 import { decodeCyclePhase, decodeCycleResult } from './realtimeProtocol';
 import type { SignInStep, TelegramDelivery } from './backend.interface';
 import { applyBranding } from './branding';
@@ -308,6 +309,33 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   }, [loadBoards]);
   const loadBoardsRef = useRef(loadBoards);
   loadBoardsRef.current = loadBoards;
+
+  // ── A quiet stream under a board (realtimeWatchdog.ts) ────────────────────
+  // A round past its end with no next round means the pushes were missed, not
+  // that the server is late: reopen the stream so it sends the snapshot again.
+  // And a tab hidden for a while reopens it when shown, as the native shell
+  // does on every foreground.
+  useEffect(() => {
+    let lastReopen = 0;
+    let hiddenAt = 0;
+    const reopen = () => {
+      const now = Date.now();
+      if (!mayReopen(lastReopen, now)) return;
+      lastReopen = now;
+      backend.reconnectRealtime?.();
+    };
+    const check = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      if (hasStaleRound(cyclesRef.current, Date.now())) reopen();
+    }, 5_000);
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+      if (hiddenAt && Date.now() - hiddenAt >= HIDDEN_LONG_MS) reopen();
+      hiddenAt = 0;
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => { clearInterval(check); document.removeEventListener('visibilitychange', onVisibility); };
+  }, []);
 
   // ── CROSS-2: Fetch branding on init so getAssetUrl() works in production ──
   useEffect(() => {

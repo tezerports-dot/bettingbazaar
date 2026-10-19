@@ -25,6 +25,7 @@ vi.mock('../../domains/markets/cycleTypes.js', () => ({
 vi.mock('../../services/metrics.service.js', () => ({ recordRealtimeEvent: vi.fn() }));
 vi.mock('../../domains/markets/rtpHouseBet.js', () => ({ planHouseBet: vi.fn() }));
 vi.mock('../../domains/risk/riskValidation.service.js', () => ({ getRiskRules: vi.fn() }));
+vi.mock('../../services/alerting.service.js', () => ({ sendAlert: vi.fn(async () => {}) }));
 
 const { default: CycleGenerator } = await import('../../domains/markets/cycleGenerator.service.js');
 

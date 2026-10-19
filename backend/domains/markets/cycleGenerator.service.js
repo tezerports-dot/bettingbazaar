@@ -21,6 +21,10 @@ import { announceRoundResults } from './roundResult.service.js';
 import { recordRealtimeEvent } from '../../services/metrics.service.js';
 import { planHouseBet } from './rtpHouseBet.js';
 import { getRiskRules } from '../risk/riskValidation.service.js';
+import { sendAlert } from '../../services/alerting.service.js';
+
+/** A tick of the cycle manager running this long means every board has stopped (it runs every second). */
+const TICK_STALL_MS = 20_000;
 
 /**
  * Each board runs one cycle per slot for each audience (VIP, GENERAL), and the
@@ -53,6 +57,8 @@ class CycleGenerator {
 
         this.isInitialized = false;
         this.isRunning     = false;
+        this.tickStartedAt = 0;
+        this.stallReported = false;
 
         this.initializeCycles().then(() => {
             this.isInitialized = true;
@@ -70,13 +76,35 @@ class CycleGenerator {
         // Timer is derived client-side from endTime, zero server push required.
         setInterval(async () => {
             if (!this.isInitialized) return;
-            if (this.isRunning) return;
+            if (this.isRunning) {
+                // One tick at a time, so a tick that never returns (a query
+                // waiting on a lock or on a pool with no free connection)
+                // freezes every board: timers reach 00:00 and nothing moves
+                // until the scheduler restarts. Say so, once per stall, rather
+                // than skipping in silence. Starting a second tick beside it
+                // would phase and settle the same rounds twice, so this only
+                // reports.
+                const ranMs = Date.now() - this.tickStartedAt;
+                if (ranMs >= TICK_STALL_MS && !this.stallReported) {
+                    this.stallReported = true;
+                    console.error(`❌ CycleGenerator: one tick has run for ${Math.round(ranMs / 1000)}s; every board is waiting on it`);
+                    sendAlert('cycle-manager-stalled', 'Board rounds are not moving: the cycle manager is stuck on one tick', {
+                        runningForSeconds: Math.round(ranMs / 1000),
+                    }).catch(() => {});
+                }
+                return;
+            }
             this.isRunning = true;
+            this.tickStartedAt = Date.now();
             try {
                 await this.manageCycles();
             } catch (e) {
                 console.error('❌ CycleGenerator interval error:', e);
             } finally {
+                if (this.stallReported) {
+                    console.warn(`⚠️  CycleGenerator: the stuck tick finished after ${Math.round((Date.now() - this.tickStartedAt) / 1000)}s`);
+                }
+                this.stallReported = false;
                 this.isRunning = false;
             }
         }, 1000);
