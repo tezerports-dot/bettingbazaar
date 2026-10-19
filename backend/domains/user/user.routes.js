@@ -366,6 +366,7 @@ router.get('/v1/board-rules', async (req, res) => {
     return res.json({ success: true, ...renderBoardRules(text, {
       feePercent: config.winningsFeePercent,
       multiplier: config.payoutMultiplier,
+      generalMultiplier: config.generalPayoutMultiplier ?? 1.8, // schema default: 1.8
       // schema default: false (database/spec/config.spec.js riskRules)
       bothSides: !(config.riskRules?.blockOppositeSideBetting ?? false),
       phantomBetsLabel: phantomBetsLabelOf(config),

@@ -34,12 +34,13 @@
  */
 
 /** The version of the built-in text; a published version is always above it. */
-export const BOARD_RULES_BASE_VERSION = 5;
+export const BOARD_RULES_BASE_VERSION = 6;
 
 /** The tokens an admin may write, filled in when the text is served. */
 export const BOARD_RULES_TOKENS = Object.freeze({
   winningsFeePercent: 'The winnings fee in force, as a number (e.g. 1).',
-  payoutMultiplier: 'How many times the stake a win pays, as a number (e.g. 2).',
+  payoutMultiplier: 'How many times the stake a win pays on VIP boards, as a number (e.g. 2).',
+  generalPayoutMultiplier: 'How many times the stake a win pays on General boards, as a number (e.g. 1.8).',
   backingSides: 'One sentence saying whether a player may back both sides of a round.',
 });
 
@@ -74,7 +75,7 @@ export const DEFAULT_BOARD_RULES = Object.freeze({
     { title: 'Backing a side', body: '{backingSides}' },
     {
       title: 'Payout',
-      body: 'A winning bet pays {payoutMultiplier}× its stake, minus a platform fee of {winningsFeePercent}% of that payout. '
+      body: 'A winning bet pays {payoutMultiplier}× its stake on VIP boards and {generalPayoutMultiplier}× on General boards, minus a platform fee of {winningsFeePercent}% of that payout. '
         + 'A losing stake is not returned.',
     },
     {
@@ -109,10 +110,11 @@ const backingSentence = (bothSides) => (bothSides
  *   `SystemConfig.winningsFeePercent` and `payoutMultiplier`; `bothSides` is
  *   false only while `riskRules.blockOppositeSideBetting` is on.
  */
-export function renderBoardRules(text, { feePercent, multiplier, bothSides = true, phantomBetsLabel }) {
+export function renderBoardRules(text, { feePercent, multiplier, generalMultiplier, bothSides = true, phantomBetsLabel }) {
   const fill = (str) => String(str)
     .replaceAll('{winningsFeePercent}', String(feePercent))
     .replaceAll('{payoutMultiplier}', String(multiplier))
+    .replaceAll('{generalPayoutMultiplier}', String(generalMultiplier))
     .replaceAll('{backingSides}', backingSentence(bothSides));
   return {
     version: text.version,

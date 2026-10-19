@@ -93,6 +93,8 @@ const GameScreen: React.FC = () => {
   } = useGame();
   // Admin › Player Screen (SystemConfig.boardExtras).
   const extras = sysConfig.boardExtras;
+  // What a win pays on this profile's boards, shown where "VS" was (owner, 2026-10-19).
+  const payoutMultiple = audience === 'GENERAL' ? sysConfig.generalPayoutMultiplier : sysConfig.payoutMultiplier;
 
   // Phantom-manager access (ghost mode). Only users granted phantomAccess for the
   // active cycle type see the toggle; enabling it routes bets through
@@ -460,7 +462,7 @@ const GameScreen: React.FC = () => {
             {blindBandShown && <BlindBand total={total} compact={cardH < 200} />}
             {!isClosed && !isResult && shareMode !== 'blind' && (
               <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: mobile ? 42 : 50, height: mobile ? 42 : 50, borderRadius: '50%', background: 'var(--bg)', border: '2px solid var(--gold)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 4 }}>
-                <span className="font-grotesk" style={{ fontWeight: 700, fontStyle: 'italic', fontSize: 17, color: 'var(--gold-ink)' }}>VS</span>
+                <span className="font-grotesk" aria-label={`A win pays ${payoutMultiple} times the stake`} style={{ fontWeight: 700, fontStyle: 'italic', fontSize: mobile ? 13 : 15, color: 'var(--gold-ink)' }}>{payoutMultiple}×</span>
               </div>
             )}
             {isClosed && (

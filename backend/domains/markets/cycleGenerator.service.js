@@ -20,7 +20,7 @@ import { emitCyclePhase, emitCycleResult } from '../notification/realtimeEmitter
 import { announceRoundResults } from './roundResult.service.js';
 import { recordRealtimeEvent } from '../../services/metrics.service.js';
 import { planHouseBet } from './rtpHouseBet.js';
-import { getRiskRules } from '../risk/riskValidation.service.js';
+import { getRiskRules, multiplierFor } from '../risk/riskValidation.service.js';
 import { sendAlert } from '../../services/alerting.service.js';
 
 /** A tick of the cycle manager running this long means every board has stopped (it runs every second). */
@@ -322,9 +322,11 @@ class CycleGenerator {
                 const placed = await db.markets.getCycle(cycle.cycleId);
                 return placed?.houseBetSide ? { side: placed.houseBetSide, stakePaise: Math.round(placed.houseBet * 100) } : null;
             }
-            const [stakes, { winningsFeePercent, payoutMultiplier }] = await Promise.all([
+            const [stakes, rules] = await Promise.all([
                 db.bets.cycleStakesByPlayer(cycle.cycleId), getRiskRules(),
             ]);
+            const { winningsFeePercent } = rules;
+            const payoutMultiplier = multiplierFor(rules, cycle.audience);
             const plan = planHouseBet({
                 stakes, rateBp: fund.rateBp, availablePaise: fund.availablePaise,
                 feePercent: winningsFeePercent, multiplier: payoutMultiplier,
@@ -483,7 +485,7 @@ class CycleGenerator {
                 bombayPool: combinedBombay,
             }, this.transports());
             // Each player's own result, now: settlement can follow seconds later.
-            void announceRoundResults({ cycleId: cycle.cycleId, winner });
+            void announceRoundResults({ cycleId: cycle.cycleId, winner, audience: cycle.audience });
 
             // Admin result — full breakdown
             this.emitAdmin('admin_cycle_result', {

@@ -51,6 +51,9 @@ interface SysConfig {
   cricket:       CricketSettings;
   // The global winnings fee, read by the cricket position values (§11 mirror).
   winningsFeePercent: number;
+  // What a win pays, per profile (systemConfigPayload.js; owner, 2026-10-19): display only (§11).
+  payoutMultiplier: number;
+  generalPayoutMultiplier: number;
 }
 /** Mirrors `cricketPublicSettings` (backend/domains/cricket/cricketSettings.js). */
 export interface CricketSettings {
@@ -77,6 +80,8 @@ const DEFAULT_SYS_CONFIG: SysConfig = {
   // schema defaults (config.spec.js `cricket`): off, coming soon, 10 to 50,000, 5 s, 2 s
   cricket: { enabled: false, comingSoon: true, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimHoldSec: 2 },
   winningsFeePercent: 1, // schema default: 1
+  payoutMultiplier: 2, // schema default: 2
+  generalPayoutMultiplier: 1.8, // schema default: 1.8
 };
 import { useToast } from '../components/ui/Toast';
 import { BOARD_RULES_EVENT } from '../redesign/BoardRules';
@@ -845,6 +850,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         boardExtras:   data.boardExtras && typeof data.boardExtras === 'object' ? { ...prev.boardExtras, ...data.boardExtras } : prev.boardExtras,
         cricket:       data.cricket && typeof data.cricket === 'object' ? { ...prev.cricket, ...data.cricket } : prev.cricket,
         winningsFeePercent: typeof data.winningsFeePercent === 'number' ? data.winningsFeePercent : prev.winningsFeePercent,
+        payoutMultiplier: typeof data.payoutMultiplier === 'number' ? data.payoutMultiplier : prev.payoutMultiplier,
+        generalPayoutMultiplier: typeof data.generalPayoutMultiplier === 'number' ? data.generalPayoutMultiplier : prev.generalPayoutMultiplier,
       }));
     };
 

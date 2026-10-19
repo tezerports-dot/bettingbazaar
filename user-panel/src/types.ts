@@ -264,6 +264,8 @@ export interface SystemConfigData {
    *  gross (systemConfigPayload.js). Read by the Analytics page's progression
    *  calculator for "profit if it wins"; the settlement is the server's. */
   payoutMultiplier?: number;
+  /** General boards' own multiple (owner, 2026-10-19). */
+  generalPayoutMultiplier?: number;
   winningsFeePercent?: number;
   /** Whether demo results fill the analytics window
    *  (SystemConfig.demoResultsOn; systemConfigPayload.js). */

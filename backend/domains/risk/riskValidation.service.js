@@ -252,11 +252,15 @@ export function computeWinningsPayout({ amount, feePercent, multiplier = 2 }) {
       feePercent < 0 || feePercent > 100) {
     throw reject('winningsFeePercent must be between 0 and 100.');
   }
-  if (!Number.isInteger(multiplier) || multiplier <= 0) {
-    throw reject('Payout multiplier must be a positive integer.');
+  // Up to two decimals (1.8 on General boards; owner, 2026-10-19), held as
+  // hundredths so the arithmetic stays in integers; the gross is floored.
+  const multiplierX100 = Math.round(multiplier * 100);
+  if (typeof multiplier !== 'number' || !Number.isFinite(multiplier) || multiplier <= 0
+      || Math.abs(multiplierX100 - multiplier * 100) > 1e-6) {
+    throw reject('Payout multiplier must be a positive number with at most two decimals.');
   }
   const amountMinor = Math.round(amount * 100);
-  const grossMinor  = amountMinor * multiplier;
+  const grossMinor  = Math.floor(amountMinor * multiplierX100 / 100);
   const feeBp       = Math.round(feePercent * 100); // percent → integer basis points
   const feeMinor    = Math.floor(grossMinor * feeBp / 10000);
   const netMinor    = grossMinor - feeMinor;
@@ -292,7 +296,14 @@ async function getRiskRules() {
     betReservePercent: cfg?.betReservePercent ?? 1,
     // schema default: 2 (2x payout; Business Config Audit 2026-07-11)
     payoutMultiplier: cfg?.payoutMultiplier ?? 2,
+    // schema default: 1.8 (General boards; owner, 2026-10-19)
+    generalPayoutMultiplier: cfg?.generalPayoutMultiplier ?? 1.8,
   };
+}
+
+/** The multiple a round of this audience pays: General boards have their own (owner, 2026-10-19). */
+export function multiplierFor(rules, audience) {
+  return audience === 'GENERAL' ? rules.generalPayoutMultiplier : rules.payoutMultiplier;
 }
 
 export { getRiskRules };

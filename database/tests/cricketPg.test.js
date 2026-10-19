@@ -181,7 +181,7 @@ describePg('cricket opinion polls', () => {
       const { rows } = await pgQuery('SELECT * FROM rtp_fund_entries WHERE cycle_id = $1', [`CRK:${pollId}`]);
       expect(rows).toHaveLength(1);
       expect(Number(rows[0].pool_paise)).toBe(100_000);
-      expect(Number(rows[0].paid_back_paise)).toBe(gross - fee);
+      expect(Number(rows[0].paid_back_paise)).toBe(gross); // before the fee: the fee stays the house's (owner, 2026-10-19)
     } finally {
       await rtp.saveSettings({ gameKey: 'CRICKET', audience: 'VIP', enabled: false, ratePercent: 90 });
     }

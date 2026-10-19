@@ -261,6 +261,7 @@ export const SystemSettings: React.FC = () => {
     directMerchants: directMerchantDefaults(),
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
+    generalPayoutMultiplier: 1.8, // schema default: 1.8 (General boards)
     // The line under the board rules (owner, 2026-10-15). '' until loaded: the
     // server always sends one (phantomBetsLabelOf), and an empty save is refused.
     phantomBetsLabel: '',
@@ -380,6 +381,7 @@ export const SystemSettings: React.FC = () => {
           })(),
           directMerchants: { ...directMerchantDefaults(), ...(response.data.directMerchants ?? {}) },
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
+          generalPayoutMultiplier: response.data.generalPayoutMultiplier ?? 1.8, // schema default: 1.8
           phantomBetsLabel:     response.data.phantomBetsLabel     ?? '',
           demoResultsOn:      response.data.demoResultsOn      ?? true,  // schema default: true
           riskRules: {
@@ -760,6 +762,21 @@ export const SystemSettings: React.FC = () => {
             <p className="text-xs text-gold-400/80 mt-1">
               Example with {formData.payoutMultiplier}×: a ₹100 winning bet returns gross
               ₹{100 * formData.payoutMultiplier} before the winnings fee.
+            </p>
+          </div>
+
+          <div className="pt-4 border-t border-dark-700">
+            <label className="label" htmlFor="general-payout-multiplier">General Boards Payout (×)</label>
+            <input id="general-payout-multiplier"
+              type="number" min={1} max={10} step={0.01}
+              value={formData.generalPayoutMultiplier}
+              onChange={(e) => setFormData({ ...formData, generalPayoutMultiplier: Math.max(1, Math.min(10, Math.round((Number(e.target.value) || 1) * 100) / 100)) })}
+              className="input"
+            />
+            <SettingHelp path="generalPayoutMultiplier" />
+            <p className="text-xs text-gold-400/80 mt-1">
+              Example with {formData.generalPayoutMultiplier}×: a ₹100 winning General bet returns gross
+              ₹{Math.floor(100 * formData.generalPayoutMultiplier * 100) / 100} before the winnings fee.
             </p>
           </div>
 
