@@ -20,7 +20,7 @@
  * has committed, and a failed announcement must never reach it.
  */
 import { db } from '#db';
-import { getRiskRules, computeWinningsPayout } from '../risk/riskValidation.service.js';
+import { getRiskRules, computeWinningsPayout, multiplierFor } from '../risk/riskValidation.service.js';
 import { emitToPlayer } from '../notification/realtimeEmitters.js';
 
 /** Players per event-loop turn while fanning out. */
@@ -54,11 +54,14 @@ export function roundResultsFor(stakes, winner, { winningsFeePercent, payoutMult
 }
 
 /** @returns {Promise<number>} players told */
-export async function announceRoundResults({ cycleId, winner }) {
+export async function announceRoundResults({ cycleId, winner, audience }) {
   try {
     if (winner !== 'DELHI' && winner !== 'BOMBAY') return 0;
     const [rules, stakes] = await Promise.all([getRiskRules(), db.bets.cycleStakesByPlayer(cycleId)]);
-    const results = roundResultsFor(stakes, winner, rules);
+    const cycleAudience = audience ?? (await db.markets.getCycle(cycleId))?.audience;
+    const results = roundResultsFor(stakes, winner, {
+      winningsFeePercent: rules.winningsFeePercent, payoutMultiplier: multiplierFor(rules, cycleAudience),
+    });
     for (let i = 0; i < results.length; i += 1) {
       const r = results[i];
       emitToPlayer(r.userId, 'round_result', {

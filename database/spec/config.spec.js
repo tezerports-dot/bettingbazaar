@@ -380,6 +380,8 @@ export const SYSTEM_CONFIG_SPEC = group({
   betReservePercent:     n(1, 0, 100),
   winningsFeePercent:    n(1, 0, 100),
   payoutMultiplier:      n(2, 1, 10),
+  // General (bonus) boards pay their own multiple, two decimals (owner, 2026-10-19).
+  generalPayoutMultiplier: n(1.8, 1, 10),
 
   // Minutes a confirmed WITHDRAWAL stays frozen before the player's locked
   // stake is consumed and the merchant's tokens become spendable. 0 disables

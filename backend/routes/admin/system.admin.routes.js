@@ -146,6 +146,7 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         retentionMonths:       config.retentionMonths ?? 6, // schema default: 6
         // Business Config Audit (2026-07-11) — formerly-hardcoded business values
         payoutMultiplier:      config.payoutMultiplier ?? 2,   // schema default: 2 (2x)
+        generalPayoutMultiplier: config.generalPayoutMultiplier ?? 1.8, // schema default: 1.8
         registrationEnabled:   config.registrationEnabled   !== false,
         maintenanceMode:       config.maintenanceMode       || false,
         maintenanceMessage:    config.maintenanceMessage    || '',
@@ -183,7 +184,7 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
       webUrl, iosUrl, minVersion, latestVersion,
       payoutFeePercent, usdtPricing, riskRules, betReservePercent, winningsFeePercent,
       retentionMonths,
-      payoutMultiplier,
+      payoutMultiplier, generalPayoutMultiplier,
       footerPages, alertWebhookUrl, tlsFingerprintDefense,
     } = req.body;
 
@@ -265,6 +266,12 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     if (payoutMultiplier !== undefined &&
         (!Number.isInteger(payoutMultiplier) || payoutMultiplier < 1 || payoutMultiplier > 10)) {
       return res.status(400).json({ success: false, message: 'payoutMultiplier must be an integer between 1 and 10.' });
+    }
+    if (generalPayoutMultiplier !== undefined &&
+        (typeof generalPayoutMultiplier !== 'number' || !Number.isFinite(generalPayoutMultiplier)
+          || generalPayoutMultiplier < 1 || generalPayoutMultiplier > 10
+          || Math.abs(Math.round(generalPayoutMultiplier * 100) - generalPayoutMultiplier * 100) > 1e-6)) {
+      return res.status(400).json({ success: false, message: 'generalPayoutMultiplier must be a number from 1 to 10 with at most two decimals.' });
     }
     if (footerPages !== undefined) {
       if (!Array.isArray(footerPages) || footerPages.length < 2 || footerPages.length > 5) {
@@ -364,6 +371,7 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     if (riskRules?.maxWarnings !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxWarnings', riskRules.maxWarnings]);
     // Payout multiplier — consumed by markets/gameEngine.js via riskValidation.computeWinningsPayout
     if (payoutMultiplier   !== undefined) fieldWrites.push(['SystemConfig', 'payoutMultiplier', payoutMultiplier]);
+    if (generalPayoutMultiplier !== undefined) fieldWrites.push(['SystemConfig', 'generalPayoutMultiplier', generalPayoutMultiplier]);
     // The payment order windows are per rail, in SystemConfig.teamRouting,
     // accepted by declaration above.
     // Footer navigation (2026-07-13) — consumed by the user panel Footer via system_config

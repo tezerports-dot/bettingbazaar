@@ -304,6 +304,10 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'How many times the stake a winning bet pays back, before the winnings fee.',
     example: '2: a ₹100 winning bet pays ₹200 before the fee.',
   },
+  generalPayoutMultiplier: {
+    what: 'How many times the stake a winning bet pays back on GENERAL (bonus) boards, before the winnings fee. Up to two decimals. VIP boards use the payout multiplier above.',
+    example: '1.8: a ₹100 winning General bet pays ₹180 before the fee.',
+  },
   withdrawalHoldMinutes: {
     what: 'After an agent marks a sell as paid, how long the player\'s tokens stay in escrow, out of the team\'s pool, so a sell marked paid without paying can be recovered if the player disputes. Any whole number from 0 to 10,080 (7 days). At 0 the sell settles within a minute; a later dispute is refunded from the team\'s pool, or by the platform if the pool has spent it.',
     example: '120: a sell marked paid at 2:00 settles at 4:00 unless the player disputes.',

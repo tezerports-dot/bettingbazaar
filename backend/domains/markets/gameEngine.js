@@ -45,7 +45,7 @@
 import { db } from '#db';
 // Risk Platform: payout arithmetic authority — winners are paid gross 2x minus
 // the admin-editable winnings platform fee, in integer paise.
-import { getRiskRules, computeWinningsPayout } from '../risk/riskValidation.service.js';
+import { getRiskRules, computeWinningsPayout, multiplierFor } from '../risk/riskValidation.service.js';
 import { emitPayoutSuccessBatch } from '../notification/realtimeEmitters.js';
 // A settlement failure on a declared cycle pages the admin-configured webhook.
 import { sendAlert } from '../../services/alerting.service.js';
@@ -193,7 +193,9 @@ class GameEngine {
         // Read ONCE per settlement, so every bet in this cycle settles under the
         // same fee and multiplier. Reading per bet would let an admin editing
         // the rate mid-pass pay two winners on the same cycle differently.
-        const { winningsFeePercent, payoutMultiplier } = await getRiskRules();
+        const rules = await getRiskRules();
+        const { winningsFeePercent } = rules;
+        const payoutMultiplier = multiplierFor(rules, cycle.audience);
 
         // Every bet this pass could not settle, with the reason. Reported, never
         // swallowed — a refused bet still has its stake locked, and a pass that

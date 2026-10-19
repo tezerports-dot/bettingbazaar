@@ -125,6 +125,8 @@ export function systemConfigPayload(cfg) {
 
     // Admin-owned (Business Config Audit 2026-07-11) — was once hardcoded 2.
     payoutMultiplier:    cfg?.payoutMultiplier ?? 2,
+    // General boards' own multiple (owner, 2026-10-19). schema default: 1.8
+    generalPayoutMultiplier: cfg?.generalPayoutMultiplier ?? 1.8,
     // The percent kept from a winning payout's gross (computeWinningsPayout).
     // Already stated in the board rules; sent so the player app's progression
     // calculator quotes the real return (owner, 2026-10-15).

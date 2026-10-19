@@ -194,7 +194,16 @@ describe('winnings payout with platform fee (Phase A — 2x minus fee, floored)'
     expect(() => computeWinningsPayout({ amount: 10, feePercent: 101 })).toThrow();
     expect(() => computeWinningsPayout({ amount: 10, feePercent: NaN })).toThrow();
     expect(() => computeWinningsPayout({ amount: 10, feePercent: 1, multiplier: 0 })).toThrow();
-    expect(() => computeWinningsPayout({ amount: 10, feePercent: 1, multiplier: 1.5 })).toThrow();
+    expect(() => computeWinningsPayout({ amount: 10, feePercent: 1, multiplier: 1.555 })).toThrow();
+    expect(() => computeWinningsPayout({ amount: 10, feePercent: 1, multiplier: NaN })).toThrow();
+  });
+
+  // General boards pay 1.8x (owner, 2026-10-19): two decimals, gross floored to the paisa.
+  it('pays a two-decimal multiplier exactly, in paise', () => {
+    expect(computeWinningsPayout({ amount: 100, feePercent: 1, multiplier: 1.8 }))
+      .toMatchObject({ grossMinor: 18_000, feeMinor: 180, netMinor: 17_820 });
+    expect(computeWinningsPayout({ amount: 0.07, feePercent: 0, multiplier: 1.8 }).grossMinor).toBe(12); // 12.6 floored
+    expect(computeWinningsPayout({ amount: 100, feePercent: 1, multiplier: 2 }).netMinor).toBe(19_800);
   });
 
   // Business Config Audit (2026-07-11): payoutMultiplier is admin-configurable.
