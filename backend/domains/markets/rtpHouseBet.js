@@ -9,7 +9,7 @@
  * make it the bigger one. The lower side wins, so the side most players backed
  * wins instead. It is placed in ANY round the fund covers (owner, 2026-10-17):
  *
- *   paid back if flipped = Σ each bigger-side bet's payout (computeWinningsPayout)
+ *   paid back if flipped = Σ each bigger-side bet's payout BEFORE the fee (computeWinningsPayout gross)
  *   round's entry        = rate × real pool − paid back if flipped
  *   placed only when     fund available + round's entry ≥ 0
  *
@@ -40,7 +40,7 @@ export function planHouseBet({ stakes, rateBp, availablePaise, feePercent, multi
 
   const paidBack = stakes
     .filter((s) => s.side === bigger)
-    .reduce((sum, s) => sum + computeWinningsPayout({ amount: s.stakePaise / 100, feePercent, multiplier }).netMinor, 0);
+    .reduce((sum, s) => sum + computeWinningsPayout({ amount: s.stakePaise / 100, feePercent, multiplier }).grossMinor, 0);
   const realPool = pool.DELHI + pool.BOMBAY;
   const entryPaise = Math.floor((rateBp * realPool) / 10000) - paidBack;
   if (availablePaise + entryPaise < 0) return null;

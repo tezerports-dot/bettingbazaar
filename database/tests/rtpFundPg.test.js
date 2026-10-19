@@ -53,6 +53,10 @@ let rules;
 const pays = (rupees) => computeWinningsPayout({
   amount: rupees, feePercent: rules.winningsFeePercent, multiplier: rules.payoutMultiplier,
 }).netMinor;
+/** What the fund counts as paid back: the payout BEFORE the winnings fee (owner, 2026-10-19). */
+const gross = (rupees) => computeWinningsPayout({
+  amount: rupees, feePercent: rules.winningsFeePercent, multiplier: rules.payoutMultiplier,
+}).grossMinor;
 
 /** Delhi and Bombay stakes in rupees, one player per side; result and settlement run for real. */
 async function playRound(cycleId, delhi, bombay) {
@@ -81,16 +85,16 @@ describePg('the RTP fund and house bets', () => {
     expect(c.winner).toBe('BOMBAY');
     expect(c.houseBetSide).toBeNull();
     const [entry] = await rtp.listEntries('30_MIN', 'VIP');
-    expect(entry).toMatchObject({ cycleId: 'c-lop', poolPaise: 11_000_00, paidBackPaise: pays(1_000) });
-    expect(entry.deltaPaise).toBe(8_800_00 - pays(1_000));
-    expect((await rtp.getFund('30_MIN', 'VIP')).balancePaise).toBe(8_800_00 - pays(1_000));
+    expect(entry).toMatchObject({ cycleId: 'c-lop', poolPaise: 11_000_00, paidBackPaise: gross(1_000) });
+    expect(entry.deltaPaise).toBe(8_800_00 - gross(1_000));
+    expect((await rtp.getFund('30_MIN', 'VIP')).balancePaise).toBe(8_800_00 - gross(1_000));
   });
 
   it('a close round that pays back more than the rate takes it from the fund, even below zero', async () => {
     const c = await playRound('c-close', 10_000, 9_000);
     expect(c.winner).toBe('BOMBAY');
     const balance = (await rtp.getFund('30_MIN', 'VIP')).balancePaise;
-    expect(balance).toBe(15_200_00 - pays(9_000));
+    expect(balance).toBe(15_200_00 - gross(9_000));
     expect(balance).toBeLessThan(0);
   });
 
@@ -106,12 +110,12 @@ describePg('the RTP fund and house bets', () => {
 
     const [entry] = await rtp.listEntries('30_MIN', 'VIP');
     // The pool is the players' 2,200 only; the house bet is never in it.
-    expect(entry).toMatchObject({ poolPaise: 2_200_00, paidBackPaise: pays(2_000), houseBetPaise: 1_801_00 });
-    expect(entry.deltaPaise).toBe(1_760_00 - pays(2_000));
-    expect(entry.balanceAfterPaise).toBe(5_000_00 + 1_760_00 - pays(2_000));
+    expect(entry).toMatchObject({ poolPaise: 2_200_00, paidBackPaise: gross(2_000), houseBetPaise: 1_801_00 });
+    expect(entry.deltaPaise).toBe(1_760_00 - gross(2_000));
+    expect(entry.balanceAfterPaise).toBe(5_000_00 + 1_760_00 - gross(2_000));
     expect(entry.balanceAfterPaise).toBeGreaterThanOrEqual(0);
     const [vip] = (await rtp.listFunds()).filter((f) => f.audience === 'VIP');
-    expect(vip).toMatchObject({ roundsHelped: 1, returnedPaise: pays(2_000) - 1_760_00 });
+    expect(vip).toMatchObject({ roundsHelped: 1, returnedPaise: gross(2_000) - 1_760_00 });
   });
 
   it('places no house bet when the fund cannot cover the whole round', async () => {
@@ -126,7 +130,7 @@ describePg('the RTP fund and house bets', () => {
     const c = await playRound('c-refill', 2_000, 200);
     expect(c.houseBetSide).toBeNull();
     expect(c.winner).toBe('BOMBAY');
-    expect((await rtp.getFund('30_MIN', 'VIP')).balancePaise).toBe(-3_000_00 + 1_760_00 - pays(200));
+    expect((await rtp.getFund('30_MIN', 'VIP')).balancePaise).toBe(-3_000_00 + 1_760_00 - gross(200));
   });
 
   it('VIP and General never share a fund', async () => {

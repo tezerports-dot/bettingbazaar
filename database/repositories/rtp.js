@@ -9,7 +9,7 @@
  * on. Every round settled while it is on (or that carries a house bet) adds one
  * entry, in the transaction that marks the round settled:
  *
- *   delta = rate × real player pool − paid back to players (net of the fee)
+ *   delta = rate × real player pool − paid back to players (before the fee)
  *
  * A lopsided round adds to the fund; a close round, where players got back
  * more than the rate, takes from it and may leave it negative. A house bet is
@@ -209,7 +209,7 @@ export async function placeHouseBet({ cycleId, side, stakePaise, reservedPaise }
  */
 export async function recordRoundWithin(client, cycleId) {
   const { rows: cyc } = await client.query(
-    `SELECT cycle_type, audience, total_paid_out_paise, house_bet_side, house_bet_paise
+    `SELECT cycle_type, audience, total_paid_out_paise, total_platform_fees_paise, house_bet_side, house_bet_paise
        FROM cycles WHERE cycle_id = $1`,
     [String(cycleId)],
   );
@@ -230,7 +230,8 @@ export async function recordRoundWithin(client, cycleId) {
   );
   return appendEntryWithin(client, {
     gameKey: c.cycle_type, audience: c.audience, refId: String(cycleId), fund,
-    poolPaise: num(p[0].pool), paidBackPaise: num(c.total_paid_out_paise), houseBetPaise: num(c.house_bet_paise),
+    poolPaise: num(p[0].pool), // Before the fee (owner, 2026-10-19): the 1% fee is the house's, never returned through the fund.
+    paidBackPaise: num(c.total_paid_out_paise) + num(c.total_platform_fees_paise), houseBetPaise: num(c.house_bet_paise),
   });
 }
 

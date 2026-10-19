@@ -18,8 +18,8 @@ describe('planHouseBet', () => {
     expect(planHouseBet({ ...base, stakes: stakes(500, 500), availablePaise: 1e9 })).toBeNull();
     expect(planHouseBet({ ...base, stakes: [], availablePaise: 1e9 })).toBeNull();
   });
-  it('counts the winnings fee in what players get back', () => {
+  it('counts what players get back BEFORE the winnings fee, so the fee stays the house\'s', () => {
     const p = planHouseBet({ ...base, feePercent: 1, stakes: stakes(2_000, 200), availablePaise: 1e9 });
-    expect(p.entryPaise).toBe(1_760_00 - 3_960_00);
+    expect(p.entryPaise).toBe(1_760_00 - 4_000_00);
   });
 });

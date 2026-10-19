@@ -912,7 +912,7 @@ export async function endPoll({ pollId, winningOption = null, winningOptions = n
     if (num(ended.stakes_paise) > 0) {
       await recordGameEventWithin(client, {
         gameKey: CRICKET_GAME_KEY, audience: AUDIENCE, refId: `CRK:${pollId}`,
-        poolPaise: num(ended.stakes_paise), paidBackPaise: num(ended.won_paid_paise) + num(ended.claims_paid_paise),
+        poolPaise: num(ended.stakes_paise), paidBackPaise: num(ended.won_paid_paise) + num(ended.claims_paid_paise) + num(ended.fees_paise), // before the fee
       });
     }
     return { commit: true, value: { ok: true, status: ended.status, winningOptions: winners, payouts, matchId: ended.match_id } };
