@@ -50,6 +50,27 @@ describePg('cricket routes', () => {
     expect(ok.status).toBe(200);
     expect(ok.body.feed.tokenSet === true || ok.body.feed.tokenSet === false).toBe(true);
     expect(JSON.stringify(ok.body.feed)).not.toMatch(/token_enc|tokenEnc/);
+    expect(ok.body.feedProviders.map((p) => p.key)).toEqual(['SPORTMONKS', 'ENTITYSPORT']);
+  });
+
+  it('saves each provider\'s token apart and switches which one lists the fixtures', async () => {
+    const before = (await as(admin, games).get('/cricket')).body.feed;
+    try {
+      expect((await as(admin, games).put('/cricket/feed-token').send({ provider: 'NOPE', token: 'a'.repeat(32) })).body.code).toBe('UNKNOWN_PROVIDER');
+      const saved = await as(admin, games).put('/cricket/feed-token').send({ provider: 'ENTITYSPORT', token: 'e'.repeat(32) });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+      const es = saved.body.feed.providers.find((p) => p.provider === 'ENTITYSPORT');
+      expect(es).toMatchObject({ tokenSet: true });
+      expect(JSON.stringify(saved.body)).not.toContain('e'.repeat(32));
+      const used = await as(admin, games).put('/cricket/feed-provider').send({ provider: 'ENTITYSPORT' });
+      expect(used.status).toBe(200);
+      expect(used.body.feed).toMatchObject({ provider: 'ENTITYSPORT', active: true, tokenSet: true });
+      expect(used.body.feed.providers.filter((p) => p.active)).toHaveLength(1);
+      expect((await as(admin, games).put('/cricket/feed-provider').send({ provider: 'x' })).body.code).toBe('UNKNOWN_PROVIDER');
+    } finally {
+      await as(admin, games).put('/cricket/feed-provider').send({ provider: before.provider });
+      await as(admin, games).put('/cricket/feed-token').send({ provider: 'ENTITYSPORT', token: '' });
+    }
   });
 
   it('publishes a match: players see it with its toss and result polls', async () => {
@@ -104,10 +125,10 @@ describePg('cricket routes', () => {
     const polls = await as(admin, games).get(`/cricket/matches/${matchId}/polls`);
     expect(polls.status).toBe(200);
     const result = polls.body.polls.find((p) => p.kind === 'MATCH_RESULT');
-    expect(result.book.map((b) => b.key)).toEqual(['A', 'TIE', 'B']);
-    expect((await as(admin, games).post(`/cricket/polls/${encodeURIComponent(result.pollId)}/settle`).send({ winningOption: 'Z' })).status).toBe(400);
+    expect(result.book.map((b) => b.key)).toEqual(['A', 'DRAW', 'B']);
+    expect((await as(admin, games).post(`/cricket/polls/${encodeURIComponent(result.pollId)}/settle`).send({ winningOptions: ['Z'] })).status).toBe(400);
     expect((await as(admin, games).post(`/cricket/polls/${encodeURIComponent(result.pollId)}/void`).send({})).status).toBe(400);
-    const settled = await as(admin, games).post(`/cricket/polls/${encodeURIComponent(result.pollId)}/settle`).send({ winningOption: 'B' });
+    const settled = await as(admin, games).post(`/cricket/polls/${encodeURIComponent(result.pollId)}/settle`).send({ winningOptions: ['B'] });
     expect(settled.status, JSON.stringify(settled.body)).toBe(200);
     expect((await as(admin, games).post(`/cricket/polls/${encodeURIComponent(result.pollId)}/void`).send({ reason: 'x' })).body.code).toBe('ENDED');
     const toss = polls.body.polls.find((p) => p.kind === 'TOSS');

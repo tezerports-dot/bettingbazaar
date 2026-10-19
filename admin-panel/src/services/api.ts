@@ -487,7 +487,8 @@ export const boards = {
 // settings are `SystemConfig.cricket`, saved through `system.updateConfig`.
 export const cricket = {
   overview: async () => (await api.get<any>('/api/admin/cricket')).data,
-  saveToken: async (token: string) => (await api.put<any>('/api/admin/cricket/feed-token', { token })).data,
+  saveToken: async (provider: string, token: string) => (await api.put<any>('/api/admin/cricket/feed-token', { provider, token })).data,
+  setProvider: async (provider: string) => (await api.put<any>('/api/admin/cricket/feed-provider', { provider })).data,
   sync: async () => (await api.post<any>('/api/admin/cricket/sync')).data,
   publish: async (matchId: string) =>
     (await api.post<any>(`/api/admin/cricket/matches/${encodeURIComponent(matchId)}/publish`)).data,
@@ -500,8 +501,8 @@ export const cricket = {
     (await api.delete<any>(`/api/admin/cricket/series/${encodeURIComponent(seriesId)}/follow`)).data,
   polls: async (matchId: string) =>
     (await api.get<any>(`/api/admin/cricket/matches/${encodeURIComponent(matchId)}/polls`)).data,
-  settle: async (pollId: string, winningOption: string) =>
-    (await api.post<any>(`/api/admin/cricket/polls/${encodeURIComponent(pollId)}/settle`, { winningOption })).data,
+  settle: async (pollId: string, winningOptions: string[]) =>
+    (await api.post<any>(`/api/admin/cricket/polls/${encodeURIComponent(pollId)}/settle`, { winningOptions })).data,
   voidPoll: async (pollId: string, reason: string) =>
     (await api.post<any>(`/api/admin/cricket/polls/${encodeURIComponent(pollId)}/void`, { reason })).data,
   report: async (from: string, to: string) =>

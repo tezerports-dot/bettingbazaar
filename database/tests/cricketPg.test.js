@@ -104,9 +104,9 @@ describePg('cricket opinion polls', () => {
     expect((await bet(await player(), pollId, 'B', 150_000)).ok).toBe(true);
     expect((await bet(await player(), pollId, 'A', 50_000)).ok).toBe(true);
     const [p] = (await cricket.playerPolls(m.matchId)).filter((x) => x.pollId === pollId);
-    // Pools with seeds: A 1,000, TIE 500, B 2,000; T 3,500 → 0.9 × 3,500 / P.
+    // Pools with seeds: A 1,000, DRAW 500, B 2,000; T 3,500 → 0.9 × 3,500 / P.
     const odds = Object.fromEntries(p.options.map((o) => [o.key, o.oddsX100]));
-    expect(odds).toEqual({ A: 315, TIE: 630, B: 157 });
+    expect(odds).toEqual({ A: 315, DRAW: 630, B: 157 });
   });
 
   it('suspends an option rather than offer odds below 1.01 (a stake that would swamp the pool)', async () => {
@@ -279,7 +279,7 @@ describePg('cricket opinion polls', () => {
     const m = await match();
     const pollId = await resultPoll(m, { seedPaise: 20_000 });
     const users = await Promise.all(Array.from({ length: 24 }, () => player()));
-    const keys = ['A', 'B', 'TIE'];
+    const keys = ['A', 'B', 'DRAW'];
     const results = await Promise.all(users.map((u, i) => bet(u, pollId, keys[i % 3], 5_000 + i * 1_000)));
     const ok = results.filter((r) => r.ok);
     const { rows: [p] } = await pgQuery('SELECT stakes_paise FROM cricket_polls WHERE poll_id = $1', [pollId]);
