@@ -5,6 +5,7 @@
 // one line per order, with the detail drawer/sheet over them.
 import React, { useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Search } from 'lucide-react';
+import { useLocation } from 'react-router';
 import { useAuth } from '../services/AuthContext';
 import { needsAction, useOrders } from '../hooks/useOrders';
 import { useOrderActions } from '../hooks/useOrderActions';
@@ -22,8 +23,15 @@ import {
   Button, ConfirmDialog, EmptyState, ErrorState, SegmentedControl, Skeleton, inputStyle,
 } from '../components/ui';
 
-type StatusFilter = 'ALL' | 'ACTION' | 'PROCESSING' | 'PAID' | 'DISPUTED';
+export type StatusFilter = 'ALL' | 'ACTION' | 'PROCESSING' | 'PAID' | 'DISPUTED';
 type TypeFilter = 'ALL' | 'DEPOSIT' | 'WITHDRAWAL';
+
+/**
+ * What another screen asks Orders to open with, as router state: a tile's
+ * filter, or one order. The Dashboard's tiles and rows sent the merchant here
+ * with nothing, so a tap on an order landed on the whole queue.
+ */
+export interface OrdersLinkState { statusFilter?: StatusFilter; orderId?: string }
 
 const orderKey = (order: PaymentOrder): string => String(order._id || order.id || order.orderId);
 
@@ -33,10 +41,11 @@ const OrderManagement: React.FC = () => {
   const now = useNow();
   const { isMobile } = useViewport();
 
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
+  const link = (useLocation().state ?? null) as OrdersLinkState | null;
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(link?.statusFilter ?? 'ALL');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('ALL');
   const [search, setSearch] = useState('');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(link?.orderId ?? null);
 
   const { actions, confirmRequest, dismissConfirm, shouldCloseDetail, acknowledgeCloseDetail,
           rejectTarget, rejectBusy, dismissReject, submitPaymentNotReceived,

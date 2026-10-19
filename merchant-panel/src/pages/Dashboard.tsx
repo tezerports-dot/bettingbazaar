@@ -28,12 +28,16 @@ import { Card, CardTitle, Skeleton, StatusPill, cardStyle } from '../components/
 import { CashReadyCard } from '../components/CashReadyCard';
 import { PoolBreakdown } from '../components/PoolBreakdown';
 import { availabilityOf } from '../utils/availability';
+import type { OrdersLinkState } from './OrderManagement';
 
 interface WeeklyPoint { date: string; earnings: number; orders: number; }
 
 const UPCOMING_WINDOW_SECONDS = 480; // "expiring soon" cut-off from the design
 
 const orderKey = (order: PaymentOrder): string => String(order._id || order.id || order.orderId);
+
+/** Tokens from paise, for the commission figures (`toSummary` sends paise). */
+const tokensOfPaise = (paise: number): string => formatTokens(paise / 100);
 
 const Dashboard: React.FC = () => {
   const { merchant, refreshProfile } = useAuth();
@@ -79,6 +83,23 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  // A tile or a row opens Orders on what it showed: the filter, or the order.
+  const openOrders = (state: OrdersLinkState) => navigate(ROUTES.ORDERS, { state });
+  const openOrder = (order: PaymentOrder) => openOrders({ orderId: orderKey(order) });
+
+  // Why today's earnings may read 0 (team commission, §26): earned and waiting
+  // for the platform's commission pool, or no matched volume yet, because
+  // commission is paid on min(completed buys, completed sells).
+  const commission = stats?.commission ?? null;
+  const commissionNote = !commission ? null
+    : commission.owedPaise > 0
+      ? `${tokensOfPaise(commission.owedPaise)} earned, waiting for the platform's commission pool`
+      : commission.matchedPaise === 0
+        ? (commission.buysPaise === 0 && commission.sellsPaise === 0
+          ? `Commission is ${commission.commissionPercent}% of matched buys and sells`
+          : `Commission starts once a ${commission.buysPaise === 0 ? 'buy' : 'sell'} completes too`)
+        : `${tokensOfPaise(commission.paidPaise)} commission paid to your ${commission.supervisorSharePercent ? 'team' : 'account'} so far`;
+
   const expiring = useMemo(
     () => orders
       .map((order) => ({ order, left: secondsLeft(order.expiresAt, now) }))
@@ -107,8 +128,10 @@ const Dashboard: React.FC = () => {
       // Counted in platform TOKENS — never in the currency the player
       // happened to pay with (trap 15).
       value: earnings ? formatTokens(earnings.today) : '—',
-      sub: stats ? `${stats.completedToday ?? 0} orders completed` : 'Awaiting data',
+      sub: stats ? `${stats.completedToday ?? 0} orders completed today` : 'Awaiting data',
       subTone: 'var(--dep)',
+      note: commissionNote,
+      open: undefined as OrdersLinkState | undefined,
     },
     {
       label: 'Needs action',
@@ -117,6 +140,8 @@ const Dashboard: React.FC = () => {
       value: String(counts.actionable),
       sub: `${counts.processing} in progress`,
       subTone: 'var(--muted)',
+      note: null as string | null,
+      open: { statusFilter: 'ACTION' } as OrdersLinkState | undefined,
     },
     {
       label: 'Success rate',
@@ -127,6 +152,8 @@ const Dashboard: React.FC = () => {
         ? `Avg response ${merchant.avgResponseMinutes.toFixed(1)}m`
         : 'Awaiting data',
       subTone: 'var(--muted)',
+      note: null as string | null,
+      open: undefined as OrdersLinkState | undefined,
     },
   ];
   // Derived from the tiles, so removing or adding one cannot leave a gap.
@@ -220,8 +247,14 @@ const Dashboard: React.FC = () => {
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: kpiColumns, gap: 14 }}>
-          {kpis.map((kpi) => (
-            <div key={kpi.label} style={{ ...cardStyle, padding: 17 }}>
+          {kpis.map((kpi) => {
+            const Tile = kpi.open ? 'button' : 'div';
+            return (
+            <Tile
+              key={kpi.label}
+              {...(kpi.open ? { type: 'button' as const, onClick: () => openOrders(kpi.open!), className: 'bb-lift' } : {})}
+              style={{ ...cardStyle, padding: 17, textAlign: 'left', ...(kpi.open ? { cursor: 'pointer', width: '100%' } : {}) }}
+            >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 11 }}>
                 <span style={{
                   width: 30, height: 30, borderRadius: 9, background: kpi.iconBg, flexShrink: 0,
@@ -235,8 +268,10 @@ const Dashboard: React.FC = () => {
                 {kpi.value}
               </div>
               <div style={{ fontSize: 11.5, fontWeight: 600, color: kpi.subTone, marginTop: 3 }}>{kpi.sub}</div>
-            </div>
-          ))}
+              {kpi.note && <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', marginTop: 4 }}>{kpi.note}</div>}
+            </Tile>
+            );
+          })}
         </div>
       )}
 
@@ -288,7 +323,7 @@ const Dashboard: React.FC = () => {
             ) : expiring.map(({ order, left }) => (
               <button
                 key={orderKey(order)}
-                onClick={() => navigate(ROUTES.ORDERS)}
+                onClick={() => openOrder(order)}
                 className="bb-lift"
                 style={{
                   display: 'flex', alignItems: 'center', gap: 11, padding: '11px 12px', width: '100%',
@@ -346,7 +381,7 @@ const Dashboard: React.FC = () => {
               {recent.map((order) => (
                 <button
                   key={orderKey(order)}
-                  onClick={() => navigate(ROUTES.ORDERS)}
+                  onClick={() => openOrder(order)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 12, padding: '11px 4px', width: '100%',
                     border: 0, borderBottom: '1px solid var(--border-2)', background: 'none',
