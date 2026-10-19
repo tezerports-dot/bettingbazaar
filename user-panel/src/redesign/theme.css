@@ -248,6 +248,8 @@
 @keyframes bb-dot { 0%, 80%, 100% { transform: scale(.6); opacity: .4; } 40% { transform: scale(1); opacity: 1; } }
 @keyframes bb-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes bb-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes bb-slide-from-right { from { opacity: .35; transform: translateX(32%); } to { opacity: 1; transform: none; } }
+@keyframes bb-slide-from-left { from { opacity: .35; transform: translateX(-32%); } to { opacity: 1; transform: none; } }
 @keyframes bb-chipfloat { 0%, 100% { transform: translateY(0) rotate(-8deg); } 50% { transform: translateY(-10px) rotate(8deg); } }
 @keyframes bb-chipshine { 0% { transform: translateX(-165%) rotate(45deg); } 55%, 100% { transform: translateX(175%) rotate(45deg); } }
 
@@ -261,6 +263,9 @@
 .bb-spin { animation: bb-spin 1s linear infinite; }
 .bb-pulse { animation: bb-pulse 1.5s ease-in-out infinite; }
 .bb-rise { animation: bb-rise .26s cubic-bezier(.2, .8, .2, 1) backwards; }
+/* Moving between games (the game tabs): the new one slides in from the side of its tab. */
+.bb-slide-from-right { animation: bb-slide-from-right .3s cubic-bezier(.2, .8, .2, 1) backwards; }
+.bb-slide-from-left { animation: bb-slide-from-left .3s cubic-bezier(.2, .8, .2, 1) backwards; }
 /* `backwards`, not `both`: a transform left on the element after the rise
    would make it the containing block of every position:fixed child (modals,
    the bet bar), so they would scroll with the page. */
@@ -353,6 +358,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .bb-shimmer::after, .bb-skel, .bb-spin, .bb-gametab__spark, .bb-pulse, .bb-rise, .bb-chipfloat, .bb-chipshine,
+  .bb-slide-from-right, .bb-slide-from-left,
   .bb-share-blind, .bb-share-blind__text, .bb-app [style*='var(--gold-metal)']::after {
     animation: none !important;
   }

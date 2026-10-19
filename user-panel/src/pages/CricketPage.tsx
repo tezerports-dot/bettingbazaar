@@ -16,8 +16,14 @@
  * Each position's live value is worked out here from the broadcast pools
  * (`cricketValue.ts`, a §11 display mirror); the server's quote is the figure.
  * Cricket plays the VIP wallet only.
+ *
+ * Every odds button says what it is for (owner, 2026-10-19): the option's name
+ * with its price, sportsbook style; a player poll is a list per team, the
+ * favourites first, with "Any other player" last. A poll's title row says
+ * whether it is open, closing, awaiting its result, settled (with its winner,
+ * or the players sharing a dead heat) or void.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import ScreenShell, { card, capLabel, goldButton, inputStyle } from '../redesign/Screen';
 import { cricket as api } from '../services/api';
@@ -49,57 +55,181 @@ const scoreLine = (m: CricketMatch) => (m.score?.innings ?? [])
   .map((i) => `${i.team === 'A' ? (m.teamA.code ?? m.teamA.name) : (m.teamB.code ?? m.teamB.name)} ${i.runs}/${i.wickets} (${i.overs})`).join(' · ');
 const isLive = (m: CricketMatch) => m.status === 'LIVE' || m.status === 'INNINGS_BREAK';
 
-// ── Odds button ──────────────────────────────────────────────────────────────
-const OddsButton: React.FC<{ option: CricketOption; poll: CricketPoll; picked: boolean; onPick: (o: CricketOption) => void }> = ({ option, poll, picked, onPick }) => {
-  const won = poll.status === 'SETTLED' && poll.winningOption === option.key;
+// ── Odds buttons ─────────────────────────────────────────────────────────────
+/**
+ * Which way an option's odds just moved, for a moment after a broadcast
+ * changes them (UI-only, §11): green ▲ longer, red ▼ shorter.
+ */
+function useOddsFlash(x100: number): 'up' | 'down' | null {
+  const prev = useRef(x100);
+  const [dir, setDir] = useState<'up' | 'down' | null>(null);
+  useEffect(() => {
+    if (x100 === prev.current) return undefined;
+    setDir(x100 > prev.current ? 'up' : 'down');
+    prev.current = x100;
+    const t = setTimeout(() => setDir(null), 1200);
+    return () => clearTimeout(t);
+  }, [x100]);
+  return dir;
+}
+
+const winnersOf = (poll: CricketPoll) => (poll.status === 'SETTLED' ? poll.winningOptions ?? [] : []);
+const Lock: React.FC = () => <span aria-hidden style={{ fontSize: 11, opacity: 0.8 }}>🔒</span>;
+
+/**
+ * One option: its name and its price in one button. `tile` (a few options):
+ * the name above the price; `row` (a list of players): the name on the left,
+ * the price on the right. Tapped, it stays lit while the bet box is open.
+ */
+const OddsButton: React.FC<{ option: CricketOption; poll: CricketPoll; picked: boolean; onPick: (o: CricketOption) => void; variant?: 'tile' | 'row'; name?: string; note?: string }> = ({
+  option, poll, picked, onPick, variant = 'tile', name = option.label, note,
+}) => {
+  const won = winnersOf(poll).includes(option.key);
   const open = poll.status === 'OPEN';
+  const flash = useOddsFlash(option.oddsX100);
+  // Closed and waiting: a lock. Decided: the winner says Won, the rest keep their last price, faded.
+  const price = open ? odds(option.oddsX100) : won ? 'Won' : poll.status === 'CLOSED' ? null : odds(option.oddsX100);
+  const priceColor = won ? 'var(--green)' : picked ? 'var(--on-gold)' : open ? 'var(--gold-ink)' : 'var(--text3)';
+  const priceBox = (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 15, fontWeight: 800, color: priceColor, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+      {flash && open && <span aria-hidden style={{ fontSize: 9, color: picked ? 'var(--on-gold)' : flash === 'up' ? 'var(--green)' : 'var(--red)' }}>{flash === 'up' ? '▲' : '▼'}</span>}
+      {price ?? <Lock />}
+    </span>
+  );
+  const nameEl = (
+    <span style={{ minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: variant === 'row' ? 'flex-start' : 'center', gap: 1 }}>
+      <span style={{ fontSize: variant === 'row' ? 13 : 12, fontWeight: 600, lineHeight: 1.25, color: picked ? 'var(--on-gold)' : 'var(--text)', textAlign: variant === 'row' ? 'left' : 'center', overflowWrap: 'anywhere' }}>{name}</span>
+      {note && <span style={{ fontSize: 10, color: picked ? 'var(--on-gold)' : 'var(--text3)', letterSpacing: '.04em' }}>{note}</span>}
+    </span>
+  );
   return (
-    <button type="button" disabled={!open} onClick={() => onPick(option)} aria-pressed={picked} aria-label={`${option.label} at ${odds(option.oddsX100)}`}
+    <button type="button" disabled={!open} onClick={() => onPick(option)} aria-pressed={picked}
+      aria-label={`${option.label} at ${open ? odds(option.oddsX100) : won ? 'won' : poll.status === 'CLOSED' ? 'closed' : `${odds(option.oddsX100)}, ${poll.status === 'VOID' ? 'void' : 'lost'}`}`}
       style={{
-        flex: '1 1 92px', minWidth: 0, padding: '8px 6px', borderRadius: 10, cursor: open ? 'pointer' : 'default',
-        border: `1px solid ${won ? 'var(--green)' : picked ? 'var(--gold)' : 'var(--line2)'}`,
-        background: won ? 'color-mix(in srgb,var(--green) 18%,var(--surface2))' : picked ? 'rgba(var(--brand-primary-rgb), .16)' : 'var(--surface2)',
-        boxShadow: picked ? '0 0 0 1px var(--gold) inset' : 'none',
-        opacity: open || won ? 1 : 0.55, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'space-between', gap: 2,
+        minWidth: 0, minHeight: 48, padding: variant === 'row' ? '8px 12px' : '8px 6px', borderRadius: 10, cursor: open ? 'pointer' : 'default',
+        border: `1px solid ${won ? 'var(--green)' : picked ? 'var(--gold)' : flash === 'up' ? 'var(--green)' : flash === 'down' ? 'var(--red)' : 'var(--line2)'}`,
+        background: won ? 'color-mix(in srgb,var(--green) 18%,var(--surface2))' : picked ? 'var(--gold-metal)' : 'var(--surface2)',
+        opacity: open || won ? 1 : 0.6, transition: 'border-color .3s',
+        display: 'flex', flexDirection: variant === 'row' ? 'row' : 'column',
+        alignItems: 'center', justifyContent: variant === 'row' ? 'space-between' : 'center', gap: variant === 'row' ? 10 : 4,
       }}>
-      <span style={{ fontSize: 11, lineHeight: 1.25, color: picked ? 'var(--text)' : 'var(--text2)', textAlign: 'center', overflowWrap: 'anywhere', maxWidth: '100%' }}>{option.label}</span>
-      <span style={{ fontSize: 15, fontWeight: 800, color: won ? 'var(--green)' : 'var(--gold-ink)' }}>{open ? odds(option.oddsX100) : won ? 'Won' : '—'}</span>
+      {nameEl}
+      {priceBox}
     </button>
   );
 };
 
-/** The polls with one option per player, labelled "Name (Team)" by the server: drawn by team, name only. */
-const PLAYER_KINDS = new Set(['MOM', 'TOP_BATSMAN', 'TOP_BOWLER']);
-function byTeam(options: CricketOption[]): [string, CricketOption[]][] {
-  const groups = new Map<string, CricketOption[]>();
+/** The polls with one option per player: drawn as a list per team. */
+const PLAYER_KINDS = new Set(['TOP_BATSMAN', 'TOP_BOWLER']);
+/** The option a player poll keeps for a winner on neither squad (cricketPolls.js OTHER_PLAYER). */
+const OTHER_KEY = 'OTHER';
+/** How many players of a team are shown before "Show all" (UI-only, §11). */
+const PLAYERS_SHOWN = 6;
+
+interface PlayerOption { option: CricketOption; name: string; squad: boolean }
+/**
+ * A player poll's options by team, from the server's "Name (Team)" or
+ * "Name (Team, squad)" labels: each team's favourites first, and "Any other
+ * player" kept apart to go last.
+ */
+export function playerGroups(options: CricketOption[]): { teams: [string, PlayerOption[]][]; other: CricketOption | null } {
+  const groups = new Map<string, PlayerOption[]>();
+  let other: CricketOption | null = null;
   for (const o of options) {
+    if (o.key === OTHER_KEY) { other = o; continue; }
     const m = /^(.*) \(([^()]*)\)$/.exec(o.label);
-    const team = m ? m[2] : '';
-    groups.set(team, [...(groups.get(team) ?? []), m ? { ...o, label: m[1] } : o]);
+    const [team, mark] = m ? m[2].split(', ') : [''];
+    groups.set(team, [...(groups.get(team) ?? []), { option: o, name: m ? m[1] : o.label, squad: mark === 'squad' }]);
   }
-  return [...groups.entries()];
+  for (const list of groups.values()) list.sort((x, y) => x.option.oddsX100 - y.option.oddsX100 || x.name.localeCompare(y.name));
+  return { teams: [...groups.entries()], other };
 }
 
-const OptionGrid: React.FC<{ poll: CricketPoll; picked: string | null; onPick: (o: CricketOption) => void; betBox?: React.ReactNode }> = ({ poll, picked, onPick, betBox }) => (PLAYER_KINDS.has(poll.kind)
-  ? (
-    <div>
-      {byTeam(poll.options).map(([team, options]) => (
-        <div key={team} style={{ marginBottom: 8 }}>
-          <div style={{ ...capLabel, fontSize: 10, margin: '2px 0 6px' }}>{team}</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(96px,1fr))', gap: 6 }}>
-            {options.map((o) => <OddsButton key={o.key} option={o} poll={poll} picked={picked === o.key} onPick={onPick} />)}
-          </div>
-          {/* The bet box opens under the team of the player picked, so it is in view on a phone. */}
-          {betBox && options.some((o) => o.key === picked) && <div style={{ marginTop: 8, maxWidth: 420 }}>{betBox}</div>}
-        </div>
-      ))}
+const TeamList: React.FC<{ team: string; players: PlayerOption[]; poll: CricketPoll; picked: string | null; onPick: (o: CricketOption) => void; betBox?: React.ReactNode }> = ({
+  team, players, poll, picked, onPick, betBox,
+}) => {
+  const [all, setAll] = useState(false);
+  const pickedAt = players.findIndex((p) => p.option.key === picked);
+  const shown = all || pickedAt >= PLAYERS_SHOWN ? players : players.slice(0, PLAYERS_SHOWN);
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ ...capLabel, fontSize: 10, margin: '2px 0 6px' }}>{team}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(min(100%,200px),1fr))', gap: 6 }}>
+        {shown.map((p) => (
+          <OddsButton key={p.option.key} option={p.option} poll={poll} picked={picked === p.option.key} onPick={onPick}
+            variant="row" name={p.name} note={p.squad ? 'Squad' : undefined} />
+        ))}
+      </div>
+      {players.length > PLAYERS_SHOWN && pickedAt < PLAYERS_SHOWN && (
+        <button type="button" onClick={() => setAll((v) => !v)} aria-expanded={all}
+          style={{ marginTop: 6, minHeight: 36, background: 'none', border: 'none', color: 'var(--gold-ink)', fontSize: 12, fontWeight: 700, cursor: 'pointer', padding: '4px 0' }}>
+          {all ? `Show fewer ${team} players` : `Show all ${players.length} ${team} players`}
+        </button>
+      )}
+      {/* The bet box opens under the team of the player picked, so it is in view on a phone. */}
+      {betBox && pickedAt >= 0 && <div style={{ marginTop: 8, maxWidth: 420 }}>{betBox}</div>}
     </div>
-  )
-  : (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignContent: 'flex-start' }}>
+  );
+};
+
+const OptionGrid: React.FC<{ poll: CricketPoll; picked: string | null; onPick: (o: CricketOption) => void; betBox?: React.ReactNode }> = ({ poll, picked, onPick, betBox }) => {
+  if (PLAYER_KINDS.has(poll.kind)) {
+    const { teams, other } = playerGroups(poll.options);
+    return (
+      <div>
+        {teams.map(([team, players]) => <TeamList key={team} team={team} players={players} poll={poll} picked={picked} onPick={onPick} betBox={betBox} />)}
+        {other && (
+          <div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(min(100%,200px),1fr))', gap: 6 }}>
+              <OddsButton option={other} poll={poll} picked={picked === other.key} onPick={onPick} variant="row" note="Not on either squad" />
+            </div>
+            {betBox && picked === other.key && <div style={{ marginTop: 8, maxWidth: 420 }}>{betBox}</div>}
+          </div>
+        )}
+      </div>
+    );
+  }
+  const cols = poll.options.length <= 3 ? poll.options.length : poll.options.length === 4 ? 2 : 3;
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))`, gap: 6, alignContent: 'start' }}>
       {poll.options.map((o) => <OddsButton key={o.key} option={o} poll={poll} picked={picked === o.key} onPick={onPick} />)}
     </div>
-  ));
+  );
+};
+
+/** A settled poll's winner, or the options sharing a dead heat, by name. */
+export function winnerLine(poll: CricketPoll): string | null {
+  const keys = winnersOf(poll);
+  if (!keys.length) return null;
+  const names = keys.map((k) => poll.options.find((o) => o.key === k)?.label ?? k);
+  return keys.length > 1 ? `Dead heat: ${names.join(' / ')}` : `Winner: ${names[0]}`;
+}
+
+/** Seconds ticking, while something on screen counts down. */
+function useNow(active: boolean) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return undefined;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [active]);
+  return now;
+}
+
+/** What a poll's title row says of it, and in which colour. */
+function pollStatus(poll: CricketPoll, now: number): { text: string; color: string } {
+  if (poll.status === 'OPEN') {
+    const left = poll.closesAt ? Date.parse(poll.closesAt) - now : NaN;
+    if (Number.isFinite(left) && left > 0 && left < 60 * 60 * 1000) {
+      const s = Math.ceil(left / 1000);
+      return { text: `Closes in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`, color: 'var(--gold-ink)' };
+    }
+    return { text: 'Open', color: 'var(--green)' };
+  }
+  if (poll.status === 'CLOSED') return { text: 'Awaiting result', color: 'var(--text2)' };
+  if (poll.status === 'VOID') return { text: 'Void', color: 'var(--text3)' };
+  return { text: 'Settled', color: 'var(--text3)' };
+}
 
 const row = (label: React.ReactNode, value: React.ReactNode, color = 'var(--text)') => (
   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, marginTop: 4 }}>
@@ -250,6 +380,9 @@ const ClaimConfirm: React.FC<{ c: ReturnType<typeof useClaim> }> = ({ c }) => {
   );
 };
 
+/** A win shared in a dead heat is paid the odds on the stake ÷ the winners: said beside the amount. */
+export const deadHeatNote = (b: Pick<CricketBet, 'status' | 'deadHeat'>) => (b.status === 'WON' && (b.deadHeat ?? 1) > 1 ? ` (dead heat, 1/${b.deadHeat} stake)` : '');
+
 /** A poll's own bets, what they are worth now, and its Claim button. */
 const PollPositions: React.FC<{ poll: CricketPoll; bets: CricketBet[]; onClaimed: () => void }> = ({ poll, bets, onClaimed }) => {
   const settings = useCricketSettings();
@@ -298,7 +431,7 @@ const PollPositions: React.FC<{ poll: CricketPoll; bets: CricketBet[]; onClaimed
               <span style={{ color: 'var(--text2)', minWidth: 0 }}><b style={{ color: 'var(--text)' }}>{b.optionLabel.replace(/ \([^()]*\)$/, '')}</b> · {tokens(b.stakePaise)} @ {odds(b.oddsX100)} · pays {tokens(b.potentialPaise)}</span>
               <span style={{ whiteSpace: 'nowrap', fontWeight: 700, color: b.status === 'OPEN' ? (pl === null ? 'var(--text3)' : pl >= 0 ? 'var(--green)' : 'var(--red)') : b.status === 'LOST' ? 'var(--red)' : 'var(--green)' }}>
                 {b.status === 'OPEN' ? (pl === null ? 'Awaiting result' : `${pl >= 0 ? '+' : ''}${tokens(pl)}`)
-                  : b.status === 'LOST' ? 'Lost' : b.status === 'VOID' ? 'Returned' : `${b.status === 'CLAIMED' ? 'Claimed' : 'Won'} ${tokens(b.paidPaise)}`}
+                  : b.status === 'LOST' ? 'Lost' : b.status === 'VOID' ? 'Returned' : `${b.status === 'CLAIMED' ? 'Claimed' : 'Won'} ${tokens(b.paidPaise)}${deadHeatNote(b)}`}
               </span>
             </div>
           );
@@ -311,36 +444,50 @@ const PollPositions: React.FC<{ poll: CricketPoll; bets: CricketBet[]; onClaimed
   );
 };
 
-// ── A poll: opinions on the left, the bet box on the right, your bets below ──
-const PollCard: React.FC<{ poll: CricketPoll | null; tag: string; placeholder?: string; bets?: CricketBet[]; onChanged?: () => void }> = ({ poll, tag, placeholder, bets = [], onChanged = () => {} }) => {
+// ── A poll: its title and state, its opinions, the bet box, your bets ──────
+const PollCard: React.FC<{ poll: CricketPoll | null; tag?: string; placeholder?: string; bets?: CricketBet[]; onChanged?: () => void }> = ({ poll, tag, placeholder, bets = [], onChanged = () => {} }) => {
   const [picked, setPicked] = useState<string | null>(null);
   const option = poll?.options.find((o) => o.key === picked) ?? null;
   const open = poll?.status === 'OPEN';
+  const now = useNow(Boolean(open && poll?.closesAt));
   useEffect(() => { if (!open) setPicked(null); }, [open]);
   const togglePick = (o: CricketOption) => setPicked(o.key === picked ? null : o.key);
+  const status = poll ? pollStatus(poll, now) : null;
+  const winner = poll ? winnerLine(poll) : null;
+  const player = poll ? PLAYER_KINDS.has(poll.kind) : false;
   return (
     <div style={{ ...card, padding: 12 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, gap: 8 }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{poll?.title ?? placeholder}</span>
-        <span style={{ ...capLabel, color: tag === 'Live' ? 'var(--red)' : tag === 'Settled' ? 'var(--text3)' : 'var(--gold)' }}>{tag}</span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8, gap: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          {tag && <div style={{ ...capLabel, fontSize: 10, color: tag === 'Live' ? 'var(--red)' : 'var(--text3)', marginBottom: 2 }}>{tag === 'Live' ? '● Live' : tag}</div>}
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: 'var(--text)', lineHeight: 1.3 }}>{poll?.title ?? placeholder}</h3>
+        </div>
+        {status && (
+          <span role="status" style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: status.color, padding: '3px 9px', borderRadius: 999, border: '1px solid var(--line2)', background: 'var(--surface2)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+            {poll?.status === 'CLOSED' && <Lock />} {status.text}
+          </span>
+        )}
       </div>
       {poll
         ? (
           <>
-            {poll.status === 'VOID' && <p style={{ margin: '0 0 6px', fontSize: 11, color: 'var(--text3)' }}>Void: {poll.voidReason}. Stakes returned.</p>}
-            {poll.status === 'CLOSED' && <p style={{ margin: '0 0 6px', fontSize: 11, color: 'var(--text3)' }}>Bets closed. The result settles it.</p>}
-            {open && PLAYER_KINDS.has(poll.kind) && (
+            {winner && <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 800, color: 'var(--green)' }}>{winner}</p>}
+            {poll.status === 'VOID' && <p style={{ margin: '0 0 6px', fontSize: 12, color: 'var(--text3)' }}>Void: {poll.voidReason}. Stakes returned.</p>}
+            {poll.status === 'CLOSED' && <p style={{ margin: '0 0 8px', fontSize: 12, color: 'var(--text3)' }}>Bets are closed. The result settles it.</p>}
+            {open && player && (
               <OptionGrid poll={poll} picked={picked} onPick={togglePick}
                 betBox={option && <BetBox poll={poll} option={option} onPlaced={onChanged} onClear={() => setPicked(null)} />} />
             )}
-            {open && !PLAYER_KINDS.has(poll.kind) && (
+            {open && !player && (
               <div style={{ display: 'grid', gap: 10, gridTemplateColumns: option ? 'repeat(auto-fit,minmax(min(100%,240px),1fr))' : '1fr', alignItems: 'start' }}>
                 <OptionGrid poll={poll} picked={picked} onPick={togglePick} />
                 {option && <BetBox poll={poll} option={option} onPlaced={onChanged} onClear={() => setPicked(null)} />}
               </div>
             )}
             {open && !option && <p style={{ margin: '8px 0 0', fontSize: 11, color: 'var(--text3)' }}>Tap an opinion to bet on it.</p>}
-            {!open && <OptionGrid poll={poll} picked={null} onPick={() => {}} />}
+            {/* Ended, a long player list is noise: the winner line says it. */}
+            {poll.status === 'CLOSED' && <OptionGrid poll={poll} picked={null} onPick={() => {}} />}
+            {(poll.status === 'SETTLED' || poll.status === 'VOID') && !player && <OptionGrid poll={poll} picked={null} onPick={() => {}} />}
             <PollPositions poll={poll} bets={bets} onClaimed={onChanged} />
           </>
         )
@@ -415,14 +562,17 @@ const MatchHeader: React.FC<{ m: CricketMatch; onClick?: () => void }> = ({ m, o
       {m.toss && <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4, textAlign: 'center' }}>{(m.toss.winner === 'A' ? m.teamA : m.teamB).name} won the toss and chose to {m.toss.elected === 'BAT' ? 'bat' : 'bowl'}</div>}
       {m.result && (
         <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--green)', marginTop: 8, textAlign: 'center' }}>
-          {m.result === 'A' ? `${m.teamA.name} won` : m.result === 'B' ? `${m.teamB.name} won` : m.result === 'TIE' ? 'Match tied' : m.result === 'DRAW' ? 'Match drawn' : 'No result'}
+          {m.result === 'A' ? `${m.teamA.name} won` : m.result === 'B' ? `${m.teamB.name} won` : m.result === 'TIE' || m.result === 'DRAW' ? 'Match drawn' : 'No result'}
         </div>
       )}
       {onClick && result && !m.result && (
         <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
           {result.options.map((o) => (
             <div key={o.key} style={{ flex: 1, textAlign: 'center', padding: '6px 4px', borderRadius: 9, background: 'var(--surface2)', border: '1px solid var(--line)' }}>
-              <div style={{ fontSize: 10, color: 'var(--text3)' }}>{o.key === 'A' ? '1' : o.key === 'B' ? '2' : o.label}</div>
+              {/* What each price is for, by name: the team, or Draw. */}
+              <div style={{ fontSize: 10, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {o.key === 'A' ? (m.teamA.code ?? m.teamA.name) : o.key === 'B' ? (m.teamB.code ?? m.teamB.name) : o.label}
+              </div>
               <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--gold-ink)' }}>{result.status === 'OPEN' ? odds(o.oddsX100) : '—'}</div>
             </div>
           ))}
@@ -441,43 +591,38 @@ const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title
 
 const MatchView: React.FC<{ m: CricketMatch; bets: CricketBet[]; onBack: () => void; reloadBets: () => void }> = ({ m, bets, onBack, reloadBets }) => {
   const mine = bets.filter((b) => b.matchId === m.matchId);
-  const P = (poll: CricketPoll | null, tag: string, placeholder?: string) => (
+  const P = (poll: CricketPoll | null, tag?: string, placeholder?: string) => (
     <PollCard key={poll?.pollId ?? placeholder} poll={poll} tag={tag} placeholder={placeholder} bets={poll ? mine.filter((b) => b.pollId === poll.pollId) : []} onChanged={reloadBets} />
   );
   const byKind = (k: string) => m.polls.find((p) => p.kind === k) ?? null;
   const ball = threeOf(m.polls, 'BALL');
   const over = threeOf(m.polls, 'OVER');
-  const players = (['MOM', 'TOP_BATSMAN', 'TOP_BOWLER'] as const).map(byKind).filter((p): p is CricketPoll => p !== null);
-  const playerTag = (p: CricketPoll) => (p.status === 'OPEN' ? 'Open' : p.status === 'CLOSED' ? 'Awaiting' : p.status === 'VOID' ? 'Void' : 'Settled');
+  const players = (['TOP_BATSMAN', 'TOP_BOWLER'] as const).map(byKind).filter((p): p is CricketPoll => p !== null);
+  const powerplays = m.polls.filter((p) => p.kind === 'POWERPLAY').sort((a, b) => a.innings - b.innings);
+  const matchPolls = (['MATCH_RESULT', 'TOSS', 'MOST_SIXES'] as const).map(byKind).filter((p): p is CricketPoll => p !== null);
   return (
     <div>
-      <button type="button" onClick={onBack} style={{ background: 'none', border: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 13, marginBottom: 10, padding: 0 }}>← All matches</button>
+      <button type="button" onClick={onBack} style={{ background: 'none', border: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 13, marginBottom: 10, padding: '8px 0', minHeight: 40 }}>← All matches</button>
       <MatchHeader m={m} />
       <div style={{ height: 14 }} />
       <MatchPositions match={m} bets={mine} onClaimed={reloadBets} />
       {(ball.settled || ball.live) && (
         <Section title="Next ball">
-          {ball.settled && P(ball.settled, 'Settled')}
+          {ball.settled && P(ball.settled, 'Last ball')}
           {P(ball.live, 'Live', 'Next ball')}
           {P(null, 'Next', 'The ball after')}
         </Section>
       )}
       {(over.settled || over.live || over.next) && (
         <Section title="Overs: odd, even or zero">
-          {over.settled && P(over.settled, 'Settled')}
+          {over.settled && P(over.settled, 'Last over')}
           {over.live && P(over.live, 'Live')}
           {P(over.next, 'Next', 'The next over')}
         </Section>
       )}
-      <Section title="Match">
-        {byKind('MATCH_RESULT') && P(byKind('MATCH_RESULT'), byKind('MATCH_RESULT')!.status === 'OPEN' ? 'Open' : 'Settled')}
-        {byKind('TOSS') && P(byKind('TOSS'), byKind('TOSS')!.status === 'OPEN' ? 'Open' : 'Settled')}
-      </Section>
-      {players.length > 0 && (
-        <Section title="Players">
-          {players.map((p) => P(p, playerTag(p)))}
-        </Section>
-      )}
+      {matchPolls.length > 0 && <Section title="Match">{matchPolls.map((p) => P(p))}</Section>}
+      {powerplays.length > 0 && <Section title="Powerplay">{powerplays.map((p) => P(p))}</Section>}
+      {players.length > 0 && <Section title="Players">{players.map((p) => P(p))}</Section>}
     </div>
   );
 };
@@ -549,11 +694,13 @@ const CricketLive: React.FC = () => {
 
 // ── Coming soon (the game switched off, the tab kept; owner, 2026-10-18) ─────
 /**
- * The admin's full-screen picture (Branding.cricketComingSoonImageUrl, set on
- * Admin › Images), drawn over the whole screen with a way back; with none, a
- * plain line says it is coming.
+ * Drawn inside the app like any other game tab (owner, 2026-10-19: no page
+ * that covers the app), so the header, the game tabs and the bottom bar stay:
+ * the admin's picture (Branding.cricketComingSoonImageUrl, set on Admin ›
+ * Images) filling the content area, or with none, the same page in the site's
+ * own theme.
  */
-const COMING_POLLS = ['Toss', 'Match result', 'Next ball', 'Every over', 'Man of the match', 'Best batsman', 'Best bowler'];
+const COMING_POLLS = ['Toss', 'Match result', 'Next ball', 'Every over', 'Powerplay runs', 'Best batsman', 'Best bowler', 'Most sixes'];
 
 const ComingSoon: React.FC = () => {
   const navigate = useNavigate();
@@ -562,45 +709,37 @@ const ComingSoon: React.FC = () => {
     try { return String(JSON.parse(localStorage.getItem('app_branding') || '{}').cricketComingSoonImageUrl || ''); } catch { return ''; }
   })();
   const [broken, setBroken] = useState(false);
-  const back = (
-    <button type="button" onClick={() => navigate('/')} aria-label="Back to the boards"
-      style={{ position: 'absolute', top: 'max(12px, env(safe-area-inset-top))', left: 12, zIndex: 1, padding: '8px 14px', borderRadius: 999, border: '1px solid var(--pill-line)', background: 'var(--pill)', color: 'var(--gold-ink)', fontSize: 13, fontWeight: 700, cursor: 'pointer', boxShadow: 'var(--shadow-sm)' }}>
-      ← Back
-    </button>
-  );
   if (imageUrl && !broken) {
     return (
-      <div role="dialog" aria-label="Cricket is coming soon" style={{ position: 'fixed', inset: 0, zIndex: 110, background: 'var(--bg)' }}>
-        {back}
+      <section aria-label="Cricket is coming soon" style={{ position: 'relative', flex: 1, minHeight: 'min(70vh, 640px)', background: 'var(--bg)' }}>
         <img src={imageUrl} alt="Cricket is coming soon" onError={() => setBroken(true)}
-          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-      </div>
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+      </section>
     );
   }
-  // No picture set: the same full screen, drawn in the site's own theme.
+  // No picture set: the same page, drawn in the site's own theme.
   return (
-    <div role="dialog" aria-label="Cricket is coming soon"
-      style={{ position: 'fixed', inset: 0, zIndex: 110, background: 'var(--app-bg)', backgroundColor: 'var(--bg)', overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '72px 20px 32px' }}>
-      {back}
+    <section aria-label="Cricket is coming soon"
+      style={{ flex: 1, background: 'var(--app-bg)', backgroundColor: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '32px 20px 40px' }}>
       <div style={{ width: '100%', maxWidth: 420, textAlign: 'center' }}>
-        <img src={headerLogo} alt="" style={{ display: 'block', height: 44, maxWidth: '80%', objectFit: 'contain', margin: '0 auto 28px' }} onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-        <div aria-hidden style={{ width: 132, height: 132, margin: '0 auto', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 64,
+        <img src={headerLogo} alt="" style={{ display: 'block', height: 40, maxWidth: '80%', objectFit: 'contain', margin: '0 auto 22px' }} onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+        <div aria-hidden style={{ width: 120, height: 120, margin: '0 auto', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 58,
           background: 'radial-gradient(circle at 50% 40%, rgba(var(--brand-primary-rgb), .28), rgba(var(--brand-primary-rgb), .04) 70%)',
           border: '1px solid var(--line2)', boxShadow: '0 0 60px -10px var(--glow)' }}>🏏</div>
-        <h1 style={{ margin: '26px 0 0', fontSize: 40, fontWeight: 900, letterSpacing: '.08em', lineHeight: 1.05,
+        <h1 style={{ margin: '22px 0 0', fontSize: 38, fontWeight: 900, letterSpacing: '.08em', lineHeight: 1.05,
           background: 'var(--gold-metal)', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' }}>CRICKET</h1>
         <div style={{ ...capLabel, marginTop: 10, fontSize: 13, letterSpacing: '.32em', color: 'var(--gold-ink)' }}>Coming soon</div>
-        <p style={{ color: 'var(--text2)', fontSize: 14, lineHeight: 1.5, margin: '18px 0 20px' }}>
+        <p style={{ color: 'var(--text2)', fontSize: 14, lineHeight: 1.5, margin: '16px 0 18px' }}>
           Back your opinion on live matches, ball by ball. Odds move with every bet, and you can cash out before the result.
         </p>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginBottom: 26 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginBottom: 24 }}>
           {COMING_POLLS.map((t) => (
             <span key={t} style={{ padding: '6px 11px', borderRadius: 999, border: '1px solid var(--pill-line)', background: 'var(--pill)', color: 'var(--text)', fontSize: 12, fontWeight: 600 }}>{t}</span>
           ))}
         </div>
         <button type="button" onClick={() => navigate('/')} style={{ ...goldButton, width: 'auto', padding: '12px 26px', fontSize: 14 }}>Play Delhi Bazaar meanwhile</button>
       </div>
-    </div>
+    </section>
   );
 };
 

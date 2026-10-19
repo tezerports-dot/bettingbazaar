@@ -232,6 +232,22 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
     [anyCasino, anyCrash, anySports, anyCricket], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const isActive = (path: string) => (path === '/' ? location.pathname === '/' : location.pathname.startsWith(path));
+  // Moving between games slides sideways (owner, 2026-10-19: "it should just
+  // slide from bazaar game to cricket"), from the side of the tab tapped;
+  // anywhere else the page rises as before. Kept per path so a second render
+  // of the same page does not replay it.
+  const categoryAt = (path: string) => liveCategories.findIndex((c) => (c.path === '/' ? path === '/' : path.startsWith(c.path)));
+  const enter = useRef<{ path: string; cls: string }>({ path: location.pathname, cls: 'bb-rise' });
+  if (enter.current.path !== location.pathname) {
+    const from = categoryAt(enter.current.path);
+    const to = categoryAt(location.pathname);
+    enter.current = { path: location.pathname, cls: from >= 0 && to >= 0 && from !== to ? (to > from ? 'bb-slide-from-right' : 'bb-slide-from-left') : 'bb-rise' };
+  }
+  // The Cricket page's code, fetched as soon as its tab is on screen, so the
+  // first tap slides straight in instead of waiting behind a skeleton.
+  useEffect(() => {
+    if (anyCricket) void import('../pages/CricketPage').catch(() => { /* fetched again on the tap */ });
+  }, [anyCricket]);
   const onBoard = location.pathname === '/';
   // Admin › Page Slides › Home promo cards, for the phone carousel; read only
   // where it shows (Admin › Player Screen's switch, the board, not a laptop).
@@ -392,7 +408,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
         {/* ░░ RAIL (laptop) + MAIN + CATEGORY STRIP ░░ */}
         <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
         {rail}
-        <main ref={mainRef} style={{ minWidth: 0, flex: 1, minHeight: 0, position: 'relative', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+        <main ref={mainRef} style={{ minWidth: 0, flex: 1, minHeight: 0, position: 'relative', overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column' }}>
           <PullIndicator pull={pull} refreshing={refreshing} />
           {/*
             What the platform is telling everyone. `announcements` had an admin
@@ -438,7 +454,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             })}
           </nav>
 
-          <div key={location.pathname} className="bb-rise" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <div key={location.pathname} className={enter.current.cls} style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
             {children}
           </div>
         </main>

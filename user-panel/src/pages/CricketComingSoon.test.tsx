@@ -1,8 +1,9 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * The Cricket tab while the game is switched off (owner, 2026-10-18): the
- * admin's full-screen image (Branding.cricketComingSoonImageUrl) with a way
- * back, or a full-screen page in the site's theme when no image is set or it fails.
+ * admin's image (Branding.cricketComingSoonImageUrl), or a page in the site's
+ * theme when no image is set or it fails, drawn INSIDE the app's content area
+ * (owner, 2026-10-19), never a layer over the header and tabs.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -25,23 +26,25 @@ const { default: CricketPage } = await import('./CricketPage');
 describe('the Cricket tab while the game is off', () => {
   beforeEach(() => { localStorage.clear(); navigate.mockClear(); });
 
-  it('covers the screen with the admin\'s image and offers a way back', () => {
+  it('shows the admin\'s image inside the page, not over the app', () => {
     localStorage.setItem('app_branding', JSON.stringify({ cricketComingSoonImageUrl: 'https://cdn.example/cricket-soon.webp' }));
     render(<CricketPage />);
     const img = screen.getByRole('img', { name: /coming soon/i });
     expect(img.getAttribute('src')).toBe('https://cdn.example/cricket-soon.webp');
-    expect(screen.getByRole('dialog', { name: /coming soon/i }).style.position).toBe('fixed');
-    fireEvent.click(screen.getByRole('button', { name: /back to the boards/i }));
-    expect(navigate).toHaveBeenCalledWith('/');
+    const region = screen.getByRole('region', { name: /coming soon/i });
+    expect(region.style.position).not.toBe('fixed');
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('draws a full-screen page in the site\'s theme when no image is set, or the image fails', () => {
+  it('draws a page in the site\'s theme when no image is set, or the image fails', () => {
     const { unmount } = render(<CricketPage />);
-    const page = screen.getByRole('dialog', { name: /coming soon/i });
-    expect(page.style.position).toBe('fixed');
+    const page = screen.getByRole('region', { name: /coming soon/i });
+    expect(page.style.position).not.toBe('fixed');
     expect(page.style.backgroundColor).toBe('var(--bg)');
     expect(screen.getByRole('heading', { name: 'CRICKET' })).toBeTruthy();
     expect(screen.getByText('Best batsman')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /play delhi bazaar/i }));
+    expect(navigate).toHaveBeenCalledWith('/');
     unmount();
     localStorage.setItem('app_branding', JSON.stringify({ cricketComingSoonImageUrl: 'https://cdn.example/missing.webp' }));
     render(<CricketPage />);

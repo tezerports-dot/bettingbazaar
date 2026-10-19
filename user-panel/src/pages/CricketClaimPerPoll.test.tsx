@@ -27,11 +27,11 @@ vi.mock('../redesign/Screen', () => ({
 const opts = [{ key: 'A', label: 'Alpha win', poolPaise: 300_000, oddsX100: 180 }, { key: 'B', label: 'Bravo win', poolPaise: 300_000, oddsX100: 180 }];
 const poll = (pollId: string, title: string, kind: string) => ({
   pollId, matchId: 'M1', kind, innings: 0, overNo: 0, seq: 0, title, status: 'OPEN', spreadBp: 1000, seedPaise: 100, closesAt: null,
-  winningOption: null, voidReason: null, options: opts,
+  winningOptions: null, voidReason: null, options: opts,
 });
 const bet = (betId: string, pollId: string, pollTitle: string) => ({
   betId, pollId, matchId: 'M1', optionKey: 'A', optionLabel: 'Alpha win', pollTitle, pollKind: 'X', pollStatus: 'OPEN',
-  stakePaise: 10_000, oddsX100: 180, potentialPaise: 18_000, status: 'OPEN', paidPaise: 0, feePaise: 0, placedAt: '', matchName: '',
+  stakePaise: 10_000, oddsX100: 180, potentialPaise: 18_000, status: 'OPEN', paidPaise: 0, feePaise: 0, placedAt: '', matchName: '', deadHeat: 1,
 });
 
 const { default: CricketPage } = await import('./CricketPage');
