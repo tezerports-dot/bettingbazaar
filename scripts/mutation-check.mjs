@@ -3529,8 +3529,16 @@ const MUTATIONS = [
     id: 'M463', file: 'database/repositories/merchantPaymentAccounts.js', config: PG,
     test: 'backend/tests/routes/merchantAccountPg.test.js',
     why: 'a sell is marked paid FROM an account that does not pay withdrawals, so the report and any dispute name the wrong account',
-    from: `                       AND a.status = 'ACTIVE' AND a.pays_withdrawals)`,
-    to: `                       )`,
+    from: `                       AND a.status = 'ACTIVE' AND a.pays_withdrawals
+                       AND (o.token_amount_paise`,
+    to: `                       AND (o.token_amount_paise`,
+  },
+  {
+    id: 'M463b', file: 'database/repositories/merchantPaymentAccounts.js', config: PG,
+    test: 'backend/tests/routes/merchantAccountPg.test.js',
+    why: 'a buy is paid into an account its merchant did not assign that order size to',
+    from: `        AND $3::int = ANY (buy_sizes)`,
+    to: `        AND $3::int IS NOT NULL`,
   },
   {
     id: 'M464', file: 'backend/domains/merchant/merchantActor.js', config: PG,

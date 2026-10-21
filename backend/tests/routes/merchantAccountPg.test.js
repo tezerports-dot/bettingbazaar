@@ -521,6 +521,9 @@ describePg('merchant accounts', () => {
       ]);
       expect(saved.status, JSON.stringify(saved.body)).toBe(200);
       try {
+        // Asked again where the account is taken, under its lock (trap 18).
+        const { takeDepositAccountWithin } = await import('#db/repositories/merchantPaymentAccounts.js');
+        expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, m.upi.accountId, 1_000))).toBe(null);
         for (const [tokens, account] of [[1_000, m.bank], [5_000, m.upi]]) {
           const { order, orderId } = await queuedBuy(tokens);
           await onlyDirectOnline(m.merchantId);
