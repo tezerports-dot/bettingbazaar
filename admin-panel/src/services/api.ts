@@ -1271,9 +1271,16 @@ export interface UsdtWatcherStatus {
 }
 /** The owner's own wallet the sweep sends to (`usdt_final_wallets`, newest row in use). */
 export interface UsdtFinalWallet { address: string; setBy: string; setAt: string }
+/** A merchant's pool buy paid in USDT (`listPoolDeposits`, usdtDeposits.js). */
+export interface UsdtPoolBuy {
+  requestId: string; teamId: string; teamName: string; requesterName: string; address: string;
+  status: 'PENDING' | 'FULFILLED' | 'REJECTED' | 'CANCELLED'; tokens: number;
+  usdtRequired: number; usdtReceived: number; rate: number; expiresAt: string; createdAt: string;
+  transfers: number; attention: 'LATE' | 'SHORT' | 'OVERPAID' | null; sweptAt: string | null; sweptTxHash: string | null;
+}
 export interface UsdtDepositsResponse {
   success: boolean; filters: string[]; filter: string; total: number; page: number; pages: number;
-  deposits: UsdtDeposit[]; totals: UsdtDepositTotals; watcher: UsdtWatcherStatus;
+  deposits: UsdtDeposit[]; totals: UsdtDepositTotals; watcher: UsdtWatcherStatus; poolBuys: UsdtPoolBuy[];
   finalWallet: UsdtFinalWallet | null; finalWalletHistory: UsdtFinalWallet[]; mayChangeFinalWallet: boolean;
 }
 export const usdtDeposits = {

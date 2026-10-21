@@ -35,6 +35,7 @@ import { rupeesToPaise } from '../../shared/money.js';
 import { refuse as refuseTeam } from '../team/teamRefusals.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { merchantSizes, offeredSizes } from './denominations.js';
+import { openMerchantPoolUsdtBuy } from '../payment/usdtDeposit.service.js';
 
 const router = express.Router();
 
@@ -98,12 +99,13 @@ function sizesRefusal(res, err) {
 router.get('/account', merchantAuth, requireMerchantAccount, async (req, res) => {
   try {
     const owner = req.merchantActor?.isOwner !== false;
-    const [accounts, staff, flags, poolRequests, sizes] = await Promise.all([
+    const [accounts, staff, flags, poolRequests, sizes, poolTrades] = await Promise.all([
       db.merchantPaymentAccounts.listAccounts(req.merchantId),
       owner ? db.merchantStaff.listStaff(req.merchantId) : null,
       db.merchantProblems.listFlags({ merchantId: req.merchantId, days: 30 }),
       owner ? db.teamPools.listRequests({ teamId: req.directTeam.teamId, limit: 50 }) : null,
       requiredSizes().then((required) => db.merchantPaymentAccounts.sizeCoverage(req.merchantId, required)),
+      db.teamPools.poolTradeTotals(req.directTeam.teamId),
     ]);
     res.json({
       success: true,
@@ -111,6 +113,8 @@ router.get('/account', merchantAuth, requireMerchantAccount, async (req, res) =>
       accounts,
       // Which sizes the platform sends here, and which no account takes yet.
       sizes,
+      // Tokens bought from the platform, and returned to it (owner, 2026-10-21).
+      poolTrades,
       ...(owner ? { staff, poolRequests } : {}),
       flags,
     });
@@ -278,6 +282,28 @@ router.post('/account/pool-requests', merchantAuth, requireMerchantAccount, owne
     res.status(201).json({ success: true, requestId: out.requestId });
   } catch (err) {
     respondError(res, err, 'POST /merchant/account/pool-requests', { message: 'Could not send the request.' });
+  }
+});
+
+/**
+ * POST /api/merchant/account/pool-requests/usdt { tokens } — buy pool tokens
+ * from the platform in USDT, the way a player buys (owner, 2026-10-21): an
+ * address of its own on BNB Smart Chain and the price, and the tokens arrive
+ * by themselves once the USDT does. No admin step.
+ */
+router.post('/account/pool-requests/usdt', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
+  try {
+    const tokens = Number(req.body?.tokens);
+    if (!Number.isInteger(tokens) || tokens <= 0) {
+      return res.status(400).json({ success: false, code: 'BAD_TOKENS', message: 'Enter a whole number of tokens greater than zero.' });
+    }
+    const out = await openMerchantPoolUsdtBuy({
+      teamId: req.directTeam.teamId, supervisorId: req.merchantId, tokenAmountPaise: rupeesToPaise(tokens),
+    });
+    if (!out.ok) return refuseTeam(res, out.reason);
+    res.status(201).json({ success: true, request: await db.teamPools.getRequest(out.requestId) });
+  } catch (err) {
+    respondError(res, err, 'POST /merchant/account/pool-requests/usdt', { message: 'Could not start the USDT payment.' });
   }
 });
 

@@ -15,6 +15,7 @@ import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { respondError } from '../../shared/httpError.js';
 import { refuse } from './teamRefusals.js';
 import { rupeesToPaise } from '../../shared/money.js';
+import { openMerchantPoolUsdtBuy } from '../payment/usdtDeposit.service.js';
 import { listMessages, postSupervisorMessage } from '#db/repositories/chat.js';
 import { toSupervisorOrderView, toSupervisorOrderViews } from '../merchant/merchantOrderView.js';
 import {
@@ -40,6 +41,8 @@ router.get('/team', merchantAuth, async (req, res) => {
       const teams = await db.teams.listTeams({ supervisorId: me.merchantId });
       const members = (await Promise.all(teams.map((t) => db.teams.listMembers({ teamId: t.teamId })))).flat();
       const poolRequests = await db.teamPools.listRequests({ supervisorId: me.merchantId, limit: 50 });
+      // Per team: tokens bought from the platform and returned to it.
+      for (const t of teams) t.poolTrades = await db.teamPools.poolTradeTotals(t.teamId);
       // Team commission (Step 2e): each team's recent payments with this
       // supervisor's 16% of each, and their total across every team.
       const [commissions, myCommissionPaise] = await Promise.all([
@@ -189,6 +192,29 @@ router.post('/supervisor/teams/:teamId/pool-requests', merchantAuth, requireSupe
         : 'Requested. An admin will pay you and take the tokens out of the pool.',
     });
   } catch (err) { respondError(res, err, 'POST /merchant/supervisor/teams/:id/pool-requests'); }
+});
+
+/**
+ * POST /api/merchant/supervisor/teams/:teamId/pool-requests/usdt { tokenAmount }
+ * Buy pool tokens from the platform in USDT (owner, 2026-10-21): the team's
+ * own address and the price; the tokens arrive once the USDT does.
+ */
+router.post('/supervisor/teams/:teamId/pool-requests/usdt', merchantAuth, requireSupervisor, async (req, res) => {
+  try {
+    const tokens = Number(req.body?.tokenAmount);
+    if (!Number.isInteger(tokens) || tokens <= 0) {
+      return res.status(400).json({ success: false, code: 'bad_amount', message: 'Enter a whole number of tokens greater than zero.' });
+    }
+    const out = await openMerchantPoolUsdtBuy({
+      teamId: req.params.teamId, supervisorId: req.merchantId, tokenAmountPaise: rupeesToPaise(tokens),
+    });
+    if (!out.ok) return refuse(res, out.reason);
+    await db.audit.recordDetailed({
+      performedBy: req.merchantId, category: 'TREASURY', targetType: 'TEAM', action: 'TEAM_POOL_BUY_REQUESTED',
+      targetId: req.params.teamId, ip: req.ip, details: { requestId: out.requestId, tokenAmount: tokens, usdt: out.usdt },
+    });
+    res.status(201).json({ success: true, request: await db.teamPools.getRequest(out.requestId) });
+  } catch (err) { respondError(res, err, 'POST /merchant/supervisor/teams/:id/pool-requests/usdt'); }
 });
 
 // DELETE /api/merchant/supervisor/pool-requests/:requestId — a pending request only.

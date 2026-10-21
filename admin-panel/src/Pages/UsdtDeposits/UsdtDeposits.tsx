@@ -18,7 +18,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Coins, Copy, Download, RefreshCw, Wallet } from 'lucide-react';
 import toast from 'react-hot-toast';
-import api, { type UsdtDeposit, type UsdtDepositsResponse, type UsdtFinalWallet, type UsdtTransfer } from '../../services/api';
+import api, { type UsdtDeposit, type UsdtDepositsResponse, type UsdtFinalWallet, type UsdtPoolBuy, type UsdtTransfer } from '../../services/api';
 import { EmptyState } from '../../components/EmptyState';
 import { LoadingSpinner } from '../../components/LoadingSpinner';
 
@@ -124,13 +124,24 @@ const FinalWalletCard: React.FC<{
 };
 
 /** One deposit's transfers and the two things an admin may do to it. */
-const DepositDetail: React.FC<{ deposit: UsdtDeposit; onChanged: () => void }> = ({ deposit, onChanged }) => {
+/** What the detail needs of a deposit: a player's order, or a merchant's pool buy (by its request id). */
+type DepositLike = Pick<UsdtDeposit, 'orderId' | 'state' | 'attention' | 'sweptAt' | 'usdtReceived'> | {
+  orderId: string; state: string; attention: string | null; sweptAt: string | null; usdtReceived: number;
+};
+
+const POOL_ATTENTION_LABEL: Record<NonNullable<UsdtPoolBuy['attention']>, string> = {
+  LATE: 'Arrived after the request closed',
+  SHORT: 'Window ended short of the price',
+  OVERPAID: 'More than the price was sent',
+};
+
+const DepositDetail: React.FC<{ deposit: DepositLike; ended?: boolean; onChanged: () => void }> = ({ deposit, ended: endedGiven, onChanged }) => {
   const [transfers, setTransfers] = useState<UsdtTransfer[] | null>(null);
   const [note, setNote] = useState('');
   const [txHash, setTxHash] = useState('');
   const [busy, setBusy] = useState<'' | 'handled' | 'sweep'>('');
   const [problem, setProblem] = useState('');
-  const ended = !OPEN_STATES.includes(deposit.state);
+  const ended = endedGiven ?? !OPEN_STATES.includes(deposit.state);
 
   useEffect(() => {
     api.usdtDeposits.transfers(deposit.orderId)
@@ -201,6 +212,65 @@ const DepositDetail: React.FC<{ deposit: UsdtDeposit; onChanged: () => void }> =
         </div>
       )}
       {problem && <p role="alert" className="text-sm text-red-400">{problem}</p>}
+    </div>
+  );
+};
+
+/**
+ * Merchants' pool buys paid in USDT (owner, 2026-10-21): fulfilled by the
+ * server when the USDT covers the price, so a person is needed only for what
+ * it could not credit. Swept with the players' addresses.
+ */
+const PoolBuysCard: React.FC<{ rows: UsdtPoolBuy[]; onChanged: () => void }> = ({ rows, onChanged }) => {
+  const [openId, setOpenId] = useState<string | null>(null);
+  return (
+    <div className="card p-4 space-y-3">
+      <div>
+        <h2 className="text-base font-semibold text-gray-100">Merchant pool buys</h2>
+        <p className="text-xs text-gray-500">Merchants buying pool tokens in USDT. The tokens go into their pool by themselves once the USDT arrives.</p>
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-sm text-gray-400">No merchant has bought pool tokens in USDT yet.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-xs text-gray-500">
+              <th className="py-2">Request</th><th>Pool</th><th>Tokens</th><th>Price</th><th>Received</th><th>Status</th><th>Needs</th><th>Swept</th><th />
+            </tr></thead>
+            <tbody>
+              {rows.map((r) => {
+                const ended = r.status !== 'PENDING' || new Date(r.expiresAt).getTime() < Date.now();
+                return (
+                  <React.Fragment key={r.requestId}>
+                    <tr className="border-t border-dark-700">
+                      <td className="py-2 font-mono text-xs">{r.requestId}<div className="text-gray-500">{when(r.createdAt)}</div></td>
+                      <td>{r.teamName}<div className="text-xs text-gray-500">{r.requesterName}</div></td>
+                      <td>{r.tokens.toLocaleString('en-IN')}</td>
+                      <td>{usdt(r.usdtRequired)}<div className="text-xs text-gray-500">at ₹{r.rate}</div></td>
+                      <td>{usdt(r.usdtReceived)}</td>
+                      <td>{r.status}</td>
+                      <td className="text-amber-400 text-xs">{r.attention ? POOL_ATTENTION_LABEL[r.attention] : '—'}</td>
+                      <td className="text-xs">{r.sweptAt ? when(r.sweptAt) : r.usdtReceived > 0 ? 'Not yet' : '—'}</td>
+                      <td>
+                        <button type="button" className="text-xs text-gold-300 hover:underline" aria-expanded={openId === r.requestId}
+                          onClick={() => setOpenId(openId === r.requestId ? null : r.requestId)}>
+                          {openId === r.requestId ? 'Close' : 'Open'}
+                        </button>
+                      </td>
+                    </tr>
+                    {openId === r.requestId && (
+                      <tr><td colSpan={9} className="pb-3">
+                        <DepositDetail ended={ended} onChanged={onChanged}
+                          deposit={{ orderId: r.requestId, state: r.status, attention: r.attention, sweptAt: r.sweptAt, usdtReceived: r.usdtReceived }} />
+                      </td></tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 };
@@ -359,6 +429,8 @@ export const UsdtDeposits: React.FC = () => {
           </div>
         )}
       </div>
+
+      {data && <PoolBuysCard rows={data.poolBuys ?? []} onChanged={() => void load()} />}
     </div>
   );
 };

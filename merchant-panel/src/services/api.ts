@@ -10,6 +10,7 @@ import {
   PoolDirection,
   TeamPool,
   TeamPoolEntry,
+  TeamPoolRequest,
   MemberLog,
   SupervisorOrder,
   DisputeThreadMessage,
@@ -613,6 +614,12 @@ export const requestTeamPool = async (
     method: 'POST', body: JSON.stringify({ direction, tokenAmount, note: note || null }),
   })).message;
 
+/** Buy pool tokens from the platform in USDT: the request, with where to pay (owner, 2026-10-21). */
+export const buyTeamPoolUsdt = async (teamId: string, tokenAmount: number): Promise<TeamPoolRequest> =>
+  (await request<{ request: TeamPoolRequest }>(ENDPOINTS.TEAM.POOL_USDT_BUY(teamId), {
+    method: 'POST', body: JSON.stringify({ tokenAmount }),
+  })).request;
+
 export const cancelTeamPoolRequest = async (requestId: string): Promise<void> => {
   await request(ENDPOINTS.TEAM.POOL_CANCEL(requestId), { method: 'DELETE' });
 };
@@ -712,6 +719,10 @@ export const requestMerchantPool = async (direction: PoolDirection, tokens: numb
   (await accountRequest<{ requestId: string }, []>(ENDPOINTS.ACCOUNT.REQUEST_POOL, [], {
     direction, tokens, note: note || null,
   })).requestId;
+
+/** A merchant account buys pool tokens in USDT: the request, with where to pay (owner, 2026-10-21). */
+export const buyMerchantPoolUsdt = async (tokens: number): Promise<TeamPoolRequest> =>
+  (await accountRequest<{ request: TeamPoolRequest }, []>(ENDPOINTS.ACCOUNT.BUY_POOL_USDT, [], { tokens })).request;
 
 export const cancelMerchantPoolRequest = async (requestId: string): Promise<void> => {
   await accountRequest(ENDPOINTS.ACCOUNT.CANCEL_POOL, [requestId]);
@@ -824,6 +835,7 @@ export const api = {
   assignSubMemberAccount,
   unassignSubMemberAccount,
   requestMerchantPool,
+  buyMerchantPoolUsdt,
   cancelMerchantPoolRequest,
   getMerchantReport,
   getOrderReport,

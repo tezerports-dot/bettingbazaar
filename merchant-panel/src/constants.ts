@@ -69,6 +69,7 @@ export const ENDPOINTS = {
     // Team token pools (Step 2b).
     POOL:          (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/pool`,
     POOL_REQUEST:  (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/pool-requests`,
+    POOL_USDT_BUY: (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/pool-requests/usdt`,
     // Oversight (Step 2f): a member's log, and the disputes on the teams.
     MEMBER_LOG:    (merchantId: string) => `/api/merchant/supervisor/members/${merchantId}/log`,
     DISPUTES:      '/api/merchant/supervisor/disputes',
@@ -93,6 +94,7 @@ export const ENDPOINTS = {
     UNASSIGN_ACCOUNT:  { method: 'DELETE', path: (staffId: string, accountId: string, duty: string) =>
       `/api/merchant/account/staff/${staffId}/accounts/${accountId}/${duty}` },
     REQUEST_POOL:      { method: 'POST',   path: () => '/api/merchant/account/pool-requests' },
+    BUY_POOL_USDT:     { method: 'POST',   path: () => '/api/merchant/account/pool-requests/usdt' },
     CANCEL_POOL:       { method: 'DELETE', path: (requestId: string) => `/api/merchant/account/pool-requests/${requestId}` },
     REPORTS:           { method: 'GET',    path: () => '/api/merchant/account/reports' },
   },

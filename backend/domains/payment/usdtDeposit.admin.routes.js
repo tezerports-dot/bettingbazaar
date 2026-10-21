@@ -35,17 +35,20 @@ router.get('/usdt-deposits', authenticate, AREA, async (req, res) => {
     const filter = String(req.query.filter ?? 'ALL').toUpperCase();
     const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
     const page = Math.max(1, Number(req.query.page) || 1);
-    const [list, totals, watcher, finalWallets] = await Promise.all([
+    const [list, totals, watcher, finalWallets, poolBuys] = await Promise.all([
       db.usdtDeposits.listDeposits({ filter, limit, offset: (page - 1) * limit }),
       db.usdtDeposits.depositTotals(),
       watcherStatus(),
       db.usdtDeposits.finalWalletHistory(),
+      db.usdtDeposits.listPoolDeposits({ limit: 100 }),
     ]);
     res.json({
       success: true,
       filters: db.usdtDeposits.DEPOSIT_FILTERS, filter,
       total: list.total, page, pages: Math.max(1, Math.ceil(list.total / limit)),
       deposits: list.rows, totals, watcher,
+      // Merchants' pool buys paid in USDT (owner, 2026-10-21), newest first.
+      poolBuys,
       finalWallet: finalWallets[0] ?? null, finalWalletHistory: finalWallets,
       mayChangeFinalWallet: req.user?.isAdmin === true,
     });

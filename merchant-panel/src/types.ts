@@ -412,6 +412,8 @@ export interface Team {
   poolExposure: PoolExposure;
   /** Team commission (Step 2e): `toSummary` in database/repositories/teamCommission.js. */
   commission: TeamCommissionSummary;
+  /** Sent on a supervisor's own teams (`GET /api/merchant/team`). */
+  poolTrades?: PoolTradeTotals;
 }
 // Team commission (Step 2e). Mirrors `toSummary` and `listCommissions` in
 // database/repositories/teamCommission.js — §5. Paise throughout.
@@ -439,7 +441,15 @@ export interface TeamPoolRequest {
   requestId: string; teamId: string; direction: PoolDirection; tokenAmountPaise: number;
   status: 'PENDING' | 'FULFILLED' | 'REJECTED' | 'CANCELLED';
   note: string | null; decisionNote: string | null; decidedAt: string | null; createdAt: string;
+  /** A pool buy paid in USDT (`toRequest` in database/repositories/teamPools.js); null when an admin fulfils it. */
+  usdt?: PoolUsdtPayment | null;
 }
+/** Where and how much to pay for a USDT pool buy, and what has arrived (owner, 2026-10-21). */
+export interface PoolUsdtPayment {
+  chain: 'BEP20'; address: string; amount: number; received: number; rate: number; expiresAt: string;
+}
+/** Tokens a pool bought from the platform and returned to it (`poolTradeTotals`, teamPools.js). */
+export interface PoolTradeTotals { boughtPaise: number; returnedPaise: number; buys: number; returns: number }
 export interface TeamMember {
   merchantId: string; teamId: string; name: string; publicRef: string;
   status: 'PENDING' | 'APPROVED'; isOnline: boolean;
@@ -582,6 +592,7 @@ export interface MerchantAccountOverview {
   team: DirectTeam;
   accounts: PaymentAccount[];
   sizes: SizeCoverage;
+  poolTrades: PoolTradeTotals;
   staff?: SubMember[];
   poolRequests?: Array<TeamPoolRequest & { teamKind?: 'AGENT' | 'DIRECT' }>;
   flags: MerchantFlag[];

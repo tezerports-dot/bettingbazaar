@@ -5172,6 +5172,104 @@ CREATE TRIGGER usdt_final_wallets_frozen
   BEFORE UPDATE OR DELETE ON usdt_final_wallets FOR EACH ROW EXECUTE FUNCTION bb_usdt_final_wallet_frozen();
 
 -- ════════════════════════════════════════════════════════════════════════════
+-- USDT POOL BUYS (owner, 2026-10-21: a merchant buys pool tokens from the
+-- platform the way a player buys tokens, and they arrive with no admin step)
+-- A supervisor or a merchant account's owner asks for tokens paid in USDT: a
+-- BUY `team_pool_requests` row and, in the same transaction, an address
+-- derived for that request alone (`pool_usdt_addresses`, the same xpub and
+-- index sequence as a player's buy, so no address is ever shared), the price
+-- frozen at `SystemConfig.usdtPricing.merchantAdminBuyInr`. The watcher
+-- records what arrives (`pool_usdt_transfers`) and, once it covers the price,
+-- fulfils the request (`teamPools.fulfilRequestWithin`: TOKEN_SUPPLY →
+-- TEAM_FLOAT, the pool entry and the USDT consideration) in one transaction.
+-- Written only by database/repositories/usdtDeposits.js; swept with the
+-- player addresses by scripts/usdt-sweep.mjs.
+-- ════════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS pool_usdt_addresses (
+  request_id        TEXT PRIMARY KEY REFERENCES team_pool_requests (request_id),
+  chain             TEXT NOT NULL,
+  address           TEXT NOT NULL,
+  key_id            TEXT NOT NULL,
+  derivation_index  INTEGER NOT NULL,
+  -- The price, in micro-USDT, and the rate that set it: frozen with the row.
+  usdt_micro        BIGINT NOT NULL,
+  rate_used         NUMERIC(18, 6) NOT NULL,
+  expires_at        TIMESTAMPTZ NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  swept_at          TIMESTAMPTZ,
+  swept_tx_hash     TEXT,
+  swept_by          TEXT
+);
+ALTER TABLE pool_usdt_addresses DROP CONSTRAINT IF EXISTS pool_usdt_addresses_shape;
+ALTER TABLE pool_usdt_addresses ADD CONSTRAINT pool_usdt_addresses_shape CHECK (
+  chain = 'BEP20'
+  AND address ~ '^0x[0-9a-f]{40}$'
+  AND key_id ~ '^[0-9a-f]{16}$'
+  AND derivation_index >= 0
+  AND usdt_micro > 0 AND usdt_micro % 10000 = 0
+  AND rate_used > 0
+  AND ((swept_at IS NULL AND swept_tx_hash IS NULL AND swept_by IS NULL)
+    OR (swept_at IS NOT NULL AND swept_tx_hash ~ '^0x[0-9a-f]{64}$' AND swept_by IS NOT NULL)));
+CREATE UNIQUE INDEX IF NOT EXISTS pool_usdt_addresses_address_unique ON pool_usdt_addresses (address);
+CREATE UNIQUE INDEX IF NOT EXISTS pool_usdt_addresses_index_unique ON pool_usdt_addresses (key_id, derivation_index);
+
+CREATE OR REPLACE FUNCTION bb_pool_usdt_address_frozen() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'pool_usdt_addresses rows are never deleted'; END IF;
+  IF (to_jsonb(NEW) - 'swept_at' - 'swept_tx_hash' - 'swept_by')
+     IS DISTINCT FROM (to_jsonb(OLD) - 'swept_at' - 'swept_tx_hash' - 'swept_by') THEN
+    RAISE EXCEPTION 'a pool USDT address is fixed once derived (request %)', OLD.request_id;
+  END IF;
+  IF OLD.swept_at IS NOT NULL THEN
+    RAISE EXCEPTION 'pool USDT address of request % is already recorded as swept', OLD.request_id;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER pool_usdt_addresses_frozen
+  BEFORE UPDATE OR DELETE ON pool_usdt_addresses FOR EACH ROW EXECUTE FUNCTION bb_pool_usdt_address_frozen();
+
+CREATE TABLE IF NOT EXISTS pool_usdt_transfers (
+  chain          TEXT NOT NULL,
+  tx_hash        TEXT NOT NULL,
+  log_index      INTEGER NOT NULL,
+  request_id     TEXT NOT NULL REFERENCES pool_usdt_addresses (request_id),
+  from_address   TEXT NOT NULL,
+  amount_micro   BIGINT NOT NULL,
+  block_number   BIGINT NOT NULL,
+  -- The request's status when the transfer was seen: whether it could count.
+  status_at_arrival TEXT NOT NULL,
+  seen_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  handled_at     TIMESTAMPTZ,
+  handled_by     TEXT,
+  handled_note   TEXT,
+  PRIMARY KEY (chain, tx_hash, log_index)
+);
+ALTER TABLE pool_usdt_transfers DROP CONSTRAINT IF EXISTS pool_usdt_transfers_shape;
+ALTER TABLE pool_usdt_transfers ADD CONSTRAINT pool_usdt_transfers_shape CHECK (
+  chain = 'BEP20'
+  AND tx_hash ~ '^0x[0-9a-f]{64}$'
+  AND from_address ~ '^0x[0-9a-f]{40}$'
+  AND amount_micro >= 0 AND log_index >= 0 AND block_number >= 0
+  AND ((handled_at IS NULL AND handled_by IS NULL AND handled_note IS NULL)
+    OR (handled_at IS NOT NULL AND handled_by IS NOT NULL AND length(btrim(handled_note)) BETWEEN 1 AND 500)));
+CREATE INDEX IF NOT EXISTS pool_usdt_transfers_request_idx ON pool_usdt_transfers (request_id);
+
+CREATE OR REPLACE FUNCTION bb_pool_usdt_transfer_frozen() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'pool_usdt_transfers rows are never deleted'; END IF;
+  IF (to_jsonb(NEW) - 'handled_at' - 'handled_by' - 'handled_note')
+     IS DISTINCT FROM (to_jsonb(OLD) - 'handled_at' - 'handled_by' - 'handled_note') THEN
+    RAISE EXCEPTION 'a pool USDT transfer record is never edited (% #%)', OLD.tx_hash, OLD.log_index;
+  END IF;
+  IF OLD.handled_at IS NOT NULL THEN
+    RAISE EXCEPTION 'pool USDT transfer % #% is already marked handled', OLD.tx_hash, OLD.log_index;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER pool_usdt_transfers_frozen
+  BEFORE UPDATE OR DELETE ON pool_usdt_transfers FOR EACH ROW EXECUTE FUNCTION bb_pool_usdt_transfer_frozen();
+
+-- ════════════════════════════════════════════════════════════════════════════
 -- CRICKET OPINION POLLS (owner, 2026-10-18; docs/reference/CRICKET_OPINION_DESIGN.md)
 -- An in-house game. Matches come from one data feed the server alone reads
 -- (`cricket_feed`); an admin publishes a match (or follows a whole series) and

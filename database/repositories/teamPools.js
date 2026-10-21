@@ -82,14 +82,40 @@ function toRequest(row) {
     decidedAt: row.decided_at,
     decisionNote: row.decision_note,
     createdAt: row.created_at,
+    // A USDT buy (`usdtDeposits.openPoolUsdtBuy`): where to pay, how much, by
+    // when, and what has arrived. Null on a request an admin fulfils.
+    usdt: row.usdt_address ? {
+      chain: 'BEP20', address: row.usdt_address,
+      amount: toNum(row.usdt_micro) / 1e6, received: toNum(row.usdt_received_micro) / 1e6,
+      rate: Number(row.usdt_rate), expiresAt: row.usdt_expires_at,
+    } : null,
   };
 }
 
 const REQUEST_SELECT = `
-  SELECT r.*, t.name AS team_name, t.kind AS team_kind, s.name AS supervisor_name
+  SELECT r.*, t.name AS team_name, t.kind AS team_kind, s.name AS supervisor_name,
+         ua.address AS usdt_address, ua.usdt_micro, ua.rate_used AS usdt_rate, ua.expires_at AS usdt_expires_at,
+         (SELECT COALESCE(SUM(ut.amount_micro), 0) FROM pool_usdt_transfers ut WHERE ut.request_id = r.request_id) AS usdt_received_micro
     FROM team_pool_requests r
     JOIN teams t ON t.team_id = r.team_id
-    JOIN merchants s ON s.merchant_id = r.supervisor_id`;
+    JOIN merchants s ON s.merchant_id = r.supervisor_id
+    LEFT JOIN pool_usdt_addresses ua ON ua.request_id = r.request_id`;
+
+/**
+ * What a pool has bought from the platform and returned to it, in tokens: its
+ * FULFILLED requests (owner, 2026-10-21: shown on the merchant's pool page).
+ */
+export async function poolTradeTotals(teamId) {
+  const { rows } = await pgQuery(
+    `SELECT COALESCE(SUM(token_amount_paise) FILTER (WHERE direction = 'BUY'), 0) AS bought,
+            COALESCE(SUM(token_amount_paise) FILTER (WHERE direction = 'SELL'), 0) AS returned,
+            COUNT(*) FILTER (WHERE direction = 'BUY')::int AS buys,
+            COUNT(*) FILTER (WHERE direction = 'SELL')::int AS returns
+       FROM team_pool_requests WHERE team_id = $1 AND status = 'FULFILLED'`,
+    [String(teamId)], 'team_pool_trade_totals');
+  const r = rows[0];
+  return { boughtPaise: toNum(r.bought), returnedPaise: toNum(r.returned), buys: r.buys, returns: r.returns };
+}
 
 /** A team's pool. A team that has never traded holds nothing. */
 export async function getPool(teamId) {
@@ -175,7 +201,15 @@ export async function listEntries(teamId, { limit = 50 } = {}) {
  * nothing (trap 16). One pending request per team and direction — the partial
  * unique index refuses a second.
  */
-export async function createRequest({ teamId, supervisorId, direction, tokenAmountPaise, note = null }) {
+export async function createRequest(input) {
+  return withTransaction((client) => createRequestWithin(client, input));
+}
+
+/**
+ * `createRequest` inside the caller's transaction: a USDT pool buy writes its
+ * address in the same commit (`usdtDeposits.openPoolUsdtBuy`).
+ */
+export async function createRequestWithin(client, { teamId, supervisorId, direction, tokenAmountPaise, note = null }) {
   if (!Object.values(POOL_DIRECTIONS).includes(direction)) {
     throw Object.assign(new Error('direction must be BUY or SELL.'), { status: 400 });
   }
@@ -184,43 +218,49 @@ export async function createRequest({ teamId, supervisorId, direction, tokenAmou
     throw Object.assign(new Error('Enter a whole number of tokens greater than zero.'), { status: 400 });
   }
   const cleanNote = note === null || note === undefined ? null : String(note).trim().slice(0, 500) || null;
-  return withTransaction(async (client) => {
-    const { rows: t } = await client.query(
-      'SELECT team_id FROM teams WHERE team_id = $1 AND (supervisor_id = $2 OR owner_merchant_id = $2)',
-      [String(teamId), String(supervisorId)]);
-    if (!t[0]) return { ok: false, reason: 'team_not_found' };
-    if (direction === POOL_DIRECTIONS.SELL) {
-      // Asked now so the supervisor hears it now; asked AGAIN, as a write, at
-      // fulfilment — this read is a courtesy, never the guard.
-      const { rows: p } = await client.query(
-        'SELECT available_paise FROM team_pools WHERE team_id = $1', [String(teamId)]);
-      if (toNum(p[0]?.available_paise) < amount) return { ok: false, reason: 'pool_short' };
+  const { rows: t } = await client.query(
+    'SELECT team_id FROM teams WHERE team_id = $1 AND (supervisor_id = $2 OR owner_merchant_id = $2)',
+    [String(teamId), String(supervisorId)]);
+  if (!t[0]) return { ok: false, reason: 'team_not_found' };
+  if (direction === POOL_DIRECTIONS.SELL) {
+    // Asked now so the supervisor hears it now; asked AGAIN, as a write, at
+    // fulfilment — this read is a courtesy, never the guard.
+    const { rows: p } = await client.query(
+      'SELECT available_paise FROM team_pools WHERE team_id = $1', [String(teamId)]);
+    if (toNum(p[0]?.available_paise) < amount) return { ok: false, reason: 'pool_short' };
+  }
+  const requestId = newRequestId();
+  try {
+    await client.query('SAVEPOINT pool_request');
+    await client.query(
+      `INSERT INTO team_pool_requests (request_id, team_id, supervisor_id, direction, token_amount_paise, note)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [requestId, String(teamId), String(supervisorId), direction, amount, cleanNote]);
+  } catch (e) {
+    if (e?.code === '23505') {
+      await client.query('ROLLBACK TO SAVEPOINT pool_request');
+      return { ok: false, reason: 'request_pending' };
     }
-    const requestId = newRequestId();
-    try {
-      await client.query('SAVEPOINT pool_request');
-      await client.query(
-        `INSERT INTO team_pool_requests (request_id, team_id, supervisor_id, direction, token_amount_paise, note)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [requestId, String(teamId), String(supervisorId), direction, amount, cleanNote]);
-    } catch (e) {
-      if (e?.code === '23505') {
-        await client.query('ROLLBACK TO SAVEPOINT pool_request');
-        return { ok: false, reason: 'request_pending' };
-      }
-      throw e;
-    }
-    return { ok: true, requestId };
-  });
+    throw e;
+  }
+  return { ok: true, requestId };
 }
 
-/** A supervisor withdraws their own pending request. */
+/**
+ * A supervisor withdraws their own pending request. A USDT buy that has
+ * received anything is no longer theirs to withdraw: the coins are on chain,
+ * and it completes when they cover the price or goes to an admin.
+ */
 export async function cancelRequest({ requestId, supervisorId }) {
   const { rowCount } = await pgQuery(
     `UPDATE team_pool_requests SET status = 'CANCELLED', decided_by = $2, decided_at = now()
-      WHERE request_id = $1 AND supervisor_id = $2 AND status = 'PENDING'`,
+      WHERE request_id = $1 AND supervisor_id = $2 AND status = 'PENDING'
+        AND NOT EXISTS (SELECT 1 FROM pool_usdt_transfers t WHERE t.request_id = team_pool_requests.request_id)`,
     [String(requestId), String(supervisorId)], 'team_pool_request_cancel');
-  return rowCount ? { ok: true } : { ok: false, reason: 'request_not_pending' };
+  if (rowCount) return { ok: true };
+  const { rows } = await pgQuery(
+    'SELECT 1 FROM pool_usdt_transfers WHERE request_id = $1 LIMIT 1', [String(requestId)], 'team_pool_request_usdt_received');
+  return { ok: false, reason: rows[0] ? 'usdt_received' : 'request_not_pending' };
 }
 
 export async function getRequest(requestId) {
@@ -282,6 +322,20 @@ export async function fulfilRequest({ requestId, actor, consideration }) {
     if (e instanceof Refused) return { ok: false, reason: e.reason };
     throw e;
   }
+}
+
+/**
+ * `fulfilRequest` inside the caller's transaction (the USDT watcher's credit,
+ * `usdtDeposits.creditPoolUsdtBuyWithin`). A BUY only. Throws `PoolRefused`
+ * on any refusal, so the caller's transaction unwinds with it.
+ */
+export async function fulfilBuyWithin(client, { requestId, supervisorId, tokenAmountPaise, actor, consideration }) {
+  const movementId = `team_pool_${requestId}`;
+  assertRecordable({
+    movementId, merchantId: supervisorId, direction: DIRECTIONS.RECEIVED,
+    tokenAmountPaise, recordedBy: actor, ...consideration,
+  });
+  return fulfilWithin(client, { requestId, actor, consideration, movementId, direction: DIRECTIONS.RECEIVED });
 }
 
 async function fulfilWithin(client, { requestId, actor, consideration, movementId, direction }) {

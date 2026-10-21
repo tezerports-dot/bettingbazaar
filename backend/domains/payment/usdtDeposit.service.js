@@ -7,6 +7,8 @@
  *   watchUsdtDeposits     the cron tick: read the chain, record transfers,
  *                         credit every order they cover
  *   creditIfCovered       one order, now (the tick, and expiry's last look)
+ *   openMerchantPoolUsdtBuy  a merchant's pool buy and its own address
+ *                         (owner, 2026-10-21), fulfilled by the same tick
  *
  * The chain is read only through `usdtBsc.js`; the rows are written only by
  * `usdtDeposits.js`; the money moves only through `walletAuthority`.
@@ -20,6 +22,7 @@ import { completeUsdtBuy } from '../wallet/walletAuthority.service.js';
 import { emitOrderUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { notify } from '../communication/communication.service.js';
 import { sendAlert } from '../../services/alerting.service.js';
+import { adminToMerchantUsdtRate } from '../configuration/tokenRates.js';
 
 /** How many blocks one `eth_getLogs` asks for. Public BSC nodes refuse wide ranges. */
 export const LOG_BLOCK_RANGE = Math.max(1, Number(process.env.BSC_LOG_BLOCK_RANGE) || 500);
@@ -70,6 +73,57 @@ export async function openPlatformUsdtBuy(orderInput, cfg) {
     deriveAddress: (index) => deriveDepositAddress(key, index),
     windowSeconds: paymentWindowMinutes * 60,
   });
+}
+
+/**
+ * A merchant's pool buy paid in USDT: the BUY request with its own address,
+ * priced at `usdtPricing.merchantAdminBuyInr` and frozen. Refused before
+ * anything is written when USDT cannot be watched here (503
+ * `USDT_DEPOSITS_UNAVAILABLE`) or the price is unset (409 `USDT_RATE_UNSET`).
+ * A refusal of the request itself comes back as `{ ok: false, reason }`.
+ */
+export async function openMerchantPoolUsdtBuy({ teamId, supervisorId, tokenAmountPaise, note = null }) {
+  const key = configuredAccountKey();
+  if (!String(process.env.BSC_RPC_URL ?? '').trim()) {
+    throw Object.assign(new Error('USDT payments are not available right now. Please try again later.'),
+      { status: 503, code: 'USDT_DEPOSITS_UNAVAILABLE' });
+  }
+  const cfg = await getSystemConfig();
+  const rate = adminToMerchantUsdtRate(cfg);
+  if (!rate) {
+    throw Object.assign(new Error('The platform has not set its USDT price for merchants yet. Ask an admin to set it (Settings › USDT pricing).'),
+      { status: 409, code: 'USDT_RATE_UNSET' });
+  }
+  const { paymentWindowMinutes } = usdtDepositSettings(cfg);
+  return db.usdtDeposits.openPoolUsdtBuy({
+    teamId, supervisorId, tokenAmountPaise, rate, note, keyId: keyIdOf(key),
+    deriveAddress: (index) => deriveDepositAddress(key, index),
+    windowSeconds: paymentWindowMinutes * 60,
+  });
+}
+
+/** Tell the merchant who asked, by their own notifications. Never fails the caller. */
+async function tellRequester(supervisorId, title, message, requestId) {
+  try {
+    const m = await db.merchants.getMerchant(supervisorId);
+    if (!m?.userId) return;
+    await notify({ userId: m.userId, type: 'SUCCESS', title, message, relatedId: String(requestId), relatedType: 'TeamPoolRequest' });
+  } catch (e) {
+    console.warn('[usdt] tell requester:', e?.message);
+  }
+}
+
+/** Fulfil one pool buy if what arrived covers its price. Safe to call any number of times. */
+export async function creditPoolIfCovered(requestId) {
+  const done = await db.usdtDeposits.creditPoolUsdtBuy(requestId);
+  if (!done.credited) return done;
+  await tellRequester(done.supervisorId, 'USDT received',
+    `We received your USDT. ${(done.tokenAmountPaise / 100).toLocaleString('en-IN')} tokens are in your pool.`, requestId);
+  if (done.excessMicro > 0n) {
+    sendAlert(`usdt-pool-overpaid:${requestId}`, 'A merchant pool buy was overpaid in USDT; the excess needs an admin',
+      { requestId: String(requestId), excessUsdt: usdtText(done.excessMicro) }).catch(() => {});
+  }
+  return done;
 }
 
 const usdtText = (micro) => (Number(micro) / MICRO_PER_USDT).toLocaleString('en-IN', { maximumFractionDigits: 6 });
@@ -142,6 +196,7 @@ export async function watchUsdtDeposits() {
 
   const { confirmations, lateWatchHours } = usdtDepositSettings(await getSystemConfig());
   const touched = new Set();
+  const touchedPool = new Set();
   let recorded = 0;
   let scannedTo = null;
   let head = null;
@@ -164,7 +219,13 @@ export async function watchUsdtDeposits() {
           const r = await db.usdtDeposits.recordTransfer(t);
           if (!r.recorded) continue;
           recorded += 1;
-          if (r.orderState === 'PROCESSING') touched.add(r.orderId);
+          if (r.requestId) {
+            if (r.requestStatus === 'PENDING') touchedPool.add(r.requestId);
+            else {
+              sendAlert(`usdt-pool-late:${r.requestId}`, 'USDT arrived for a merchant pool buy that is no longer waiting',
+                { requestId: r.requestId, status: r.requestStatus, usdt: usdtText(t.amountMicro), txHash: t.txHash }).catch(() => {});
+            }
+          } else if (r.orderState === 'PROCESSING') touched.add(r.orderId);
           else await reportLateTransfer(r.orderId, t, r.orderState);
         }
       }
@@ -193,7 +254,24 @@ export async function watchUsdtDeposits() {
         .catch(() => {});
     }
   }
-  return { head, scannedTo, recorded, credited };
+  // Merchants' pool buys: credit what is covered, then lapse what is overdue
+  // and unpaid, by the same rule a player's buy lapses by.
+  for (const requestId of await db.usdtDeposits.pendingPoolBuysWithTransfers()) touchedPool.add(requestId);
+  let poolCredited = 0;
+  for (const requestId of touchedPool) {
+    try {
+      if ((await creditPoolIfCovered(requestId)).credited) poolCredited += 1;
+    } catch (e) {
+      console.error(`[usdt-watcher] pool credit ${requestId}:`, e.message);
+      sendAlert(`usdt-pool-credit-failed:${requestId}`, 'A merchant pool buy paid in USDT could not be credited',
+        { requestId, error: e.message }).catch(() => {});
+    }
+  }
+  const cfg = await getSystemConfig();
+  for (const overdue of await db.usdtDeposits.overduePoolBuys()) {
+    if (await usdtBuyMayLapse(overdue.expiresAt, cfg)) await db.usdtDeposits.lapsePoolUsdtBuy(overdue.requestId);
+  }
+  return { head, scannedTo, recorded, credited, poolCredited };
 }
 
 /**

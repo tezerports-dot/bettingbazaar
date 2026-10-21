@@ -3541,6 +3541,13 @@ const MUTATIONS = [
     to: `        AND $3::int IS NOT NULL`,
   },
   {
+    id: 'M463c', file: 'database/repositories/usdtDeposits.js', config: PG,
+    test: 'backend/tests/routes/usdtPoolBuyPg.test.js',
+    why: 'a merchant pool buy paid in USDT fills the pool before the USDT covers its price',
+    from: `  if (receivedMicro < requiredMicro) return { credited: false, reason: 'not_covered', requiredMicro, receivedMicro };`,
+    to: `  if (receivedMicro < 0n) return { credited: false, reason: 'not_covered', requiredMicro, receivedMicro };`,
+  },
+  {
     id: 'M464', file: 'backend/domains/merchant/merchantActor.js', config: PG,
     test: 'backend/tests/routes/merchantAccountPg.test.js',
     why: 'a DEPOSITS sub-member works a buy paid into an account that is not theirs',

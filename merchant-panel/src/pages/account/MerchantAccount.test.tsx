@@ -37,6 +37,7 @@ const api = vi.hoisted(() => ({
   assignSubMemberAccount: vi.fn(),
   unassignSubMemberAccount: vi.fn(),
   requestMerchantPool: vi.fn(),
+  buyMerchantPoolUsdt: vi.fn(),
   cancelMerchantPoolRequest: vi.fn(),
   getMerchantReport: vi.fn(),
   getOrderReport: vi.fn(),
@@ -274,9 +275,36 @@ describe('pool and reports', () => {
     expect(screen.getByText('400 BB')).toBeInTheDocument();
     expect(screen.getByText('Incoming from sells')).toBeInTheDocument();
     expect(screen.getByText('2,500 BB')).toBeInTheDocument();
+    // Buying in USDT is the default: no admin, an address back (owner, 2026-10-21).
+    api.buyMerchantPoolUsdt.mockResolvedValue({ requestId: 'req-u' });
+    fireEvent.change(screen.getByLabelText('Tokens (whole number)'), { target: { value: '2000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Get the USDT address' }));
+    await waitFor(() => expect(api.buyMerchantPoolUsdt).toHaveBeenCalledWith(2000));
+    expect(api.requestMerchantPool).not.toHaveBeenCalled();
+    // Paying an admin another way is still a request an admin fulfils.
+    fireEvent.click(screen.getByRole('button', { name: 'Pay an admin another way' }));
     fireEvent.change(screen.getByLabelText('Tokens (whole number)'), { target: { value: '2000' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send request' }));
     await waitFor(() => expect(api.requestMerchantPool).toHaveBeenCalledWith('BUY', 2000, ''));
+  });
+
+  it('a USDT pool buy shows where to pay, the amount and the network, and what bought and returned add up to', async () => {
+    api.getMerchantAccount.mockResolvedValue({
+      ...OVERVIEW,
+      poolTrades: { boughtPaise: 1_200_000, returnedPaise: 300_000, buys: 2, returns: 1 },
+      poolRequests: [{
+        requestId: 'req-u', teamId: 'team-1', direction: 'BUY', tokenAmountPaise: 900_000, status: 'PENDING',
+        note: null, decisionNote: null, decidedAt: null, createdAt: '2026-10-21T10:00:00Z',
+        usdt: { chain: 'BEP20', address: '0x' + 'ab'.repeat(20), amount: 100, received: 0, rate: 90, expiresAt: '2099-01-01T00:00:00Z' },
+      }],
+    });
+    at(ROUTES.ACCOUNT_POOL, OWNER, <PoolPage />);
+    const card = await screen.findByTestId('usdt-pay-card');
+    expect(card.textContent).toMatch(/Pay 100 USDT for 9,000 BB tokens/);
+    expect(card.textContent).toMatch(/BNB Smart Chain \(BEP-20\)/);
+    expect(card.textContent).toContain('0x' + 'ab'.repeat(20));
+    expect(screen.getByText('12,000 BB')).toBeInTheDocument();
+    expect(screen.getByText('3,000 BB')).toBeInTheDocument();
   });
 
   it('the report shows the server\'s figures and the orders table and its CSV follow the same range', async () => {
