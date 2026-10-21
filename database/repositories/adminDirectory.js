@@ -332,7 +332,7 @@ export async function merchantRow(merchantId) {
 }
 
 // ── Staff ─────────────────────────────────────────────────────────────────────
-// Every STAFF account (admin, sub-admin, queue manager, mediator) as one row.
+// Every STAFF account (admin, sub-admin, mediator) as one row.
 // The roles are the account's own flags on `users`; the areas are the keys its
 // grant holds true (`sub_admin_permissions`, validated by staffPermissions.js);
 // whether it has an authenticator is a yes/no from `staff_totp`, never the
@@ -350,13 +350,12 @@ export const STAFF_SORTS = Object.freeze({
 export const STAFF_ROLES = Object.freeze({
   ADMIN: 'is_admin',
   SUB_ADMIN: 'is_sub_admin',
-  QUEUE_MANAGER: 'is_queue_manager',
   MEDIATOR: 'is_mediator',
 });
 
 const STAFF_SQL = `
   SELECT u.user_id, u.username, u.mobile, u.status, u.joined_at, u.last_login,
-         u.is_admin, u.is_sub_admin, u.is_queue_manager, u.is_mediator, u.is_blocked,
+         u.is_admin, u.is_sub_admin, u.is_mediator, u.is_blocked,
          u.sub_admin_permissions,
          (SELECT COUNT(*) FROM jsonb_each(u.sub_admin_permissions) e WHERE e.value = 'true'::jsonb) AS area_count,
          (t.user_id IS NOT NULL) AS authenticator_enrolled

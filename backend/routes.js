@@ -137,7 +137,6 @@ function accountRefusal(door, user, loginType = null) {
   // The staff panel's role selector, re-applied on every leg.
   if (loginType === 'admin' && !user.isAdmin) return { status: 403, code: 'ROLE_REQUIRED', message: 'Admin access required.' };
   if (loginType === 'subadmin' && !user.isSubAdmin) return { status: 403, code: 'ROLE_REQUIRED', message: 'Sub-admin access required.' };
-  if (loginType === 'queue_manager' && !user.isQueueManager) return { status: 403, code: 'ROLE_REQUIRED', message: 'Queue manager access required.' };
   return null;
 }
 
@@ -208,13 +207,11 @@ export async function issueSession(user, res, { amr, extra = {} } = {}) {
   let role = 'user';
   if (user.isAdmin)          role = 'admin';
   else if (user.isSubAdmin)  role = 'subadmin';
-  else if (user.isQueueManager) role = 'queue_manager';
   else if (user.isMediator)  role = 'mediator';
 
   const token = signToken(
     { userId: user.userId, mobile: user.mobile, role,
       isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
-      isQueueManager: user.isQueueManager || false,
       amr: [...new Set(amr)],
       permissions: user.subAdminPermissions || {} }
   );
@@ -232,7 +229,7 @@ export async function issueSession(user, res, { amr, extra = {} } = {}) {
   const userPayload = {
     id: user.userId, _id: user.userId, username: user.username, mobile: user.mobile,
     role, isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
-    isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
+    permissions: user.subAdminPermissions || {},
     depositBalance: dep, winningsBalance: win, lockedBalance: balances.lockedBalance,
     // Sent separately, and never folded into walletBalance: only
     // `betReservePercent` of a stake may come from the reserve.
@@ -612,7 +609,7 @@ router.get('/me', async (req, res) => {
       user: {
         id: user.userId, _id: user.userId, username: user.username, mobile: user.mobile,
         role: decoded.role, isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
-        isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
+        permissions: user.subAdminPermissions || {},
         depositBalance: dep, winningsBalance: win, lockedBalance: balances.lockedBalance || 0,
         reserveBalance: balances.reserveBalance || 0,
         walletBalance: dep + win,

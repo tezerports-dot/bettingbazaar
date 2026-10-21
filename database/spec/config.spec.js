@@ -489,7 +489,7 @@ export const BRANDING_SPEC = group({
   logo: s(''), icon: s(''), favicon: s(''), splashScreen: s(''),
   // ── Panel titles ──────────────────────────────────────────────────────────
   userPanelName: s('Betting Bazaar'), adminPanelName: s('Bazaar Admin'),
-  merchantPanelName: s('Merchant Panel'), queueManagerPanelName: s('Queue Manager'),
+  merchantPanelName: s('Merchant Panel'),
   // ── Brand colours ─────────────────────────────────────────────────────────
   //
   // This spec is the OWNER, and its secondary and accent had drifted from the

@@ -31,10 +31,9 @@ export interface Admin {
   id?: string;
   username: string;
   mobile?: string; // full admins only (staffContactShield.js)
-  role: 'admin' | 'subadmin' | 'queue_manager';
+  role: 'admin' | 'subadmin';
   isAdmin: boolean;
   isSubAdmin: boolean;
-  isQueueManager: boolean;
   // permissions is populated for sub-admins from subAdminPermissions on the User document
   permissions?: SubAdminPermissions;
   profilePic?: string;
@@ -93,7 +92,6 @@ export interface User {
   /** Only on `GET /api/admin/sub-admins` (subadmins.admin.routes.js): a yes/no, never the secret. */
   authenticatorEnrolled?: boolean;
 
-  isQueueManager: boolean;
   isMediator: boolean;
   isMerchant: boolean;
   merchantApprovalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'SUSPENDED';
@@ -107,7 +105,7 @@ export interface User {
 }
 
 /** A staff role key, as the server names it (adminDirectory.js STAFF_ROLES). */
-export type StaffRole = 'ADMIN' | 'SUB_ADMIN' | 'QUEUE_MANAGER' | 'MEDIATOR';
+export type StaffRole = 'ADMIN' | 'SUB_ADMIN' | 'MEDIATOR';
 
 /**
  * One row of the staff table, as `GET /api/admin/staff` sends it
@@ -398,7 +396,7 @@ export interface PaymentOrder {
   /** The team serving it, once routed. */
   teamId?: string | null;
   status: OrderStatus;
-  /** May the queue manager move it to another member (`mayChangeHands`, orders.record.js). */
+  /** May an admin move it to another member (`mayChangeHands`, orders.record.js). */
   canReassign?: boolean;
   assignedBy?: string;
   assignedAt?: string;

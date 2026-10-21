@@ -9,9 +9,6 @@
  * as it was created. So each event names the AREAS (staffPermissions keys) whose
  * screens need it, and both transports deliver it only to staff who hold one.
  *
- * `queueManager: true` also delivers it to queue managers, who hold no keys and
- * exist to work the payment queue.
- *
  * An event NOT listed here reaches full admins only. Failing closed is the right
  * default for a new event: the symptom is a screen that does not update for a
  * sub-admin, which somebody reports, rather than data reaching people it should
@@ -20,7 +17,7 @@
 import { shieldContact } from '../identity/staffContactShield.js';
 import { staffCan } from '../identity/staffPermissions.js';
 
-const QUEUE = Object.freeze({ keys: ['canManageMerchants'], queueManager: true });
+const QUEUE = Object.freeze({ keys: ['canManageMerchants'] });
 const DISPUTES = Object.freeze({ keys: ['canResolveDisputes'] });
 const MERCHANTS = Object.freeze({ keys: ['canManageMerchants'] });
 const CYCLES = Object.freeze({ keys: ['canViewAnalytics', 'canManageCycles'] });
@@ -60,7 +57,6 @@ export function staffMayReceive(viewer, event) {
   if (viewer.isAdmin === true) return true;
   const area = STAFF_EVENT_AREAS[event];
   if (!area) return false;
-  if (area.queueManager && viewer.isQueueManager === true) return true;
   return area.keys.some((k) => staffCan(viewer, k));
 }
 
@@ -79,7 +75,6 @@ export function maySeeLiveSplit(viewer) {
  * the people `staffMayReceive` would allow.
  */
 export const staffRoom = (key) => `staff-area:${key}`;
-export const QUEUE_ROOM = 'staff-area:queue';
 export const FULL_ADMIN_ROOM = 'staff-area:admin';
 export const personalStaffRoom = (userId) => `staff:${userId}`;
 
@@ -88,7 +83,6 @@ export function roomsForEvent(event) {
   const rooms = [FULL_ADMIN_ROOM];
   if (!area) return rooms;
   rooms.push(...area.keys.map(staffRoom));
-  if (area.queueManager) rooms.push(QUEUE_ROOM);
   return rooms;
 }
 
@@ -97,7 +91,6 @@ export function roomsForViewer(viewer, keys) {
   const rooms = [personalStaffRoom(viewer.userId)];
   if (viewer.isAdmin === true) rooms.push(FULL_ADMIN_ROOM);
   else rooms.push(...keys.filter((k) => staffCan(viewer, k)).map(staffRoom));
-  if (viewer.isQueueManager === true) rooms.push(QUEUE_ROOM);
   return rooms;
 }
 

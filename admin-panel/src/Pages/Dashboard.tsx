@@ -152,7 +152,7 @@ export const Dashboard: React.FC = () => {
 
   const lanes = s ? [
     { title: 'Operations Queue', sub: 'Actionable work items', icon: Inbox, tone: 'info', rows: [
-      { label: 'Pending payment orders', value: num(s.queue.pendingOrders), color: 'var(--warning)', go: '/queue-manager' },
+      { label: 'Pending payment orders', value: num(s.queue.pendingOrders), color: 'var(--warning)', go: '/payment-queue' },
       { label: 'Merchant approvals', value: num(s.merchants.pending), color: 'var(--info)', go: '/merchants' },
     ] },
     { title: 'Risk & Controls', sub: 'Needs admin intervention', icon: ShieldCheck, tone: 'danger', rows: [

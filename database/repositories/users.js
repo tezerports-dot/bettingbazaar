@@ -48,7 +48,7 @@ const COLUMNS = `
   status, wallet_address, profile_pic, warning_count,
   payment_flagged, payment_flag_reason, payment_flagged_at, payment_flag_count,
   consecutive_payment_failures, order_lock_until, lost_disputes, high_risk_at,
-  is_admin, is_sub_admin, is_queue_manager, is_mediator,
+  is_admin, is_sub_admin, is_mediator,
   sub_admin_role, sub_admin_permissions, phantom_access,
   is_blocked, block_reason, blocked_at, blocked_by,
   bank_details, last_login, roles, deleted_at, deleted_by, joined_at, updated_at,
@@ -73,7 +73,7 @@ const UPDATABLE = Object.freeze(new Set([
   'status', 'wallet_address', 'profile_pic', 'warning_count',
   'payment_flagged', 'payment_flag_reason', 'payment_flagged_at', 'payment_flag_count',
   'consecutive_payment_failures', 'order_lock_until',
-  'is_admin', 'is_sub_admin', 'is_queue_manager', 'is_mediator',
+  'is_admin', 'is_sub_admin', 'is_mediator',
   'sub_admin_role', 'sub_admin_permissions', 'phantom_access',
   'is_blocked', 'block_reason', 'blocked_at', 'blocked_by',
   'bank_details', 'last_login', 'roles',
@@ -155,7 +155,6 @@ function toUser(row) {
     highRiskAt: row.high_risk_at ?? null,
     isAdmin: row.is_admin,
     isSubAdmin: row.is_sub_admin,
-    isQueueManager: row.is_queue_manager,
     isMediator: row.is_mediator,
     subAdminRole: row.sub_admin_role,
     subAdminPermissions: row.sub_admin_permissions ?? {},
@@ -611,8 +610,8 @@ export async function setBlocked(userId, { blocked, reason = null, actor = null,
  * Set an account's roles and the flags derived from them, in one statement.
  *
  * ── isAdmin is DERIVED from roles, not stored beside it ────────────────────
- * The handler this replaced assigned `roles`, then `isAdmin`, `isSubAdmin` and
- * `isQueueManager` as four separate properties on a document and saved it. Any
+ * The handler this replaced assigned `roles`, then `isAdmin` and `isSubAdmin` as
+ * separate properties on a document and saved it. Any
  * failure between them left an account whose roles array and whose flags
  * disagreed — and the flags are what every authorisation check reads, so the
  * roles column would have said "not an admin" while the platform treated the
@@ -629,7 +628,6 @@ export async function setRoles(userId, roles = []) {
        roles = $2::text[],
        is_admin         = 'admin'         = ANY($2::text[]),
        is_sub_admin     = 'subadmin'      = ANY($2::text[]),
-       is_queue_manager = 'queue_manager' = ANY($2::text[]),
        updated_at = now()
       WHERE user_id = $1
       RETURNING ${COLUMNS}`,
@@ -679,7 +677,7 @@ export async function softDeleteUser(userId, { actor }) {
  * cursor total when two accounts share a timestamp.
  */
 export async function listUsers({
-  status = null, isAdmin = null, isSubAdmin = null, isQueueManager = null,
+  status = null, isAdmin = null, isSubAdmin = null,
   blocked = null, flagged = null, search = null, byMobile = false,
   excludeRole = null, accountType = null, limit = 50, cursor = null, page = null,
 } = {}) {
@@ -706,7 +704,6 @@ export async function listUsers({
   if (status) add('status = $?', status);
   if (isAdmin !== null) add('is_admin = $?', Boolean(isAdmin));
   if (isSubAdmin !== null) add('is_sub_admin = $?', Boolean(isSubAdmin));
-  if (isQueueManager !== null) add('is_queue_manager = $?', Boolean(isQueueManager));
   if (blocked !== null) add('is_blocked = $?', Boolean(blocked));
   if (flagged !== null) add('payment_flagged = $?', Boolean(flagged));
   // Merchants are a separate entity with their own record and login; the

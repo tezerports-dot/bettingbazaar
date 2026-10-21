@@ -21,8 +21,7 @@ const NoAccess: React.FC<{ adminOnly?: boolean }> = ({ adminOnly = false }) => {
   const granted = (admin?.permissions ?? {}) as Record<string, boolean>;
   const elsewhere = admin?.isAdmin
     ? '/'
-    : (firstPermittedPath((keys) => keys.some((k) => granted[k] === true))
-      ?? (admin?.isQueueManager ? '/queue-manager' : null));
+    : firstPermittedPath((keys) => keys.some((k) => granted[k] === true));
 
   return (
     <div role="alert" style={{ maxWidth: 560, margin: '48px auto', padding: 24, borderRadius: 12, border: '1px solid var(--line, #334155)', background: 'var(--surface, transparent)' }}>

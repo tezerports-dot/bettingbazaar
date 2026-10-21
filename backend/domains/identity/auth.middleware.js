@@ -252,7 +252,7 @@ export function belongsElsewhere(user, accountTypes) {
  * staff door and every staff route refuse it the same way.
  */
 export function hasStaffRole(user) {
-  return Boolean(user?.isAdmin || user?.isSubAdmin || user?.isQueueManager || user?.isMediator);
+  return Boolean(user?.isAdmin || user?.isSubAdmin || user?.isMediator);
 }
 
 export function refuseWrongPanel(res, user) {

@@ -41,7 +41,7 @@ router.get('/account/me', authenticateStaff, (req, res) => {
       id: u.userId, _id: u.userId, username: u.username, mobile: u.mobile,
       accountType: u.accountType,
       isAdmin: u.isAdmin || false, isSubAdmin: u.isSubAdmin || false,
-      isQueueManager: u.isQueueManager || false, isMediator: u.isMediator || false,
+      isMediator: u.isMediator || false,
       permissions: u.subAdminPermissions || {},
       status: u.status || 'ACTIVE', lastLogin: u.lastLogin || null,
     },

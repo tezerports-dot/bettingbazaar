@@ -1,10 +1,10 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // The staff table (owner, 2026-10-14): every staff account — full admins,
-// sub-admins, queue managers, mediators — one row each, from
+// sub-admins, mediators — one row each, from
 // `GET /api/admin/staff` (adminDirectory.listStaff). The role tabs and sort
 // keys are the server's. A row opens the account's own page (StaffProfile),
-// where its areas, queue-manager access and authenticator are changed on the
+// where its areas and authenticator are changed on the
 // page itself. Support staff are sub-admins holding the chat and support
 // areas; the Areas column names them. Full admin only, as every route here.
 import React, { useCallback, useEffect, useState } from 'react';

@@ -1,14 +1,14 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * domains/merchant/merchant.assignment.routes.js — the queue manager's levers
- * over who serves an order.
+ * domains/merchant/merchant.assignment.routes.js — the payment queue's levers
+ * over who serves an order (staff with the merchants area).
  *
  * ── There is no picker any more ─────────────────────────────────────────────
  * Every order reaches an approved team member through team routing
  * (`db.teamRouting.assignToTeam`, PROJECT_STATUS §3.10 2c, §3.11): the admin's
  * routing priority, then the fastest average response, then fewest open
  * orders, then least recently assigned, on the order's rail, with a buy's
- * tokens held in the team's pool in the same transaction. A queue manager
+ * tokens held in the team's pool in the same transaction. Staff
  * hand-picking a merchant would bypass every one of those checks — the pool,
  * the cap, Ready, the approval — so the levers left are the ones that go
  * THROUGH it:
@@ -21,7 +21,7 @@
  * Payment-order lifecycle (approve / reject / cancel / resolve-dispute) is
  * Payment domain territory and lives in domains/payment/paymentOrder.routes.js.
  */
-import { express, authenticate, queueManagerOrPermission } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { requeueOrder } from '../payment/orderLifecycle.service.js';
 import { tryAssignMerchant } from '../payment/paymentProcessing.service.js';
@@ -53,7 +53,7 @@ const router = express.Router();
  * Not a refusal by the member — the admin moved it — so nothing is counted
  * against them.
  */
-router.post('/payment-orders/:id/reassign', authenticate, queueManagerOrPermission('canManageMerchants'), async (req, res) => {
+router.post('/payment-orders/:id/reassign', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const order = await db.orders.getOrderRecord(req.params.id);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
@@ -72,11 +72,11 @@ router.post('/payment-orders/:id/reassign', authenticate, queueManagerOrPermissi
       expectFrom: 'PROCESSING',
       set: { merchantId: null, merchantSnapshot: null, expiresAt: null },
       actor: `admin:${req.user.userId}`,
-      reason: 'Reassigned by a queue manager',
+      reason: 'Reassigned by an admin',
       within: async (client) => {
         await db.orders.refuseIfPayableWithin(client, order.orderId);
         await db.teamPools.detachFromTeamWithin(client, order.orderId, {
-          actor: `admin:${req.user.userId}`, reason: 'Reassigned by a queue manager',
+          actor: `admin:${req.user.userId}`, reason: 'Reassigned by an admin',
         });
       },
     });
@@ -127,7 +127,7 @@ router.post('/payment-orders/:id/reassign', authenticate, queueManagerOrPermissi
 });
 
 // ─── GET /api/admin/queue/pending-orders ──────────────────────────────────────
-router.get('/queue/pending-orders', authenticate, queueManagerOrPermission('canManageMerchants'), async (req, res) => {
+router.get('/queue/pending-orders', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     // One query with the player joined, not a populate per page. A player who
     // has since been deleted comes back with null columns rather than a `null`
@@ -148,14 +148,14 @@ router.get('/queue/pending-orders', authenticate, queueManagerOrPermission('canM
   }
 });
 
-// ─── POST /api/admin/queue/assign/:orderId (queue manager) ────────────────────
+// ─── POST /api/admin/queue/assign/:orderId ────────────────────────────────────
 /**
  * Offer one queued order to the teams NOW, rather than waiting for the sweep.
  * Through routing, never to a hand-picked merchant (see the header). Answers
- * 409 naming why when nobody can take it, so the queue manager knows whether to
+ * 409 naming why when nobody can take it, so the admin knows whether to
  * wait or to ask a supervisor to fund a pool or fill a team.
  */
-router.post('/queue/assign/:orderId', authenticate, queueManagerOrPermission('canManageMerchants'), async (req, res) => {
+router.post('/queue/assign/:orderId', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const order = await db.orders.getOrderRecord(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });

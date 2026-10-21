@@ -21,7 +21,7 @@ import { TransactionsList } from './Pages/Finance/TransactionsList';
 import { ProfitLoss } from './Pages/Finance/ProfitLoss';
 import { TokenFlow } from './Pages/Finance/TokenFlow';
 import { SupportAssistant } from './Pages/Support/SupportAssistant';
-import { QueueDashboard } from './Pages/QueueManager/QueueDashboard';
+import { QueueDashboard } from './Pages/PaymentQueue/QueueDashboard';
 import { TelegramBot } from './Pages/Telegram/TelegramBot';
 import { MyAuthenticator } from './Pages/Account/MyAuthenticator';
 import { ReferralProgramme } from './Pages/Referrals/ReferralProgramme';
@@ -97,21 +97,7 @@ const PermRoute: React.FC<{ permission: PermissionKey | PermissionKey[]; childre
 };
 
 /**
- * QueueRoute — queue managers, and staff holding `canManageMerchants`: the same
- * rule every queue route applies on the server (`queueManagerOrPermission`). It
- * admitted ANY sub-admin, who then met a screen of refusals.
- */
-const QueueRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated, admin } = useAuthStore();
-  const { can } = usePermissions();
-  if (!isAuthenticated) return <Navigate to="/login" replace />;
-  if (!admin) return <Navigate to="/login" replace />;
-  if (!admin.isQueueManager && !can('canManageMerchants')) return <Layout><NoAccess /></Layout>;
-  return <>{children}</>;
-};
-
-/**
- * AnyAuth — any authenticated user (admin, sub-admin with any perm, queue_manager).
+ * AnyAuth — any authenticated user (admin, sub-admin with any perm).
  * Used for the main dashboard which is a safe read-only page.
  */
 const AnyAuth: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -153,12 +139,8 @@ const App: React.FC = () => {
     }
   }, [isAuthenticated]);
 
-  // Redirect queue-only users away from all routes except /queue-manager
-  // This is enforced at route level above — but we also handle the root redirect
   const rootRedirect = () => {
     if (!admin) return <Navigate to="/login" replace />;
-    if (admin.isQueueManager && !admin.isAdmin && !admin.isSubAdmin)
-      return <Navigate to="/queue-manager" replace />;
     // The dashboard is analytics. A sub-admin who was not given analytics lands
     // on the first area they WERE given, instead of a dashboard of refusals.
     if (!admin.isAdmin && !(admin.permissions as Record<string, boolean> | undefined)?.canViewAnalytics) {
@@ -280,11 +262,12 @@ const App: React.FC = () => {
           </PermRoute>
         } />
 
-        {/* Queue Manager — queue_manager role OR admin */}
-        <Route path="/queue-manager" element={
-          <QueueRoute>
+        {/* Payment queue — canManageMerchants, the area every queue route asks
+            on the server (there is no queue manager role; owner, 2026-10-21) */}
+        <Route path="/payment-queue" element={
+          <PermRoute permission="canManageMerchants">
             <Layout><QueueDashboard /></Layout>
-          </QueueRoute>
+          </PermRoute>
         } />
 
         {/* Content — canManageContent */}

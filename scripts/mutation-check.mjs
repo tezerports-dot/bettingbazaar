@@ -1328,8 +1328,8 @@ const MUTATIONS = [
   {
     id: 'M242', file: 'backend/domains/payment/paymentOrder.routes.js', config: PG,
     test: 'backend/tests/routes/queueWritePermissionPg.test.js',
-    why: "a queue manager's one screen cannot load its own queue",
-    from: `router.get('/payment-queue', authenticate, queueManagerOrPermission('canManageMerchants'),`,
+    why: "a staff account with the merchants area cannot load the payment queue",
+    from: `router.get('/payment-queue', authenticate, hasPermission('canManageMerchants'),`,
     to: `router.get('/payment-queue', authenticate, hasPermission('canViewTransactions'),`,
   },
   // ── Staff authority on STAFF rows only; a deleted account is closed (2026-10-01) ──
@@ -1337,16 +1337,10 @@ const MUTATIONS = [
     id: 'M243', file: 'database/schema.sql', config: PG,
     test: 'backend/tests/routes/adminUsersRoutes.test.js',
     why: 'a staff flag can be written onto a PLAYER row, and that player\'s own session carries it',
-    from: `CHECK (account_type = 'STAFF' OR NOT (is_admin OR is_sub_admin OR is_queue_manager OR is_mediator));`,
+    from: `CHECK (account_type = 'STAFF' OR NOT (is_admin OR is_sub_admin OR is_mediator));`,
     to: `CHECK (TRUE);`,
   },
-  {
-    id: 'M244', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
-    test: 'backend/tests/routes/adminUsersRoutes.test.js',
-    why: 'the queue-manager grant accepts a PLAYER id and the admin is not told why it failed',
-    from: `if (target.accountType !== 'STAFF') {`,
-    to: `if (false) {`,
-  },
+  // M244 (the queue-manager grant) deleted with the role (owner, 2026-10-21).
   {
     id: 'M245', file: 'database/repositories/users.js', config: PG,
     test: 'backend/tests/routes/closedAccountPg.test.js',

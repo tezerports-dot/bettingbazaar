@@ -37,7 +37,6 @@ export const BrandingSettings: React.FC = () => {
     userPanelName: 'Betting Bazaar',
     adminPanelName: 'Bazaar Admin',
     merchantPanelName: 'Merchant Portal',
-    queueManagerPanelName: 'Queue Manager',
 
     // Every image (logo, icons, board cards, banners) is set on the Images
     // page (Pages/Images), the one place images are edited (owner,
@@ -235,7 +234,6 @@ export const BrandingSettings: React.FC = () => {
                 { id: 'userPanelName', label: 'User Panel Name' },
                 { id: 'adminPanelName', label: 'Admin Panel Name' },
                 { id: 'merchantPanelName', label: 'Merchant Panel Name' },
-                { id: 'queueManagerPanelName', label: 'Queue Manager Panel Name' },
               ].map(({ id, label }) => (
                 <div key={id}>
                   <label className="label" htmlFor={id}>{label}</label>
@@ -269,7 +267,6 @@ export const BrandingSettings: React.FC = () => {
               { id: 'user-panel-name', name: 'userPanelName', label: 'User App Name', key: 'userPanelName', hint: 'Browser tab title & header in user-facing app' },
               { id: 'admin-panel-name', name: 'adminPanelName', label: 'Admin Panel Name', key: 'adminPanelName', hint: 'Browser tab & header in admin panel' },
               { id: 'merchant-panel-name', name: 'merchantPanelName', label: 'Merchant Panel Name', key: 'merchantPanelName', hint: 'Title shown in merchant portal' },
-              { id: 'queue-panel-name', name: 'queueManagerPanelName', label: 'Queue Manager Panel Name', key: 'queueManagerPanelName', hint: 'Title shown for queue manager login' },
             ].map((p) => (
               <div key={p.key}>
                 <label htmlFor={p.id} className="label">{p.label}</label>
