@@ -33,6 +33,8 @@ const team = (teamId: string, name: string, extra = {}) => ({
   approvedCount: 0, pendingCount: 0, size: 10, strength: 'STOPPED', createdAt: '',
   poolAvailablePaise: 0, poolHeldPaise: 0,
   poolExposure: { heldOpenPaise: 0, heldDisputedPaise: 0, openBuys: 0, sellsSettlingPaise: 0, sellsDisputedPaise: 0, openSells: 0 },
+  poolStanding: { sizePaise: 0, leftPaise: 0, heldPaise: 0, consumedPaise: 0, sellsOwedPaise: 0, sellRoomPaise: 0, leftPercent: 0 },
+  cashOut: { active: false, startedAt: null, pausedUntil: null, pauseHours: 48 },
   commission: { teamId, buysPaise: 0, sellsPaise: 0, paidPaise: 0, owedPaise: 0,
     depositPercent: 5, withdrawalPercent: 5, supervisorSharePercent: 16 },
   ...extra,

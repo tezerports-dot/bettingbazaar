@@ -4461,6 +4461,21 @@ ALTER TABLE teams ADD CONSTRAINT teams_kind_shape CHECK (
 CREATE UNIQUE INDEX IF NOT EXISTS teams_one_direct_per_owner ON teams (owner_merchant_id)
   WHERE owner_merchant_id IS NOT NULL;
 
+-- A pool's CASH OUT (owner, 2026-10-21): its holder turns tokens into cash by
+-- serving buys only. From the start no new sell reaches it and its buys go
+-- first; the sells and disputes it already has stay with it. It ends when the
+-- pool can no longer cover the smallest buy it could be sent and it has no
+-- buy open (or its holder stops it), and then nothing new reaches it, and it
+-- buys no tokens, for 48 hours (`paused_until`). Written only by
+-- `database/repositories/teamCashOut.js`, its guards in each UPDATE's WHERE.
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS cash_out_started_at TIMESTAMPTZ;
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS cash_out_by TEXT;
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS paused_until TIMESTAMPTZ;
+ALTER TABLE teams DROP CONSTRAINT IF EXISTS teams_cash_out_or_pause;
+ALTER TABLE teams ADD CONSTRAINT teams_cash_out_or_pause CHECK (
+  (cash_out_started_at IS NULL OR paused_until IS NULL)
+  AND (cash_out_started_at IS NULL) = (cash_out_by IS NULL));
+
 -- A team is born AGENT or DIRECT and stays it; a DIRECT team keeps its owner.
 -- An owner is neither a supervisor nor a team member, and the reverse: the
 -- three roles are disjoint (extends `team_roles_disjoint`).

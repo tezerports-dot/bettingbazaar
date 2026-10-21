@@ -8,6 +8,9 @@
  * one to ten (owner, Phase A): there is no team-level gate, because a team
  * with no approved member has nobody this query can return.
  *
+ * A pool cashing out takes buys only, and first; one in the 48-hour pause after
+ * it takes nothing new (`teamCashOut.js`, owner 2026-10-21).
+ *
  * Inside the eligible members, best first (owner, Phase A; pool, 2026-10-21):
  *   1. the highest `routing_priority` (1–5, the admin's, default 3);
  *   2. by the pool (`poolStandingSql`): a BUY to the team with the most of its
@@ -42,6 +45,16 @@ import { transitionOrder } from './orders.js';
 export { RAILS, railOf, PAYMENT_MODES, paymentModeFor, routedToMerchants } from './orderRails.js';
 
 const OPEN_STATES = ['PROCESSING', 'PAID'];
+
+/**
+ * A pool's cash out (owner, 2026-10-21; `teamCashOut.js`): while it runs, the
+ * pool takes buys only, and before anyone else (the first key of each ORDER
+ * BY); in the pause after it, nothing new. `isBuy` names the statement's
+ * direction parameter.
+ */
+const CASH_OUT_ADMITS = (isBuy) => `
+  (t.paused_until IS NULL OR t.paused_until <= now())
+  AND (t.cash_out_started_at IS NULL OR ${isBuy})`;
 
 /**
  * The pool's part of "best first" (owner, 2026-10-21), over a team's pool row
@@ -125,6 +138,7 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
        LEFT JOIN open o ON o.merchant_id = m.merchant_id
       WHERE tm.status = 'APPROVED'
         AND s.supervisor_rail = $1
+        AND ${CASH_OUT_ADMITS('$3')}
         AND m.status = 'ACTIVE'
         AND m.merchant_approval_status = 'APPROVED'
         AND m.is_online
@@ -141,7 +155,8 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
         AND (NOT ($3 AND $1 = 'UPI_BANK') OR (
               COALESCE(m.bank_account_no, '') <> '' AND COALESCE(m.bank_ifsc, '') <> ''
           AND COALESCE(m.bank_account_holder_name, '') <> ''))
-      ORDER BY m.routing_priority DESC,
+      ORDER BY (t.cash_out_started_at IS NOT NULL) DESC,
+               m.routing_priority DESC,
                ${poolOrderSql('$3', '$4')},
                m.avg_response_minutes ASC NULLS LAST,
                ${sellRoomOrderSql('$3')},
@@ -296,6 +311,7 @@ export async function directCandidates(order, { cap, barredMerchantIds = [], lim
        CROSS JOIN LATERAL (${poolStandingSql('t.team_id')}) st
        LEFT JOIN open_by_direction ob ON ob.merchant_id = owner.merchant_id
       WHERE t.kind = 'DIRECT'
+        AND ${CASH_OUT_ADMITS('$2')}
         AND owner.status = 'ACTIVE'
         AND owner.merchant_approval_status = 'APPROVED'
         AND owner.is_online
@@ -308,7 +324,8 @@ export async function directCandidates(order, { cap, barredMerchantIds = [], lim
                      WHERE acct.merchant_id = owner.merchant_id AND acct.status = 'ACTIVE'
                        AND (CASE WHEN $2 THEN acct.accepts_deposits ELSE acct.pays_withdrawals END)
                        AND ($3 / 100)::int = ANY (CASE WHEN $2 THEN acct.buy_sizes ELSE acct.sell_sizes END))
-      ORDER BY owner.routing_priority DESC,
+      ORDER BY (t.cash_out_started_at IS NOT NULL) DESC,
+               owner.routing_priority DESC,
                ${poolOrderSql('$2', '$3')},
                owner.avg_response_minutes ASC NULLS LAST,
                ${sellRoomOrderSql('$2')},

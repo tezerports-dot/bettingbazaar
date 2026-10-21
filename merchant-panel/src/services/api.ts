@@ -10,6 +10,7 @@ import {
   TeamPool,
   TeamPoolEntry,
   TeamPoolRequest,
+  CashOut,
   MemberLog,
   SupervisorOrder,
   DisputeThreadMessage,
@@ -614,6 +615,10 @@ export const requestTeamPool = async (
     method: 'POST', body: JSON.stringify({ tokenAmount, note: note || null }),
   })).message;
 
+/** Start (`true`) or stop a team pool's cash out (owner, 2026-10-21). */
+export const setTeamCashOut = async (teamId: string, start: boolean): Promise<CashOut> =>
+  (await request<{ cashOut: CashOut }>(ENDPOINTS.TEAM.CASH_OUT(teamId), { method: start ? 'POST' : 'DELETE' })).cashOut;
+
 /** Buy pool tokens from the platform in USDT: the request, with where to pay (owner, 2026-10-21). */
 export const buyTeamPoolUsdt = async (teamId: string, tokenAmount: number): Promise<TeamPoolRequest> =>
   (await request<{ request: TeamPoolRequest }>(ENDPOINTS.TEAM.POOL_USDT_BUY(teamId), {
@@ -719,6 +724,11 @@ export const requestMerchantPool = async (tokens: number, note: string): Promise
   (await accountRequest<{ requestId: string }, []>(ENDPOINTS.ACCOUNT.REQUEST_POOL, [], {
     tokens, note: note || null,
   })).requestId;
+
+/** Start (`true`) or stop the merchant account's cash out (owner, 2026-10-21). */
+export const setMerchantCashOut = async (start: boolean): Promise<CashOut> =>
+  (await accountRequest<{ cashOut: CashOut }, []>(
+    start ? ENDPOINTS.ACCOUNT.START_CASH_OUT : ENDPOINTS.ACCOUNT.STOP_CASH_OUT, [])).cashOut;
 
 /** A merchant account buys pool tokens in USDT: the request, with where to pay (owner, 2026-10-21). */
 export const buyMerchantPoolUsdt = async (tokens: number): Promise<TeamPoolRequest> =>
@@ -851,6 +861,8 @@ export const api = {
   unassignSubMemberAccount,
   requestMerchantPool,
   buyMerchantPoolUsdt,
+  setMerchantCashOut,
+  setTeamCashOut,
   cancelMerchantPoolRequest,
   getMerchantReport,
   getOrderReport,

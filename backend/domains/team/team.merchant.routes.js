@@ -215,6 +215,28 @@ router.post('/supervisor/teams/:teamId/pool-requests/usdt', merchantAuth, requir
   } catch (err) { respondError(res, err, 'POST /merchant/supervisor/teams/:id/pool-requests/usdt'); }
 });
 
+/**
+ * POST /api/merchant/supervisor/teams/:teamId/cash-out — start the team pool's
+ * cash out; DELETE stops it early (owner, 2026-10-21; `teamCashOut.js`): buys
+ * only, and first, while it runs; the sells and disputes already open stay;
+ * then 48 hours with nothing new. Another supervisor's team matches no row.
+ */
+const cashOutRoute = (start) => async (req, res) => {
+  try {
+    const args = { teamId: req.params.teamId, merchantId: req.merchantId };
+    const out = start ? await db.teamCashOut.startCashOut(args) : await db.teamCashOut.stopCashOut(args);
+    if (!out.ok) return refuse(res, out.reason);
+    await db.audit.recordDetailed({
+      performedBy: req.merchantId, category: 'TREASURY', targetType: 'TEAM',
+      action: start ? 'TEAM_CASH_OUT_STARTED' : 'TEAM_CASH_OUT_STOPPED',
+      targetId: req.params.teamId, ip: req.ip, details: out.cashOut,
+    });
+    res.json({ success: true, cashOut: out.cashOut });
+  } catch (err) { respondError(res, err, `${start ? 'POST' : 'DELETE'} /merchant/supervisor/teams/:id/cash-out`); }
+};
+router.post('/supervisor/teams/:teamId/cash-out', merchantAuth, requireSupervisor, cashOutRoute(true));
+router.delete('/supervisor/teams/:teamId/cash-out', merchantAuth, requireSupervisor, cashOutRoute(false));
+
 // DELETE /api/merchant/supervisor/pool-requests/:requestId — a pending request only.
 router.delete('/supervisor/pool-requests/:requestId', merchantAuth, requireSupervisor, async (req, res) => {
   try {

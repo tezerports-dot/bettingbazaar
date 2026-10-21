@@ -22,6 +22,8 @@ import {
   creditSellToPool, reverseSellFromPool, findStrandedBuyHolds, findCompletedUnspentBuys, poolStanding,
 } from '../repositories/teamPools.js';
 import { assignToTeam, routingCandidates, railOf, setCashReady, routingSettings } from '../repositories/teamRouting.js';
+import { startCashOut, stopCashOut, finishCashOut, CASH_OUT_PAUSE_HOURS } from '../repositories/teamCashOut.js';
+import { getTeam } from '../repositories/teams.js';
 import { createOrderRecord, getOrderRecord } from '../repositories/orders.record.js';
 import { transitionOrder } from '../repositories/orders.js';
 import { getTreasuryBalances, ACCOUNTS } from '../repositories/treasury.js';
@@ -359,6 +361,91 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     await pgQuery('UPDATE merchants SET avg_response_minutes = 0.5 WHERE merchant_id = $1', [f]);
     const faster = (await routingCandidates(await order('WITHDRAWAL', 100000), { cap: 3, limit: 500 })).map((c) => c.merchantId);
     expect(faster.slice(0, 2)).toEqual([f, d]);
+  });
+
+  // ── Cash out (owner, 2026-10-21) ─────────────────────────────────────────
+  // Buys only, and first; the sells already open stay; it ends when the pool
+  // cannot cover the smallest buy and none is open; then 48 hours of nothing.
+  const complete = async (o) => {
+    expect((await transitionOrder(o.orderId, 'PAID', { actor: 'test' })).ok).toBe(true);
+    expect(await spendForBuy(o.orderId, { requireState: 'PAID' })).toMatchObject({ ok: true });
+    expect((await transitionOrder(o.orderId, 'COMPLETED', { actor: 'test' })).ok).toBe(true);
+  };
+  it('a pool cashing out gets only buys, first; its open sell stays; it ends empty and pauses for 48 hours', async () => {
+    const out = await workingTeam('UPI_BANK', 100000);
+    const other = await workingTeam('UPI_BANK', 400000);
+    const [a] = out.members;
+    const [b] = other.members;
+    await pgQuery('UPDATE merchants SET is_online = (merchant_id = ANY($2)) WHERE merchant_id = ANY($1)', [made, [a, b]]);
+    // A sell already with the pool when it starts.
+    const openSell = await order('WITHDRAWAL', 60000);
+    expect((await assignToTeam(openSell, { cap: 3, barredMerchantIds: [b], buildSet: async () => ({ assignedAt: new Date() }) })).merchantId).toBe(a);
+
+    // Only its supervisor starts it; another's team is not theirs.
+    expect(await startCashOut({ teamId: out.teamId, merchantId: other.sup })).toEqual({ ok: false, reason: 'team_not_found' });
+    const started = await startCashOut({ teamId: out.teamId, merchantId: out.sup });
+    expect(started).toMatchObject({ ok: true, cashOut: { active: true, pausedUntil: null, pauseHours: 48 } });
+    expect(await startCashOut({ teamId: out.teamId, merchantId: out.sup })).toEqual({ ok: false, reason: 'cash_out_running' });
+    expect((await getTeam(out.teamId)).cashOut.active).toBe(true);
+    // It buys no tokens while it gives them up.
+    expect(await createRequest({ teamId: out.teamId, supervisorId: out.sup, tokenAmountPaise: T(1000) }))
+      .toEqual({ ok: false, reason: 'cash_out_running' });
+
+    // A buy goes to it first, over a fuller pool; a new sell never does.
+    const buys = (await routingCandidates(await order('DEPOSIT', 50000), { cap: 3, limit: 500 })).map((c) => c.merchantId);
+    expect(buys.slice(0, 2)).toEqual([a, b]);
+    const sells = (await routingCandidates(await order('WITHDRAWAL', 60000), { cap: 3, limit: 500 })).map((c) => c.merchantId);
+    expect(sells).toContain(b);
+    expect(sells).not.toContain(a);
+    // The sell it already had is still its own.
+    expect((await getOrderRecord(openSell.orderId)).merchantId).toBe(a);
+
+    // Not over while the pool covers the smallest buy (50,000 here).
+    expect(await finishCashOut(out.teamId, T(50000))).toEqual({ ok: false });
+    const first = await order('DEPOSIT', 50000);
+    expect((await assign(first)).merchantId).toBe(a);
+    await complete(first);
+    const second = await order('DEPOSIT', 50000);
+    expect((await assign(second)).merchantId).toBe(a);
+    // The pool is empty but a buy is still open: not over yet.
+    expect(await finishCashOut(out.teamId, T(50000))).toEqual({ ok: false });
+    await complete(second);
+    const ended = await finishCashOut(out.teamId, T(50000));
+    expect(ended.ok).toBe(true);
+    const hours = (new Date(ended.pausedUntil).getTime() - Date.now()) / 3_600_000;
+    expect(hours).toBeGreaterThan(CASH_OUT_PAUSE_HOURS - 0.1);
+    expect(hours).toBeLessThanOrEqual(CASH_OUT_PAUSE_HOURS);
+
+    // The pause: nothing new, no tokens bought, no second cash out.
+    expect((await getTeam(out.teamId)).cashOut).toMatchObject({ active: false, pausedUntil: ended.pausedUntil });
+    const anyBuy = (await routingCandidates(await order('DEPOSIT', 50000), { cap: 3, limit: 500 })).map((c) => c.merchantId);
+    const anySell = (await routingCandidates(await order('WITHDRAWAL', 60000), { cap: 3, limit: 500 })).map((c) => c.merchantId);
+    expect(anyBuy).not.toContain(a);
+    expect(anySell).not.toContain(a);
+    expect(await createRequest({ teamId: out.teamId, supervisorId: out.sup, tokenAmountPaise: T(1000) }))
+      .toMatchObject({ ok: false, reason: 'cash_out_paused' });
+    expect(await startCashOut({ teamId: out.teamId, merchantId: out.sup })).toMatchObject({ ok: false, reason: 'cash_out_paused' });
+
+    // Once the pause is over the pool works as before (the clock moved by hand).
+    await pgQuery("UPDATE teams SET paused_until = now() - interval '1 minute' WHERE team_id = $1", [out.teamId]);
+    const back = (await routingCandidates(await order('WITHDRAWAL', 60000), { cap: 3, limit: 500 })).map((c) => c.merchantId);
+    expect(back).toContain(a);
+  });
+
+  it('a cash out is not started while a token request waits, and stopping one early starts the pause', async () => {
+    const t = await workingTeam('UPI_BANK', 0);
+    const r = await createRequest({ teamId: t.teamId, supervisorId: t.sup, tokenAmountPaise: T(1000) });
+    expect(r.ok).toBe(true);
+    expect(await startCashOut({ teamId: t.teamId, merchantId: t.sup })).toEqual({ ok: false, reason: 'request_pending' });
+    await pgQuery("UPDATE team_pool_requests SET status = 'CANCELLED', decided_at = now() WHERE request_id = $1", [r.requestId]);
+    expect(await stopCashOut({ teamId: t.teamId, merchantId: t.sup })).toEqual({ ok: false, reason: 'cash_out_not_running' });
+    expect((await startCashOut({ teamId: t.teamId, merchantId: t.sup })).ok).toBe(true);
+    const stopped = await stopCashOut({ teamId: t.teamId, merchantId: t.sup });
+    expect(stopped).toMatchObject({ ok: true, cashOut: { active: false } });
+    expect(stopped.cashOut.pausedUntil).not.toBeNull();
+    // The row refuses a cash out and a pause at once, from any writer.
+    await expect(pgQuery('UPDATE teams SET cash_out_started_at = now(), cash_out_by = $2 WHERE team_id = $1', [t.teamId, t.sup]))
+      .rejects.toMatchObject({ constraint: 'teams_cash_out_or_pause' });
   });
 
   it('priority is a whole number from 1 to 5, a member\'s only, and the row holds the range for every writer', async () => {

@@ -623,6 +623,8 @@ export interface TeamView {
   poolAvailablePaise: number; poolHeldPaise: number;
   /** What the held tokens are held for, and the sells on their way in. */
   poolExposure: PoolExposure;
+  /** Cash out and the pause after it (`toCashOut`, teamCashOut.js). */
+  cashOut?: CashOut;
   /** Team commission (Step 2e): mirrors `toSummary` in database/repositories/teamCommission.js — §5. */
   commission: {
     teamId: string; buysPaise: number; sellsPaise: number;
@@ -673,6 +675,21 @@ export interface PoolExposure {
 }
 
 /** One line saying where a pool's held tokens are and what sells are bringing in. */
+/**
+ * A pool's cash out (owner, 2026-10-21): `toCashOut` in
+ * database/repositories/teamCashOut.js — §5. Buys only while active; nothing
+ * new until `pausedUntil`.
+ */
+export interface CashOut { active: boolean; startedAt: string | null; pausedUntil: string | null; pauseHours: number }
+
+/** The one line the admin's pool tables show for a cash out; '' when there is none. */
+export function cashOutLine(c: CashOut | undefined): string {
+  if (!c) return '';
+  if (c.active) return 'Cashing out: buy orders only';
+  if (c.pausedUntil) return `Paused after a cash out until ${new Date(c.pausedUntil).toLocaleString('en-IN')}`;
+  return '';
+}
+
 export function poolExposureLine(x: PoolExposure | undefined, tokens: (paise: number) => string): string {
   if (!x) return '';
   const parts = [`${tokens(x.heldOpenPaise)} in ${x.openBuys} open buy${x.openBuys === 1 ? '' : 's'}`];

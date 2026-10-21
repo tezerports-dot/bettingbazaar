@@ -410,6 +410,10 @@ export interface Team {
   poolAvailablePaise: number; poolHeldPaise: number;
   /** What the held tokens are held for, and the sells on their way in. */
   poolExposure: PoolExposure;
+  /** Size, left, consumed and sell room (`toPoolStanding`, teamPools.js). */
+  poolStanding: PoolStanding;
+  /** Cash out and the pause after it (`toCashOut`, teamCashOut.js). */
+  cashOut: CashOut;
   /** Team commission (Step 2e): `toSummary` in database/repositories/teamCommission.js. */
   commission: TeamCommissionSummary;
   /** Sent on a supervisor's own teams (`GET /api/merchant/team`). */
@@ -564,7 +568,24 @@ export interface DirectTeam {
   teamId: string; kind: 'DIRECT'; ownerMerchantId: string; ownerName: string; ownerRef: string;
   ownerStatus: string; ownerApproval: string; ownerOnline: boolean; routingPriority: number;
   name: string; poolAvailablePaise: number; poolHeldPaise: number; poolExposure: PoolExposure;
+  poolStanding: PoolStanding; cashOut: CashOut;
   commission: TeamCommissionSummary; createdAt: string;
+}
+
+/**
+ * How full a pool is (owner, 2026-10-21): `toPoolStanding` in
+ * database/repositories/teamPools.js — §5. Paise. Size is the tokens bought
+ * from the platform plus commission, less compensation paid; sell room is the
+ * cash from buys not yet paid out on sells.
+ */
+export interface PoolStanding {
+  sizePaise: number; leftPaise: number; heldPaise: number; consumedPaise: number;
+  sellsOwedPaise: number; sellRoomPaise: number; leftPercent: number;
+}
+
+/** `toCashOut` (teamCashOut.js): buys only while active; nothing new until `pausedUntil`. */
+export interface CashOut {
+  active: boolean; startedAt: string | null; pausedUntil: string | null; pauseHours: number;
 }
 
 /**

@@ -308,6 +308,28 @@ router.post('/account/pool-requests/usdt', merchantAuth, requireMerchantAccount,
   }
 });
 
+/**
+ * POST /api/merchant/account/cash-out — start the merchant account's cash out;
+ * DELETE stops it early (owner, 2026-10-21; `teamCashOut.js`).
+ */
+const accountCashOut = (start) => async (req, res) => {
+  try {
+    const args = { teamId: req.directTeam.teamId, merchantId: req.merchantId };
+    const out = start ? await db.teamCashOut.startCashOut(args) : await db.teamCashOut.stopCashOut(args);
+    if (!out.ok) return refuseTeam(res, out.reason);
+    await db.audit.recordDetailed({
+      performedBy: req.merchantId, category: 'TREASURY', targetType: 'TEAM',
+      action: start ? 'TEAM_CASH_OUT_STARTED' : 'TEAM_CASH_OUT_STOPPED',
+      targetId: req.directTeam.teamId, ip: req.ip, details: out.cashOut,
+    });
+    res.json({ success: true, cashOut: out.cashOut });
+  } catch (err) {
+    respondError(res, err, `${start ? 'POST' : 'DELETE'} /merchant/account/cash-out`, { message: 'Could not change the cash out.' });
+  }
+};
+router.post('/account/cash-out', merchantAuth, requireMerchantAccount, ownerOnly, accountCashOut(true));
+router.delete('/account/cash-out', merchantAuth, requireMerchantAccount, ownerOnly, accountCashOut(false));
+
 router.delete('/account/pool-requests/:requestId', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
   try {
     const out = await db.teamPools.cancelRequest({ requestId: req.params.requestId, supervisorId: req.merchantId });

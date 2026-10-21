@@ -25,7 +25,7 @@ import toast from 'react-hot-toast';
 import { RefreshCw, Users } from 'lucide-react';
 import {
   getMyTeam, createTeam, renameTeam, deleteTeam, addTeamMember, removeTeamMember,
-  getTeamPool, requestTeamPool, buyTeamPoolUsdt, cancelTeamPoolRequest,
+  getTeamPool, requestTeamPool, buyTeamPoolUsdt, cancelTeamPoolRequest, setTeamCashOut,
   getMemberLog, getTeamDisputes, getDisputeThread, postDisputeMessage,
 } from '../services/api';
 import type {
@@ -35,6 +35,7 @@ import type {
 import { Banner, Button, Card, CardTitle, CopyRow, ErrorState, Skeleton, inputStyle } from '../components/ui';
 import { PoolBreakdown } from '../components/PoolBreakdown';
 import { UsdtPayCard } from '../components/UsdtPayCard';
+import { CashOutCard } from '../components/CashOutCard';
 
 const STRENGTH: Record<Team['strength'], { label: string; tone: 'ok' | 'warn' | 'danger'; body: string }> = {
   WORKING: { label: 'Working', tone: 'ok', body: 'The team takes orders. It can have up to 10 agents.' },
@@ -320,7 +321,8 @@ const TeamDisputesCard: React.FC<{ members: TeamMember[] }> = ({ members }) => {
 const TeamPoolSection: React.FC<{
   team: Team; requests: TeamPoolRequest[]; busy: string;
   run: (key: string, fn: () => Promise<unknown>, ok: string) => Promise<void>;
-}> = ({ team, requests, busy, run }) => {
+  reload: () => Promise<void>;
+}> = ({ team, requests, busy, run, reload }) => {
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [history, setHistory] = useState<TeamPoolEntry[] | null>(null);
@@ -382,7 +384,12 @@ const TeamPoolSection: React.FC<{
         </Banner>
       ))}
 
-      <form
+      <div style={{ marginBottom: 12 }}>
+        <CashOutCard cashOut={team.cashOut} canAct change={(start) => setTeamCashOut(team.teamId, start)} onChanged={reload} />
+      </div>
+
+      {/* A pool cashing out, or paused after one, buys no tokens (teamCashOut.js). */}
+      {!team.cashOut.active && !team.cashOut.pausedUntil && <form
         style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}
         onSubmit={(e) => {
           e.preventDefault();
@@ -411,7 +418,7 @@ const TeamPoolSection: React.FC<{
           }, 'Pay the USDT shown above. The tokens arrive by themselves.')}>
           Buy in USDT now (automatic)
         </Button>
-      </form>
+      </form>}
 
       <div style={{ marginTop: 10 }}>
         {history === null ? (
@@ -439,7 +446,8 @@ const SupervisorTeamCard: React.FC<{
   team: Team; members: TeamMember[]; poolRequests: TeamPoolRequest[]; commissions: TeamCommission[]; busy: string;
   today: MemberActivity[]; week: MemberActivity[]; flags: LowActivityFlag[];
   run: (key: string, fn: () => Promise<unknown>, ok: string) => Promise<void>;
-}> = ({ team, members, poolRequests, commissions, busy, today, week, flags, run }) => {
+  reload: () => Promise<void>;
+}> = ({ team, members, poolRequests, commissions, busy, today, week, flags, run, reload }) => {
   const [ref, setRef] = useState('');
   const [name, setName] = useState(team.name);
   // Which member's removal is waiting for a second press. Removing is not
@@ -452,7 +460,7 @@ const SupervisorTeamCard: React.FC<{
     <Card style={{ marginBottom: 14 }}>
       <CardTitle title={team.name} sub={`${team.approvedCount} approved · ${team.pendingCount} waiting for an admin`} action={<StrengthTag team={team} />} />
       <Banner tone={STRENGTH[team.strength].tone} style={{ marginBottom: 12 }}>{STRENGTH[team.strength].body}</Banner>
-      <TeamPoolSection team={team} requests={poolRequests} busy={busy} run={run} />
+      <TeamPoolSection team={team} requests={poolRequests} busy={busy} run={run} reload={reload} />
       <CommissionSection team={team} commissions={commissions} />
       <TeamActivitySection team={team} today={today} week={week} flags={flags} />
 
@@ -639,7 +647,7 @@ const TeamPage: React.FC = () => {
         </form>
       </Card>
       {data.teams.map((t) => (
-        <SupervisorTeamCard key={t.teamId} team={t} busy={busy} run={run}
+        <SupervisorTeamCard key={t.teamId} team={t} busy={busy} run={run} reload={load}
           members={data.members.filter((m) => m.teamId === t.teamId)}
           poolRequests={(data.poolRequests ?? []).filter((r) => r.teamId === t.teamId)}
           commissions={data.commissions ?? []}

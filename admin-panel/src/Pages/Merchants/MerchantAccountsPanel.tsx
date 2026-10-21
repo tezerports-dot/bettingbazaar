@@ -16,7 +16,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { RefreshCw, Flag } from 'lucide-react';
 import api from '../../services/api';
-import { poolExposureLine, type PoolExposure } from '../../types';
+import { poolExposureLine, cashOutLine, type PoolExposure, type CashOut } from '../../types';
 
 const tokens = (paise: number) => ((Number(paise) || 0) / 100).toLocaleString('en-IN');
 
@@ -29,6 +29,7 @@ interface AdminMerchantAccount {
   teamId: string; ownerMerchantId: string; ownerName: string; ownerRef: string; ownerStatus: string;
   ownerOnline: boolean; name: string; poolAvailablePaise: number; poolHeldPaise: number;
   poolExposure?: PoolExposure;
+  cashOut?: CashOut;
   commission: { paidPaise: number; owedPaise: number; depositPercent: number; withdrawalPercent: number };
   accounts: AdminPaymentAccount[]; staff: AdminSubMember[];
   problemDays: Array<{ day: string; kind: string; count: number }>;
@@ -86,6 +87,7 @@ export const MerchantAccountsPanel: React.FC<{ reloadKey?: number }> = ({ reload
             <p className="text-sm text-gray-300 mt-1">
               Pool: {tokens(m.poolAvailablePaise)} tokens{m.poolHeldPaise ? ` · ${tokens(m.poolHeldPaise)} held` : ''}
               {m.poolExposure && (m.poolExposure.openBuys + m.poolExposure.openSells > 0 || m.poolExposure.heldDisputedPaise > 0) && ` (${poolExposureLine(m.poolExposure, tokens)})`}
+              {cashOutLine(m.cashOut) && ` · ${cashOutLine(m.cashOut)}`}
               {' · '}Commission {m.commission.depositPercent}% buys, {m.commission.withdrawalPercent}% sells: {tokens(m.commission.paidPaise)} paid, {tokens(m.commission.owedPaise)} owed
             </p>
             <div className="grid md:grid-cols-2 gap-3 mt-2 text-xs">

@@ -15,7 +15,8 @@
  * with an address of its own and the price, and the tokens arrive in the pool
  * once the USDT does (`UsdtPayCard`). What the pool bought from the platform
  * is shown under the balance (`poolTrades`). Nothing is sold back to the
- * platform (owner, 2026-10-21).
+ * platform (owner, 2026-10-21); the pool is turned into cash by a cash out
+ * (`CashOutCard`).
  */
 import React, { useState } from 'react';
 import { Coins, X } from 'lucide-react';
@@ -29,6 +30,7 @@ import { Button, Card, CardTitle, Field, SegmentedControl, Skeleton, inputStyle 
 import AccountShell, { Refusal } from './AccountShell';
 import { PoolBreakdown } from '../../components/PoolBreakdown';
 import { UsdtPayCard } from '../../components/UsdtPayCard';
+import { CashOutCard } from '../../components/CashOutCard';
 
 const errorText = (err: any, fallback: string): string => err?.message || fallback;
 const tokensOf = (paise: number) => formatTokens((Number(paise) || 0) / 100);
@@ -138,7 +140,10 @@ const PoolBody: React.FC = () => {
         </div>
       </Card>
 
-      {owner && <PoolRequestForm onSent={reload} />}
+      <CashOutCard cashOut={team.cashOut} canAct={owner} change={api.setMerchantCashOut} onChanged={reload} />
+
+      {/* A pool cashing out, or paused after one, buys no tokens (teamCashOut.js). */}
+      {owner && !team.cashOut.active && !team.cashOut.pausedUntil && <PoolRequestForm onSent={reload} />}
 
       {owner && (
         <Card>

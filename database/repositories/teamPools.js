@@ -274,10 +274,16 @@ export async function createRequestWithin(client, { teamId, supervisorId, direct
     throw Object.assign(new Error('Enter a whole number of tokens greater than zero.'), { status: 400 });
   }
   const cleanNote = note === null || note === undefined ? null : String(note).trim().slice(0, 500) || null;
+  // Locked: a cash out (`teamCashOut.startCashOut`) takes the same row, so a
+  // pool never asks for tokens while it is giving them up (owner, 2026-10-21).
   const { rows: t } = await client.query(
-    'SELECT team_id FROM teams WHERE team_id = $1 AND (supervisor_id = $2 OR owner_merchant_id = $2)',
+    `SELECT team_id, cash_out_started_at IS NOT NULL AS cashing_out,
+            (paused_until IS NOT NULL AND paused_until > now()) AS paused, paused_until
+       FROM teams WHERE team_id = $1 AND (supervisor_id = $2 OR owner_merchant_id = $2) FOR UPDATE`,
     [String(teamId), String(supervisorId)]);
   if (!t[0]) return { ok: false, reason: 'team_not_found' };
+  if (t[0].cashing_out) return { ok: false, reason: 'cash_out_running' };
+  if (t[0].paused) return { ok: false, reason: 'cash_out_paused', pausedUntil: new Date(t[0].paused_until).toISOString() };
   const requestId = newRequestId();
   try {
     await client.query('SAVEPOINT pool_request');

@@ -3785,8 +3785,8 @@ const MUTATIONS = [
     id: 'M489', file: 'database/repositories/teamRouting.js', config: PG,
     test: 'database/tests/teamRoutingPg.test.js',
     why: 'the pool no longer orders the candidates: a faster member with a drained pool takes every buy',
-    from: "      ORDER BY m.routing_priority DESC,\n               ${poolOrderSql('$3', '$4')},",
-    to: "      ORDER BY m.routing_priority DESC,",
+    from: "               m.routing_priority DESC,\n               ${poolOrderSql('$3', '$4')},",
+    to: "               m.routing_priority DESC,",
   },
   {
     id: 'M490', file: 'database/repositories/teamPools.js', config: PG,
@@ -3794,6 +3794,35 @@ const MUTATIONS = [
     why: 'the sells a pool owes are not taken off its sell room, so one pool is handed more sells than its cash',
     from: "    sellRoomPaise: Math.max(0, consumedPaise - sellsOwedPaise),",
     to: "    sellRoomPaise: Math.max(0, consumedPaise),",
+  },
+  // ── Cash out (owner, 2026-10-21) ─────────────────────────────────────────
+  {
+    id: 'M491', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a pool cashing out is still handed new sells, which refill the pool it is emptying',
+    from: "  AND (t.cash_out_started_at IS NULL OR ${isBuy})`;",
+    to: "  AND TRUE`;",
+  },
+  {
+    id: 'M492', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a pool cashing out waits behind fuller pools for the buys it needs',
+    from: "      ORDER BY (t.cash_out_started_at IS NOT NULL) DESC,\n               m.routing_priority DESC,",
+    to: "      ORDER BY m.routing_priority DESC,",
+  },
+  {
+    id: 'M493', file: 'database/repositories/teamCashOut.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'the cash out ends and the pause starts with a buy still open',
+    from: "        AND NOT EXISTS (SELECT 1 FROM order_states o\n                         WHERE o.team_id = t.team_id AND o.order_type = 'DEPOSIT' AND o.state = ANY($4))",
+    to: "        AND $4::text[] IS NOT NULL",
+  },
+  {
+    id: 'M494', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a pool asks the platform for tokens while it is cashing them out',
+    from: "  if (t[0].cashing_out) return { ok: false, reason: 'cash_out_running' };",
+    to: "",
   },
 ];
 

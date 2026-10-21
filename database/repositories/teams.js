@@ -24,7 +24,8 @@ import { pgQuery, withTransaction } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { teamCommissionSql, toSummary, commissionRates } from './teamCommission.js';
 import { getSystemConfig } from './config.js';
-import { poolExposureSql, toPoolExposure } from './teamPools.js';
+import { poolExposureSql, toPoolExposure, poolStandingSql, toPoolStanding } from './teamPools.js';
+import { toCashOut } from './teamCashOut.js';
 import { textHasAMobile } from '../../backend/domains/identity/mobileInText.js';
 
 export const MAX_TEAMS = 4;
@@ -50,22 +51,25 @@ const newTeamId = () => `team_${randomBytes(10).toString('hex')}`;
 const STRENGTH_SQL = `CASE WHEN approved_count >= 1 THEN 'WORKING' ELSE 'STOPPED' END`;
 
 const TEAM_SELECT = `
-  SELECT t.team_id, t.supervisor_id, t.name, t.created_at,
+  SELECT t.team_id, t.supervisor_id, t.name, t.created_at, t.cash_out_started_at, t.paused_until,
          s.name AS supervisor_name, s.public_ref AS supervisor_ref, s.supervisor_rail AS rail,
          c.approved_count, c.pending_count,
          COALESCE(p.available_paise, 0) AS pool_available_paise,
          COALESCE(p.held_paise, 0)      AS pool_held_paise,
-         v.*, x.*,
+         v.*, x.*, st.*,
          ${STRENGTH_SQL} AS strength
     FROM teams t
     JOIN merchants s ON s.merchant_id = t.supervisor_id
     LEFT JOIN team_pools p ON p.team_id = t.team_id
     CROSS JOIN LATERAL (${poolExposureSql('team_id = t.team_id')}) x
     CROSS JOIN LATERAL (${teamCommissionSql('t.team_id')}) v
+    CROSS JOIN LATERAL (${poolStandingSql('t.team_id')}) st
     CROSS JOIN LATERAL (
       SELECT count(*) FILTER (WHERE status = 'APPROVED')::int AS approved_count,
              count(*) FILTER (WHERE status = 'PENDING')::int  AS pending_count
         FROM team_members WHERE team_id = t.team_id) c`;
+
+const standingOf = (row) => toPoolStanding(row, { available_paise: row.pool_available_paise, held_paise: row.pool_held_paise });
 
 function toTeam(row, rates) {
   if (!row) return null;
@@ -86,6 +90,9 @@ function toTeam(row, rates) {
     // What the held tokens are held for, and the sells on their way in
     // (`teamPools.poolExposureSql`).
     poolExposure: toPoolExposure(row),
+    // Size, left, consumed and sell room (owner, 2026-10-21; `teamPools.poolStandingSql`).
+    poolStanding: standingOf(row),
+    cashOut: toCashOut(row),
     // Order commission (owner, 2026-10-21): completed volume, what has been
     // paid, and what is earned but waiting for the commission pool.
     commission: toSummary(row.team_id, row, rates),
@@ -388,18 +395,19 @@ export async function createDirectTeam({ merchantId, name = null }) {
 }
 
 const DIRECT_SELECT = `
-  SELECT t.team_id, t.owner_merchant_id, t.name, t.created_at,
+  SELECT t.team_id, t.owner_merchant_id, t.name, t.created_at, t.cash_out_started_at, t.paused_until,
          o.name AS owner_name, o.public_ref AS owner_ref, o.status AS owner_status,
          o.merchant_approval_status AS owner_approval, o.is_online AS owner_online,
          o.routing_priority AS owner_priority,
          COALESCE(p.available_paise, 0) AS pool_available_paise,
          COALESCE(p.held_paise, 0)      AS pool_held_paise,
-         v.*, x.*
+         v.*, x.*, st.*
     FROM teams t
     JOIN merchants o ON o.merchant_id = t.owner_merchant_id
     LEFT JOIN team_pools p ON p.team_id = t.team_id
     CROSS JOIN LATERAL (${poolExposureSql('team_id = t.team_id')}) x
     CROSS JOIN LATERAL (${teamCommissionSql('t.team_id')}) v
+    CROSS JOIN LATERAL (${poolStandingSql('t.team_id')}) st
    WHERE t.kind = 'DIRECT'`;
 
 function toDirectTeam(row, rates) {
@@ -418,6 +426,8 @@ function toDirectTeam(row, rates) {
     poolAvailablePaise: Number(row.pool_available_paise ?? 0),
     poolHeldPaise: Number(row.pool_held_paise ?? 0),
     poolExposure: toPoolExposure(row),
+    poolStanding: standingOf(row),
+    cashOut: toCashOut(row),
     commission: toSummary(row.team_id, row, rates, { kind: 'DIRECT' }),
     createdAt: row.created_at,
   };
