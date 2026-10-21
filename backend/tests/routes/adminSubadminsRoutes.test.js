@@ -174,7 +174,7 @@ describePg('sub-admin routes', () => {
     expect(res.status).toBe(200);
     const row = res.body.staff.find((u) => u.userId === id);
     expect(row).toMatchObject({ roles: ['SUB_ADMIN'], areas: ['canViewAnalytics'], authenticatorEnrolled: false });
-    expect(res.body.roles).toEqual(['ADMIN', 'SUB_ADMIN', 'QUEUE_MANAGER', 'MEDIATOR']);
+    expect(res.body.roles).toEqual(['ADMIN', 'SUB_ADMIN', 'MEDIATOR']);
     expect(res.body.sorts).toEqual(expect.arrayContaining(['joined', 'lastLogin', 'areas', 'name']));
 
     const body = JSON.stringify(res.body);
