@@ -480,6 +480,50 @@ router.get('/phantom-agents', authenticate, hasPermission('canManagePhantomAgent
   }
 });
 
+// ── Maintenance testers (owner, 2026-10-20) ─────────────────────────────────
+// Players who keep the app while maintenance mode is on (auth.middleware.js
+// `maintenanceRefusal`), so the team can test a release on the live platform.
+router.get('/maintenance-testers', authenticate, hasPermission('canManageSystemSettings'), async (req, res) => {
+  try {
+    res.json({ success: true, testers: await db.users.listMaintenanceTesters() });
+  } catch (error) {
+    respondError(res, error, 'GET /admin/maintenance-testers', { message: 'Failed to fetch the maintenance testers' });
+  }
+});
+
+router.put('/users/:userId/maintenance-tester', authenticate, hasPermission('canManageUsers'), async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const on = req.body?.on;
+    if (typeof on !== 'boolean') return res.status(400).json({ success: false, message: '`on` must be true or false.' });
+    const user = await db.users.getUser(userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    // Maintenance closes the PLAYER app; a staff or merchant account is never
+    // closed by it, so a grant there would mean nothing (§32 S49). The row
+    // says the same (`users_maintenance_tester_player`).
+    if (on && user.accountType !== 'PLAYER') {
+      return res.status(409).json({
+        success: false, code: 'NOT_A_PLAYER_ACCOUNT',
+        message: 'Only a player account can be a maintenance tester: staff and merchant panels keep working during maintenance anyway.',
+      });
+    }
+    const updated = await db.users.updateUser(userId, { maintenance_tester: on });
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, performedByRole: 'admin',
+      action: 'MAINTENANCE_TESTER_SET', category: 'USER',
+      targetType: 'User', targetId: String(userId),
+      details: { on },
+    });
+    res.json({
+      success: true,
+      message: on ? 'This player can use the app during maintenance.' : 'This player sees the maintenance screen like everyone else.',
+      maintenanceTester: updated?.maintenanceTester === true,
+    });
+  } catch (error) {
+    respondError(res, error, 'PUT /admin/users/:userId/maintenance-tester', { message: 'Failed to change maintenance testing' });
+  }
+});
+
 // Assign phantom agent role
 router.post('/users/:userId/phantom-access', authenticate, hasPermission('canManagePhantomAgents'), async (req, res) => {
   try {

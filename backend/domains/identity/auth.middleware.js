@@ -33,6 +33,7 @@ import { verifyJwt } from './jwt.util.js';
 import { isChallengeToken } from './twoFactorChallenge.js';
 import { isPermissionKey, permissionLabel, staffCan } from './staffPermissions.js';
 import { PANEL_NAME } from './audiences.js';
+import { getSystemConfig } from '#db/repositories/config.js';
 
 
 /**
@@ -266,6 +267,27 @@ export function refuseWrongPanel(res, user) {
 }
 
 /**
+ * Maintenance mode (owner, 2026-10-20). While `SystemConfig.maintenanceMode`
+ * is on, a PLAYER session is refused 503 `MAINTENANCE` on every route that
+ * checks one, unless the account is a maintenance tester
+ * (`users.maintenance_tester`, set on the player's admin page): the team tests
+ * the release on the live platform while everybody else sees the maintenance
+ * screen. Staff and merchant sessions are never refused here. Asked of the
+ * config cache, so it costs no query.
+ */
+export async function maintenanceRefusal(user) {
+  if (user?.accountType !== 'PLAYER' || user.maintenanceTester) return null;
+  let cfg;
+  try { cfg = await getSystemConfig(); } catch { return null; }
+  if (cfg?.maintenanceMode !== true) return null;
+  return {
+    success: false,
+    code: 'MAINTENANCE',
+    message: cfg.maintenanceMessage || 'The app is under maintenance. Please check back soon.',
+  };
+}
+
+/**
  * @param {object}   [opts]
  * @param {string[]} [opts.accountTypes]  the populations this door admits. The
  *   shared door admits PLAYER and STAFF (the staff routes then ask for an AREA,
@@ -345,6 +367,8 @@ const makeAuthenticate = ({ accountTypes = ['PLAYER', 'STAFF'], admits = () => t
     if (belongsElsewhere(user, accountTypes)) return refuseWrongPanel(res, user);
     if (!admits(user)) return refuseWrongPanel(res, user);
     if (secondFactorMissing(user.accountType, decoded)) return refuseMissingSecondFactor(res);
+    const closedForMaintenance = await maintenanceRefusal(user);
+    if (closedForMaintenance) return res.status(503).json(closedForMaintenance);
 
     // Check if user account is active
     if (user.isBlocked) {

@@ -5458,3 +5458,15 @@ DROP TRIGGER IF EXISTS cricket_poll_options_book_bound ON cricket_poll_options;
 CREATE CONSTRAINT TRIGGER cricket_poll_options_book_bound
   AFTER INSERT OR UPDATE ON cricket_poll_options DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION bb_cricket_book_bound();
+
+-- ── Maintenance testers (owner, 2026-10-20) ─────────────────────────────────
+-- Player accounts that keep using the app while SystemConfig.maintenanceMode
+-- is on, so the team can test a release on the live platform before players
+-- return. Set only from the player's admin page (`PUT /api/admin/users/:userId/
+-- maintenance-tester`); asked by `maintenanceRefusal` in every player
+-- session check. A staff or merchant row cannot hold it.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS maintenance_tester BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_maintenance_tester_player;
+ALTER TABLE users ADD CONSTRAINT users_maintenance_tester_player
+  CHECK (account_type = 'PLAYER' OR NOT maintenance_tester);
+CREATE INDEX IF NOT EXISTS users_maintenance_testers_idx ON users (user_id) WHERE maintenance_tester;

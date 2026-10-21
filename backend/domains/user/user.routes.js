@@ -142,6 +142,17 @@ router.get('/v1/game/cycles/history', async (req, res) => {
 // The new endpoint merges real winners + admin-curated fake winners (FakeWinner model).
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /api/user/maintenance-pass — may this session use the app now?
+// (owner, 2026-10-20). `authenticatePlayer` itself answers 503 MAINTENANCE to
+// a player who is not a maintenance tester while maintenance is on, so
+// reaching this handler IS the pass; the player app asks it before showing
+// the maintenance screen to a signed-in player.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/user/maintenance-pass', authenticatePlayer, (req, res) => {
+  res.json({ success: true, tester: req.user.maintenanceTester === true });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/v1/user/:id/data  (auth required)
 // BUG-U5 FIX: Now returns bets[], history[], kycData, bankDetails.
 // BUG-U6 FIX: Now returns walletBalance = depositBalance + winningsBalance.

@@ -25,7 +25,7 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     example: '1.2.0: a browser on 1.1.9 must tap Update & Restart; 1.2.0 or newer carries on.',
   },
   maintenanceMode: {
-    what: 'Switches the player app into maintenance: players see the maintenance message instead of the app. Staff panels keep working.',
+    what: 'Switches the player app into maintenance: players see the maintenance message instead of the app, and the server refuses their requests. Staff and merchant panels keep working, and so do the players marked as maintenance testers on their page, so the team can test a release live first.',
     example: 'On during a planned database upgrade; off again when it is done.',
   },
   maintenanceMessage: {

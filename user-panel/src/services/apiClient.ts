@@ -120,6 +120,13 @@ function getToken(): string | null {
     : null;
 }
 
+/**
+ * Fired on `window` when the server refuses this session for maintenance (503
+ * `MAINTENANCE`, auth.middleware.js `maintenanceRefusal`; owner, 2026-10-20),
+ * so the app shows the maintenance screen however the request was made.
+ */
+export const MAINTENANCE_EVENT = 'bb:maintenance';
+
 /** Whether this browser holds a session at all (it may still be refused). */
 export function hasStoredSession(): boolean {
   return Boolean(getToken());
@@ -230,6 +237,9 @@ async function performFetch(
   }
 
   const json = await resp.json().catch(() => ({}));
+  if (resp.status === 503 && json?.code === 'MAINTENANCE' && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(MAINTENANCE_EVENT, { detail: { message: json?.message ?? '' } }));
+  }
   if (!resp.ok) throw Object.assign(new Error(json?.message ?? resp.statusText), { status: resp.status, data: json });
   return json;
 }

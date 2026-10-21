@@ -26,7 +26,7 @@ import toast from 'react-hot-toast';
 
 interface ProfileUser {
   userId: string; username: string; mobile: string; status: PlayerRow['status'];
-  accountType?: string; profilePic?: string; phantomAccess?: string;
+  accountType?: string; profilePic?: string; phantomAccess?: string; maintenanceTester?: boolean;
   blockReason?: string | null; joinedAt: string; lastLogin?: string | null;
   bankDetails?: { accountHolderName: string; accountNumber: string; ifscCode: string; bankName: string } | null;
 }
@@ -121,6 +121,10 @@ export const UserProfile: React.FC = () => {
   const savePhantom = () => run('phantom',
     () => api.post(`/api/admin/users/${user.userId}/phantom-access`, { accessLevel: phantom }),
     `Phantom-bettor access set to ${phantom}`, 'Failed to set phantom-bettor access');
+
+  const setTester = (on: boolean) => run('tester',
+    () => api.users.setMaintenanceTester(user.userId, on),
+    on ? 'This player can use the app during maintenance' : 'Maintenance testing switched off', 'Failed to change maintenance testing');
 
   const closeAccount = async () => {
     if (await run('close', () => api.users.deleteUser(user.userId), 'Account closed', 'Failed to delete the account')) setConfirmClose(false);
@@ -257,6 +261,17 @@ export const UserProfile: React.FC = () => {
               <button type="button" className="btn-primary disabled:opacity-50" disabled={busy === 'phantom' || phantom === (user.phantomAccess || 'NONE')}
                 onClick={() => void savePhantom()}>{busy === 'phantom' ? 'Saving…' : 'Save'}</button>
             </div>
+          </Section>
+        )}
+
+        {canUsers && isPlayer && (
+          <Section title="Maintenance tester"
+            sub="While maintenance mode is on, everyone else sees the maintenance screen; a tester keeps using the app to check the release.">
+            <label htmlFor="maintenance-tester" className="flex items-center gap-3 text-sm text-gray-200 cursor-pointer">
+              <input id="maintenance-tester" type="checkbox" checked={user.maintenanceTester === true} disabled={busy === 'tester'}
+                onChange={(e) => void setTester(e.target.checked)} />
+              {user.maintenanceTester ? 'Can use the app during maintenance' : 'Sees the maintenance screen like everyone else'}
+            </label>
           </Section>
         )}
 

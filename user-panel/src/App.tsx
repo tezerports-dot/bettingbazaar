@@ -66,6 +66,7 @@ const preloadLazyPages = () => {
 import ErrorBoundary from './components/ui/ErrorBoundary';
 import { applyBranding, applyCachedBranding } from './services/branding';
 import { getBackend } from './services/backend.service';
+import { platform } from './services/api';
 import { startAppUpdate, webBundleOutdated } from './services/appUpdate';
 import { brandLogo, fallBackToMark, uploadedAsset } from './services/brandAssets';
 import NativeUpdateGate from './components/NativeUpdateGate';
@@ -135,7 +136,16 @@ const LoadingScreen = () => {
   );
 };
 
-const MaintenanceScreen = ({ message }: { message?: string }) => (
+// A maintenance tester signing in while maintenance is on (owner, 2026-10-20):
+// remembered for the tab so the sign-in screen stays reachable. The server
+// decides who is a tester; anyone else is sent back here by their first request.
+const TESTER_SIGN_IN_KEY = 'bb_maintenance_sign_in';
+const testerSigningIn = (): boolean => { try { return sessionStorage.getItem(TESTER_SIGN_IN_KEY) === '1'; } catch { return false; } };
+const setTesterSigningIn = (on: boolean) => {
+  try { if (on) sessionStorage.setItem(TESTER_SIGN_IN_KEY, '1'); else sessionStorage.removeItem(TESTER_SIGN_IN_KEY); } catch { /* storage blocked */ }
+};
+
+const MaintenanceScreen = ({ message, onTesterSignIn }: { message?: string; onTesterSignIn: () => void }) => (
   <div className="flex flex-col items-center justify-center h-full p-8 text-center" style={{ background: 'var(--app-bg, #0A0E17)', color: 'var(--text)' }}>
     <div className="w-24 h-24 bg-orange-500/10 rounded-full flex items-center justify-center text-5xl mb-6 border border-orange-500/20">🛠️</div>
     <h1 className="text-2xl font-black uppercase tracking-tight mb-2">Under Maintenance</h1>
@@ -143,6 +153,11 @@ const MaintenanceScreen = ({ message }: { message?: string }) => (
       {message || "We're currently fine-tuning the marketplace. Please check back in a few minutes."}
     </p>
     <div className="text-[10px] uppercase font-bold tracking-widest" style={{ color: 'var(--text3)' }}>System Stability Update</div>
+    {!platform.hasStoredSession() && (
+      <button type="button" onClick={onTesterSignIn} className="mt-10 text-[11px] underline" style={{ color: 'var(--text3)' }}>
+        Testing team sign in
+      </button>
+    )}
   </div>
 );
 
@@ -271,9 +286,13 @@ const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) =
       if (!config) { setStatus(prev => prev === 'LOADING' ? 'OK' : prev); return; }
       if (config.maintenanceMode && !window.location.hash.includes('admin')) {
         setMaintenanceMsg(config.maintenanceMessage || '');
-        setStatus('MAINTENANCE');
+        // Signed out: the maintenance screen, unless a tester is signing in.
+        if (!platform.hasStoredSession()) { setStatus(testerSigningIn() ? 'OK' : 'MAINTENANCE'); return; }
+        // Signed in: the server says whether this account is a tester.
+        void platform.maintenancePass().then((pass) => setStatus(pass ? 'OK' : 'MAINTENANCE'));
         return;
       }
+      setTesterSigningIn(false);
       const minRequired = config.minVersion || APP_VERSION;
       if (webBundleOutdated(APP_VERSION, minRequired, isNativeShell(), compareVersions)) {
         setLatestVer(config.latestVersion || 'Unknown');
@@ -305,6 +324,14 @@ const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) =
     const stream = (backend as any).sseBridge as EventTarget | undefined;
     const onConfig = (e: Event) => applyConfig((e as any).data);
     stream?.addEventListener('system_config', onConfig);
+    // Any request the server refused for maintenance (apiClient).
+    const onMaintenance = (e: Event) => {
+      setTesterSigningIn(false);
+      const said = (e as CustomEvent<{ message?: string }>).detail?.message;
+      if (said) setMaintenanceMsg(said);
+      setStatus('MAINTENANCE');
+    };
+    window.addEventListener(platform.MAINTENANCE_EVENT, onMaintenance);
 
     checkSystem();
     const loadingGuard = setTimeout(() => {
@@ -315,6 +342,7 @@ const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) =
       clearTimeout(loadingGuard);
       clearInterval(interval);
       stream?.removeEventListener('system_config', onConfig);
+      window.removeEventListener(platform.MAINTENANCE_EVENT, onMaintenance);
     };
   }, []);
 
@@ -322,7 +350,9 @@ const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) =
   useEffect(() => { if (ready) preloadLazyPages(); }, [ready]);
 
   if (status === 'LOADING')     return <LoadingScreen />;
-  if (status === 'MAINTENANCE') return <MaintenanceScreen message={maintenanceMsg} />;
+  if (status === 'MAINTENANCE') {
+    return <MaintenanceScreen message={maintenanceMsg} onTesterSignIn={() => { setTesterSigningIn(true); setStatus('OK'); }} />;
+  }
   if (status === 'OUTDATED')    return <UpdateRequiredScreen latest={latestVer} />;
   return children;
 };

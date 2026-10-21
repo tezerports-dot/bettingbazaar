@@ -1,5 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { Save, Power, AlertTriangle } from 'lucide-react';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { SettingHelp, SettingHelpProvider, type SettingHelpMap } from '../../components/SettingHelp';
@@ -209,6 +210,41 @@ const GatewayStatusLine: React.FC<{ status: GatewayDocumentStatus | null }> = ({
       ({daysLeft} {daysLeft === 1 ? 'day' : 'days'} left).
       {soon && ' Sign a replacement before it lapses.'}
     </p>
+  );
+};
+
+/**
+ * Who keeps the player app during maintenance (owner, 2026-10-20). Set on each
+ * player's page (Players › the player › Maintenance tester); listed here.
+ */
+const MaintenanceTesters: React.FC = () => {
+  const [testers, setTesters] = useState<Array<{ userId: string; username: string; joiningNumber: number | null }> | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.users.maintenanceTesters().then((t) => { if (live) setTesters(t); }).catch(() => { if (live) setTesters([]); });
+    return () => { live = false; };
+  }, []);
+  return (
+    <div className="mb-4 rounded-lg border border-dark-700 p-3">
+      <div className="text-sm font-semibold text-gray-200">Maintenance testers</div>
+      <p className="text-xs text-gray-500 mt-0.5 mb-2">
+        These players keep using the app while maintenance is on, so you can test a release live first.
+        Add or remove one from the player&apos;s page under Players.
+      </p>
+      {testers === null ? <div className="text-xs text-gray-500">Loading…</div>
+        : testers.length === 0 ? <div className="text-xs text-gray-400">No testers yet.</div>
+          : (
+            <ul className="flex flex-wrap gap-2">
+              {testers.map((t) => (
+                <li key={t.userId}>
+                  <Link to={`/users/${t.userId}`} className="inline-block rounded-full border border-dark-600 px-2.5 py-1 text-xs text-gray-200 hover:border-gray-400">
+                    {t.username}{t.joiningNumber != null ? ` · #${t.joiningNumber}` : ''}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+    </div>
   );
 };
 
@@ -514,7 +550,7 @@ export const SystemSettings: React.FC = () => {
                 [!] MAINTENANCE MODE ACTIVE
               </p>
               <p className="text-sm text-gray-300">
-                Platform is currently inaccessible to users. Only admins can login.
+                Players see the maintenance screen. Staff, merchants and the maintenance testers below keep working.
               </p>
               {formData.maintenanceMessage && (
                 <p className="text-sm text-gray-400 mt-2 italic">
@@ -540,6 +576,7 @@ export const SystemSettings: React.FC = () => {
                 : 'Platform is operational'}
             </p>
             <SettingHelp path="maintenanceMode" className="mb-4" />
+            <MaintenanceTesters />
             {formData.maintenanceMode && (
               <div className="mb-4">
                 <label className="label" htmlFor="maintenance-message">Maintenance Message</label>

@@ -52,7 +52,7 @@ const COLUMNS = `
   sub_admin_role, sub_admin_permissions, phantom_access,
   is_blocked, block_reason, blocked_at, blocked_by,
   bank_details, last_login, roles, deleted_at, deleted_by, joined_at, updated_at,
-  account_type, sessions_valid_from, payout_hold_until`;
+  account_type, sessions_valid_from, payout_hold_until, maintenance_tester`;
 
 /**
  * The columns a caller may set through `updateUser`.
@@ -75,6 +75,8 @@ const UPDATABLE = Object.freeze(new Set([
   'consecutive_payment_failures', 'order_lock_until',
   'is_admin', 'is_sub_admin', 'is_queue_manager', 'is_mediator',
   'sub_admin_role', 'sub_admin_permissions', 'phantom_access',
+  // A player who keeps the app during maintenance (owner, 2026-10-20).
+  'maintenance_tester',
   'is_blocked', 'block_reason', 'blocked_at', 'blocked_by',
   'bank_details', 'last_login', 'roles',
   // Moved to `now()` by a password reset, which kills every session issued
@@ -160,6 +162,8 @@ function toUser(row) {
     subAdminRole: row.sub_admin_role,
     subAdminPermissions: row.sub_admin_permissions ?? {},
     phantomAccess: row.phantom_access,
+    // Keeps using the app while maintenance mode is on (owner, 2026-10-20).
+    maintenanceTester: row.maintenance_tester === true,
     isBlocked: row.is_blocked,
     blockReason: row.block_reason,
     blockedAt: row.blocked_at,
@@ -870,6 +874,16 @@ export async function listPhantomAgents() {
       ORDER BY username`, [], 'user_list_phantom_agents',
   );
   return rows.map(toUser);
+}
+
+/** The players who keep the app during maintenance, for Admin › Settings (owner, 2026-10-20). */
+export async function listMaintenanceTesters() {
+  const { rows } = await pgQuery(
+    `SELECT user_id, username, joining_number FROM users
+      WHERE maintenance_tester AND account_type = 'PLAYER' AND status <> 'DELETED'
+      ORDER BY username`, [], 'user_list_maintenance_testers',
+  );
+  return rows.map((r) => ({ userId: r.user_id, username: r.username, joiningNumber: toInt(r.joining_number) }));
 }
 
 /** How many accounts match a status. Counted from rows, never accumulated. */

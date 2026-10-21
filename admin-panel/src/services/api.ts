@@ -284,6 +284,17 @@ export const users = {
     }
     return res.data;
   },
+  /** Keep (or stop keeping) the app open to this player during maintenance (owner, 2026-10-20). */
+  setMaintenanceTester: async (userId: string, on: boolean) => {
+    const res = await api.put(`/api/admin/users/${userId}/maintenance-tester`, { on });
+    return res.data as { success: boolean; message: string; maintenanceTester: boolean };
+  },
+
+  /** The players who keep the app during maintenance. */
+  maintenanceTesters: async () => {
+    const res = await api.get('/api/admin/maintenance-testers');
+    return (res.data?.testers ?? []) as Array<{ userId: string; username: string; joiningNumber: number | null }>;
+  },
 };
 
 // --- MERCHANTS ----------------------------------------------------------------
@@ -860,6 +871,7 @@ export const subAdmins = {
     });
     return res.data;
   },
+
 };
 
 // --- FINANCE ------------------------------------------------------------------

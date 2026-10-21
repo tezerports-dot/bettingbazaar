@@ -6,7 +6,9 @@
  * FALLBACK_MAX_AGE_MS). The system config does not: the order sizes it carries
  * are what the wallet offers, and those are the server's to state.
  */
-import apiClient from '../apiClient';
+import apiClient, { hasStoredSession, MAINTENANCE_EVENT } from '../apiClient';
+
+export { hasStoredSession, MAINTENANCE_EVENT };
 
 const DISPLAY = { staleOnError: true } as const;
 
@@ -31,6 +33,18 @@ export const leaderboard = (period: string): Promise<any> =>
 /** Whether an Android release is published to offer (`GET /api/app/android/available`). */
 export const androidAppAvailable = (): Promise<{ success?: boolean; available?: boolean }> =>
   apiClient.get('/api/app/android/available');
+
+/**
+ * Whether this session may use the app during maintenance (owner,
+ * 2026-10-20): the server answers 200 only to a maintenance tester (or to
+ * anyone once maintenance is off), and 503 MAINTENANCE to everybody else.
+ */
+export const maintenancePass = async (): Promise<boolean> => {
+  try {
+    const res = await apiClient.get<{ success?: boolean }>('/api/user/maintenance-pass');
+    return res?.success === true;
+  } catch { return false; }
+};
 
 /** A crash in the UI, for the admin's error log. Best-effort: never throws. */
 export const reportCrash = (report: Record<string, unknown>): void => {
