@@ -346,7 +346,8 @@ export interface MerchantProfile extends Merchant {
     totalOrders: number;
     completedOrders: number;
     failedOrders: number;
-    successRate: number;
+    /** Percent of decided orders that succeeded; null before any is decided (`bb_merchant_track_record`). */
+    successRate: number | null;
   };
 }
 

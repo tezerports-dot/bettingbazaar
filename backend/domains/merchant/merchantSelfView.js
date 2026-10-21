@@ -50,7 +50,10 @@ export function formatMerchant(merchant, user = null) {
     totalDepositAmount:        merchant.totalDepositAmount,
     totalWithdrawalsProcessed: merchant.totalWithdrawalsProcessed,
     totalWithdrawalAmount:     merchant.totalWithdrawalAmount,
+    // Counted from the order rows (`bb_merchant_track_record`): null until one is decided.
     successRate:               merchant.successRate,
+    ordersSucceeded:           merchant.ordersSucceeded,
+    ordersFailed:              merchant.ordersFailed,
     avgResponseMinutes:        merchant.avgResponseMinutes,
     disputeRate:               merchant.disputeRate,
     totalOrdersCompleted:      merchant.totalOrdersCompleted,

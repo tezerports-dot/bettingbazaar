@@ -149,7 +149,7 @@ const Dashboard: React.FC = () => {
       label: 'Success rate',
       icon: <ShieldCheck size={16} style={{ color: 'var(--ok)' }} />,
       iconBg: 'var(--ok-bg)',
-      value: merchant?.successRate !== undefined ? `${(merchant.successRate * 100).toFixed(1)}%` : '—',
+      value: typeof merchant?.successRate === 'number' ? `${(merchant.successRate * 100).toFixed(1)}%` : '—',
       sub: merchant?.avgResponseMinutes !== undefined
         ? `Avg response ${merchant.avgResponseMinutes.toFixed(1)}m`
         : 'Awaiting data',

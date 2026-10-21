@@ -157,7 +157,12 @@ export const MerchantProfile: React.FC = () => {
         <Kpis min={160} items={[
           { label: 'Volume processed', value: formatters.paise(summary.processedPaise) },
           { label: 'Completed orders', value: summary.completedOrders.toLocaleString('en-IN') },
-          { label: 'Success rate', value: `${merchant.statistics?.successRate ?? 0}%` },
+          {
+            label: 'Success rate',
+            value: typeof merchant.statistics?.successRate === 'number'
+              ? `${merchant.statistics.successRate}% (${merchant.statistics.completedOrders} of ${merchant.statistics.totalOrders})`
+              : 'No decided orders yet',
+          },
           { label: role === 'SUPERVISOR' ? `Pool (${summary.pool.teams} team${summary.pool.teams === 1 ? '' : 's'})` : 'Pool available', value: formatters.paise(summary.pool.availablePaise) },
           { label: 'Pool held for orders', value: formatters.paise(summary.pool.heldPaise), tone: summary.pool.heldPaise > 0 ? 'var(--warning)' : undefined },
           { label: 'Commission today', value: formatters.paise(summary.commission.todayPaise), tone: 'var(--success)' },

@@ -3824,6 +3824,21 @@ const MUTATIONS = [
     from: "  if (t[0].cashing_out) return { ok: false, reason: 'cash_out_running' };",
     to: "",
   },
+  // ── Track record (owner, 2026-10-21) ─────────────────────────────────────
+  {
+    id: 'M495', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a dispute the player lost still counts the merchant\'s rejection as a failure',
+    from: "    count(*) FILTER (WHERE f.party = 'PLAYER'\n                        OR (f.party IS NULL AND",
+    to: "    count(*) FILTER (WHERE (f.party IS NULL AND",
+  },
+  {
+    id: 'M496', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a cancelled order counts against the merchant',
+    from: "                        OR (f.party IS NULL AND (o.state IN ('REJECTED', 'FAILED')",
+    to: "                        OR (f.party IS NULL AND (o.state IN ('REJECTED', 'FAILED', 'CANCELLED')",
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

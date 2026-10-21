@@ -35,7 +35,7 @@ interface FundingStats {
   withdrawalsCompleted: number; withdrawalVolume: number;
   /** min(deposit volume, withdrawal volume): what went round a buy→sell cycle. */
   matchedCycleVolume: number;
-  successRate: number;        // 0..1, off the merchant row
+  successRate: number | null; // 0..1, counted from the order rows; null before any is decided
   avgResponseMinutes: number;
 }
 
@@ -166,7 +166,7 @@ export const MerchantPlatform: React.FC = () => {
                 <Figure label="Buys completed" value={`${stats.depositsCompleted} · ${inr(stats.depositVolume)}`} />
                 <Figure label="Sells completed" value={`${stats.withdrawalsCompleted} · ${inr(stats.withdrawalVolume)}`} />
                 <Figure label="Matched volume" value={inr(stats.matchedCycleVolume)} />
-                <Figure label="Success rate" value={`${Math.round((stats.successRate ?? 0) * 100)}%`} />
+                <Figure label="Success rate" value={typeof stats.successRate === 'number' ? `${Math.round(stats.successRate * 100)}%` : '—'} />
                 <Figure label="Avg response" value={`${(stats.avgResponseMinutes ?? 0).toFixed(1)} min`} />
               </div>
             )}

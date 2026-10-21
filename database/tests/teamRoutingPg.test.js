@@ -106,6 +106,8 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     await pgQuery('SET session_replication_role = replica');
     try {
       await pgQuery('DELETE FROM order_transitions WHERE order_id = ANY($1)', [orders]);
+      await pgQuery('DELETE FROM dispute_faults WHERE order_id = ANY($1)', [orders]);
+      await pgQuery('DELETE FROM order_rejections WHERE order_id = ANY($1)', [orders]);
       await pgQuery('DELETE FROM order_states WHERE order_id = ANY($1)', [orders]);
       await pgQuery('DELETE FROM admin_token_considerations WHERE team_id = ANY($1)', [teams]);
       await pgQuery('DELETE FROM team_pool_entries WHERE team_id = ANY($1)', [teams]);
@@ -446,6 +448,53 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     // The row refuses a cash out and a pause at once, from any writer.
     await expect(pgQuery('UPDATE teams SET cash_out_started_at = now(), cash_out_by = $2 WHERE team_id = $1', [t.teamId, t.sup]))
       .rejects.toMatchObject({ constraint: 'teams_cash_out_or_pause' });
+  });
+
+  // ── Track record (owner, 2026-10-21) ─────────────────────────────────────
+  // Counted from the rows: completed and paid succeed; rejected, failed and
+  // declined fail; a decided dispute counts by its loser; cancels count for nothing.
+  it('the success rate counts every decided order the honest way, and none of a cancel', async () => {
+    const t = await workingTeam('UPI_BANK', 400000);
+    const [a, b] = t.members;
+    await pgQuery('UPDATE merchants SET is_online = (merchant_id = ANY($2)) WHERE merchant_id = ANY($1)', [made, [a]]);
+    expect(await getMerchant(a)).toMatchObject({ ordersSucceeded: 0, ordersFailed: 0, successRate: null });
+
+    const done = await order('DEPOSIT', 50000);
+    expect((await assign(done)).merchantId).toBe(a);
+    await complete(done);
+    const cancelled = await order('DEPOSIT', 50000);
+    await assign(cancelled);
+    expect((await transitionOrder(cancelled.orderId, 'CANCELLED', { actor: 'test' })).ok).toBe(true);
+    const paidSell = await order('WITHDRAWAL', 60000);
+    await assign(paidSell);
+    expect((await transitionOrder(paidSell.orderId, 'PAID', { actor: 'test' })).ok).toBe(true);
+    expect(await getMerchant(a)).toMatchObject({ ordersSucceeded: 2, ordersFailed: 0, successRate: 1 });
+
+    // A rejected buy fails, until a dispute finds the player at fault.
+    const rejected = await order('DEPOSIT', 50000);
+    await assign(rejected);
+    expect((await transitionOrder(rejected.orderId, 'PAID', { actor: 'test' })).ok).toBe(true);
+    expect((await transitionOrder(rejected.orderId, 'REJECTED', { actor: 'test' })).ok).toBe(true);
+    expect(await getMerchant(a)).toMatchObject({ ordersSucceeded: 2, ordersFailed: 1 });
+    await pgQuery(`INSERT INTO dispute_faults (order_id, party, user_id, decision, lost_count)
+                   VALUES ($1, 'PLAYER', $2, 'REJECT', 1)`, [rejected.orderId, rejected.userId]);
+    expect(await getMerchant(a)).toMatchObject({ ordersSucceeded: 3, ordersFailed: 0 });
+
+    // A sell the merchant lost in a dispute fails, whatever state it ends in.
+    const lost = await order('WITHDRAWAL', 60000);
+    await assign(lost);
+    expect((await transitionOrder(lost.orderId, 'PAID', { actor: 'test' })).ok).toBe(true);
+    await pgQuery(`INSERT INTO dispute_faults (order_id, party, merchant_id, decision, lost_count)
+                   VALUES ($1, 'MERCHANT', $2, 'REFUND', 1)`, [lost.orderId, a]);
+    // A decline of an order that went to someone else fails too.
+    const declined = await order('WITHDRAWAL', 60000);
+    await pgQuery('UPDATE merchants SET is_online = (merchant_id = ANY($2)) WHERE merchant_id = ANY($1)', [made, [b]]);
+    expect((await assign(declined)).merchantId).toBe(b);
+    await pgQuery(`INSERT INTO order_rejections (order_id, merchant_id, user_id, reason) VALUES ($1, $2, $3, 'busy')`,
+      [declined.orderId, a, declined.userId]);
+    expect(await getMerchant(a)).toMatchObject({ ordersSucceeded: 3, ordersFailed: 2, successRate: 0.6 });
+    // The other member's record holds only their own order, still open.
+    expect(await getMerchant(b)).toMatchObject({ ordersSucceeded: 0, ordersFailed: 0, successRate: null });
   });
 
   it('priority is a whole number from 1 to 5, a member\'s only, and the row holds the range for every writer', async () => {

@@ -241,22 +241,20 @@ router.get('/merchants/:merchantId/profile', authenticate, hasPermission('canMan
     const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
-    // The lifetime counters live on the merchant row and are moved by the
-    // arithmetic in the statement that records each completed order, so they
-    // cannot lose one to a concurrent settlement. `successRate` is derived from
-    // them in the same statement — it can never describe a different number of
-    // orders than the count beside it.
-    const totalOrders     = merchant.totalOrdersAll;
-    const completedOrders = merchant.totalOrdersCompleted;
-    const failedOrders    = Math.max(0, totalOrders - completedOrders);
-    const successRate     = (merchant.successRate * 100).toFixed(2);
+    // The track record is counted from the order rows on every read
+    // (`bb_merchant_track_record`, owner 2026-10-21): disputes by who lost,
+    // player cancels and open orders left out. Null until one is decided.
+    const completedOrders = merchant.ordersSucceeded;
+    const failedOrders    = merchant.ordersFailed;
+    const totalOrders     = completedOrders + failedOrders;
+    const successRate     = merchant.successRate === null ? null : Number((merchant.successRate * 100).toFixed(2));
     res.json({
       success: true,
       merchant: {
         ...merchant,
         // Fixed 1:1 conversion (Phase 006 flattening, 2026-07-08) — no spread.
         prices: { buyPrice: 1, sellPrice: 1, profit: 0 },
-        statistics: { totalOrders, completedOrders, failedOrders, successRate: parseFloat(successRate) },
+        statistics: { totalOrders, completedOrders, failedOrders, successRate },
       },
       // The merchants-table row: role, team, pool and commission, from the
       // same query the table reads (display only, §9).

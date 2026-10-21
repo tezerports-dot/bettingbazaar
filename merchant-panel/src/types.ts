@@ -241,7 +241,10 @@ export interface MerchantProfile {
 
   // Figures maintained by the order lifecycle (recordCompletedOrder in
   // database/repositories/merchants.js) — read-only here.
-  successRate?: number;        // ratio 0-1
+  /** Ratio 0-1 of decided orders that succeeded (`bb_merchant_track_record`); null before any is decided. */
+  successRate?: number | null;
+  ordersSucceeded?: number;
+  ordersFailed?: number;
   avgResponseMinutes?: number;
   disputeRate?: number;        // ratio 0-1
   totalOrdersCompleted?: number;
