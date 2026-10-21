@@ -302,7 +302,7 @@ export const merchants = {
   getProfile: async (merchantId: string) => {
     const res = await api.get<any>(`/api/admin/merchants/${merchantId}/profile`);
     if (res.data?.success && res.data?.merchant) {
-      return { success: true, data: res.data.merchant, summary: res.data.summary, choices: res.data.choices };
+      return { success: true, data: res.data.merchant, summary: res.data.summary, choices: res.data.choices, merchantPanelUrl: res.data.merchantPanelUrl as string };
     }
     return res.data;
   },

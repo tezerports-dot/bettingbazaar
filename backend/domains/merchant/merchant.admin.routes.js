@@ -11,6 +11,7 @@ import { NAME_IS_A_MOBILE_MESSAGE } from '../identity/mobileInText.js';
 import { respondError } from '../../shared/httpError.js';
 import { toCsv } from '../reporting/csv.util.js';
 import { paiseToRupees } from '../../shared/money.js';
+import { panelOrigin } from '../../config/network.config.js';
 
 const router = express.Router();
 
@@ -266,6 +267,9 @@ router.get('/merchants/:merchantId/profile', authenticate, hasPermission('canMan
         routingPriority: db.merchants.ROUTING_PRIORITY,
         supervisorRails: db.teams.SUPERVISOR_RAILS,
       },
+      // Where the merchant panel is: its own host when MERCHANT_HOST is set,
+      // else /merchant/ on this origin (owner, 2026-10-20).
+      merchantPanelUrl: `${panelOrigin('MERCHANT', '')}/merchant/`,
     });
   } catch (error) {
     console.error('Get merchant profile error:', error);
