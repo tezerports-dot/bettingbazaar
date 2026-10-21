@@ -1253,7 +1253,17 @@ sweep". So:
 
 ---
 
-## 26. Team commission
+## 26. Order commission
+
+**2026-10-21, the owner:** "make that 10 % per transaction cycle commission into
+5% deposit and 5% withdrawal commission admin editable." The matched-volume
+cycle paid only when buys and sells balanced, so a merchant who mostly served
+one direction earned nothing for real work, and the owner could not tune it.
+Now every completed order pays its own rate, one row per order; the old rows on
+a test server stay (the CHECK is NOT VALID), and its matched-volume columns are
+dropped. The text below is the history of the rule it replaced.
+
+### The matched-volume rule it replaced (2026-10-02 to 2026-10-21)
 
 Owner, 2026-10-02 (`PROJECT_STATUS.md` §3.10, built in 2e, 2026-10-04). Merchants
 hold no tokens after 2c, so pay goes to the TEAM: 10% of each rise in the team's

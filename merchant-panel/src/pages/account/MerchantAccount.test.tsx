@@ -75,7 +75,7 @@ const OVERVIEW = {
     teamId: 't-d', kind: 'DIRECT', ownerMerchantId: 'm-1', ownerName: 'Shop', ownerRef: 'M1', ownerStatus: 'ACTIVE',
     ownerApproval: 'APPROVED', ownerOnline: true, routingPriority: 3, name: 'Shop', poolAvailablePaise: 500000, poolHeldPaise: 100000,
     poolExposure: { heldOpenPaise: 60000, heldDisputedPaise: 40000, openBuys: 1, sellsSettlingPaise: 250000, sellsDisputedPaise: 0, openSells: 1 },
-    commission: { teamId: 't-d', buysPaise: 0, sellsPaise: 0, matchedPaise: 0, highPaise: 0, paidPaise: 0, owedPaise: 0, commissionPercent: 10, supervisorSharePercent: 0 },
+    commission: { teamId: 't-d', buysPaise: 0, sellsPaise: 0, paidPaise: 0, owedPaise: 0, depositPercent: 5, withdrawalPercent: 5, supervisorSharePercent: 0 },
     createdAt: '',
   },
   accounts: [ACCOUNT],

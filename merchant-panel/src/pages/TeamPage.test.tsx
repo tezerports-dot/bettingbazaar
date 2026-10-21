@@ -33,8 +33,8 @@ const team = (teamId: string, name: string, extra = {}) => ({
   approvedCount: 0, pendingCount: 0, size: 10, strength: 'STOPPED', createdAt: '',
   poolAvailablePaise: 0, poolHeldPaise: 0,
   poolExposure: { heldOpenPaise: 0, heldDisputedPaise: 0, openBuys: 0, sellsSettlingPaise: 0, sellsDisputedPaise: 0, openSells: 0 },
-  commission: { teamId, buysPaise: 0, sellsPaise: 0, matchedPaise: 0, highPaise: 0, paidPaise: 0, owedPaise: 0,
-    commissionPercent: 10, supervisorSharePercent: 16 },
+  commission: { teamId, buysPaise: 0, sellsPaise: 0, paidPaise: 0, owedPaise: 0,
+    depositPercent: 5, withdrawalPercent: 5, supervisorSharePercent: 16 },
   ...extra,
 });
 
@@ -182,27 +182,28 @@ describe('merchant Team screen', () => {
       role: 'MEMBER', publicRef: 'M1', status: 'APPROVED',
       team: team('t-1', 'Alpha', {
         strength: 'WORKING', approvedCount: 10,
-        commission: { teamId: 't-1', buysPaise: 15000000, sellsPaise: 10000000, matchedPaise: 10000000, highPaise: 5000000,
-          paidPaise: 500000, owedPaise: 500000, commissionPercent: 10, supervisorSharePercent: 16 },
+        commission: { teamId: 't-1', buysPaise: 15000000, sellsPaise: 10000000,
+          paidPaise: 500000, owedPaise: 500000, depositPercent: 5, withdrawalPercent: 5, supervisorSharePercent: 16 },
       }),
-      commissions: [{ commissionId: 'c-1', teamId: 't-1', fromHighPaise: 0, toHighPaise: 5000000, commissionPaise: 500000,
-        mySharePaise: 42000, createdAt: '2026-10-03T10:00:00Z' }],
+      commissions: [{ commissionId: 'c-1', teamId: 't-1', orderId: 'DEP_1', orderType: 'DEPOSIT', basePaise: 10000000,
+        commissionPercent: 5, commissionPaise: 500000, mySharePaise: 42000, createdAt: '2026-10-03T10:00:00Z' }],
       myCommissionPaise: 42000,
     });
     render(<TeamPage />);
     expect(await screen.findByText('420 tokens')).toBeInTheDocument();
     expect(screen.getByText('your share 420')).toBeInTheDocument();
     expect(screen.getByText(/5,000 tokens earned and waiting/)).toBeInTheDocument();
-    expect(screen.getByText(/10% of the rise is paid into the pool/)).toBeInTheDocument();
+    expect(screen.getByText(/Every completed buy pays 5% and every completed sell 5%/)).toBeInTheDocument();
+    expect(screen.getByText(/for a buy of 1,00,000|for a buy of 100,000/)).toBeInTheDocument();
   });
 
   it('a supervisor sees each team its own commission and their total', async () => {
     api.getMyTeam.mockResolvedValue({
       role: 'SUPERVISOR', rail: 'UPI_BANK', publicRef: 'MSUP', members: [], poolRequests: [],
-      teams: [team('t-1', 'Alpha', { commission: { teamId: 't-1', buysPaise: 0, sellsPaise: 0, matchedPaise: 0, highPaise: 0,
-        paidPaise: 300000, owedPaise: 0, commissionPercent: 10, supervisorSharePercent: 16 } }), team('t-2', 'Bravo')],
-      commissions: [{ commissionId: 'c-1', teamId: 't-1', fromHighPaise: 0, toHighPaise: 3000000, commissionPaise: 300000,
-        mySharePaise: 48000, createdAt: '2026-10-03T10:00:00Z' }],
+      teams: [team('t-1', 'Alpha', { commission: { teamId: 't-1', buysPaise: 0, sellsPaise: 0,
+        paidPaise: 300000, owedPaise: 0, depositPercent: 5, withdrawalPercent: 5, supervisorSharePercent: 16 } }), team('t-2', 'Bravo')],
+      commissions: [{ commissionId: 'c-1', teamId: 't-1', orderId: 'WD_1', orderType: 'WITHDRAWAL', basePaise: 6000000,
+        commissionPercent: 5, commissionPaise: 300000, mySharePaise: 48000, createdAt: '2026-10-03T10:00:00Z' }],
       myCommissionPaise: 48000,
     });
     render(<TeamPage />);

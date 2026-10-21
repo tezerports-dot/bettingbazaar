@@ -587,8 +587,8 @@ export async function merchantLeaderboard({ days = 30, limit = 20, sortBy = 'vol
  * One merchant's funding picture.
  *
  * `matchedCycleVolume` is the smaller of the deposit and withdrawal volumes —
- * the amount this merchant took round a buy→sell cycle. Commission is paid on
- * the TEAM's matched volume (`teamCommission.js`), not on this.
+ * the amount this merchant took round a buy→sell cycle. Commission is paid per
+ * completed order into the TEAM's pool (`teamCommission.js`), not on this.
  */
 export async function merchantFundingStats(merchantId) {
   const { rows } = await pgQuery(
@@ -759,10 +759,8 @@ export async function merchantEarnings(merchantId, { from = null, to = null } = 
   const r = rows[0];
   return {
     today: {
-      // ONE figure, because commission is not attributed per order and cannot
-      // honestly be split across the two directions. It is paid on the TEAM's
-      // matched volume — min(buys, sells) — so a deposit's "share" of it does
-      // not exist to be reported.
+      // ONE figure: the merchant's recorded share of the commission paid on
+      // their team's completed orders (16% supervisor / the rest members).
       earned: rupees(r.today_paid),
       deposits: {
         count: r.today_deposit_count,

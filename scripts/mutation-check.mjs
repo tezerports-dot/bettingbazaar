@@ -2298,20 +2298,20 @@ const MUTATIONS = [
     from: "    if (isAccountMobileRefusal(error)) {\n",
     to: "    if (false) {\n",
   },
-  // ── Team commission (Step 2e) ──────────────────────────────────────────────
+  // ── Order commission (owner, 2026-10-21) ─────────────────────────────────────
   {
     id: 'M383', file: 'database/repositories/teamCommission.js', config: PG,
     test: 'backend/tests/routes/teamCommissionPg.test.js',
     why: 'a commission the platform pool cannot cover is paid anyway: the pool is overdrawn, and the platform pays more than it set aside (§26: never partial)',
-    from: `      if (poolPaise < amount) return { ok: false, reason: 'pool_short', owedPaise: amount, poolPaise, summary };\n`,
+    from: `      if (poolPaise < amount) return { ok: false, reason: 'pool_short', owedPaise: amount, poolPaise };\n`,
     to: '',
   },
   {
     id: 'M384', file: 'database/repositories/teamCommission.js', config: PG,
     test: 'backend/tests/routes/teamCommissionPg.test.js',
-    why: 'matched volume is the LARGER side: a team that only buys is paid commission on volume nobody matched',
-    from: `  const matched = Math.min(buys, sells);`,
-    to: `  const matched = Math.max(buys, sells);`,
+    why: 'a sell is paid the deposit rate: the admin\'s withdrawal percent is ignored',
+    from: `      const bp = rates.bp[order.order_type] ?? 0;`,
+    to: `      const bp = rates.bp.DEPOSIT;`,
   },
   {
     id: 'M385', file: 'database/repositories/teamCommission.js', config: UNIT,
@@ -2323,15 +2323,15 @@ const MUTATIONS = [
   {
     id: 'M386', file: 'backend/domains/payment/orderLifecycle.service.js', config: PG,
     test: 'backend/tests/routes/teamCommissionPg.test.js',
-    why: 'a buy that completes the match pays nothing until the sweep: commission is no longer instant',
+    why: 'a completed buy pays nothing until the sweep: commission is no longer instant',
     from: `  if (to === ORDER_STATES.COMPLETED && result.ok && result.order?.teamId) {`,
     to: `  if (false) {`,
   },
   {
     id: 'M387', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
     test: 'backend/tests/routes/teamCommissionPg.test.js',
-    why: 'a sell that completes the match pays nothing until the sweep: commission is no longer instant',
-    from: `  await payCommissionFor(order.teamId, { actor: 'settlement-worker' });\n`,
+    why: 'a completed sell pays nothing until the sweep: commission is no longer instant',
+    from: `  await payCommissionFor(order, { actor: 'settlement-worker' });\n`,
     to: '',
   },
   {
@@ -2344,9 +2344,9 @@ const MUTATIONS = [
   {
     id: 'M389', file: 'database/repositories/teamCommission.js', config: PG,
     test: 'backend/tests/routes/teamCommissionPg.test.js',
-    why: 'the mark is read as the LOWEST mark paid, so the same rise is paid again on the next ask',
-    from: `  SELECT COALESCE(MAX(to_high_paise), 0) AS high_paise,`,
-    to: `  SELECT COALESCE(MIN(to_high_paise), 0) AS high_paise,`,
+    why: 'a direction the admin switched off is reported as an amount too small to pay, so nobody can tell it is off',
+    from: `      if (bp <= 0) return { ok: true, paid: false, reason: 'rate_zero' };\n`,
+    to: '',
   },
   {
     id: 'M390', file: 'database/repositories/teamCommission.js', config: PG,
@@ -3620,9 +3620,9 @@ const MUTATIONS = [
   {
     id: 'M474', file: 'database/repositories/teamCommission.js', config: PG,
     test: 'backend/tests/routes/merchantAccountPg.test.js',
-    why: 'a merchant account is paid the agents\' fixed percent, not the admin\'s',
-    from: `      const percent = direct ? directCommissionPercent(await getSystemConfig()) : COMMISSION_PERCENT;`,
-    to: `      const percent = COMMISSION_PERCENT;`,
+    why: 'the admin\'s commission percent is ignored and the schema default paid',
+    from: `  const deposit = bpOf(c.depositPercent, 5);     // schema default: 5`,
+    to: `  const deposit = bpOf(undefined, 5);     // schema default: 5`,
   },
   {
     id: 'M475', file: 'backend/domains/merchant/merchantRefusal.service.js', config: PG,

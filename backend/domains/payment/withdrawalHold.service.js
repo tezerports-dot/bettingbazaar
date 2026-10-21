@@ -101,8 +101,8 @@ export async function settleHold(orderId) {
   }
 
   await mirrorSettlement(order, 'SETTLED');
-  // The sell is COMPLETED now: its team may have earned commission (Step 2e).
-  await payCommissionFor(order.teamId, { actor: 'settlement-worker' });
+  // The sell is COMPLETED now: it earns its team commission (owner, 2026-10-21).
+  await payCommissionFor(order, { actor: 'settlement-worker' });
 
   emitOrderUpdate(String(order.userId), 'order_completed', {
     orderId: order.orderId, _id: order.orderId, status: 'COMPLETED', server_ts: Date.now(),

@@ -138,11 +138,11 @@ describePg('merchant panel figures', () => {
     expect(c.teamId).toBe(String(team.teamId));
     expect(c.buysPaise).toBe(10_000_00);
     expect(c.sellsPaise).toBe(4_000_00);
-    expect(c.matchedPaise).toBe(4_000_00);
-    // Nothing paid (the commission pool is not funded in this suite), so the
-    // 10% of the matched rise is owed: the figure the dashboard shows beside a 0.
+    // Nothing paid (the commission pool is not funded in this suite), so 5%
+    // of each completed order is owed: the figure the dashboard shows beside a 0.
     expect(c.paidPaise).toBe(0);
-    expect(c.owedPaise).toBe(400_00);
+    expect(c.owedPaise).toBe(500_00 + 200_00);
+    expect(c).toMatchObject({ depositPercent: 5, withdrawalPercent: 5 });
   });
 
   it('sends no commission for a merchant who works in no team', async () => {

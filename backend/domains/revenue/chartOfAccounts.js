@@ -83,8 +83,8 @@ export const EVENT_TYPES = Object.freeze({
   // Moving distributable platform revenue into the merchant bonus pool.
   MERCHANT_BONUS_FUNDED: 'MERCHANT_BONUS_FUNDED',
 
-  // A team commission paid from the pool into a team's token pool, each time
-  // the team's matched volume rises above its high-water mark (Step 2e,
+  // An order commission paid from the pool into a team's token pool, once per
+  // completed order the team served (owner, 2026-10-21,
   // `database/repositories/teamCommission.js`).
   MERCHANT_BONUS_ISSUED: 'MERCHANT_BONUS_ISSUED',
 

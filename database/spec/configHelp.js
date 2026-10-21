@@ -164,9 +164,13 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'Once a sell is assigned to a merchant account, how long it has to pay the player before it expires.',
     example: '900 (15 minutes).',
   },
-  'directMerchants.commissionPercent': {
-    what: 'The commission a merchant account earns, as a percent of each rise in its matched volume, paid into its own pool.',
-    example: '10: matched volume rising by ₹1,00,000 pays ₹10,000 commission.',
+  'orderCommission.depositPercent': {
+    what: 'The commission paid into a merchant\'s pool for every completed buy (a player\'s deposit), as a percent of its tokens. Agents\' teams and merchant accounts alike; 0 turns it off.',
+    example: '5: a completed 10,000-token buy pays 500 tokens commission.',
+  },
+  'orderCommission.withdrawalPercent': {
+    what: 'The commission paid into a merchant\'s pool for every completed sell (a player\'s withdrawal), as a percent of its tokens. 0 turns it off.',
+    example: '5: a completed 50,000-token sell pays 2,500 tokens commission.',
   },
   'directMerchants.dailyProblemFlagThreshold': {
     what: 'How many problems (refusals, unpaid buys that were its fault, lost disputes) a merchant account may have in one day before it is flagged to admins. A flag only warns; it stops nothing.',

@@ -92,17 +92,14 @@ const Dashboard: React.FC = () => {
   const openHistory = (state: HistoryLinkState) => navigate(ROUTES.HISTORY, { state });
   const openOrder = (order: PaymentOrder) => openOrders({ orderId: orderKey(order) });
 
-  // Why today's earnings may read 0 (team commission, §26): earned and waiting
-  // for the platform's commission pool, or no matched volume yet, because
-  // commission is paid on min(completed buys, completed sells).
+  // Why today's earnings may read 0 (order commission, §26): earned and
+  // waiting for the platform's commission pool, or no completed order yet.
   const commission = stats?.commission ?? null;
   const commissionNote = !commission ? null
     : commission.owedPaise > 0
       ? `${tokensOfPaise(commission.owedPaise)} earned, waiting for the platform's commission pool`
-      : commission.matchedPaise === 0
-        ? (commission.buysPaise === 0 && commission.sellsPaise === 0
-          ? `Commission is ${commission.commissionPercent}% of matched buys and sells`
-          : `Commission starts once a ${commission.buysPaise === 0 ? 'buy' : 'sell'} completes too`)
+      : commission.paidPaise === 0
+        ? `Commission is ${commission.depositPercent}% of each completed buy and ${commission.withdrawalPercent}% of each completed sell`
         : `${tokensOfPaise(commission.paidPaise)} commission paid to your ${commission.supervisorSharePercent ? 'team' : 'account'} so far`;
 
   const expiring = useMemo(

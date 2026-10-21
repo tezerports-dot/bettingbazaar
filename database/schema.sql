@@ -3924,20 +3924,16 @@ ALTER TABLE users ADD CONSTRAINT users_bank_details_bank_account_only
           AND (bank_details - ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName']) = '{}'::jsonb));
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- Step 2e (owner, 2026-10-02): the team commission, instant and per team.
+-- Order commission (owner, 2026-10-21; it replaced the matched-volume cycle
+-- of 2026-10-02): every COMPLETED order a team served earns
+-- `orderCommission.depositPercent` (a buy) or `withdrawalPercent` (a sell) of
+-- its tokens, paid as tokens into the team's pool out of the platform's
+-- commission pool (MERCHANT_BONUS_POOL in the accounting ledger, which an
+-- admin funds from distributable revenue). One row per order, written by
+-- `teamCommission.js` alone, in the transaction that credits the pool.
 --
--- A team's MATCHED volume is min(completed buys, completed sells), in tokens.
--- Every time it rises above the team's high-water mark, 10% of the rise is paid
--- as tokens into the team's pool, out of the platform's commission pool
--- (MERCHANT_BONUS_POOL in the accounting ledger, which an admin funds from
--- distributable revenue). The mark is the highest `to_high_paise` recorded for
--- the team: one row per rise, written by `teamCommission.js` alone, in the
--- transaction that credits the pool. Volume that falls (a completed sell
--- disputed and refunded) is never clawed back; it has to climb back past the
--- mark before anything is paid again.
---
--- `team_commissions_from_once` is the double-payment guard (§32 S6, S45): two
--- payments racing from the same mark cannot both land, whatever read them.
+-- `team_commissions_once_per_order` is the double-payment guard (§32 S6,
+-- S45): two payments for one order cannot both land, whatever read them.
 -- ═══════════════════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS team_commissions (
   commission_id    TEXT PRIMARY KEY,
@@ -3945,24 +3941,41 @@ CREATE TABLE IF NOT EXISTS team_commissions (
   -- The team's supervisor; NULL on a DIRECT team, which has none (its owner's
   -- share names them).
   supervisor_id    TEXT REFERENCES merchants (merchant_id),
-  from_high_paise  BIGINT NOT NULL,
-  to_high_paise    BIGINT NOT NULL,
-  buys_paise       BIGINT NOT NULL,
-  sells_paise      BIGINT NOT NULL,
+  order_id         TEXT,
+  order_type       TEXT,
+  -- The order's tokens and the rate it was paid at, in basis points.
+  base_paise       BIGINT,
+  commission_bp    INTEGER,
   commission_paise BIGINT NOT NULL,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT team_commissions_rises CHECK (from_high_paise >= 0 AND to_high_paise > from_high_paise),
-  CONSTRAINT team_commissions_is_matched CHECK (to_high_paise = LEAST(buys_paise, sells_paise)),
-  -- The percent of the rise is `team_commissions_percent_of_rise`, DIRECT
-  -- MERCHANTS below (the percent became a column, owner 2026-10-11).
-  CONSTRAINT team_commissions_from_once UNIQUE (team_id, from_high_paise),
-  CONSTRAINT team_commissions_to_once UNIQUE (team_id, to_high_paise)
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Converges a database made under the matched-volume rule (S31): its columns
+-- go, and with them their CHECKs and the once-per-mark keys.
+ALTER TABLE team_commissions ADD COLUMN IF NOT EXISTS order_id TEXT;
+ALTER TABLE team_commissions ADD COLUMN IF NOT EXISTS order_type TEXT;
+ALTER TABLE team_commissions ADD COLUMN IF NOT EXISTS base_paise BIGINT;
+ALTER TABLE team_commissions ADD COLUMN IF NOT EXISTS commission_bp INTEGER;
+ALTER TABLE team_commissions DROP COLUMN IF EXISTS from_high_paise;
+ALTER TABLE team_commissions DROP COLUMN IF EXISTS to_high_paise;
+ALTER TABLE team_commissions DROP COLUMN IF EXISTS buys_paise;
+ALTER TABLE team_commissions DROP COLUMN IF EXISTS sells_paise;
+ALTER TABLE team_commissions DROP COLUMN IF EXISTS commission_percent;
+-- The row is one order's commission, at the rate it records, rounded down to
+-- the paisa. NOT VALID: a test server's rows from the old rule stay as the
+-- record they are; every new row is held to it.
+ALTER TABLE team_commissions DROP CONSTRAINT IF EXISTS team_commissions_per_order;
+ALTER TABLE team_commissions ADD CONSTRAINT team_commissions_per_order CHECK (
+  order_id IS NOT NULL AND order_type IN ('DEPOSIT', 'WITHDRAWAL')
+  AND base_paise > 0 AND commission_bp BETWEEN 1 AND 2000
+  AND commission_paise = (base_paise * commission_bp) / 10000
+  AND commission_paise > 0) NOT VALID;
+CREATE UNIQUE INDEX IF NOT EXISTS team_commissions_once_per_order ON team_commissions (order_id);
+CREATE INDEX IF NOT EXISTS team_commissions_team_idx ON team_commissions (team_id, created_at DESC);
 CREATE OR REPLACE TRIGGER team_commissions_append_only
   BEFORE UPDATE OR DELETE ON team_commissions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
 -- Who earned what of each payment: 16% to the supervisor, 84% equally to the
--- team's approved members at that moment. A RECORD, not money: the tokens sit
+-- team's approved members at that moment (a merchant account: all to its owner). A RECORD, not money: the tokens sit
 -- in the team's pool. The shares of one payment add up to it exactly.
 CREATE TABLE IF NOT EXISTS team_commission_shares (
   commission_id TEXT NOT NULL REFERENCES team_commissions (commission_id),
@@ -4487,19 +4500,9 @@ DROP TRIGGER IF EXISTS merchants_supervisor_not_direct_owner ON merchants;
 CREATE TRIGGER merchants_supervisor_not_direct_owner BEFORE UPDATE OF is_supervisor ON merchants
   FOR EACH ROW EXECUTE FUNCTION bb_direct_team_shape();
 
--- ── Commission: the percent is the admin's, and a row records it ──────────
--- An AGENT team is paid COMMISSION_PERCENT (10); a merchant account the
--- admin's `directMerchants.commissionPercent` (default 10). The row carries
--- the percent it was paid at, and the CHECK holds the sum to it, so every
--- writer pays exactly that percent of the rise, rounded down to the paisa.
+-- ── Commission: a merchant account's row names no supervisor ───────────────
 ALTER TABLE team_commissions ALTER COLUMN supervisor_id DROP NOT NULL;
-ALTER TABLE team_commissions ADD COLUMN IF NOT EXISTS commission_percent SMALLINT NOT NULL DEFAULT 10;
 ALTER TABLE team_commissions DROP CONSTRAINT IF EXISTS team_commissions_tenth;
-ALTER TABLE team_commissions DROP CONSTRAINT IF EXISTS team_commissions_percent_of_rise;
-ALTER TABLE team_commissions ADD CONSTRAINT team_commissions_percent_of_rise CHECK (
-  commission_percent BETWEEN 1 AND 50
-  AND commission_paise = ((to_high_paise - from_high_paise) * commission_percent) / 100
-  AND commission_paise > 0);
 -- A merchant account's whole payment is recorded to its owner: no supervisor share.
 ALTER TABLE team_commission_shares DROP CONSTRAINT IF EXISTS team_commission_shares_role_known;
 ALTER TABLE team_commission_shares ADD CONSTRAINT team_commission_shares_role_known

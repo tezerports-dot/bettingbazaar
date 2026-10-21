@@ -625,9 +625,9 @@ export interface TeamView {
   poolExposure: PoolExposure;
   /** Team commission (Step 2e): mirrors `toSummary` in database/repositories/teamCommission.js — §5. */
   commission: {
-    teamId: string; buysPaise: number; sellsPaise: number; matchedPaise: number;
-    highPaise: number; paidPaise: number; owedPaise: number;
-    commissionPercent: number; supervisorSharePercent: number;
+    teamId: string; buysPaise: number; sellsPaise: number;
+    paidPaise: number; owedPaise: number;
+    depositPercent: number; withdrawalPercent: number; supervisorSharePercent: number;
   };
 }
 // Mirrors `toRequest` and POOL_DIRECTIONS in database/repositories/teamPools.js

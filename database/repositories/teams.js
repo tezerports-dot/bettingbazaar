@@ -22,7 +22,7 @@
  */
 import { pgQuery, withTransaction } from '../client.js';
 import { randomBytes } from 'node:crypto';
-import { teamVolumeSql, teamMarkSql, toSummary, directCommissionPercent } from './teamCommission.js';
+import { teamCommissionSql, toSummary, commissionRates } from './teamCommission.js';
 import { getSystemConfig } from './config.js';
 import { poolExposureSql, toPoolExposure } from './teamPools.js';
 import { textHasAMobile } from '../../backend/domains/identity/mobileInText.js';
@@ -55,20 +55,19 @@ const TEAM_SELECT = `
          c.approved_count, c.pending_count,
          COALESCE(p.available_paise, 0) AS pool_available_paise,
          COALESCE(p.held_paise, 0)      AS pool_held_paise,
-         v.buys_paise, v.sells_paise, k.high_paise, k.paid_paise, x.*,
+         v.*, x.*,
          ${STRENGTH_SQL} AS strength
     FROM teams t
     JOIN merchants s ON s.merchant_id = t.supervisor_id
     LEFT JOIN team_pools p ON p.team_id = t.team_id
     CROSS JOIN LATERAL (${poolExposureSql('team_id = t.team_id')}) x
-    CROSS JOIN LATERAL (${teamVolumeSql('t.team_id')}) v
-    CROSS JOIN LATERAL (${teamMarkSql('t.team_id')}) k
+    CROSS JOIN LATERAL (${teamCommissionSql('t.team_id')}) v
     CROSS JOIN LATERAL (
       SELECT count(*) FILTER (WHERE status = 'APPROVED')::int AS approved_count,
              count(*) FILTER (WHERE status = 'PENDING')::int  AS pending_count
         FROM team_members WHERE team_id = t.team_id) c`;
 
-function toTeam(row) {
+function toTeam(row, rates) {
   if (!row) return null;
   return {
     teamId: row.team_id,
@@ -87,9 +86,9 @@ function toTeam(row) {
     // What the held tokens are held for, and the sells on their way in
     // (`teamPools.poolExposureSql`).
     poolExposure: toPoolExposure(row),
-    // Step 2e: matched volume, the high-water mark, what has been paid, and
-    // what is earned but waiting for the commission pool.
-    commission: toSummary(row.team_id, row),
+    // Order commission (owner, 2026-10-21): completed volume, what has been
+    // paid, and what is earned but waiting for the commission pool.
+    commission: toSummary(row.team_id, row, rates),
     createdAt: row.created_at,
   };
 }
@@ -247,7 +246,7 @@ export async function deleteTeam({ teamId, supervisorId }) {
 
 export async function getTeam(teamId) {
   const { rows } = await pgQuery(`${TEAM_SELECT} WHERE t.team_id = $1`, [String(teamId)], 'teams_get');
-  return toTeam(rows[0]);
+  return toTeam(rows[0], commissionRates(await getSystemConfig()));
 }
 
 export async function listTeams({ supervisorId = null } = {}) {
@@ -255,7 +254,8 @@ export async function listTeams({ supervisorId = null } = {}) {
     `${TEAM_SELECT} WHERE ($1::text IS NULL OR t.supervisor_id = $1)
       ORDER BY s.name, t.created_at`,
     [supervisorId === null ? null : String(supervisorId)], 'teams_list');
-  return rows.map(toTeam);
+  const rates = commissionRates(await getSystemConfig());
+  return rows.map((r) => toTeam(r, rates));
 }
 
 export async function listMembers({ teamId = null, status = null } = {}) {
@@ -394,16 +394,15 @@ const DIRECT_SELECT = `
          o.routing_priority AS owner_priority,
          COALESCE(p.available_paise, 0) AS pool_available_paise,
          COALESCE(p.held_paise, 0)      AS pool_held_paise,
-         v.buys_paise, v.sells_paise, k.high_paise, k.paid_paise, x.*
+         v.*, x.*
     FROM teams t
     JOIN merchants o ON o.merchant_id = t.owner_merchant_id
     LEFT JOIN team_pools p ON p.team_id = t.team_id
     CROSS JOIN LATERAL (${poolExposureSql('team_id = t.team_id')}) x
-    CROSS JOIN LATERAL (${teamVolumeSql('t.team_id')}) v
-    CROSS JOIN LATERAL (${teamMarkSql('t.team_id')}) k
+    CROSS JOIN LATERAL (${teamCommissionSql('t.team_id')}) v
    WHERE t.kind = 'DIRECT'`;
 
-function toDirectTeam(row, commissionPercent) {
+function toDirectTeam(row, rates) {
   if (!row) return null;
   return {
     teamId: row.team_id,
@@ -419,7 +418,7 @@ function toDirectTeam(row, commissionPercent) {
     poolAvailablePaise: Number(row.pool_available_paise ?? 0),
     poolHeldPaise: Number(row.pool_held_paise ?? 0),
     poolExposure: toPoolExposure(row),
-    commission: toSummary(row.team_id, row, { percent: commissionPercent, kind: 'DIRECT' }),
+    commission: toSummary(row.team_id, row, rates, { kind: 'DIRECT' }),
     createdAt: row.created_at,
   };
 }
@@ -428,12 +427,12 @@ function toDirectTeam(row, commissionPercent) {
 export async function directTeamOf(merchantId) {
   if (!merchantId) return null;
   const { rows } = await pgQuery(`${DIRECT_SELECT} AND t.owner_merchant_id = $1`, [String(merchantId)], 'teams_direct_of');
-  return toDirectTeam(rows[0], directCommissionPercent(await getSystemConfig()));
+  return toDirectTeam(rows[0], commissionRates(await getSystemConfig()));
 }
 
 /** Every merchant account, by owner name. */
 export async function listDirectTeams() {
   const { rows } = await pgQuery(`${DIRECT_SELECT} ORDER BY o.name, t.created_at`, [], 'teams_direct_list');
-  const percent = directCommissionPercent(await getSystemConfig());
-  return rows.map((r) => toDirectTeam(r, percent));
+  const rates = commissionRates(await getSystemConfig());
+  return rows.map((r) => toDirectTeam(r, rates));
 }

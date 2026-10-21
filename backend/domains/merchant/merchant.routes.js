@@ -111,7 +111,7 @@ router.get('/profile', merchantAuth, async (req, res) => {
         if (!merchant) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
         // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
         // no buy/sell spread. Shape kept for merchant-panel compatibility;
-        // merchant earnings are team commission (2e, teamCommission.js).
+        // merchant earnings are order commission (teamCommission.js).
         // A sub-member reads the merchant account's record, never the owner's
         // own contact or payout details (§24: nobody is shown another
         // person's mobile).

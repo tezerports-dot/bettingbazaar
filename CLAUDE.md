@@ -125,7 +125,7 @@ exported constants. `SystemConfig.x` lives in `config_documents`, declared in
 | A USDT buy's address and what arrived | `order_states.usdt_pay_address` (frozen) and `usdt_deposit_addresses`, `usdt_deposit_transfers`, `usdt_chain_cursors`, written only by `database/repositories/usdtDeposits.js` (owner, 2026-10-18). The address is derived for that order alone from the account xpub `USDT_BEP20_XPUB` (m/44'/60'/0', child 0/<index>, `usdtBsc.js`, the one door to the chain over `BSC_RPC_URL`); the server never holds a private key. The watcher (`watchUsdtDeposits`, cron) reads the head, then the watched addresses, then the cursor; records each Transfer log of `BSC_USDT_CONTRACT` once per (hash, log index); and credits through `completeOrder` → `creditUsdtBuyWithin` once transfers `SystemConfig.usdtDeposits.confirmations` deep cover the order: wallet, TOKEN_SUPPLY → USER_FLOAT, the first transfer's `<hash>:<log index>` in `utr_registry` (`paymentReferenceOf`, so one transaction can pay several orders) and the first-deposit bonus in one transaction. Short of it, nothing moves; late, overpaid and after-credit money is recorded for an admin (Admin › USDT Deposits, `canManageUsdtDeposits`), never credited by the server. No team commission (no team). Window `usdtDeposits.paymentWindowMinutes`; closed orders watched `lateWatchHours`. Swept offline by `scripts/usdt-sweep.mjs`; the sweep is recorded once on the address row. Each address row keeps the key it was derived under (`key_id` = `keyIdOf`, unique with the index), so the key is rotated by swapping `USDT_BEP20_XPUB` for a new offline phrase's: new buys take the new key, old addresses stay watched and are swept with the old phrase, which refuses the other key's lines (`docs/governance/USDT_KEY_ROTATION.md`). The active key is shown on Admin › USDT Deposits (`activeKeyId`). Where a sweep SENDS is the owner's own wallet, `usdt_final_wallets` (append-only, newest row in use, written only by `setFinalWallet`), set on that page by a full admin only (`PUT /api/admin/usdt-deposits/final-wallet`, `isAdmin`; alerted on change), carried in the sweep file as `finalWallet` (no wallet, no file: 409 `FINAL_WALLET_NOT_SET`); the tool sends only after the person running it pastes the whole address from their own wallet app (`confirmsAddress`; never a few characters), and refuses a file that disagrees with a local `USDT_TREASURY_ADDRESS` (owner, 2026-10-18). |
 | USDT pricing | `SystemConfig.usdtPricing` (`userMerchantBuyInr`, `merchantAdminBuyInr`); band ₹10–₹1,000 owned by `domains/configuration/tokenRates.js`, enforced on save and on read; 0 = unset = refused by name. No USDT sell rail. |
 | An order's payment rail | `order_states.payment_mode`, stamped at creation from the order's size or currency (`orderRails.js`: `paymentModeFor`, `railOf`) and frozen by trigger. Everything branches on the order's own value; there is no platform-wide switch. |
-| Merchant earnings | Team commission (§26): `database/repositories/teamCommission.js`, the one writer of `team_commissions` + `team_commission_shares`. Paid into the TEAM's pool from the platform-funded team commission pool (`MERCHANT_BONUS_POOL`); never from users, a spread or a deposit trigger. Every screen reads `toSummary` and the shares; none keeps its own percentages. A merchant account's: `SystemConfig.directMerchants.commissionPercent` (default 10), stamped on the row (`commission_percent`), into its own pool, one OWNER share (§26; owner, 2026-10-11). |
+| Merchant earnings | Order commission (§26): `database/repositories/teamCommission.js`, the one writer of `team_commissions` + `team_commission_shares`: `SystemConfig.orderCommission.depositPercent` / `withdrawalPercent` (default 5 / 5, admin; owner, 2026-10-21) of each completed order, paid into the serving TEAM's pool (agents' teams and merchant accounts alike, a merchant account's as one OWNER share) from the platform-funded team commission pool (`MERCHANT_BONUS_POOL`); never from users, a spread or a deposit trigger. Every screen reads `toSummary` and the shares; none keeps its own percentages. |
 | Token supply | `SystemConfig.adminTokenSupply.total` (20 billion), read in the database by `bb_token_supply_paise()` (fallback = the spec default). None are ever created; every movement is a transfer, and the books prove holding + pools + wallets = total — per transaction, not per sweep (Token conservation, below). The platform cannot release more than the total (`treasury_supply_ceiling`), asked only when it releases, so lowering the total never blocks a buyback. |
 | Pool token movements | `teamPools.js`, the one writer; idempotent `tx_id`. A commission joins the pool as a `COMMISSION` entry with its `TOKEN_SUPPLY` → `TEAM_FLOAT` movement, in the paying transaction (`creditCommissionWithin`). A completed BUY (`spendForBuy`) and a settled or reversed SELL (`creditSellToPool`, `reverseSellFromPool`) move the POOL, the player's WALLET and the treasury in ONE transaction — never two with compensation. |
 | Token conservation | The DATABASE, per transaction, not a sweep (owner, 2026-10-07): `schema.sql`, "TOKEN CONSERVATION". Every movement's legs sum to zero; every treasury account moves by exactly its new `treasury_entries`; the wallets move with `USER_FLOAT` and the pools with `TEAM_FLOAT`; a pool's available and held tokens move with their `team_pool_entries`; no pocket, pool or platform account below zero and `TOKEN_SUPPLY` never above it. Checked at COMMIT by deferred constraint triggers over transaction-local buckets, so the cost is per row and not per table. A path that cannot keep this is a defect to fix, never a reason to relax it. |
@@ -530,28 +530,35 @@ supervisor's dispute message carrying a mobile is refused by the row.
 - ₹10,000 (the largest CASH size) is the ATM limit; it is not a USDT limit.
 - A refusal names that rail's own valid choices.
 
-## 26. Team commission
+## 26. Order commission
 
-1. A team's matched volume is `min(completed buys, completed sells)` in tokens
-   over its own orders (`teamVolumeSql`, the one query; trap 15).
-2. Each rise above the team's high-water mark pays `COMMISSION_PERCENT` (10) of
-   the rise, rounded down to the paisa, into the team's pool from
+(Owner, 2026-10-21: it replaced the 10% matched-volume cycle.)
+
+1. Every COMPLETED order a team or merchant account served pays a percent of
+   its tokens: `SystemConfig.orderCommission.depositPercent` on a buy (a
+   player's deposit), `withdrawalPercent` on a sell (default 5 and 5; admin,
+   Admin › Settings › Merchant Commission; 0 to 20, two decimals; 0 is off),
+   read through `commissionRates` (`teamCommission.js`) at the moment it is
+   paid. Rounded down to the paisa, into the serving team's pool, from
    `MERCHANT_BONUS_POOL` (funded only from distributable revenue).
-3. The mark is the rows: the highest `team_commissions.to_high_paise`. It moves
-   only with a payment. UNIQUE `(team, from)` and `(team, to)` plus the advisory
-   lock pay each rise once; the CHECKs hold the row to the rule.
-4. Never partial: a pool short of the whole amount pays nothing, and the rise
-   waits for the next completion, the 5-minute sweep or the next funding.
-5. Paid after commit from every path that completes an order (the lifecycle
-   and the sell settlement); a failure is alerted and the sweep pays it (§21).
-   The payment, its shares, the ledger event, the pool entry and the treasury
-   movement are one transaction.
-6. The split is a RECORD, adding up to the payment exactly:
+2. One row per order (`team_commissions.order_id`, unique
+   `team_commissions_once_per_order`, id `tcm~<orderId>`), carrying the
+   order's tokens and the rate in basis points; the CHECK
+   (`team_commissions_per_order`) holds the sum to them. The advisory lock
+   serialises the commission pool's balance check with its spend.
+3. Never partial: a pool short of the whole amount pays nothing, and the
+   order stays owed (`ordersOwed`) for the next completion, the 5-minute sweep
+   or the next funding.
+4. Paid after commit from every path that completes an order (the lifecycle
+   and the sell settlement, `payCommissionFor`); a failure is alerted and the
+   sweep pays it (§21). The payment, its shares, the ledger event, the pool
+   entry and the treasury movement are one transaction.
+5. The split is a RECORD, adding up to the payment exactly:
    `SUPERVISOR_SHARE_PERCENT` (16) to the supervisor, the rest equally to the
-   approved members at the time of payment. The tokens stay in the pool.
-   A merchant account (owner, 2026-10-11): `directMerchants.commissionPercent`
-   (default 10) in place of `COMMISSION_PERCENT`, stamped on the row, paid into
-   its own pool as one OWNER share of the whole payment; no supervisor share.
+   approved members at the time of payment. The tokens stay in the pool. A
+   merchant account records the whole payment as one OWNER share.
+6. Screens read `toSummary` (completed buys and sells, paid, owed, the two
+   rates) and `listCommissions` (each payment naming its order).
 7. A member sees only their own share; the team's totals are team-level.
 
 ## 27. One payment, one claim

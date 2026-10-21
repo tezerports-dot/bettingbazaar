@@ -127,7 +127,7 @@ const PoolBody: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 11, marginTop: 11 }}>
           {[
             { label: `Bought from the platform (${poolTrades?.buys ?? 0})`, value: tokensOf(poolTrades?.boughtPaise ?? 0) },
-            { label: `Commission paid (${team.commission.commissionPercent}%)`, value: tokensOf(team.commission.paidPaise) },
+            { label: `Commission paid (${team.commission.depositPercent}% buys · ${team.commission.withdrawalPercent}% sells)`, value: tokensOf(team.commission.paidPaise) },
             { label: 'Commission owed', value: tokensOf(team.commission.owedPaise) },
           ].map((tile) => (
             <div key={tile.label} style={{ background: 'var(--surface-2)', borderRadius: 13, padding: 14 }}>

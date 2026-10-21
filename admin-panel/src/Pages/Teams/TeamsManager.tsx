@@ -261,7 +261,7 @@ export const TeamsManager: React.FC = () => {
                     <span className="text-xs text-gray-400">{poolExposureLine(t.poolExposure, tokens)}</span>
                   )}
                   <span className="text-xs text-gray-400">
-                    Commission: {tokens(t.commission.paidPaise)} paid on matched volume {tokens(t.commission.matchedPaise)}
+                    Commission: {tokens(t.commission.paidPaise)} paid on completed buys {tokens(t.commission.buysPaise)} and sells {tokens(t.commission.sellsPaise)}
                   </span>
                   {t.commission.owedPaise > 0 && (
                     <span className="text-xs px-2 py-0.5 rounded-lg bg-yellow-500/10 text-yellow-400">

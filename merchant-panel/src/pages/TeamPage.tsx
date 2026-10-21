@@ -70,9 +70,9 @@ const POOL_KIND: Record<TeamPoolEntry['kind'], string> = {
 };
 
 /**
- * A team's commission (Step 2e): its matched volume, what has been paid into
- * the pool, anything earned and waiting, and the reader's own share of each
- * recent payment. Module level (§32 S23).
+ * A team's commission (owner, 2026-10-21): a percent of every completed buy
+ * and sell, what has been paid into the pool, anything earned and waiting, and
+ * the reader's own share of each recent payment. Module level (§32 S23).
  */
 const CommissionSection: React.FC<{ team: Team; commissions: TeamCommission[] }> = ({ team, commissions }) => {
   const c = team.commission;
@@ -84,8 +84,8 @@ const CommissionSection: React.FC<{ team: Team; commissions: TeamCommission[] }>
         <span className="bb-mono" style={{ fontSize: 14, fontWeight: 800 }}>{tokens(c.paidPaise)} tokens paid</span>
       </div>
       <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '0 0 8px' }}>
-        Matched volume {tokens(c.matchedPaise)} (completed buys {tokens(c.buysPaise)}, sells {tokens(c.sellsPaise)}).
-        Each time it passes its highest so far, {c.commissionPercent}% of the rise is paid into the pool:
+        Completed buys {tokens(c.buysPaise)}, sells {tokens(c.sellsPaise)}.
+        Every completed buy pays {c.depositPercent}% and every completed sell {c.withdrawalPercent}% of its tokens into the pool:
         {' '}{c.supervisorSharePercent}% is the supervisor&apos;s, {100 - c.supervisorSharePercent}% is shared equally by the agents.
       </p>
       {c.owedPaise > 0 && (
@@ -97,7 +97,10 @@ const CommissionSection: React.FC<{ team: Team; commissions: TeamCommission[] }>
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
           {mine.map((x) => (
             <li key={x.commissionId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '4px 0' }}>
-              <span>{new Date(x.createdAt).toLocaleString('en-IN')} · +{tokens(x.commissionPaise)} into the pool</span>
+              <span>
+                {new Date(x.createdAt).toLocaleString('en-IN')} · +{tokens(x.commissionPaise)} into the pool
+                {x.orderType ? ` for a ${x.orderType === 'DEPOSIT' ? 'buy' : 'sell'} of ${tokens(x.basePaise)}` : ''}
+              </span>
               <span className="bb-mono">your share {tokens(x.mySharePaise)}</span>
             </li>
           ))}

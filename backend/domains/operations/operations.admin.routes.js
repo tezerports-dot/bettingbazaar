@@ -112,7 +112,7 @@ router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics
 router.get('/operations/config-catalog', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   res.json({ success: true, catalog: [
     { value: 'Deposit/reserve split + reserve usage rules (per currency)', owner: 'Business Policy — DepositPolicy', edit: 'PUT /api/admin/deposit-policy/:currency' },
-    { value: 'Team commission (10% of each rise in matched volume; 16% supervisor / 84% members)', owner: 'Fixed rule — database/repositories/teamCommission.js (PROJECT_STATUS §3.10, 2e); paid from the team commission pool', edit: 'POST /api/admin/revenue/bonus-pool/fund (funds the pool; the percentages are not editable)' },
+    { value: 'Order commission (a percent of each completed deposit and of each completed withdrawal; 16% supervisor / 84% members)', owner: 'SystemConfig.orderCommission — database/repositories/teamCommission.js; paid from the team commission pool', edit: 'Admin › Settings › Merchant Commission; POST /api/admin/revenue/bonus-pool/fund funds the pool' },
     { value: 'Boards: each board\'s timer, phase timings, stake limits, switch and home-page order', owner: 'boards table — database/repositories/boards.js (read by markets/cycleTypes, cached 5s)', edit: 'POST /api/admin/boards, PUT /api/admin/boards/:key, PUT /api/admin/boards/order' },
     { value: 'Deposit/withdrawal min/max', owner: 'Business Policy — SystemConfig', edit: 'PUT /api/admin/system/config' },
     { value: 'Payout fee %', owner: 'Business Policy — SystemConfig.payoutFeePercent (enforced by Risk, recorded by R&S)', edit: 'PUT /api/admin/system/config' },

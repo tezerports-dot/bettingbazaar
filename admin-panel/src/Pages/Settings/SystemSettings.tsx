@@ -101,7 +101,8 @@ const routingDefaults = (): TeamRoutingForm => ({
 // §5 MIRROR — `SYSTEM_CONFIG_SPEC.fields.merchantRouting` and
 // `.directMerchants` in `database/spec/config.spec.js` (owner, 2026-10-11),
 // read by `merchantRoutingSettings` (database/repositories/teamRouting.js),
-// `payTeamCommission` and `merchantProblems.js`. Bounds repeat the spec's for
+// `merchantProblems.js`; and `.orderCommission`, read by `commissionRates`
+// (database/repositories/teamCommission.js; owner, 2026-10-21). Bounds repeat the spec's for
 // the input; the server refuses an out-of-range value by name. `fallback` is a
 // LOADING placeholder equal to the spec default beside it (§4).
 type OrderDirection = 'DEPOSIT' | 'WITHDRAWAL';
@@ -119,11 +120,9 @@ const MERCHANT_ROUTING_DIRECTIONS: Array<{
 ];
 const MERCHANT_ASSIGNMENT_WAIT = { min: 60, max: 86400, fallback: 1500 };   // spec default: 1500
 const DIRECT_MERCHANT_FIELDS: Array<{
-  key: 'commissionPercent' | 'dailyProblemFlagThreshold'; label: string;
+  key: 'dailyProblemFlagThreshold'; label: string;
   min: number; max: number; fallback: number;
 }> = [
-  { key: 'commissionPercent', label: 'Merchant commission (%)',
-    min: 1, max: 50, fallback: 10 },   // spec default: 10,
   { key: 'dailyProblemFlagThreshold', label: 'Problems in a day before a merchant is flagged',
     min: 1, max: 100, fallback: 5 },   // spec default: 5,
 ];
@@ -146,7 +145,16 @@ const merchantRoutingDefaults = (): MerchantRoutingForm => ({
   assignmentWaitSeconds: MERCHANT_ASSIGNMENT_WAIT.fallback,
 });
 const directMerchantDefaults = () =>
-  Object.fromEntries(DIRECT_MERCHANT_FIELDS.map((f) => [f.key, f.fallback])) as Record<'commissionPercent' | 'dailyProblemFlagThreshold', number>;
+  Object.fromEntries(DIRECT_MERCHANT_FIELDS.map((f) => [f.key, f.fallback])) as Record<'dailyProblemFlagThreshold', number>;
+
+/** Commission per completed order, in percent, two decimals at most (`orderCommission`, §5 mirror). */
+type CommissionKey = 'depositPercent' | 'withdrawalPercent';
+const ORDER_COMMISSION_FIELDS: Array<{ key: CommissionKey; label: string; min: number; max: number; fallback: number }> = [
+  { key: 'depositPercent', label: 'Commission on each deposit (buy), %', min: 0, max: 20, fallback: 5 },       // spec default: 5
+  { key: 'withdrawalPercent', label: 'Commission on each withdrawal (sell), %', min: 0, max: 20, fallback: 5 }, // spec default: 5
+];
+const orderCommissionDefaults = () =>
+  Object.fromEntries(ORDER_COMMISSION_FIELDS.map((f) => [f.key, f.fallback])) as Record<CommissionKey, number>;
 
 const outOfRange = (v: number, b: { min: number; max: number }) => !Number.isFinite(v) || v < b.min || v > b.max;
 
@@ -259,6 +267,7 @@ export const SystemSettings: React.FC = () => {
     merchantSellSizes: [] as number[],  // schema default: []
     merchantRouting: merchantRoutingDefaults(),
     directMerchants: directMerchantDefaults(),
+    orderCommission: orderCommissionDefaults(),
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
     generalPayoutMultiplier: 1.8, // schema default: 1.8 (General boards)
@@ -380,6 +389,7 @@ export const SystemSettings: React.FC = () => {
             } as MerchantRoutingForm;
           })(),
           directMerchants: { ...directMerchantDefaults(), ...(response.data.directMerchants ?? {}) },
+          orderCommission: { ...orderCommissionDefaults(), ...(response.data.orderCommission ?? {}) },
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
           generalPayoutMultiplier: response.data.generalPayoutMultiplier ?? 1.8, // schema default: 1.8
           phantomBetsLabel:     response.data.phantomBetsLabel     ?? '',
@@ -1164,6 +1174,36 @@ export const SystemSettings: React.FC = () => {
             </div>
           </div>
 
+          {/* ── Commission per order (owner, 2026-10-21) ─────────────────────
+              Into the pool of the team or merchant account that served it,
+              agents and merchant accounts alike. */}
+          <div className="pt-4 border-t border-dark-700">
+            <h3 className="font-semibold mb-1">Merchant Commission</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              Paid into the merchant&apos;s pool for every completed order, from the commission pool. An agents&apos; team
+              records 16% of it to the supervisor and the rest to its members. 0 turns it off for that direction.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {ORDER_COMMISSION_FIELDS.map((f) => {
+                const v = formData.orderCommission[f.key];
+                return (
+                  <div key={f.key}>
+                    <label className="label" htmlFor={`oc-${f.key}`}>{f.label}</label>
+                    <input id={`oc-${f.key}`} type="number" step={0.01} min={f.min} max={f.max}
+                      value={Number.isFinite(v) ? v : ''}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        orderCommission: { ...formData.orderCommission, [f.key]: Math.round(Number(e.target.value) * 100) / 100 },
+                      })}
+                      className="input" />
+                    {outOfRange(v, f) && <p role="alert" className="text-xs text-red-400 mt-1">Must be {f.min}–{f.max}.</p>}
+                    <SettingHelp path={`orderCommission.${f.key}`} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           <div className="pt-4 border-t border-dark-700">
             <label className="label" htmlFor="withdrawal-payout-fee">Withdrawal Payout Fee (%)</label>
             <input id="withdrawal-payout-fee"
@@ -1704,7 +1744,8 @@ export const SystemSettings: React.FC = () => {
           || MERCHANT_ROUTING_DIRECTIONS.some((d) => outOfRange(formData.merchantRouting.concurrency[d.direction], d.concurrency)
             || outOfRange(formData.merchantRouting.processingWindowSeconds[d.direction], d.processing))
           || outOfRange(formData.merchantRouting.assignmentWaitSeconds, MERCHANT_ASSIGNMENT_WAIT)
-          || DIRECT_MERCHANT_FIELDS.some((f) => outOfRange(formData.directMerchants[f.key], f))}
+          || DIRECT_MERCHANT_FIELDS.some((f) => outOfRange(formData.directMerchants[f.key], f))
+          || ORDER_COMMISSION_FIELDS.some((f) => outOfRange(formData.orderCommission[f.key], f))}
         className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
       >
         {isSaving ? (

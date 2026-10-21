@@ -98,7 +98,7 @@ describePg('merchant accounts', () => {
     const cfg = await getSystemConfig();
     prior = {
       merchantBuySizes: [...cfg.merchantBuySizes], merchantSellSizes: [...cfg.merchantSellSizes],
-      directMerchants: { ...cfg.directMerchants },
+      directMerchants: { ...cfg.directMerchants }, orderCommission: { ...cfg.orderCommission },
     };
   }, 60_000);
 
@@ -775,8 +775,8 @@ describePg('merchant accounts', () => {
 
   // ── Commission ────────────────────────────────────────────────────────────
   describe('commission', () => {
-    it('pays the admin\'s percent of the matched rise into the account\'s own pool, all of it the owner\'s', async () => {
-      await config({ ...TO_MERCHANTS, directMerchants: { commissionPercent: 7 } });
+    it('pays the admin\'s percent of each completed order into the account\'s own pool, all of it the owner\'s', async () => {
+      await config({ ...TO_MERCHANTS, orderCommission: { depositPercent: 7, withdrawalPercent: 3 } });
       const m = await merchantAccount({ poolTokens: 200_000 });
       // The platform's commission pool, funded from revenue for this case.
       const need = 10_000_000 - await bonusPoolPaise();
@@ -800,19 +800,18 @@ describePg('merchant accounts', () => {
       const poolBefore = (await getPool(m.team.teamId)).availablePaise;
       expect(await settleHold(sell.orderId)).toBe(true);
 
-      const { rows } = await pgQuery('SELECT * FROM team_commissions WHERE team_id = $1', [m.team.teamId]);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({
-        from_high_paise: '0', to_high_paise: '5000000', commission_paise: '350000', commission_percent: 7,
-      });
-      expect(rows[0].supervisor_id).toBe(null);
+      const { rows } = await pgQuery('SELECT * FROM team_commissions WHERE team_id = $1 ORDER BY created_at', [m.team.teamId]);
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({ order_id: orderId, order_type: 'DEPOSIT', commission_bp: 700, commission_paise: '350000' });
+      expect(rows[1]).toMatchObject({ order_id: sell.orderId, order_type: 'WITHDRAWAL', commission_bp: 300, commission_paise: '150000' });
+      expect(rows.every((r) => r.supervisor_id === null)).toBe(true);
       const { rows: shares } = await pgQuery(
         'SELECT role, merchant_id, share_paise FROM team_commission_shares WHERE commission_id = $1', [rows[0].commission_id]);
       expect(shares).toEqual([{ role: 'OWNER', merchant_id: String(m.merchantId), share_paise: '350000' }]);
-      // The sell's tokens and the commission both landed in the account's own pool.
-      expect((await getPool(m.team.teamId)).availablePaise - poolBefore).toBe(5_000_000 + 350_000);
+      // The sell's tokens and its commission both landed in the account's own pool.
+      expect((await getPool(m.team.teamId)).availablePaise - poolBefore).toBe(5_000_000 + 150_000);
       const summary = (await as(accountApp, m).get('/account')).body.team.commission;
-      expect(summary).toMatchObject({ commissionPercent: 7, supervisorSharePercent: 0 });
+      expect(summary).toMatchObject({ depositPercent: 7, withdrawalPercent: 3, supervisorSharePercent: 0, paidPaise: 500_000 });
     });
   });
 

@@ -415,16 +415,17 @@ export interface Team {
   /** Sent on a supervisor's own teams (`GET /api/merchant/team`). */
   poolTrades?: PoolTradeTotals;
 }
-// Team commission (Step 2e). Mirrors `toSummary` and `listCommissions` in
-// database/repositories/teamCommission.js — §5. Paise throughout.
+// Order commission (owner, 2026-10-21). Mirrors `toSummary` and
+// `listCommissions` in database/repositories/teamCommission.js — §5. Paise throughout.
 export interface TeamCommissionSummary {
-  teamId: string; buysPaise: number; sellsPaise: number; matchedPaise: number;
-  highPaise: number; paidPaise: number; owedPaise: number;
-  /** The rule, from the server: of each rise, and the supervisor's part of each payment. */
-  commissionPercent: number; supervisorSharePercent: number;
+  teamId: string; buysPaise: number; sellsPaise: number;
+  paidPaise: number; owedPaise: number;
+  /** The rule, from the server: of each completed buy and sell, and the supervisor's part of each payment. */
+  depositPercent: number; withdrawalPercent: number; supervisorSharePercent: number;
 }
 export interface TeamCommission {
-  commissionId: string; teamId: string; fromHighPaise: number; toHighPaise: number;
+  commissionId: string; teamId: string; orderId: string | null; orderType: 'DEPOSIT' | 'WITHDRAWAL' | null;
+  basePaise: number; commissionPercent: number | null;
   commissionPaise: number; mySharePaise: number; createdAt: string;
 }
 // Team token pools (Step 2b). Mirrors `toPool`, `toEntry`, `toRequest` and

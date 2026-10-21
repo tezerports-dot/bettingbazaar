@@ -277,13 +277,18 @@ export const SYSTEM_CONFIG_SPEC = group({
   }),
   // ── Merchant accounts (owner, 2026-10-11) ───────────────────────────────
   directMerchants: group({
-    // Percent of each rise in matched volume paid into the merchant account's
-    // own pool (`payTeamCommission`; no supervisor share). Agents' teams stay
-    // at COMMISSION_PERCENT.
-    commissionPercent:         int(10, 1, 50),
     // Problems (refusals, unpaid buys counted against it, lost disputes) in
     // one IST day that flag a merchant account. A flag suspends nothing.
     dailyProblemFlagThreshold: int(5, 1, 100),
+  }),
+  // ── Order commission (owner, 2026-10-21) ────────────────────────────────
+  // Percent of each COMPLETED order's tokens paid into the pool of the team
+  // or merchant account that served it (`payOrderCommission`,
+  // teamCommission.js): a buy (a player's deposit) and a sell (a player's
+  // withdrawal) apart. Two decimals at most (basis points on the row); 0 off.
+  orderCommission: group({
+    depositPercent:    n(5, 0, 20),
+    withdrawalPercent: n(5, 0, 20),
   }),
   // ── Referral rewards (owner, 2026-10-14: admin-editable) ─────────────────
   // What a verified joiner earns each player up the invite chain, in whole
@@ -557,8 +562,8 @@ export const DEPOSIT_POLICY_SPEC = group({
 
 // A `merchantBonusPolicy` scope used to sit here, declaring a per-order spread
 // (depositBonusPercent / withdrawalBonusPercent / maxBonusPerOrder). Nothing
-// ever read it, and what a merchant earns is owned by team commission
-// (`database/repositories/teamCommission.js`, 2e): a fixed rule, not a policy.
+// ever read it, and what a merchant earns is owned by order commission
+// (`orderCommission` above, `database/repositories/teamCommission.js`).
 // A second set of earnings fields an admin could reach was a second owner
 // waiting to disagree with the first, so it is gone rather than left dormant.
 
