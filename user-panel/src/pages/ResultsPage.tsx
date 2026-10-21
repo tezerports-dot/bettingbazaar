@@ -14,7 +14,7 @@ const NO_WINNERS: Side[] = [];
 const sideBg = (sd: string) => (sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)');
 
 const ResultsPage: React.FC = () => {
-  const { pastCycles, loadCycleHistory, boards } = useGame();
+  const { pastCycles, loadCycleHistory, boards, audience } = useGame();
   const [picked, setPicked] = useState('');
   // The board picked here, or the first in the admin's order.
   const aBoard = boards.find(b => b.key === picked) ?? boards[0];
@@ -46,7 +46,7 @@ const ResultsPage: React.FC = () => {
               return <button key={b.key} type="button" role="radio" aria-checked={on} onClick={() => setPicked(b.key)} style={{ flex: 'none', padding: '6px 13px', borderRadius: 999, border: `1px solid ${on ? 'var(--gold)' : 'var(--line2)'}`, cursor: 'pointer', fontSize: 10, fontWeight: 800, background: on ? 'var(--gold)' : 'var(--surface2)', color: on ? 'var(--on-gold)' : 'var(--text2)' }}>{b.name.toUpperCase()}</button>;
             })}
           </div>
-          <AnalyticsView board={aBoard} winners={(aBoard && winnersByType[aBoard.key]) || NO_WINNERS} loadCycleHistory={loadCycleHistory} />
+          <AnalyticsView board={aBoard} winners={(aBoard && winnersByType[aBoard.key]) || NO_WINNERS} loadCycleHistory={loadCycleHistory} audience={audience} />
         </div>
       )}
 

@@ -476,6 +476,14 @@ export const cycles = {
   },
 };
 
+export interface DemoResultsEntry { results: string; count: number; bombay: number; delhi: number }
+export interface DemoResultsPage {
+  success: boolean;
+  max: number;
+  audiences: Array<'VIP' | 'GENERAL'>;
+  boards: Array<{ key: string; name: string; enabled: boolean; VIP: DemoResultsEntry; GENERAL: DemoResultsEntry }>;
+}
+
 // --- BOARDS (owner, 2026-10-08) ------------------------------------------------
 // Admin-created board games, each with its own timer, and their home-page order.
 // backend/routes/admin/boards.admin.routes.js. Screens that only LABEL boards
@@ -487,6 +495,15 @@ export const boards = {
     (await api.put<any>(`/api/admin/boards/${encodeURIComponent(key)}`, patch)).data,
   setOrder: async (keys: string[]) => (await api.put<any>('/api/admin/boards/order', { keys })).data,
   rtpFunds: async () => (await api.get<any>('/api/admin/rtp')).data,
+  // Demo results the admin types, per board and profile (owner, 2026-10-20).
+  demoResults: async () => (await api.get<DemoResultsPage>('/api/admin/boards/demo-results')).data,
+  saveDemoResults: async (key: string, audience: string, results: string) =>
+    (await api.put<{ success: boolean; count: number; bombay: number; delhi: number; results: string }>(
+      `/api/admin/boards/${encodeURIComponent(key)}/demo-results`, { audience, results })).data,
+  importDemoResults: async (text: string) =>
+    (await api.post<{ success: boolean; saved: Array<{ key: string; audience: string; count: number }> }>(
+      '/api/admin/boards/demo-results/import', { text })).data,
+  downloadDemoResults: () => downloadCsv('/api/admin/boards/demo-results.csv', {}, 'demo-results.csv'),
   saveRtp: async (game: string, audience: string, body: { enabled: boolean; ratePercent: number }) =>
     (await api.put<any>(`/api/admin/rtp/${encodeURIComponent(game)}/${encodeURIComponent(audience)}`, body)).data,
   rtpEntries: async (game: string, audience: string) =>

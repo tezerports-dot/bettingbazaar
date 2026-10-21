@@ -12,6 +12,13 @@
  * every player sees the same demo history and demo #n never changes. Display
  * only (§11): never in the Results list, never a cycle, never sent anywhere.
  *
+ * Or the admin types them (owner, 2026-10-20): Admin › Boards › Demo
+ * results, per board and profile, sent with the board as `demoResults`
+ * (B and D, OLDEST first). A board and profile with typed results shows
+ * those, newest typed result just before the oldest real one, and no drawn
+ * ones; with none typed, the drawn ones as before. Either way they are drawn
+ * the same way, faded.
+ *
  * Whether they are on is the server's (`SystemConfig.demoResultsOn`, sent by
  * systemConfigPayload.js); the panel keeps no copy, and shows no demo result
  * until that has arrived. They are drawn faded (`DEMO_STYLE`) and named
@@ -43,14 +50,24 @@ export function demoWinners(boardKey: string, count: number): Side[] {
   return out;
 }
 
+/** The admin's typed results ('B'/'D', oldest first), newest first as the analytics read them. */
+export function typedDemoWinners(typed: string, count: number): Side[] {
+  const out: Side[] = [];
+  for (let i = typed.length - 1; i >= 0 && out.length < count; i--) out.push(typed[i] === 'D' ? 'DELHI' : 'BOMBAY');
+  return out;
+}
+
 /**
  * The window to analyse: the real winners, then as many demo winners as fill
- * it to `window`. `real` is how many of the returned winners are real.
+ * it to `window` (the admin's typed ones when there are any, else drawn).
+ * `real` is how many of the returned winners are real.
  */
-export function withDemoResults(realNewestFirst: Side[], boardKey: string, window: number, on: boolean): { winners: Side[]; real: number } {
+export function withDemoResults(realNewestFirst: Side[], boardKey: string, window: number, on: boolean, typed = ''): { winners: Side[]; real: number } {
   const real = Math.min(realNewestFirst.length, window);
   const fill = on && boardKey ? Math.max(0, window - real) : 0;
-  return { winners: fill ? [...realNewestFirst.slice(0, real), ...demoWinners(boardKey, fill)] : realNewestFirst.slice(0, real), real };
+  if (!fill) return { winners: realNewestFirst.slice(0, real), real };
+  const demo = typed ? typedDemoWinners(typed, fill) : demoWinners(boardKey, fill);
+  return { winners: [...realNewestFirst.slice(0, real), ...demo], real };
 }
 
 export interface DemoResultsConfig { on: boolean }

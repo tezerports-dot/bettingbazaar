@@ -5470,3 +5470,16 @@ ALTER TABLE users DROP CONSTRAINT IF EXISTS users_maintenance_tester_player;
 ALTER TABLE users ADD CONSTRAINT users_maintenance_tester_player
   CHECK (account_type = 'PLAYER' OR NOT maintenance_tester);
 CREATE INDEX IF NOT EXISTS users_maintenance_testers_idx ON users (user_id) WHERE maintenance_tester;
+
+-- ── Demo results the admin typed (owner, 2026-10-20) ────────────────────────
+-- Per board and profile, the demo results that fill the analytics window
+-- before the board's oldest real result, as B (Bombay) and D (Delhi), OLDEST
+-- FIRST, at most 1,440 (the analytics window). Empty = the drawn ones
+-- (`redesign/DemoResults.tsx`). Display only: never a cycle, a bet or a
+-- figure. Written only by `setDemoResults` (boards.js).
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS demo_vip     TEXT NOT NULL DEFAULT '';
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS demo_general TEXT NOT NULL DEFAULT '';
+ALTER TABLE boards DROP CONSTRAINT IF EXISTS boards_demo_results_shape;
+ALTER TABLE boards ADD CONSTRAINT boards_demo_results_shape
+  CHECK (demo_vip ~ '^[BD]*$' AND demo_general ~ '^[BD]*$'
+         AND length(demo_vip) <= 1440 AND length(demo_general) <= 1440);

@@ -30,6 +30,8 @@ export interface Board {
   maxBet: number;
   homeOrder: number;
   idPrefix: string;
+  /** The admin's demo results per profile, 'B'/'D' oldest first; '' = drawn (owner, 2026-10-20). */
+  demoResults?: { VIP: string; GENERAL: string };
 }
 
 export enum BettingSide {

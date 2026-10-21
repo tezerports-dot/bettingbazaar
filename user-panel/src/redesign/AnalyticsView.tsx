@@ -39,6 +39,8 @@ interface Props {
   winners: Side[];
   /** Requests one board's full analytics window. See GameContext. */
   loadCycleHistory?: (type: CycleType) => void;
+  /** The profile whose rounds these are (GameContext `audience`), for its typed demo results. */
+  audience?: 'VIP' | 'GENERAL';
 }
 
 export const SECTIONS = [
@@ -53,7 +55,7 @@ export type SectionKey = typeof SECTIONS[number]['key'];
 
 const bead = (sd: Side) => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)' });
 
-const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) => {
+const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory, audience = 'VIP' }) => {
   const [active, setActive] = useState<SectionKey>('runs');
   const rootRef = useRef<HTMLDivElement | null>(null);
   const boardKey = board?.key ?? '';
@@ -75,8 +77,8 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory }) =>
   }, [boardKey, loadCycleHistory]);
   const demoCfg = useDemoResults();
   const filled = useMemo(
-    () => withDemoResults(winners, boardKey, analyticsWindowFor(board), !!demoCfg?.on),
-    [winners, boardKey, board, demoCfg],
+    () => withDemoResults(winners, boardKey, analyticsWindowFor(board), !!demoCfg?.on, board?.demoResults?.[audience] ?? ''),
+    [winners, boardKey, board, demoCfg, audience],
   );
   const A = useMemo(() => analyticsFor(filled.winners, board), [filled, board]);
 
