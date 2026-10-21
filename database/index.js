@@ -58,6 +58,7 @@ export {
 import * as users from './repositories/users.js';
 import * as identity from './repositories/identity.js';
 import * as telegram from './repositories/telegram.js';
+import * as telegramChannels from './repositories/telegramChannels.js';
 import * as totp from './repositories/totp.js';
 import * as ipBlocks from './repositories/ipBlocks.js';
 import * as merchants from './repositories/merchants.js';
@@ -127,6 +128,7 @@ export const db = Object.freeze({
   identity,
   ipBlocks,
   telegram,
+  telegramChannels,
   totp,
 
   // Money

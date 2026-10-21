@@ -3765,6 +3765,36 @@ const MUTATIONS = [
     from: "export const paymentReferenceOf = (t) => `${String(t.tx_hash ?? t.txHash).toLowerCase()}:${Number(t.log_index ?? t.logIndex)}`;",
     to: "export const paymentReferenceOf = (t) => `${String(t.tx_hash ?? t.txHash).toLowerCase()}`;",
   },
+  // ── Signup channels and their join requests (owner, 2026-10-21) ──────────
+  {
+    id: 'MCH1', file: 'database/repositories/telegramChannels.js', config: PG,
+    test: 'database/tests/telegramChannelsPg.test.js',
+    why: 'a request already approved or dropped is decided again, so an approved person is marked gone or approved twice',
+    from: `      WHERE chat_id = $1 AND telegram_user_id = $2 AND status = 'PENDING'`,
+    to: `      WHERE chat_id = $1 AND telegram_user_id = $2`,
+  },
+  {
+    id: 'MCH2', file: 'database/repositories/telegramChannels.js', config: PG,
+    test: 'database/tests/telegramChannelsPg.test.js',
+    why: 'a request Telegram dropped still counts, so that person is never asked to join again',
+    from: `                           AND r.status IN ('PENDING', 'APPROVED'))`,
+    to: `                           )`,
+  },
+  {
+    id: 'MCH3', file: 'backend/domains/telegram/signupChannels.service.js', config: PG,
+    test: 'database/tests/telegramChannelsPg.test.js',
+    why: 'an approval Telegram refused is counted as approved and the run keeps going past it',
+    from: `      stopped = res.retryAfter`,
+    to: `      if (await db.telegramChannels.decideRequest({ chatId: channel.chatId, telegramUserId: userId, status: 'APPROVED', by })) approved += 1; continue;
+      stopped = res.retryAfter`,
+  },
+  {
+    id: 'MCH4', file: 'database/repositories/telegramChannels.js', config: PG,
+    test: 'database/tests/telegramChannelsPg.test.js',
+    why: 'a bot\'s reading moves backward, so updates already read are read again and the reading never settles',
+    from: `      WHERE telegram_update_offsets.next_offset < EXCLUDED.next_offset`,
+    to: ``,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

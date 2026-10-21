@@ -174,4 +174,46 @@ describe('the Verify screen (Continue with Telegram)', () => {
     expect(continueToSite).toHaveBeenCalledWith(a.initData, null);
     expect(a.openLink).toHaveBeenCalledWith('https://bettingbazaar.com/#/tg/xyz');
   });
+  it('a player\'s Verify also opens the signup channel\'s join request, after the sign-in, and lists every channel', async () => {
+    const channels = [
+      { title: 'Bazaar News', inviteLink: 'https://t.me/+news' },
+      { title: 'Bazaar Two', inviteLink: 'https://t.me/+two' },
+    ];
+    context.mockResolvedValue(signIn({ delivery: 'HANDOFF', choices: null, channels }));
+    approve.mockResolvedValue({ approved: true, message: 'Opening…', redirectUrl: 'https://bettingbazaar.com/#/tg/abc' });
+    const a = { ...app(), openTelegramLink: vi.fn() };
+    render(<MiniApp app={a} />);
+    expect((await screen.findByTestId('verify-channels')).textContent).toMatch(/Bazaar News, Bazaar Two.*admin approves/i);
+    expect(a.openTelegramLink).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /^verify$/i }));
+    expect(await screen.findByText(/opening bettingbazaar\.com/i)).toBeTruthy();
+    expect(a.openLink).toHaveBeenCalledWith('https://bettingbazaar.com/#/tg/abc');
+    expect(a.openTelegramLink).toHaveBeenCalledWith('https://t.me/+news');
+    fireEvent.click(screen.getByRole('button', { name: /request to join bazaar two/i }));
+    expect(a.openTelegramLink).toHaveBeenLastCalledWith('https://t.me/+two');
+  });
+
+  it('a MATCH with a channel keeps the join buttons on the finished screen', async () => {
+    context.mockResolvedValue(signIn({ delivery: 'MATCH', choices: [31, 47, 82], channels: [{ title: 'Bazaar News', inviteLink: 'https://t.me/+news' }] }));
+    approve.mockResolvedValue({ approved: true, message: 'Done. Go back to the website or app — it will continue on its own.', redirectUrl: null });
+    const a = { ...app(), openTelegramLink: vi.fn() };
+    render(<MiniApp app={a} />);
+    fireEvent.click(await screen.findByRole('button', { name: '47' }));
+    fireEvent.click(screen.getByRole('button', { name: /^verify$/i }));
+    expect(await screen.findByText(/go back to the website/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /request to join bazaar news/i })).toBeTruthy();
+    expect(a.openTelegramLink).toHaveBeenCalledWith('https://t.me/+news');
+  });
+
+  it('with no channel on, Verify says nothing about channels and opens none', async () => {
+    context.mockResolvedValue(signIn({ delivery: 'HANDOFF', choices: null, channels: [] }));
+    approve.mockResolvedValue({ approved: true, message: 'Opening…', redirectUrl: 'https://bettingbazaar.com/#/tg/abc' });
+    const a = { ...app(), openTelegramLink: vi.fn() };
+    render(<MiniApp app={a} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^verify$/i }));
+    expect(await screen.findByText(/opening bettingbazaar\.com/i)).toBeTruthy();
+    expect(screen.queryByTestId('verify-channels')).toBeNull();
+    expect(screen.queryByTestId('join-channels')).toBeNull();
+    expect(a.openTelegramLink).not.toHaveBeenCalled();
+  });
 });

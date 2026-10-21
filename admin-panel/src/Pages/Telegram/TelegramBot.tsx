@@ -24,6 +24,7 @@ import toast from 'react-hot-toast';
 import api, { type TelegramBot as BotView, type TelegramBotSlot } from '../../services/api';
 import { formatters } from '../../utils/formatters';
 import { refusalText } from '../../utils/refusal';
+import { SignupChannels } from './SignupChannels';
 
 const label: React.CSSProperties = {
   display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--text-2)', marginBottom: 5,
@@ -244,6 +245,8 @@ export const TelegramBot: React.FC = () => {
           onChanged={load}
         />
       ))}
+
+      <SignupChannels />
     </div>
   );
 };

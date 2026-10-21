@@ -12,8 +12,9 @@
  * Telegram refuses and new links move to the next slot at once. Replacing a bot
  * is still a form, not a deploy: PUT a new token to its slot. Links survive any
  * swap — they key on the PERSON's Telegram id, which belongs to Telegram, not
- * to the bot. The channels, the recovery bots and the bot messages that used
- * to be configured here are gone.
+ * to the bot. The recovery bots and the bot messages that used to be
+ * configured here are gone; the signup channels came back as join requests
+ * an admin approves (owner, 2026-10-21, below).
  *
  * ── Two areas, each granted on its own ────────────────────────────────────
  * Telegram setup (`canManageTelegram`) holds the key that signs every Mini App
@@ -22,7 +23,8 @@
 import express from 'express';
 import { authenticate, hasPermission } from '../../domains/identity/auth.middleware.js';
 import { encryptField } from '../../domains/identity/fieldCrypto.util.js';
-import { verifyBotToken, invalidateBotCache, miniAppBots } from '../../domains/telegram/telegramClient.js';
+import { verifyBotToken, invalidateBotCache, miniAppBots, miniAppBot } from '../../domains/telegram/telegramClient.js';
+import { addChannel, ensureInviteLink, approveWaiting, APPROVE_PER_PRESS } from '../../domains/telegram/signupChannels.service.js';
 import { db } from '#db';
 import { disburse, programmeStats } from '../../domains/referral/referral.service.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
@@ -176,6 +178,74 @@ router.post('/telegram/bot/:slot/resume', authenticate, hasPermission('canManage
     return res.json({ success: true, ...botView(row) });
   } catch (err) {
     return respondError(res, err, 'POST /admin/telegram/bot/:slot/resume', { message: 'Could not resume the bot.' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SIGNUP CHANNELS AND THEIR JOIN REQUESTS (owner, 2026-10-21)
+// ═══════════════════════════════════════════════════════════════════════════
+// A player's Verify asks to join every channel switched on here; none on is
+// the sign-in as it was. Requests are read from Telegram by polling and are
+// never approved on their own: "Approve waiting" below is the one way.
+
+const channelView = (c) => ({
+  chatId: c.chatId, title: c.title, username: c.username, inviteLink: c.inviteLink,
+  linkCheckedAt: c.linkCheckedAt || null, linkError: c.linkError || '',
+  active: c.active, addedAt: c.addedAt, switchedAt: c.switchedAt || null,
+  waiting: c.waiting ?? 0, approved: c.approved ?? 0, gone: c.gone ?? 0,
+});
+
+/** GET /api/admin/telegram/channels — every channel, the ones on first, with request counts. */
+router.get('/telegram/channels', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
+  try {
+    const channels = await db.telegramChannels.listChannels();
+    return res.json({ success: true, channels: channels.map(channelView), approvePerPress: APPROVE_PER_PRESS });
+  } catch (err) {
+    return serverError(res, err, 'GET /admin/telegram/channels');
+  }
+});
+
+/**
+ * POST /api/admin/telegram/channels `{ channel }` — add a channel (or switch a
+ * known one back on) by @name, t.me link or id. Telegram must know it and our
+ * bot must be its administrator; the invite link is made at once.
+ */
+router.post('/telegram/channels', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
+  try {
+    await addChannel({ ref: req.body?.channel, by: req.user.userId });
+    const channels = await db.telegramChannels.listChannels();
+    return res.json({ success: true, channels: channels.map(channelView) });
+  } catch (err) {
+    return respondError(res, err, 'POST /admin/telegram/channels', { message: 'Could not add the channel.' });
+  }
+});
+
+/** PUT /api/admin/telegram/channels/:chatId `{ active }` — switch a channel on or off. */
+router.put('/telegram/channels/:chatId', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
+  try {
+    if (typeof req.body?.active !== 'boolean') throw refusal(400, 'ACTIVE_INVALID', 'Send active: true or false.');
+    const row = await db.telegramChannels.setChannelActive({ chatId: req.params.chatId, active: req.body.active, by: req.user.userId });
+    if (!row) throw refusal(404, 'CHANNEL_UNKNOWN', 'That channel is not saved.');
+    if (row.active) await ensureInviteLink(row, await miniAppBot());
+    const channels = await db.telegramChannels.listChannels();
+    return res.json({ success: true, channels: channels.map(channelView) });
+  } catch (err) {
+    return respondError(res, err, 'PUT /admin/telegram/channels/:chatId', { message: 'Could not switch the channel.' });
+  }
+});
+
+/**
+ * POST /api/admin/telegram/channels/:chatId/approve — approve the channel's
+ * waiting join requests, oldest first, up to `APPROVE_PER_PRESS`.
+ */
+router.post('/telegram/channels/:chatId/approve', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
+  try {
+    const result = await approveWaiting({ chatId: req.params.chatId, by: req.user.userId });
+    console.warn(`[telegram] ${result.approved} join requests approved in ${req.params.chatId} by ${req.user.userId}`);
+    const channels = await db.telegramChannels.listChannels();
+    return res.json({ success: true, ...result, channels: channels.map(channelView) });
+  } catch (err) {
+    return respondError(res, err, 'POST /admin/telegram/channels/:chatId/approve', { message: 'Could not approve the requests.' });
   }
 });
 

@@ -212,6 +212,14 @@ router.post('/mini-app/context', miniAppLimiter, async (req, res) => {
     const accounts = (await db.telegram.listLinksForTelegramUser(tg.id))
       .map((a) => ({ panel: a.audience, mobileHint: mobileHint(a.mobile) }));
 
+    // A player's Verify also asks to join the signup channels this Telegram
+    // account has no waiting or approved request for (owner, 2026-10-21).
+    // None switched on: an empty list and the screen is what it was.
+    if (start.panel === 'PLAYER' && (start.kind === 'CONTINUE' || start.kind === 'TELEGRAM_LOGIN')) {
+      start.channels = (await db.telegramChannels.channelsToJoin(tg.id))
+        .map((c) => ({ title: c.title, inviteLink: c.inviteLink }));
+    }
+
     return res.json({
       success: true,
       telegramUser: { id: tg.id, username: tg.username, firstName: tg.firstName },
