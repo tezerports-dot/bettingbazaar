@@ -50,62 +50,76 @@ async function audit(req, { action, targetType = 'support_ticket', targetId, det
   }
 }
 
-function deskRoutes(base, desk, permission) {
-  const allowed = [authenticate, hasPermission(permission)];
+/** The handlers of one desk; each route below names its own path and permission. */
+function deskHandlers(desk, base) {
+  return {
+    async list(req, res) {
+      try {
+        const status = req.query.status ? String(req.query.status).toUpperCase() : null;
+        const result = await db.supportDesk.deskTickets({
+          desk, status, older: req.query.older === '1', search: String(req.query.q || ''),
+          limit: parseInt(req.query.limit, 10) || 50,
+        });
+        res.json({ success: true, ...result });
+      } catch (e) { return respondError(res, e, `GET /admin${base}`); }
+    },
 
-  router.get(base, allowed, async (req, res) => {
-    try {
-      const status = req.query.status ? String(req.query.status).toUpperCase() : null;
-      const result = await db.supportDesk.deskTickets({
-        desk, status, older: req.query.older === '1', search: String(req.query.q || ''),
-        limit: parseInt(req.query.limit, 10) || 50,
-      });
-      res.json({ success: true, ...result });
-    } catch (e) { return respondError(res, e, `GET /admin${base}`); }
-  });
+    async one(req, res) {
+      try {
+        const found = await db.supportDesk.deskTicket({ ticketId: req.params.id, desk });
+        if (!found) return res.status(404).json({ success: false, message: 'Ticket not found' });
+        res.json({ success: true, ...found });
+      } catch (e) { return respondError(res, e, `GET /admin${base}/:id`); }
+    },
 
-  router.get(`${base}/:id`, allowed, async (req, res) => {
-    try {
-      const found = await db.supportDesk.deskTicket({ ticketId: req.params.id, desk });
-      if (!found) return res.status(404).json({ success: false, message: 'Ticket not found' });
-      res.json({ success: true, ...found });
-    } catch (e) { return respondError(res, e, `GET /admin${base}/:id`); }
-  });
+    async reveal(req, res) {
+      try {
+        const found = await db.supportDesk.revealNumber({ ticketId: req.params.id, desk, staffId: req.user.userId });
+        if (!found) return res.status(404).json({ success: false, message: 'Ticket not found' });
+        await audit(req, { action: 'SUPPORT_NUMBER_REVEALED', targetId: req.params.id, details: { desk } });
+        res.json({ success: true, ...found });
+      } catch (e) { return respondError(res, e, `POST /admin${base}/:id/reveal-number`); }
+    },
 
-  router.post(`${base}/:id/reveal-number`, allowed, async (req, res) => {
-    try {
-      const found = await db.supportDesk.revealNumber({ ticketId: req.params.id, desk, staffId: req.user.userId });
-      if (!found) return res.status(404).json({ success: false, message: 'Ticket not found' });
-      await audit(req, { action: 'SUPPORT_NUMBER_REVEALED', targetId: req.params.id, details: { desk } });
-      res.json({ success: true, ...found });
-    } catch (e) { return respondError(res, e, `POST /admin${base}/:id/reveal-number`); }
-  });
+    async note(req, res) {
+      try {
+        const content = String(req.body?.content ?? '').trim();
+        if (!content) throw refusal(400, 'NOTE_REQUIRED', 'Write the note first.');
+        const saved = await db.supportDesk.addNote({ ticketId: req.params.id, desk, agentId: req.user.userId, content });
+        if (!saved) return res.status(404).json({ success: false, message: 'Ticket not found' });
+        if (desk === 'PLAYER') emitToPlayer(saved.ticket.userId, 'support_reply', { ticketId: saved.ticket.ticketId });
+        res.json({ success: true, ...saved });
+      } catch (e) { return respondError(res, e, `POST /admin${base}/:id/notes`); }
+    },
 
-  router.post(`${base}/:id/notes`, allowed, async (req, res) => {
-    try {
-      const content = String(req.body?.content ?? '').trim();
-      if (!content) throw refusal(400, 'NOTE_REQUIRED', 'Write the note first.');
-      const saved = await db.supportDesk.addNote({ ticketId: req.params.id, desk, agentId: req.user.userId, content });
-      if (!saved) return res.status(404).json({ success: false, message: 'Ticket not found' });
-      if (desk === 'PLAYER') emitToPlayer(saved.ticket.userId, 'support_reply', { ticketId: saved.ticket.ticketId });
-      res.json({ success: true, ...saved });
-    } catch (e) { return respondError(res, e, `POST /admin${base}/:id/notes`); }
-  });
-
-  router.post(`${base}/:id/status`, allowed, async (req, res) => {
-    try {
-      const status = String(req.body?.status || '').toUpperCase();
-      if (!AGENT_STATUSES.includes(status)) throw refusal(400, 'UNKNOWN_STATUS', `Status is one of ${AGENT_STATUSES.join(', ')}.`);
-      const ticket = await db.supportDesk.setStatus({ ticketId: req.params.id, desk, agentId: req.user.userId, status });
-      if (!ticket) return res.status(404).json({ success: false, message: 'Ticket not found' });
-      if (desk === 'PLAYER') emitToPlayer(ticket.userId, 'support_reply', { ticketId: ticket.ticketId });
-      res.json({ success: true, ticket });
-    } catch (e) { return respondError(res, e, `POST /admin${base}/:id/status`); }
-  });
+    async status(req, res) {
+      try {
+        const status = String(req.body?.status || '').toUpperCase();
+        if (!AGENT_STATUSES.includes(status)) throw refusal(400, 'UNKNOWN_STATUS', `Status is one of ${AGENT_STATUSES.join(', ')}.`);
+        const ticket = await db.supportDesk.setStatus({ ticketId: req.params.id, desk, agentId: req.user.userId, status });
+        if (!ticket) return res.status(404).json({ success: false, message: 'Ticket not found' });
+        if (desk === 'PLAYER') emitToPlayer(ticket.userId, 'support_reply', { ticketId: ticket.ticketId });
+        res.json({ success: true, ticket });
+      } catch (e) { return respondError(res, e, `POST /admin${base}/:id/status`); }
+    },
+  };
 }
 
-deskRoutes('/support/tickets', 'PLAYER', 'canManageSupportTickets');
-deskRoutes('/merchant-support/tickets', 'MERCHANT', 'canManageMerchantSupport');
+const player = deskHandlers('PLAYER', '/support/tickets');
+const playerDesk = [authenticate, hasPermission('canManageSupportTickets')];
+router.get('/support/tickets', playerDesk, player.list);
+router.get('/support/tickets/:id', playerDesk, player.one);
+router.post('/support/tickets/:id/reveal-number', playerDesk, player.reveal);
+router.post('/support/tickets/:id/notes', playerDesk, player.note);
+router.post('/support/tickets/:id/status', playerDesk, player.status);
+
+const merchant = deskHandlers('MERCHANT', '/merchant-support/tickets');
+const merchantDesk = [authenticate, hasPermission('canManageMerchantSupport')];
+router.get('/merchant-support/tickets', merchantDesk, merchant.list);
+router.get('/merchant-support/tickets/:id', merchantDesk, merchant.one);
+router.post('/merchant-support/tickets/:id/reveal-number', merchantDesk, merchant.reveal);
+router.post('/merchant-support/tickets/:id/notes', merchantDesk, merchant.note);
+router.post('/merchant-support/tickets/:id/status', merchantDesk, merchant.status);
 
 const CONTACT_REFUSALS = {
   DUPLICATE: [409, 'That Telegram username is already on this desk.'],

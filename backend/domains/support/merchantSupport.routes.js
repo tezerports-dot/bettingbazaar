@@ -8,14 +8,24 @@
  * owner, or a merchant account's sub-member with their own Telegram); a
  * dispute contact is for an order assigned to this merchant.
  */
+import express from 'express';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
-import { accountSupportRouter } from './accountSupport.routes.js';
+import { accountSupportHandlers } from './accountSupport.js';
 
-export default accountSupportRouter({
+const router = express.Router();
+const desk = accountSupportHandlers({
   desk: 'MERCHANT',
-  authenticate: merchantAuth,
   // A merchant row made before merchants had a login of their own carries no
   // user id; its tickets are the merchant's.
   accountOf: (req) => req.userId || String(req.merchantId),
   orderOwner: (req) => ({ merchantId: String(req.merchantId) }),
 });
+
+router.get('/desk', merchantAuth, desk.desk);
+router.post('/tickets', merchantAuth, desk.openLimiter, desk.open);
+router.get('/tickets', merchantAuth, desk.list);
+router.get('/tickets/:ticketId', merchantAuth, desk.one);
+router.post('/tickets/:ticketId/rate', merchantAuth, desk.rate);
+router.get('/dispute-contact/:orderId', merchantAuth, desk.disputeContact);
+
+export default router;

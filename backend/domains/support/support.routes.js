@@ -5,8 +5,13 @@
  *
  *   GET  /api/support/status              feature readiness (no secrets)
  *   POST /api/support/ask                 authenticated Q&A over the help centre
- *   /api/support/desk, /tickets, /dispute-contact  the player's support desk
- *                                         (accountSupport.routes.js)
+ *   GET  /api/support/desk                topics; whether today's ticket is used
+ *   POST /api/support/tickets             open a ticket (one per India day)
+ *   GET  /api/support/tickets             own tickets, last 7 days
+ *   GET  /api/support/tickets/:ticketId   one, with the agent's notes
+ *   POST /api/support/tickets/:ticketId/rate
+ *   GET  /api/support/dispute-contact/:orderId  the Dispute Manager's Telegram
+ *        (handlers: accountSupport.js)
  *
  * Tickets are a form plus a Telegram chat with the support account the ticket
  * was given (owner, 2026-10-21); the old in-app reply thread is gone.
@@ -17,7 +22,7 @@ import { authenticatePlayer } from '../identity/auth.middleware.js';
 import { createRateLimitStore } from '../../middleware/redisRateLimitStore.js';
 import { answer, ragStatus } from './ragService.js';
 import { serverError, respondError } from '../../shared/httpError.js';
-import { accountSupportRouter } from './accountSupport.routes.js';
+import { accountSupportHandlers } from './accountSupport.js';
 
 const router = express.Router();
 
@@ -68,11 +73,16 @@ router.post('/ask', authenticatePlayer, askLimiter, async (req, res) => {
 // The player's support desk (CLAUDE.md §2, "Support desks"): the form, the
 // day's one ticket, the Telegram chat it opens, and the Dispute Manager's
 // Telegram on a disputed order.
-router.use('/', accountSupportRouter({
+const desk = accountSupportHandlers({
   desk: 'PLAYER',
-  authenticate: authenticatePlayer,
   accountOf: (req) => req.user?.userId,
   orderOwner: (req) => ({ userId: req.user.userId }),
-}));
+});
+router.get('/desk', authenticatePlayer, desk.desk);
+router.post('/tickets', authenticatePlayer, desk.openLimiter, desk.open);
+router.get('/tickets', authenticatePlayer, desk.list);
+router.get('/tickets/:ticketId', authenticatePlayer, desk.one);
+router.post('/tickets/:ticketId/rate', authenticatePlayer, desk.rate);
+router.get('/dispute-contact/:orderId', authenticatePlayer, desk.disputeContact);
 
 export default router;
