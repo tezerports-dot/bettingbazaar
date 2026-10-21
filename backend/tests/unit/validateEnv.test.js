@@ -14,6 +14,7 @@ const full = {
   // All four S3 vars: production boot requires isS3Configured(), which needs
   // bucket + access key + secret key + endpoint, not the bucket alone.
   S3_BUCKET_NAME: 'b', S3_ACCESS_KEY: 'ak', S3_SECRET_KEY: 'sk', S3_ENDPOINT: 'https://s3.example.test', CDN_URL: 'https://cdn.example.test',
+  BACKUP_S3_BUCKET: 'b-backups',
   PUBLIC_APP_ORIGIN: 'https://app.example.test',
   // Both must be STATED in production (2026-09-30): see the two cases below.
   TRUST_PROXY: '1', TURNSTILE_SECRET_KEY: 'a-turnstile-secret-for-tests',
@@ -173,5 +174,13 @@ describe('validateEnv', () => {
     const r = validateEnv({ ...full, NODE_ENV: 'production' }, true);
     expect(r.ok).toBe(true);
     expect(r.advisedMissing).toEqual([]);
+  });
+
+  it('advises a private backup bucket when none is set', () => {
+    const { BACKUP_S3_BUCKET, ...withoutBackups } = full;
+    const r = validateEnv({ ...withoutBackups, NODE_ENV: 'production' }, true);
+    expect(BACKUP_S3_BUCKET).toBeTruthy();
+    expect(r.ok).toBe(true);
+    expect(r.advisedMissing).toEqual(['BACKUP_S3_BUCKET']);
   });
 });

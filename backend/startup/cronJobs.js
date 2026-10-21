@@ -374,7 +374,7 @@ export function registerCronJobs(rebuildLeaderboard) {
   });
 
   // ── Automated database backup — runs daily ─────────────────────────────────
-  // pg_dump (custom format) → S3 (backups/), keeping the newest BACKUP_KEEP
+  // pg_dump (custom format) → the private BACKUP_S3_BUCKET (backups/), keeping the newest BACKUP_KEEP
   // (14). Skips loudly (log + alert) when pg_dump or S3 is unavailable; a
   // failed backup pages the alert webhook. Restore steps:
   // docs/governance/DISASTER_RECOVERY.md.
