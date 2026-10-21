@@ -608,7 +608,7 @@ export interface PoolExposure {
 /** GET /api/merchant/stats `money`: this merchant's own orders, and the pool they work from. */
 export interface MerchantMoney {
   own: PoolExposure;
-  pool: { availablePaise: number; heldPaise: number; exposure: PoolExposure } | null;
+  pool: { availablePaise: number; heldPaise: number; exposure: PoolExposure; standing: PoolStanding } | null;
 }
 
 /** `toFlag` (merchantProblems.js): a day the merchant's problems reached the threshold. It suspends nothing. */

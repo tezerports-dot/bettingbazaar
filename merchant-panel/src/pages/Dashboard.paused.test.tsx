@@ -18,11 +18,13 @@ vi.mock('../services/AuthContext', () => ({
   useAuth: () => ({ merchant: auth.merchant, refreshProfile: vi.fn() }),
 }));
 const stats = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
+const ledger = vi.hoisted(() => ({ value: null as Record<string, unknown> | null }));
 vi.mock('../services/api', () => ({
   api: {
     getStats: vi.fn(async () => stats.value),
     getEarnings: vi.fn().mockResolvedValue({ earnings: null }),
     getWeeklyEarnings: vi.fn().mockResolvedValue({ weekly: [] }),
+    getBusinessLedger: vi.fn(async () => { if (!ledger.value) throw new Error('no ledger'); return ledger.value; }),
     toggleOnlineStatus: vi.fn(),
   },
 }));
@@ -85,28 +87,52 @@ describe('the Dashboard shows no merchant balance', () => {
  * what is free, what open orders lock, what waits on a dispute and what sells
  * are about to add.
  */
-describe('the Dashboard says where the tokens are', () => {
+describe('the Dashboard says where the tokens are (owner, 2026-10-21: swipeable cards with bars and the ledger)', () => {
   const none = { heldOpenPaise: 0, heldDisputedPaise: 0, openBuys: 0, sellsSettlingPaise: 0, sellsDisputedPaise: 0, openSells: 0 };
-  it('shows the team pool split by what it is locked in', async () => {
+  const standing = {
+    sizePaise: 20_000_000, leftPaise: 9_000_000, heldPaise: 700_000, consumedPaise: 10_300_000,
+    sellsOwedPaise: 300_000, sellRoomPaise: 10_000_000, leftPercent: 45,
+  };
+  it('shows the pool, how full it is, and what it is locked in', async () => {
     stats.value = { money: {
       own: { ...none, heldOpenPaise: 500000, openBuys: 1 },
-      pool: { availablePaise: 9000000, heldPaise: 700000, exposure: { ...none, heldOpenPaise: 500000, heldDisputedPaise: 200000, openBuys: 2, sellsSettlingPaise: 100000, openSells: 1 } },
+      pool: { availablePaise: 9000000, heldPaise: 700000, standing,
+        exposure: { ...none, heldOpenPaise: 500000, heldDisputedPaise: 200000, openBuys: 2, sellsSettlingPaise: 100000, openSells: 1 } },
     } };
     show({});
-    expect(await screen.findByText('Your tokens')).toBeInTheDocument();
-    expect(screen.getByText('90,000 BB')).toBeInTheDocument();
+    expect(await screen.findByText('Pool status')).toBeInTheDocument();
+    expect(screen.getByText('Healthy · 45% left')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Pool left' })).toHaveAttribute('aria-valuenow', '45');
     expect(screen.getByText('Locked in open buys')).toBeInTheDocument();
     expect(screen.getByText('Locked in disputes')).toBeInTheDocument();
-    expect(screen.getByText('2,000 BB')).toBeInTheDocument();
+    expect(screen.getByText('Pool size and sell capacity')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Sell capacity in use' })).toHaveAttribute('aria-valuenow', '2.9');
     expect(screen.getByText(/Your own orders: 5,000 BB locked in 1 open buy/)).toBeInTheDocument();
+    // No ledger read: no profit line.
+    expect(screen.queryByText(/Net profit/)).not.toBeInTheDocument();
     stats.value = {};
   });
 
-  it('shows nothing when the merchant has no pool and no open order', async () => {
+  it('puts the ledger\'s profit and loss on the cards', async () => {
+    stats.value = { money: { own: none, pool: { availablePaise: 9000000, heldPaise: 700000, standing, exposure: none } } };
+    ledger.value = {
+      disputes: [{ orderId: 'o1', decision: 'COMPLETE', lostBy: 'MERCHANT' }, { orderId: 'o2', decision: 'CANCEL', lostBy: 'PLAYER' }],
+      totals: { netProfitPaise: 125_000, netUserPaise: -40_000, compensationPaise: 5_000, netCommissionPaise: 20_000 },
+    };
+    show({});
+    expect(await screen.findByText('Net profit · last 7 days')).toBeInTheDocument();
+    expect(screen.getByText('+1,250 BB')).toBeInTheDocument();
+    expect(screen.getByText('−400 BB')).toBeInTheDocument();
+    expect(screen.getByText('1 of 2 decided for you in the last 7 days.')).toBeInTheDocument();
+    stats.value = {}; ledger.value = null;
+  });
+
+  it('shows no pool cards when the merchant has no pool', async () => {
     stats.value = { money: { own: none, pool: null } };
     show({});
     expect(await screen.findByText(/Online · Accepting orders/)).toBeInTheDocument();
-    expect(screen.queryByText('Your tokens')).not.toBeInTheDocument();
+    expect(await screen.findByText('Disputes')).toBeInTheDocument();
+    expect(screen.queryByText('Pool status')).not.toBeInTheDocument();
     stats.value = {};
   });
 });

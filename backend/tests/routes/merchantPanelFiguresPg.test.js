@@ -145,6 +145,14 @@ describePg('merchant panel figures', () => {
     expect(c).toMatchObject({ depositPercent: 5, withdrawalPercent: 5 });
   });
 
+  it('sends the pool standing for the home cards\' bars (owner, 2026-10-21)', async () => {
+    const s = await as(panel, m).get('/stats');
+    const { standing } = s.body.money.pool;
+    expect(Object.keys(standing).sort()).toEqual(
+      ['consumedPaise', 'heldPaise', 'leftPaise', 'leftPercent', 'sellRoomPaise', 'sellsOwedPaise', 'sizePaise']);
+    expect(standing.leftPaise).toBe(s.body.money.pool.availablePaise);
+  });
+
   it('sends no commission for a merchant who works in no team', async () => {
     const loner = await merchantActor();
     const s = await as(panel, loner).get('/stats');

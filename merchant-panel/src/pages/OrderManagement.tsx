@@ -3,24 +3,14 @@
 // Orders — the merchant's live queue. Design handoff "BB Merchant Panel.dc.html":
 // four status tiles that double as filters, a search + type filter row, then
 // one line per order, with the detail drawer/sheet over them.
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { RefreshCw, Search } from 'lucide-react';
 import { useLocation } from 'react-router';
-import { useAuth } from '../services/AuthContext';
 import { needsAction, useOrders } from '../hooks/useOrders';
-import { useOrderActions } from '../hooks/useOrderActions';
-import PaymentNotReceivedDialog from '../components/PaymentNotReceivedDialog';
-import CashLinkScanner from '../components/CashLinkScanner';
-import PayoutFromAccountDialog from '../components/PayoutFromAccountDialog';
-import { useMerchantAccount } from '../hooks/useMerchantAccount';
-import { isMerchantAccountSession } from '../utils/actor';
-import { useNow } from '../hooks/useCountdown';
 import { useViewport } from '../hooks/useViewport';
-import type { PaymentOrder } from '../types';
-import OrderRow from '../components/OrderRow';
-import OrderDetail from '../components/OrderDetail';
+import OrderWorkList from '../components/OrderWorkList';
 import {
-  Button, ConfirmDialog, EmptyState, ErrorState, SegmentedControl, Skeleton, inputStyle,
+  Button, EmptyState, ErrorState, SegmentedControl, Skeleton, inputStyle,
 } from '../components/ui';
 
 export type StatusFilter = 'ALL' | 'ACTION' | 'PROCESSING' | 'PAID' | 'DISPUTED';
@@ -33,40 +23,14 @@ type TypeFilter = 'ALL' | 'DEPOSIT' | 'WITHDRAWAL';
  */
 export interface OrdersLinkState { statusFilter?: StatusFilter; orderId?: string }
 
-const orderKey = (order: PaymentOrder): string => String(order._id || order.id || order.orderId);
-
 const OrderManagement: React.FC = () => {
-  const { merchant } = useAuth();
   const { orders, state, counts, reload } = useOrders();
-  const now = useNow();
   const { isMobile } = useViewport();
 
   const link = (useLocation().state ?? null) as OrdersLinkState | null;
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(link?.statusFilter ?? 'ALL');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('ALL');
   const [search, setSearch] = useState('');
-  const [selectedId, setSelectedId] = useState<string | null>(link?.orderId ?? null);
-
-  const { actions, confirmRequest, dismissConfirm, shouldCloseDetail, acknowledgeCloseDetail,
-          rejectTarget, rejectBusy, dismissReject, submitPaymentNotReceived,
-          scanTarget, scanBusy, dismissScan, sendCashLink,
-          payoutTarget, dismissPayout, submitPayoutFrom } =
-    useOrderActions(reload);
-  // A merchant account's payment accounts: which one a buy is paid into, and
-  // the choices a sell is marked paid from (owner, 2026-10-11).
-  const merchantAccount = isMerchantAccountSession(merchant);
-  const { overview: account, reload: reloadAccount } = useMerchantAccount(merchantAccount);
-  const paymentAccounts = account?.accounts ?? [];
-  // The choices are re-read when the dialog opens: an account paused a minute
-  // ago is not offered.
-  useEffect(() => { if (payoutTarget && merchantAccount) void reloadAccount(); }, [payoutTarget, merchantAccount, reloadAccount]);
-
-  useEffect(() => {
-    if (shouldCloseDetail) {
-      setSelectedId(null);
-      acknowledgeCloseDetail();
-    }
-  }, [shouldCloseDetail, acknowledgeCloseDetail]);
 
   const visible = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -85,9 +49,6 @@ const OrderManagement: React.FC = () => {
 
   const filtersActive = statusFilter !== 'ALL' || typeFilter !== 'ALL' || !!search.trim();
   const clearFilters = () => { setStatusFilter('ALL'); setTypeFilter('ALL'); setSearch(''); };
-
-  const selected = selectedId ? orders.find((o) => orderKey(o) === selectedId) ?? null : null;
-  const cardActions = { ...actions, onOpen: (order: PaymentOrder) => setSelectedId(orderKey(order)) };
 
   const tiles: Array<{ key: StatusFilter; label: string; count: number; color: string; bg: string }> = [
     { key: 'ACTION',     label: 'Needs you',  count: counts.actionable, color: 'var(--info)',    bg: 'var(--info-bg)' },
@@ -187,39 +148,11 @@ const OrderManagement: React.FC = () => {
         />
       )}
 
-      {state === 'ready' && visible.length > 0 && (
-        // One line per order (owner, 2026-10-17); a tap opens the details.
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {visible.map((order) => (
-            <OrderRow key={orderKey(order)} order={order} merchant={merchant} now={now} actions={cardActions} />
-          ))}
-        </div>
-      )}
-
-      <OrderDetail
-        order={selected}
-        merchant={merchant}
-        now={now}
-        isMobile={isMobile}
-        onClose={() => setSelectedId(null)}
-        actions={cardActions}
-        paymentAccounts={paymentAccounts}
-      />
-      <ConfirmDialog request={confirmRequest} onClose={dismissConfirm} />
-      <PaymentNotReceivedDialog
-        open={rejectTarget !== null}
-        orderRef={String(rejectTarget?.orderId || rejectTarget?._id || '')}
-        busy={rejectBusy}
-        onCancel={dismissReject}
-        onSubmit={submitPaymentNotReceived}
-      />
-      <CashLinkScanner order={scanTarget} busy={scanBusy} onClose={dismissScan} onSend={sendCashLink} />
-      <PayoutFromAccountDialog
-        order={payoutTarget}
-        merchant={merchant}
-        accounts={paymentAccounts}
-        onCancel={dismissPayout}
-        onSubmit={submitPayoutFrom}
+      <OrderWorkList
+        orders={state === 'ready' ? visible : []}
+        allOrders={orders}
+        reload={reload}
+        openOrderId={link?.orderId ?? null}
       />
     </div>
   );

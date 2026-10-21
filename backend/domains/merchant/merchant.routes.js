@@ -1285,6 +1285,9 @@ router.get('/stats', merchantAuth, async (req, res) => {
             availablePaise: team.poolAvailablePaise,
             heldPaise: team.poolHeldPaise,
             exposure: team.poolExposure,
+            // Size, left, consumed and sell room (`toPoolStanding`), for the
+            // home cards' bars (owner, 2026-10-21).
+            standing: team.poolStanding,
         } : null;
 
         // The team's commission picture (`toSummary`, the one every screen
