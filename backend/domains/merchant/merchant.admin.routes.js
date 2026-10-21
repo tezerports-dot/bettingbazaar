@@ -2,6 +2,7 @@
 /** merchant.admin.routes.js — admin-facing merchant management. Domain: Merchant
  * (BBEPS Phase 003 §3.3). Moved from backend/routes/admin/merchants.admin.routes.js
  * on 2026-07-01 (BBEPS Phase 004 migration). */
+import { seesContact } from '../identity/staffContactShield.js';
 import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { assertExternalHttpsUrl } from '../../shared/storedUrl.js';
@@ -42,6 +43,7 @@ router.get('/merchants', authenticate, hasPermission('canManageMerchants'), asyn
     const { status, accountStatus, role, sort, dir, page = 1, limit = 50, search } = req.query;
     const size = Math.min(parseInt(limit, 10) || 50, 200);
     const { rows, total } = await db.adminDirectory.listMerchants({
+      byMobile: seesContact(req.user),
       approval: status && status !== 'ALL' ? String(status) : null,
       status: accountStatus && accountStatus !== 'ALL' ? String(accountStatus) : null,
       role: role && role !== 'ALL' ? String(role) : null,
@@ -73,6 +75,7 @@ router.get('/merchants.xlsx', authenticate, hasPermission('canManageMerchants'),
   try {
     const { status, accountStatus, role, sort, dir, search } = req.query;
     const { rows } = await db.adminDirectory.listMerchants({
+      byMobile: seesContact(req.user),
       approval: status && status !== 'ALL' ? String(status) : null,
       status: accountStatus && accountStatus !== 'ALL' ? String(accountStatus) : null,
       role: role && role !== 'ALL' ? String(role) : null,

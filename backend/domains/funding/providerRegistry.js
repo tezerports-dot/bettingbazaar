@@ -29,8 +29,8 @@ const manualP2PInr = {
   kind: 'P2P',
   active: true,
   capabilities: { deposit: true, withdrawal: true },
-  createDeposit:    ({ userId, tokenAmount, payMethod }) =>
-    createDepositOrder(userId, tokenAmount, { payMethod, playerChoosesPayMethod: true }),
+  // One line: verify-player-privacy.mjs reads the binding from the line naming the method.
+  createDeposit:    ({ userId, tokenAmount, payMethod }) => createDepositOrder(userId, tokenAmount, { payMethod, playerChoosesPayMethod: true }),
   createWithdrawal: ({ userId, tokenAmount }) => createWithdrawalOrder(userId, tokenAmount),
 };
 

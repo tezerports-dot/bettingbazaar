@@ -195,6 +195,7 @@ exported constants. `SystemConfig.x` lives in `config_documents`, declared in
 | Login doors | `LOGIN_DOOR` (`backend/routes.js`); the read is scoped by `account_type` on every leg. Which legs a door has: `DOOR_LEGS` (`loginDoors.js`, §33.4). The staff legs are `loginHandler` (password) and `totpLoginHandler`, `totpSetupHandler`, `totpActivateHandler`; the Telegram legs (`telegramLoginHandler`, `telegramLoginCompleteHandler`, `telegramTicketHandler`) refuse any door but a player's or a merchant's (`telegramDoor`) and seat through one `signInRedeemed`. |
 | Which panel a session may use | `belongsElsewhere`/`refuseWrongPanel`: `authenticatePlayer` on every player route; `authenticateStaff` (a STAFF row holding a staff role, `hasStaffRole`) on the whole `/api/admin` router, and the admin panel restores its session from `GET /api/admin/account/me`, so a player or merchant is refused at the door, never shown the panel (owner, 2026-10-17); `authenticate` never admits MERCHANT; `403 WRONG_PANEL` (S51). |
 | Who gets a security alert | The webhook (`SystemConfig.alertWebhookUrl`, else `ALERT_WEBHOOK_URL`), the one sink of `services/alerting.service.js`. Staff have no Telegram, so the bot messages nobody (owner, 2026-10-13). |
+| Who on the staff may see a person's contact and payout details | Full admins only (owner, 2026-10-21): `seesContact` (`domains/identity/staffContactShield.js`). Anyone else on the staff (sub-admin, dispute manager, queue manager) is sent no mobile, email, Telegram handle, account number, IFSC, UPI ID, wallet address or link built from one (`CONTACT_KEYS`), and free text with its mobiles hidden (`FREE_TEXT_KEYS`), at every door: each `/api/admin` JSON answer (`shieldContactForStaff`, `routes/admin/index.js`), each staff workbook (`sendXlsx`), each staff stream event (`_localBroadcastToAdmins`, the `queue_snapshot`, `emitToStaff`). The platform's own published contact (`supportLinks`) passes. A search by mobile is a full admin's only (`byMobile`: `listPlayers`, `listMerchants`, `listUsers`). Screens show `CONTACT_HIDDEN` (admin `formatters.ts`) where a detail is withheld. |
 | Valid mobile, referral code | `backend/domains/identity/signupFields.js`. |
 | Password policy | `backend/domains/identity/passwordPolicy.js`; staff only, floor 12. |
 | Notifications | `notify()` (`domains/communication/communication.service.js`); never write a notification row directly. |
@@ -488,7 +489,7 @@ sees where to pay, an opaque `Merchant #<ref>` and a deadline. Where to pay is
 the member's bank account on a UPI_BANK buy (`PLAYER_PAY_TO_BANK_FIELDS`), the
 scanned ATM QR on a cash buy, the order's own platform address and its network
 on USDT (`platformUsdtPayTo`). **Nobody is
-ever shown another person's mobile number or UPI handle**, in a view, a
+ever shown another person's mobile number or UPI handle** (and on the staff, only a full admin sees a person's contact or payout details: §2 *Who on the staff may see*), in a view, a
 timeline message or a display name (owner, 2026-10-03). One exception (owner,
 2026-10-11): a merchant account's UPI_QR account reaches the player inside the
 link built for their order, and its UPI ID and payee name may never carry a

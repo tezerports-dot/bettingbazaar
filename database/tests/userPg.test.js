@@ -342,9 +342,10 @@ describePg('accounts (PostgreSQL)', () => {
         expect(found.users.map((u) => u.userId)).toEqual(['u-3']);
       });
 
-      it('matches a mobile prefix — the other half of the same OR', async () => {
-        const found = await listUsers({ search: '9770000004' });
+      it('matches a mobile prefix for a full admin only (byMobile, CLAUDE.md §24)', async () => {
+        const found = await listUsers({ search: '9770000004', byMobile: true });
         expect(found.users.map((u) => u.userId)).toEqual(['u-4']);
+        expect((await listUsers({ search: '9770000004' })).users).toEqual([]);
       });
 
       it('a prefix nobody has returns nothing, rather than throwing', async () => {
@@ -518,26 +519,27 @@ describePg('accounts (PostgreSQL)', () => {
         await createUser(mk());
         await updateUser('u-1', { bankDetails: ACCOUNT });
         await pgQuery("UPDATE users SET payout_details_locked_until = NULL WHERE user_id = 'u-1'");
-        for (const [state, extra] of [['PENDING_QUEUE', ''], ['PROCESSING', ''], ['PAID', ''], ['DISPUTED', ''],
-                                      ['REJECTED', ", dispute_window_until = now() + interval '1 hour'"]]) {
-          const id = `o-open-${state}-${run}`;
-          await pgQuery(`INSERT INTO order_states (order_id, user_id, order_type, state, token_amount_paise)
-                         VALUES ($1, 'u-1', 'DEPOSIT', 'PENDING_QUEUE', 50000)`, [id]);
-          await pgQuery(`UPDATE order_states SET state = $2${extra} WHERE order_id = $1`, [id, state]);
-          await expect(updateUser('u-1', { bankDetails: other }), state)
-            .rejects.toMatchObject({ code: '23514', constraint: 'users_payout_details_in_use' });
-          await pgQuery("UPDATE order_states SET state = 'CANCELLED' WHERE order_id = $1", [id]);
-        }
-        // A finished order, and a rejection whose window has passed, hold nothing.
-        for (const [state, extra] of [['COMPLETED', ''], ['CANCELLED', ''],
-                                      ['REJECTED', ", dispute_window_until = now() - interval '1 minute'"]]) {
-          await pgQuery(`INSERT INTO order_states (order_id, user_id, order_type, state, token_amount_paise)
-                         VALUES ('o-done-' || $1, 'u-1', 'DEPOSIT', 'PENDING_QUEUE', 50000)`, [`${state}${extra.length}-${run}`]);
-          await pgQuery(`UPDATE order_states SET state = $1${extra} WHERE order_id = 'o-done-' || $2`, [state, `${state}${extra.length}-${run}`]);
-        }
         try {
+          for (const [state, extra] of [['PENDING_QUEUE', ''], ['PROCESSING', ''], ['PAID', ''], ['DISPUTED', ''],
+                                        ['REJECTED', ", dispute_window_until = now() + interval '1 hour'"]]) {
+            const id = `o-open-${state}-${run}`;
+            await pgQuery(`INSERT INTO order_states (order_id, user_id, order_type, state, token_amount_paise)
+                           VALUES ($1, 'u-1', 'DEPOSIT', 'PENDING_QUEUE', 50000)`, [id]);
+            await pgQuery(`UPDATE order_states SET state = $2${extra} WHERE order_id = $1`, [id, state]);
+            await expect(updateUser('u-1', { bankDetails: other }), state)
+              .rejects.toMatchObject({ code: '23514', constraint: 'users_payout_details_in_use' });
+            await pgQuery("UPDATE order_states SET state = 'CANCELLED' WHERE order_id = $1", [id]);
+          }
+          // A finished order, and a rejection whose window has passed, hold nothing.
+          for (const [state, extra] of [['COMPLETED', ''], ['CANCELLED', ''],
+                                        ['REJECTED', ", dispute_window_until = now() - interval '1 minute'"]]) {
+            await pgQuery(`INSERT INTO order_states (order_id, user_id, order_type, state, token_amount_paise)
+                           VALUES ('o-done-' || $1, 'u-1', 'DEPOSIT', 'PENDING_QUEUE', 50000)`, [`${state}${extra.length}-${run}`]);
+            await pgQuery(`UPDATE order_states SET state = $1${extra} WHERE order_id = 'o-done-' || $2`, [state, `${state}${extra.length}-${run}`]);
+          }
           expect((await updateUser('u-1', { bankDetails: other })).bankDetails).toEqual(other);
         } finally {
+          // Every row this run wrote, whichever assertion failed (trap 10).
           await pgQuery("DELETE FROM order_states WHERE order_id LIKE '%-' || $1", [run]);
         }
       });

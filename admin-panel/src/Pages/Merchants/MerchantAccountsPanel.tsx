@@ -21,7 +21,7 @@ import { poolExposureLine, cashOutLine, type PoolExposure, type CashOut } from '
 const tokens = (paise: number) => ((Number(paise) || 0) / 100).toLocaleString('en-IN');
 
 interface AdminPaymentAccount {
-  accountId: string; kind: 'UPI_QR' | 'BANK'; label: string; upiId: string | null;
+  accountId: string; kind: 'UPI_QR' | 'BANK'; label: string; upiId?: string | null;
   bankName: string; accountNo: string; acceptsDeposits: boolean; paysWithdrawals: boolean; status: string;
 }
 interface AdminSubMember { staffId: string; name: string; roles: string[]; status: string }

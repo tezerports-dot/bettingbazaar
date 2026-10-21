@@ -17,7 +17,7 @@ import { StatusBadge } from '../../components/StatusBadge';
 import { DisputeRecordBadge } from '../../components/DisputeRecordBadge';
 import { UserAvatar } from '../../components/UserAvatar';
 import { Kpis } from '../../components/design';
-import { formatters } from '../../utils/formatters';
+import { formatters, CONTACT_HIDDEN } from '../../utils/formatters';
 import { usePermissions } from '../../hooks/usePermission';
 import { useBoards } from '../../hooks/useBoards';
 import api from '../../services/api';
@@ -25,10 +25,11 @@ import type { PlayerRow } from '../../types';
 import toast from 'react-hot-toast';
 
 interface ProfileUser {
-  userId: string; username: string; mobile: string; status: PlayerRow['status'];
+  userId: string; username: string; mobile?: string; status: PlayerRow['status'];
   accountType?: string; profilePic?: string; phantomAccess?: string;
   blockReason?: string | null; joinedAt: string; lastLogin?: string | null;
-  bankDetails?: { accountHolderName: string; accountNumber: string; ifscCode: string; bankName: string } | null;
+  // Account number, IFSC and UPI ID reach full admins only (staffContactShield.js).
+  bankDetails?: { accountHolderName: string; accountNumber?: string; ifscCode?: string; bankName: string; upiId?: string } | null;
 }
 interface Profile {
   user: ProfileUser;
@@ -264,9 +265,10 @@ export const UserProfile: React.FC = () => {
           {user.bankDetails ? (
             <dl className="grid grid-cols-2 gap-y-2 text-sm">
               <dt className="text-gray-400">Account holder</dt><dd className="font-semibold">{user.bankDetails.accountHolderName}</dd>
-              <dt className="text-gray-400">Account number</dt><dd className="font-mono">{user.bankDetails.accountNumber}</dd>
-              <dt className="text-gray-400">IFSC</dt><dd className="font-mono">{user.bankDetails.ifscCode}</dd>
+              <dt className="text-gray-400">Account number</dt><dd className="font-mono">{user.bankDetails.accountNumber ?? CONTACT_HIDDEN}</dd>
+              <dt className="text-gray-400">IFSC</dt><dd className="font-mono">{user.bankDetails.ifscCode ?? CONTACT_HIDDEN}</dd>
               <dt className="text-gray-400">Bank</dt><dd>{user.bankDetails.bankName}</dd>
+              <dt className="text-gray-400">UPI ID</dt><dd className="font-mono">{user.bankDetails.upiId ?? CONTACT_HIDDEN}</dd>
             </dl>
           ) : (
             <p className="text-sm text-gray-500 flex items-center gap-2"><CreditCard size={16} className="opacity-40" /> No bank account added.</p>

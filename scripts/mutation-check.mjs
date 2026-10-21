@@ -3895,6 +3895,34 @@ const MUTATIONS = [
     from: "      && !BUY_PAY_METHOD_LIST.includes(attempt.payMethod)) {",
     to: "      && false) {",
   },
+  {
+    id: 'M505', file: 'backend/domains/identity/staffContactShield.js', config: PG,
+    test: 'backend/tests/routes/staffContactShieldPg.test.js',
+    why: 'a sub-admin is sent a player\'s mobile and payout details',
+    from: "  if (seesContact(req.user)) return next();",
+    to: "  return next();",
+  },
+  {
+    id: 'M506', file: 'backend/domains/reporting/xlsx.util.js', config: PG,
+    test: 'backend/tests/routes/staffContactShieldPg.test.js',
+    why: 'a sub-admin\'s download carries the players\' mobiles',
+    from: "  if (viewer?.accountType === 'STAFF' && !seesContact(viewer)) workbook = shieldWorkbook(workbook);",
+    to: "",
+  },
+  {
+    id: 'M507', file: 'backend/domains/identity/staffContactShield.js', config: PG,
+    test: 'backend/tests/routes/staffContactShieldPg.test.js',
+    why: 'the shield leaves the account number in a nested payout detail',
+    from: "    if (CONTACT_KEYS.has(key)) continue;",
+    to: "    if (CONTACT_KEYS.has(key) && key === 'mobile') continue;",
+  },
+  {
+    id: 'M508', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/staffContactShieldPg.test.js',
+    why: 'a sub-admin finds whose mobile a number is by searching the players table',
+    from: "    const { rows, total } = await db.adminDirectory.listPlayers({\n      byMobile: seesContact(req.user),",
+    to: "    const { rows, total } = await db.adminDirectory.listPlayers({\n      byMobile: true,",
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

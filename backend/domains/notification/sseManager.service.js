@@ -3,6 +3,7 @@
 
 import crypto from 'crypto';
 import { staffMayReceive } from './staffEventAreas.js';
+import { seesContact, shieldContact } from '../identity/staffContactShield.js';
 
 const DEFAULT_MAX_BUFFERED_BYTES = 1024 * 1024;
 
@@ -338,10 +339,13 @@ class SSEManager {
     _localBroadcastToAdmins(event, data) {
         if (this.adminClients.size === 0) return;
         const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+        // Contact and payout details go to full admins only (staffContactShield.js).
+        let shielded = null;
+        const shieldedPayload = () => (shielded ??= `event: ${event}\ndata: ${JSON.stringify(shieldContact(data))}\n\n`);
         const dead = [];
         for (const [res, viewer] of this.adminClients) {
             if (!staffMayReceive(viewer, event)) continue;
-            this._writeOrDrop(res, payload, () => dead.push(res));
+            this._writeOrDrop(res, seesContact(viewer) ? payload : shieldedPayload(), () => dead.push(res));
         }
         for (const res of dead) this.adminClients.delete(res);
     }

@@ -16,6 +16,7 @@
  * written first, in rupee floats, naming a model that did not exist — so it
  * threw on every call and the adjustment went unrecorded).
  */
+import { seesContact } from '../domains/identity/staffContactShield.js';
 import express from 'express';
 import { randomBytes } from 'node:crypto';
 import { db } from '#db';
@@ -392,7 +393,7 @@ router.get('/admin/balance-adjust/players', authenticate, hasPermission('canAdju
     const { maxBalanceAdjustment } = await db.config.getSystemConfig();
     let players = [];
     if (search) {
-      const { users } = await db.users.listUsers({ search, accountType: 'PLAYER', limit });
+      const { users } = await db.users.listUsers({ search, byMobile: seesContact(req.user), accountType: 'PLAYER', limit });
       players = await Promise.all(users.map(async (u) => {
         const b = await getBalancesRupees(u.userId);
         return {

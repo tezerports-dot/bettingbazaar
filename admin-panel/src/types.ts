@@ -30,7 +30,7 @@ export interface Admin {
   _id: string;
   id?: string;
   username: string;
-  mobile: string;
+  mobile?: string; // full admins only (staffContactShield.js)
   role: 'admin' | 'subadmin' | 'queue_manager';
   isAdmin: boolean;
   isSubAdmin: boolean;
@@ -59,7 +59,7 @@ export interface User {
    */
   userId: string;
   username: string;
-  mobile: string;
+  mobile?: string; // full admins only (staffContactShield.js)
 
   depositBalance: number;
   winningsBalance: number;
@@ -78,8 +78,8 @@ export interface User {
 
   bankDetails?: {
     accountHolderName: string;
-    accountNumber: string;
-    ifscCode: string;
+    accountNumber?: string;
+    ifscCode?: string;
     bankName: string;
   };
 
@@ -115,7 +115,7 @@ export type StaffRole = 'ADMIN' | 'SUB_ADMIN' | 'QUEUE_MANAGER' | 'MEDIATOR';
  * permission keys the grant holds true; their labels are the catalogue's.
  */
 export interface StaffRow {
-  userId: string; username: string | null; mobile: string; status: string; isBlocked: boolean;
+  userId: string; username: string | null; mobile?: string; status: string; isBlocked: boolean;
   joinedAt: string; lastLogin: string | null;
   roles: StaffRole[]; areas: string[]; authenticatorEnrolled: boolean;
 }
@@ -129,7 +129,7 @@ export interface StaffRow {
 export interface PlayerRow {
   userId: string;
   username: string;
-  mobile: string;
+  mobile?: string; // full admins only (staffContactShield.js)
   status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED' | 'DELETED';
   joinedAt: string;
   lastLogin: string | null;
@@ -154,7 +154,7 @@ export interface MerchantRow {
   merchantId: string;
   userId: string | null;
   name: string;
-  mobile: string;
+  mobile?: string; // full admins only (staffContactShield.js)
   status: 'ACTIVE' | 'SUSPENDED' | 'INACTIVE' | string;
   merchantApprovalStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | string;
   isOnline: boolean;
@@ -319,7 +319,7 @@ export interface Merchant {
   _id: string;
   userId: string;
   name: string;
-  mobile: string;
+  mobile?: string; // full admins only (staffContactShield.js)
   email?: string;
   status: 'ACTIVE' | 'SUSPENDED';
   merchantApprovalStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | 'SUSPENDED';
@@ -384,7 +384,7 @@ export interface PaymentOrder {
   type: 'DEPOSIT' | 'WITHDRAWAL';
   userId: string;
   userName: string;
-  userMobile: string;
+  userMobile?: string; // full admins only (staffContactShield.js)
   merchantId?: string;
   merchantName?: string;
   tokenAmount: number;
@@ -452,7 +452,7 @@ export interface Transaction {
   txId: string;
   userId: string;
   /** LEFT JOINed, so it is null when the account is gone but the money moved. */
-  user: { userId: string; username: string; mobile: string } | null;
+  user: { userId: string; username: string; mobile?: string } | null;
   /** The DIRECTION of the movement. */
   type: 'CREDIT' | 'DEBIT';
   /** Which pocket moved. */

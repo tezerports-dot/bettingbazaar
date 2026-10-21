@@ -363,7 +363,7 @@ export const DisputeManager: React.FC = () => {
                       {d.type}
                     </span>
                   </div>
-                  <p className="text-sm"><span className="text-gray-400">User: </span>{d.userId?.username} ({d.userId?.mobile})</p>
+                  <p className="text-sm"><span className="text-gray-400">User: </span>{d.userId?.username}{d.userId?.mobile ? ` (${d.userId.mobile})` : ''}</p>
                   <p className="text-sm"><span className="text-gray-400">Merchant: </span>{d.merchantId?.name}</p>
                   {d.disputeReason && <p className="text-xs text-yellow-400">Reason: {d.disputeReason}</p>}
                   <p className="text-xs text-gray-500">{fmtDate(d.createdAt)}</p>
@@ -426,7 +426,7 @@ export const DisputeManager: React.FC = () => {
               <div className="grid grid-cols-2 gap-x-4 gap-y-1">
                 <div className="flex justify-between"><span className="text-gray-400">Amount</span><span className="font-bold">{formatters.currency(selected.fiatAmount || selected.amount)}</span></div>
                 <div className="flex justify-between"><span className="text-gray-400">Type</span><span>{selected.type}</span></div>
-                <div className="flex justify-between"><span className="text-gray-400">User</span><span>{selected.userId?.username} ({selected.userId?.mobile})</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">User</span><span>{selected.userId?.username}{selected.userId?.mobile ? ` (${selected.userId.mobile})` : ''}</span></div>
                 <div className="flex justify-between"><span className="text-gray-400">Merchant</span><span>{selected.merchantId?.name}</span></div>
               </div>
               {selected.disputeReason && (

@@ -113,9 +113,16 @@ describe('the socket admin room', () => {
     expect(roomsForEvent('order_disputed')).toEqual([FULL_ADMIN_ROOM, staffRoom('canResolveDisputes')]);
     expect(roomsForEvent('undeclared_event')).toEqual([FULL_ADMIN_ROOM]);
     const sent = [];
-    const io = { to: (rooms) => ({ emit: (event, data) => sent.push({ rooms, event, data }) }) };
-    emitToStaff(io, 'admin_cycle_result', { x: 1 });
-    expect(sent[0].rooms).toEqual([FULL_ADMIN_ROOM, staffRoom('canViewAnalytics'), staffRoom('canManageCycles')]);
+    const target = (rooms, except = null) => ({
+      except: (r) => target(rooms, r),
+      emit: (event, data) => sent.push({ rooms, except, event, data }),
+    });
+    const io = { to: (rooms) => target(rooms) };
+    emitToStaff(io, 'admin_cycle_result', { x: 1, user: { username: 'p', mobile: '9876543210' } });
+    // Full admins whole; the areas' rooms without the contact (staffContactShield.js).
+    expect(sent[0]).toMatchObject({ rooms: FULL_ADMIN_ROOM, data: { user: { mobile: '9876543210' } } });
+    expect(sent[1]).toMatchObject({ rooms: [staffRoom('canViewAnalytics'), staffRoom('canManageCycles')], except: FULL_ADMIN_ROOM });
+    expect(sent[1].data).toEqual({ x: 1, user: { username: 'p' } });
   });
 
   it('the live split of an open round reaches full admins only', () => {

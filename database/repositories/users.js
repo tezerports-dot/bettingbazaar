@@ -680,7 +680,7 @@ export async function softDeleteUser(userId, { actor }) {
  */
 export async function listUsers({
   status = null, isAdmin = null, isSubAdmin = null, isQueueManager = null,
-  blocked = null, flagged = null, search = null,
+  blocked = null, flagged = null, search = null, byMobile = false,
   excludeRole = null, accountType = null, limit = 50, cursor = null, page = null,
 } = {}) {
   const where = [];
@@ -717,7 +717,10 @@ export async function listUsers({
   if (accountType) add('account_type = $?', String(accountType));
   // Anchored prefix match, so the index is usable and the pattern cannot be
   // turned into a leading-wildcard scan of every account by the search box.
-  if (search) add('(username ILIKE $? || \'%\' OR mobile LIKE $? || \'%\')', String(search));
+  // A search by mobile answers "whose number is this", so it is a full admin's
+  // only (`byMobile`, staffContactShield.js; CLAUDE.md §24).
+  if (search && byMobile) add('(username ILIKE $? || \'%\' OR mobile LIKE $? || \'%\')', String(search));
+  else if (search) add('username ILIKE $? || \'%\'', String(search));
   if (cursor?.joinedAt && cursor?.userId) {
     params.push(cursor.joinedAt, cursor.userId);
     where.push(`(joined_at, user_id) < ($${params.length - 1}, $${params.length})`);

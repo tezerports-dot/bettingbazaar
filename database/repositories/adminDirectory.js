@@ -171,6 +171,7 @@ function toPlayerRow(r) {
  */
 export async function listPlayers({
   search = null, status = null, sort = 'joined', dir = 'desc', limit = 50, page: pageNo = 1, exportAll = false,
+  byMobile = false,
 } = {}) {
   const order = orderBy(PLAYER_SORTS, sort, dir, 'joined', 'user_id');
   const where = ["u.account_type = 'PLAYER'"];
@@ -180,7 +181,8 @@ export async function listPlayers({
   if (search) {
     // Anchored prefix, as `listUsers`: the index serves it.
     params.push(String(search));
-    where.push(`(u.username ILIKE $${params.length} || '%' OR u.mobile LIKE $${params.length} || '%'
+    // By mobile only for a full admin (`byMobile`, staffContactShield.js, §24).
+    where.push(`(u.username ILIKE $${params.length} || '%'${byMobile ? ` OR u.mobile LIKE $${params.length} || '%'` : ''}
                  OR u.user_id = $${params.length})`);
   }
   const { size, offset } = page(limit, pageNo, exportAll);
@@ -291,7 +293,7 @@ function toMerchantRow(r) {
  */
 export async function listMerchants({
   search = null, role = null, approval = null, status = null,
-  sort = 'joined', dir = 'desc', limit = 50, page: pageNo = 1, exportAll = false,
+  sort = 'joined', dir = 'desc', limit = 50, page: pageNo = 1, exportAll = false, byMobile = false,
 } = {}) {
   const order = orderBy(MERCHANT_SORTS, sort, dir, 'joined', 'merchant_id');
   if (role && !MERCHANT_ROLES[role]) {
@@ -305,7 +307,7 @@ export async function listMerchants({
   if (search) {
     params.push(`%${String(search)}%`);
     where.push(`(name ILIKE $${params.length} OR username ILIKE $${params.length}
-                 OR mobile ILIKE $${params.length} OR merchant_id = $${params.length + 1})`);
+                 ${byMobile ? `OR mobile ILIKE $${params.length} ` : ''}OR merchant_id = $${params.length + 1})`);
     params.push(String(search));
   }
   const { size, offset } = page(limit, pageNo, exportAll);

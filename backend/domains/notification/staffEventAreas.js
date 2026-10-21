@@ -17,6 +17,7 @@
  * sub-admin, which somebody reports, rather than data reaching people it should
  * not, which nobody does.
  */
+import { shieldContact } from '../identity/staffContactShield.js';
 import { staffCan } from '../identity/staffPermissions.js';
 
 const QUEUE = Object.freeze({ keys: ['canManageMerchants'], queueManager: true });
@@ -102,5 +103,10 @@ export function roomsForViewer(viewer, keys) {
 
 /** Emit an admin event on socket.io to exactly the staff allowed it. */
 export function emitToStaff(io, event, data) {
-  io?.to(roomsForEvent(event)).emit(event, data);
+  if (!io) return;
+  // Full admins get the event whole; every other room gets it without contact
+  // or payout details (staffContactShield.js, CLAUDE.md §24).
+  io.to(FULL_ADMIN_ROOM).emit(event, data);
+  const others = roomsForEvent(event).filter((r) => r !== FULL_ADMIN_ROOM);
+  if (others.length) io.to(others).except(FULL_ADMIN_ROOM).emit(event, shieldContact(data));
 }
