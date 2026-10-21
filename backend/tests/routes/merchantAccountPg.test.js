@@ -660,7 +660,9 @@ describePg('merchant accounts', () => {
         const row = report.body.rows.find((r) => r.orderId === orderId);
         expect(row).toMatchObject({ result: 'CONFIRMED', actedBy: { kind: 'STAFF', name: desk.name }, type: 'DEPOSIT' });
         expect(row.tokenAmount).toBe(1_000);
-        expect(Object.keys(row).every((k) => ['orderId', 'type', 'userId', 'utr', 'tokenAmount', 'state', 'result', 'actedBy', 'at'].includes(k))).toBe(true);
+        expect(Object.keys(row).every((k) => ['orderId', 'type', 'userId', 'utr', 'tokenAmount', 'state', 'result', 'actedBy', 'actions', 'at'].includes(k))).toBe(true);
+        // Every action, named with the desk who took it (owner, 2026-10-21).
+        expect(row.actions).toEqual([{ action: 'Confirmed the payment', by: { kind: 'STAFF', name: desk.name }, at: expect.any(String) }]);
       }
       const { Orders } = readXlsx((await as(panel, m).get('/reports/orders.xlsx').buffer(true).parse(binary)).body);
       const line = Orders.find((r) => r[r.length - 1] === orderId);

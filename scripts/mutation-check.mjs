@@ -3923,6 +3923,20 @@ const MUTATIONS = [
     from: "    const { rows, total } = await db.adminDirectory.listPlayers({\n      byMobile: seesContact(req.user),",
     to: "    const { rows, total } = await db.adminDirectory.listPlayers({\n      byMobile: true,",
   },
+  {
+    id: 'M509', file: 'database/repositories/merchantReports.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderReportPg.test.js',
+    why: 'an order the member declined drops off their report, so the decline is named nowhere',
+    from: "        WHERE (o.merchant_id = $1 OR EXISTS (",
+    to: "        WHERE (o.merchant_id = $1 AND EXISTS (",
+  },
+  {
+    id: 'M510', file: 'database/repositories/merchantReports.js', config: PG,
+    test: 'backend/tests/routes/merchantAccountPg.test.js',
+    why: 'the report stops saying which sub-member took an action',
+    from: "    action: REPORT_ACTIONS[m.to], by: actorOfTag(m.actor, m.staffName), at: new Date(m.at).toISOString(),",
+    to: "    action: REPORT_ACTIONS[m.to], by: actorOfTag('merchant:', m.staffName), at: new Date(m.at).toISOString(),",
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

@@ -113,12 +113,25 @@ export function orderReportWorkbook(report) {
   const buys = rowsOf('DEPOSIT');
   const sells = rowsOf('WITHDRAWAL');
   const total = (rows) => (rows.length ? { tokens: sumOf(rows, 'tokens') } : undefined);
+  // Every move the merchant's side made, one line each, with who made it
+  // (owner, 2026-10-21: every action named in the reports).
+  const actionColumns = [
+    { key: 'at', label: 'Time (IST)', type: 'time' },
+    { key: 'type', label: 'Order' },
+    { key: 'action', label: 'Action' },
+    { key: 'by', label: 'By' },
+    { key: 'id', label: 'Transaction ID' },
+  ];
+  const actions = report.rows.flatMap((r) => (r.actions ?? []).map((m) => ({
+    at: m.at, type: r.type === 'DEPOSIT' ? 'Buy' : 'Sell', action: m.action, by: m.by?.name ?? '', id: r.orderId,
+  }))).sort((x, y) => String(y.at).localeCompare(String(x.at)));
   return {
     sheets: [{
       name: 'Orders', title: 'Order report', subtitle: `${rangeText(report.range)}. Generated ${istText(new Date())}.`,
       tables: [
         { heading: `Buys (${buys.length})`, accent: 'green', columns, rows: buys, totals: total(buys) },
         { heading: `Sells (${sells.length})`, accent: 'red', columns, rows: sells, totals: total(sells) },
+        { heading: `Every action (${actions.length})`, accent: 'slate', columns: actionColumns, rows: actions },
       ],
     }],
   };

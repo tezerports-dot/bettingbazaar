@@ -188,21 +188,26 @@ export function toMerchantOrderViews(orders) {
  * One row of the merchant's order report (owner, 2026-10-16;
  * `merchantReports.orderReport`). An allowlist like the order view (§24.1):
  * the order, the player's id (already in `MERCHANT_ORDER_FIELDS`), the
- * reference, the amount in tokens, the ✓/✗ and who pressed it. `actedBy.name`
- * is a sub-member's name, or `selfLabel` for the merchant's own press.
+ * reference, the amount in tokens, the ✓/✗ and who pressed it, and every
+ * move the merchant's side made on it, named and dated (`actions`, owner
+ * 2026-10-21). A `name` is a sub-member's, or `selfLabel` for the merchant's
+ * own press.
  */
 export const MERCHANT_REPORT_FIELDS = Object.freeze([
-  'orderId', 'type', 'userId', 'utr', 'tokenAmount', 'state', 'result', 'actedBy', 'at',
+  'orderId', 'type', 'userId', 'utr', 'tokenAmount', 'state', 'result', 'actedBy', 'actions', 'at',
 ]);
+
+const whoActed = (by, selfLabel) => (by
+  ? { kind: by.kind, name: by.kind === 'STAFF' ? (by.name ?? 'Removed member') : selfLabel }
+  : null);
 
 export function toMerchantReportRows(rows, { selfLabel = 'You' } = {}) {
   return (rows || []).map((row) => {
     const plain = {
       ...row,
       tokenAmount: Number(row.tokenPaise) / 100,
-      actedBy: row.actedBy
-        ? { kind: row.actedBy.kind, name: row.actedBy.kind === 'STAFF' ? (row.actedBy.name ?? 'Removed member') : selfLabel }
-        : null,
+      actedBy: whoActed(row.actedBy, selfLabel),
+      actions: (row.actions ?? []).map((m) => ({ action: m.action, by: whoActed(m.by, selfLabel), at: m.at })),
     };
     const view = {};
     for (const key of MERCHANT_REPORT_FIELDS) if (plain[key] !== undefined) view[key] = plain[key];

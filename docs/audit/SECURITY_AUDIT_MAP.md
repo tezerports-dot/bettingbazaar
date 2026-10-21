@@ -3641,7 +3641,7 @@ new route and decide. Each of the three questions is defined in §2.
 |---|---|---|---|
 | `user-panel` | 164 | 0 | 0 |
 | `admin-panel` | 145 | 0 | 0 |
-| `merchant-panel` | 73 | 0 | 0 |
+| `merchant-panel` | 76 | 0 | 0 |
 
 <!-- END GENERATED -->
 

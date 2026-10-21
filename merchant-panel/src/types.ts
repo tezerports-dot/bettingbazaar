@@ -647,6 +647,8 @@ export interface OrderReportRow {
   state: string;
   result: OrderReportResult;
   actedBy: { kind: 'MERCHANT' | 'STAFF'; name: string } | null;
+  /** Every move the merchant's side made on it, oldest first (`REPORT_ACTIONS`, merchantReports.js). */
+  actions: Array<{ action: string; by: { kind: 'MERCHANT' | 'STAFF'; name: string } | null; at: string }>;
   at: string;
 }
 export interface OrderReport {

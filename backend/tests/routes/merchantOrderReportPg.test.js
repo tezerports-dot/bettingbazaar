@@ -71,6 +71,7 @@ describePg('the merchant order report', () => {
     expect((await getOrderRecord(ids.sell)).merchantId).toBe(String(member.merchantId));
     const paid = await as(app, member).post(`/confirm/${ids.sell}`).send({ utrNumber: utr() });
     expect(paid.status, JSON.stringify(paid.body)).toBe(200);
+    ids.seller = seller.userId;
   }, 120_000);
 
   afterAll(async () => {
@@ -143,5 +144,42 @@ describePg('the merchant order report', () => {
     expect(row(ids.rejected)).toContain('✗ Rejected');
     // A buy sits in the buys table, above the sells heading.
     expect(Orders.indexOf(row(ids.confirmed))).toBeLessThan(sells);
+  });
+
+  it('names every action taken on an order, and by whom (owner, 2026-10-21)', async () => {
+    const res = await report(member);
+    const byId = Object.fromEntries(res.body.rows.map((r) => [r.orderId, r]));
+    expect(byId[ids.confirmed].actions).toEqual([{ action: 'Confirmed the payment', by: { kind: 'MERCHANT', name: 'You' }, at: expect.any(String) }]);
+    expect(byId[ids.rejected].actions.map((m) => m.action)).toEqual(['Rejected: payment not received']);
+    expect(byId[ids.sell].actions.map((m) => m.action)).toEqual(['Marked the payout sent']);
+  });
+
+  it('keeps an order the member declined on their report, named, with no reference', async () => {
+    await creditWinnings(ids.seller, 50_000, 'report suite seed', 'Test', `seed2_${ids.seller}`, `rep_seed2_${ids.seller}`);
+    const { order } = await createWithdrawalOrder(ids.seller, 50_000);
+    const declined = order.orderId ?? order._id;
+    made.push(declined);
+    expect((await getOrderRecord(declined)).merchantId).toBe(String(member.merchantId));
+    const no = await as(app, member).post(`/reject/${declined}`).send({ reason: 'Cannot pay this one now' });
+    expect(no.status, JSON.stringify(no.body)).toBe(200);
+    expect((await getOrderRecord(declined)).status).toBe('PENDING_QUEUE');
+
+    const row = (await report(member)).body.rows.find((r) => r.orderId === declined);
+    expect(row).toMatchObject({ state: 'PENDING_QUEUE', result: 'NONE', utr: null });
+    expect(row.actions).toEqual([{ action: 'Declined the order', by: { kind: 'MERCHANT', name: 'You' }, at: expect.any(String) }]);
+    // Nobody else's report gains it.
+    expect((await report(other)).body.rows.map((r) => r.orderId)).not.toContain(declined);
+  });
+
+  it('the workbook lists every action in its own table', async () => {
+    const res = await as(app, member).get('/reports/orders.xlsx').buffer(true).parse(binary);
+    const { Orders } = readXlsx(res.body);
+    const at = Orders.findIndex((r) => String(r[0]).startsWith('Every action ('));
+    expect(at).toBeGreaterThan(0);
+    expect(Orders[at + 1]).toEqual(['Time (IST)', 'Order', 'Action', 'By', 'Transaction ID']);
+    const actions = Orders.slice(at + 2).map((r) => r[2]);
+    for (const a of ['Confirmed the payment', 'Rejected: payment not received', 'Marked the payout sent', 'Declined the order']) {
+      expect(actions).toContain(a);
+    }
   });
 });

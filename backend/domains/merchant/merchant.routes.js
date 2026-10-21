@@ -863,6 +863,8 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         // order's requeue unsaved unless the else-branch happened to save it.
         const requeued = await requeueOrder(order.orderId, {
             expectMerchant: req.merchantId,
+            // Who declined, named in the order report (`merchantActorTag`).
+            actor: merchantActorTag(req),
             set: { merchantId: null, merchantSnapshot: null, expiresAt: null, rejectedReason: reason },
             // ── The pool's hold comes off IN the requeue's own transaction ──
             // This member's team held the player's tokens from the moment the
@@ -873,7 +875,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
             within: async (client) => {
                 await db.orders.refuseIfPayableWithin(client, order.orderId);
                 await db.teamPools.detachFromTeamWithin(client, order.orderId, {
-                    actor: `merchant:${req.merchantId}`, reason: `Declined by the member: ${reason}`,
+                    actor: merchantActorTag(req), reason: `Declined by the member: ${reason}`,
                 });
             },
         });
@@ -1034,6 +1036,8 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
         const flagged = await disputeOrder(order._id, {
             expectFrom: ['PROCESSING', 'PAID'],
             expectMerchant: req.merchantId,
+            // Who flagged it, named in the order report (`merchantActorTag`).
+            actor: merchantActorTag(req),
             set: {
                 redFlagged:      true,
                 redFlagReason:   reason.trim(),
