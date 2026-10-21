@@ -14,6 +14,7 @@ import { financialReport, settlementReport, merchantReport, regulatoryLedgerExpo
 // concurrent request, money paths included). Small exports stay inline.
 import { runCpuTask, shouldOffloadCsv } from '../../services/workerPool.service.js';
 import { respondError } from '../../shared/httpError.js';
+import { sendXlsx, oneTable, columnsOf, istText } from './xlsx.util.js';
 
 const router = express.Router();
 
@@ -54,7 +55,7 @@ router.get('/reports/merchants', authenticate, hasPermission('canViewAnalytics')
   }
 });
 
-// GET /api/admin/reports/ledger-export?from=&to=&format=csv|json
+// GET /api/admin/reports/ledger-export?from=&to=&format=csv|xlsx|json
 // Regulatory export: one row per journal posting, admin-only.
 router.get('/reports/ledger-export', authenticate, hasPermission('canExportLedger'), async (req, res) => {
   try {
@@ -66,6 +67,14 @@ router.get('/reports/ledger-export', authenticate, hasPermission('canExportLedge
       // Big export → serialize off the main loop; small → inline (no thread hop).
       const csv = shouldOffloadCsv(rows) ? await runCpuTask('csvSerialize', rows) : toCsv(rows);
       return res.send(csv);
+    }
+    // The same postings as a workbook for a person to read (owner, 2026-10-21).
+    if (req.query.format === 'xlsx') {
+      return sendXlsx(res, `ledger-export-${(req.query.from || 'start')}-${(req.query.to || 'now')}.xlsx`, oneTable({
+        name: 'Ledger postings', title: 'Ledger postings', accent: 'teal',
+        subtitle: `${req.query.from || 'From the start'} to ${req.query.to || 'now'}. Downloaded ${istText(new Date())}`,
+        rows, columns: rows.length ? columnsOf(rows) : [{ key: 'posting', label: 'Posting' }],
+      }));
     }
     res.json({ success: true, rows });
   } catch (error) {

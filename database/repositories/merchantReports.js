@@ -19,7 +19,7 @@ const bad = (message) => Object.assign(new Error(message), { status: 400, code: 
 
 /**
  * The range as IST days, inclusive: `from` and `to` as YYYY-MM-DD, defaulting
- * to the last seven days ending today; at most 366 days.
+ * to the last seven days ending today; at most 366 days when both are given.
  */
 export function reportRange({ from = null, to = null } = {}) {
   for (const d of [from, to]) {
@@ -35,12 +35,19 @@ export function reportRange({ from = null, to = null } = {}) {
   return { from: from || null, to: to || null };
 }
 
-/** The range clause: `created_at` inside the IST days [from, to], defaults applied in SQL. */
+/**
+ * The range clause: `created_at` inside the IST days [from, to]. With one end
+ * given the other is read from it: `to` alone is the seven days ending then,
+ * `from` alone runs to today. Both were anchored on TODAY, so a `to` more than
+ * a week back made a range ending before it started and every figure read 0
+ * until the dates were cleared (owner, 2026-10-20).
+ */
 const RANGE_SQL = `
-  created_at >= ((COALESCE($2::date, (now() AT TIME ZONE 'Asia/Kolkata')::date - 6))::timestamp AT TIME ZONE 'Asia/Kolkata')
-  AND created_at < ((COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date) + 1)::timestamp AT TIME ZONE 'Asia/Kolkata')
-  AND COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date)
-      - COALESCE($2::date, (now() AT TIME ZONE 'Asia/Kolkata')::date - 6) BETWEEN 0 AND 365`;
+  created_at >= ((COALESCE($2::date, COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date) - 6))::timestamp AT TIME ZONE 'Asia/Kolkata')
+  AND created_at < ((COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date) + 1)::timestamp AT TIME ZONE 'Asia/Kolkata')`;
+
+/** The range clause on another column (`$2` from, `$3` to): the business ledger's (`merchantLedger.js`). */
+export const rangeSqlOn = (column) => RANGE_SQL.replaceAll('created_at', column);
 
 /** Per account and direction, over the range. */
 export async function accountTotals(merchantId, range) {

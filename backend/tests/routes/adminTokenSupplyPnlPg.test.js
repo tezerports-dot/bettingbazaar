@@ -15,6 +15,7 @@ import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { fundWallet } from '#db/tests/_funding.js';
 import router from '../../domains/analytics/analytics.admin.routes.js';
 import { mountRouter, actor, as } from './_harness.js';
+import { getXlsx, onlyTable } from '../_xlsx.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 const tag = `tsp-${Date.now().toString(36)}`;
@@ -66,20 +67,20 @@ describePg('Admin › Token Flow supply and Profit & Loss', () => {
     expect(supply.body.kinds.map((k) => k.kind)).toContain('PLAYER');
     expect(supply.body.holders).toBeUndefined();
     expect((await as(app, analyst).get('/analytics/token-holders')).status).toBe(403);
-    expect((await as(app, analyst).get('/analytics/token-holders.csv')).status).toBe(403);
+    expect((await as(app, analyst).get('/analytics/token-holders.xlsx')).status).toBe(403);
   });
 
   it('refuses an unknown holder kind with a 400', async () => {
     expect((await as(app, admin).get('/analytics/token-holders').query({ kind: 'NOBODY' })).status).toBe(400);
   });
 
-  it('downloads the holders as CSV', async () => {
-    const res = await as(app, admin).get('/analytics/token-holders.csv').query({ search: player.userId });
+  it('downloads the holders as a workbook', async () => {
+    const { res, book } = await getXlsx(as(app, admin).get('/analytics/token-holders.xlsx').query({ search: player.userId }));
     expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toMatch(/text\/csv/);
-    const [head, row] = res.text.split('\n');
-    expect(head).toBe('kind,holder_id,name,supervisor_or_owner,approved_members,tokens,held_or_riding,share_of_supply_percent');
-    expect(row).toContain(`PLAYER,${player.userId}`);
+    expect(res.headers['content-type']).toMatch(/spreadsheetml/);
+    const t = onlyTable(book);
+    expect(t.header).toEqual(['Kind', 'Holder id', 'Name', 'Supervisor or owner', 'Approved members', 'Tokens', 'Held or riding', 'Share of supply percent']);
+    expect(t.rows[0].slice(0, 2)).toEqual(['PLAYER', player.userId]);
   });
 
   it('counts a referral bonus as a cost, and a day outside the window not at all', async () => {
@@ -102,11 +103,17 @@ describePg('Admin › Token Flow supply and Profit & Loss', () => {
     expect((await as(app, analyst).get('/analytics/financials').query({ startDate: 'yesterday' })).status).toBe(400);
   });
 
-  it('downloads the P&L as CSV, deposits under money flow and not revenue', async () => {
-    const res = await as(app, analyst).get('/analytics/financials.csv');
+  it('downloads the P&L as one table per section, deposits under money flow and not revenue', async () => {
+    const { res, book } = await getXlsx(as(app, analyst).get('/analytics/financials.xlsx'));
     expect(res.status).toBe(200);
-    expect(res.text.split('\n')[0]).toBe('section,item,amount,count');
-    expect(res.text).toMatch(/\nMoney flow \(not revenue\),Deposits,/);
-    expect(res.text).not.toMatch(/\nRevenue,Deposits/);
+    const rows = book['Profit and loss'];
+    const sectionOf = (item) => {
+      const at = rows.findIndex((r) => r[0] === item);
+      for (let i = at; i >= 0; i -= 1) if (rows[i + 1]?.[0] === 'Item') return rows[i][0];
+      return null;
+    };
+    expect(rows.some((r) => r[0] === 'Revenue')).toBe(true);
+    expect(sectionOf('Deposits')).toBe('Money flow (not revenue)');
+    expect(sectionOf('Total revenue')).toBe('Revenue');
   });
 });

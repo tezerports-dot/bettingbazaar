@@ -20,7 +20,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 
 const { get } = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock('../../services/api', () => ({ default: { get }, downloadCsv: vi.fn(), cleanParams: (o: object) => o }));
+vi.mock('../../services/api', () => ({ default: { get }, downloadFile: vi.fn(), cleanParams: (o: object) => o }));
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
 import { TokenFlow } from './TokenFlow';

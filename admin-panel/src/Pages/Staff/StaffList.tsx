@@ -16,7 +16,7 @@ import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
 import { DEFAULT_PERMISSIONS, type StaffPermissionCatalog } from '../../utils/permissions';
-import api, { downloadCsv, cleanParams } from '../../services/api';
+import api, { downloadFile, cleanParams } from '../../services/api';
 import type { StaffRole, StaffRow } from '../../types';
 import { PermissionPicker } from './PermissionPicker';
 import { STAFF_ROLE_LABEL } from './staffLabels';
@@ -46,12 +46,12 @@ export const StaffList: React.FC = () => {
   const [createProblem, setCreateProblem] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // Every staff account the filters match (`GET /api/admin/staff.csv`).
-  const exportCsv = async () => {
+  // Every staff account the filters match (`GET /api/admin/staff.xlsx`).
+  const exportExcel = async () => {
     try {
-      await downloadCsv('/api/admin/staff.csv', cleanParams({
+      await downloadFile('/api/admin/staff.xlsx', cleanParams({
         search: debouncedSearch, role: role === 'ALL' ? undefined : role, sort: sort.key, dir: sort.dir,
-      }), 'staff.csv');
+      }), 'staff.xlsx');
     } catch { toast.error('Export failed'); }
   };
 
@@ -146,7 +146,7 @@ export const StaffList: React.FC = () => {
         }))}
         search={{ value: search, onChange: (v) => { setSearch(v); setPage(1); }, placeholder: 'Search name, mobile, ID…' }}
         actions={[
-          { label: 'Download CSV', icon: Download, onClick: () => void exportCsv() },
+          { label: 'Download Excel', icon: Download, onClick: () => void exportExcel() },
           { label: creating ? 'Close' : 'Create Sub-Admin', icon: UserPlus, primary: !creating, onClick: () => setCreating((c) => !c) },
         ]}
       />

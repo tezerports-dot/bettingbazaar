@@ -412,6 +412,8 @@ export interface Team {
   poolExposure: PoolExposure;
   /** Team commission (Step 2e): `toSummary` in database/repositories/teamCommission.js. */
   commission: TeamCommissionSummary;
+  /** Sent on a supervisor's own teams (`GET /api/merchant/team`). */
+  poolTrades?: PoolTradeTotals;
 }
 // Team commission (Step 2e). Mirrors `toSummary` and `listCommissions` in
 // database/repositories/teamCommission.js — §5. Paise throughout.
@@ -439,7 +441,15 @@ export interface TeamPoolRequest {
   requestId: string; teamId: string; direction: PoolDirection; tokenAmountPaise: number;
   status: 'PENDING' | 'FULFILLED' | 'REJECTED' | 'CANCELLED';
   note: string | null; decisionNote: string | null; decidedAt: string | null; createdAt: string;
+  /** A pool buy paid in USDT (`toRequest` in database/repositories/teamPools.js); null when an admin fulfils it. */
+  usdt?: PoolUsdtPayment | null;
 }
+/** Where and how much to pay for a USDT pool buy, and what has arrived (owner, 2026-10-21). */
+export interface PoolUsdtPayment {
+  chain: 'BEP20'; address: string; amount: number; received: number; rate: number; expiresAt: string;
+}
+/** Tokens a pool bought from the platform and returned to it (`poolTradeTotals`, teamPools.js). */
+export interface PoolTradeTotals { boughtPaise: number; returnedPaise: number; buys: number; returns: number }
 export interface TeamMember {
   merchantId: string; teamId: string; name: string; publicRef: string;
   status: 'PENDING' | 'APPROVED'; isOnline: boolean;
@@ -522,7 +532,19 @@ export interface PaymentAccount {
   upiId: string | null; upiName: string | null; upiLink: string | null;
   holderName: string; accountNo: string; ifsc: string; bankName: string;
   acceptsDeposits: boolean; paysWithdrawals: boolean; status: PaymentAccountStatus;
+  /** The order sizes, in tokens, a buy is paid into it / a sell is paid from it (owner, 2026-10-20). */
+  buySizes: number[]; sellSizes: number[];
   lastUsedAt: string | null; createdAt: string; updatedAt: string; removedAt: string | null;
+}
+
+/**
+ * `sizeCoverage` (merchantPaymentAccounts.js): the sizes, in tokens, the
+ * platform sends to merchant accounts per direction, and which of them no
+ * account of this merchant takes yet.
+ */
+export interface SizeCoverage {
+  required: { DEPOSIT: number[]; WITHDRAWAL: number[] };
+  uncovered: { DEPOSIT: number[]; WITHDRAWAL: number[] };
 }
 
 /**
@@ -569,6 +591,8 @@ export interface MerchantAccountOverview {
   success: boolean;
   team: DirectTeam;
   accounts: PaymentAccount[];
+  sizes: SizeCoverage;
+  poolTrades: PoolTradeTotals;
   staff?: SubMember[];
   poolRequests?: Array<TeamPoolRequest & { teamKind?: 'AGENT' | 'DIRECT' }>;
   flags: MerchantFlag[];
@@ -600,6 +624,27 @@ export interface OrderReport {
   rows: OrderReportRow[];
   totals: { orders: number; confirmed: number; rejected: number; confirmedBuyPaise: number; confirmedSellPaise: number };
   pagination: { total: number; limit: number; skip: number };
+}
+
+/** One order in the business ledger (`merchantLedger.businessLedger`). */
+export interface LedgerOrderRow { orderId: string; at: string; tokensPaise: number; state: 'COMPLETED' | 'PAID'; rail: string; account: string | null }
+
+/** GET /api/merchant/reports/ledger: every figure the server's, in paise of a token. */
+export interface BusinessLedger {
+  success: boolean;
+  range: { from: string | null; to: string | null };
+  buys: LedgerOrderRow[];
+  sells: LedgerOrderRow[];
+  commission: Array<{ commissionId: string; at: string; role: string; team: string; sharePaise: number }>;
+  pool: Array<{ requestId: string; at: string; direction: 'BUY' | 'SELL'; team: string; tokensPaise: number; currency: string | null; amountMinor: number | null; inrPaise: number }>;
+  disputes: Array<{ orderId: string; at: string; type: 'BUY' | 'SELL'; tokensPaise: number; state: string; decision: string | null; lostBy: string | null; compensationPaise: number }>;
+  truncated: boolean;
+  totals: {
+    boughtPaise: number; paidToAdminPaise: number; returnedPaise: number; receivedFromAdminPaise: number; netWithAdminPaise: number;
+    userBuys: number; userBuysPaise: number; userSells: number; userSellsPaise: number; netUserPaise: number;
+    commissionPaise: number; compensationPaise: number; netCommissionPaise: number; netProfitPaise: number;
+    pools: number; poolAvailablePaise: number; poolHeldPaise: number;
+  };
 }
 
 /** GET /api/merchant/account/reports. */

@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { formatters } from '../../utils/formatters';
 import { Kpis, Toolbar } from '../../components/design';
-import api, { downloadCsv, cleanParams } from '../../services/api';
+import api, { downloadFile, cleanParams } from '../../services/api';
 import { Download } from 'lucide-react';
 import type { FinancialStats } from '../../types';
 import toast from 'react-hot-toast';
@@ -75,17 +75,17 @@ export const ProfitLoss: React.FC = () => {
   const profitMargin = revenue > 0 ? ((stats?.netProfit ?? 0) / revenue) * 100 : 0;
   const netPos = (stats?.netProfit || 0) >= 0;
   const range = () => (preset === 'custom' ? { start: startDate, end: endDate } : presetDates(preset));
-  const exportCsv = async () => {
+  const exportExcel = async () => {
     const { start, end } = range();
     try {
-      await downloadCsv('/api/admin/analytics/financials.csv', cleanParams({ startDate: start, endDate: end }), 'profit-loss.csv');
+      await downloadFile('/api/admin/analytics/financials.xlsx', cleanParams({ startDate: start, endDate: end }), 'profit-loss.xlsx');
     } catch { toast.error('Export failed'); }
   };
   return (
     <div className="om-fade space-y-6">
       <Toolbar
         tabs={PRESETS.map((p) => ({ label: p.label, active: preset === p.key, onClick: () => changePreset(p.key) }))}
-        actions={[{ label: 'Download CSV', icon: Download, onClick: exportCsv }]}
+        actions={[{ label: 'Download Excel', icon: Download, onClick: exportExcel }]}
       />
       {preset === 'custom' && (
         <div className="flex items-end gap-3">

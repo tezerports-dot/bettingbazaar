@@ -115,7 +115,7 @@ const VerifyScreen: React.FC<Props> = ({ app, start, onDone }) => {
         <p data-testid="verify-account">
           {account.isNew
             ? panel === 'MERCHANT'
-              ? <>This confirms the merchant account an admin created for your Telegram number. Telegram asks you to share your contact once. No account on this number? Ask an admin to create one first.</>
+              ? <>Telegram asks you to share your contact once. If an admin already made your merchant account on this number, this confirms it. If not, this sends your merchant application, and you can sign in once an admin approves it.</>
               : <>This creates your {word} account on your Telegram number. Telegram asks you to share your contact once.</>
             : <>Your {word} account {account.mobileHint}.</>}
         </p>

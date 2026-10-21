@@ -10,6 +10,7 @@ import {
   PoolDirection,
   TeamPool,
   TeamPoolEntry,
+  TeamPoolRequest,
   MemberLog,
   SupervisorOrder,
   DisputeThreadMessage,
@@ -23,6 +24,7 @@ import {
   StaffDuty,
   MerchantReport,
   OrderReport,
+  BusinessLedger,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -629,6 +631,12 @@ export const requestTeamPool = async (
     method: 'POST', body: JSON.stringify({ direction, tokenAmount, note: note || null }),
   })).message;
 
+/** Buy pool tokens from the platform in USDT: the request, with where to pay (owner, 2026-10-21). */
+export const buyTeamPoolUsdt = async (teamId: string, tokenAmount: number): Promise<TeamPoolRequest> =>
+  (await request<{ request: TeamPoolRequest }>(ENDPOINTS.TEAM.POOL_USDT_BUY(teamId), {
+    method: 'POST', body: JSON.stringify({ tokenAmount }),
+  })).request;
+
 export const cancelTeamPoolRequest = async (requestId: string): Promise<void> => {
   await request(ENDPOINTS.TEAM.POOL_CANCEL(requestId), { method: 'DELETE' });
 };
@@ -683,8 +691,16 @@ export interface PaymentAccountInput {
   bankName?: string;
   acceptsDeposits?: boolean;
   paysWithdrawals?: boolean;
+  buySizes?: number[];
+  sellSizes?: number[];
   status?: 'ACTIVE' | 'PAUSED';
 }
+
+/** Which sizes go to which account, every account in one save (refused 409 SIZES_UNCOVERED if one is left out). */
+export const setPaymentAccountSizes = async (
+  accounts: Array<{ accountId: string; buySizes: number[]; sellSizes: number[] }>,
+): Promise<PaymentAccount[]> =>
+  (await accountRequest<{ accounts: PaymentAccount[] }, []>(ENDPOINTS.ACCOUNT.SET_SIZES, [], { accounts })).accounts;
 
 export const addPaymentAccount = async (input: PaymentAccountInput): Promise<PaymentAccount> =>
   (await accountRequest<{ account: PaymentAccount }, []>(ENDPOINTS.ACCOUNT.ADD_ACCOUNT, [], input)).account;
@@ -721,6 +737,10 @@ export const requestMerchantPool = async (direction: PoolDirection, tokens: numb
     direction, tokens, note: note || null,
   })).requestId;
 
+/** A merchant account buys pool tokens in USDT: the request, with where to pay (owner, 2026-10-21). */
+export const buyMerchantPoolUsdt = async (tokens: number): Promise<TeamPoolRequest> =>
+  (await accountRequest<{ request: TeamPoolRequest }, []>(ENDPOINTS.ACCOUNT.BUY_POOL_USDT, [], { tokens })).request;
+
 export const cancelMerchantPoolRequest = async (requestId: string): Promise<void> => {
   await accountRequest(ENDPOINTS.ACCOUNT.CANCEL_POOL, [requestId]);
 };
@@ -755,36 +775,51 @@ export const getOrderReport = async (query: OrderReportQuery, page: { limit: num
   request<OrderReport>(`${ENDPOINTS.ORDER_REPORT.PAGE}${orderReportQuery(query, page)}`);
 
 /**
- * The order report as a CSV file the browser saves. Fetched with the
+ * A workbook the server builds, saved by the browser. Fetched with the
  * session's token (a plain link would carry none), then handed to the browser
- * as a download. A refusal is thrown with the server's words.
+ * as a download under the server's name. A refusal is thrown with the
+ * server's words.
  */
-export const downloadOrderReportCsv = async (query: OrderReportQuery): Promise<void> => {
+const downloadWorkbook = async (path: string, fallbackName: string): Promise<void> => {
   const token = getAuthToken();
-  const response = await fetch(`${BASE_URL}${ENDPOINTS.ORDER_REPORT.CSV}${orderReportQuery(query)}`, {
+  const response = await fetch(`${BASE_URL}${path}`, {
     method: 'GET',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     mode: 'cors',
     credentials: 'omit',
   });
   if (!response.ok) {
-    let said = `The export failed (status ${response.status}).`;
+    let said = `The download failed (status ${response.status}).`;
     try {
       const body = await response.json();
       if (typeof body?.message === 'string' && body.message) said = body.message;
     } catch { /* not JSON: keep the status sentence */ }
     throw Object.assign(new Error(said), { status: response.status });
   }
+  const named = /filename="?([^";]+)"?/.exec(response.headers.get('content-disposition') || '')?.[1];
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `merchant-orders-${query.from || 'last7'}-${query.to || 'today'}.csv`;
+  link.download = named || fallbackName;
   document.body.appendChild(link);
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
+
+/** The order report as an Excel workbook: buys and sells in their own tables. */
+export const downloadOrderReport = (query: OrderReportQuery): Promise<void> =>
+  downloadWorkbook(`${ENDPOINTS.ORDER_REPORT.XLSX}${orderReportQuery(query)}`,
+    `merchant-orders-${query.from || 'last7'}-${query.to || 'today'}.xlsx`);
+
+/** The business ledger over IST days (empty: the last seven), with its totals. */
+export const getBusinessLedger = async (from: string, to: string): Promise<BusinessLedger> =>
+  request<BusinessLedger>(`${ENDPOINTS.LEDGER.PAGE}${rangeQuery(from, to)}`);
+
+/** The same ledger as an Excel workbook, one labelled table per kind. */
+export const downloadBusinessLedger = (from: string, to: string): Promise<void> =>
+  downloadWorkbook(`${ENDPOINTS.LEDGER.XLSX}${rangeQuery(from, to)}`, `business-ledger-${from || 'last7'}-${to || 'today'}.xlsx`);
 
 export const api = {
   // Auth
@@ -825,16 +860,20 @@ export const api = {
   addPaymentAccount,
   updatePaymentAccount,
   removePaymentAccount,
+  setPaymentAccountSizes,
   addSubMember,
   setSubMemberRoles,
   removeSubMember,
   assignSubMemberAccount,
   unassignSubMemberAccount,
   requestMerchantPool,
+  buyMerchantPoolUsdt,
   cancelMerchantPoolRequest,
   getMerchantReport,
   getOrderReport,
-  downloadOrderReportCsv,
+  downloadOrderReport,
+  getBusinessLedger,
+  downloadBusinessLedger,
 
   // Red Flag
   // Utilities

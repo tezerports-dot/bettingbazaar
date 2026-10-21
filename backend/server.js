@@ -94,7 +94,7 @@ import { startPgBouncerStats } from '#db/pgbouncerStats.js';
 import { CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';
 import { refreshProviderFrameSources, startProviderFrameSourceRefresh } from './domains/casino/providerFrameSources.js';
 import { securityHeaders } from './middleware/cspMiddleware.js';
-import { network, canonicalRedirect, adminHostGate, adminPreflightGate } from './config/network.config.js';
+import { network, canonicalRedirect, adminHostGate, adminPreflightGate, merchantHostGate } from './config/network.config.js';
 import {
   attachProxyProtocolRequestMetadata,
   listenWithOptionalProxyProtocol,
@@ -243,8 +243,10 @@ app.use(securityHeaders);
 // Item 29: optional canonical-host 301 (only when CANONICAL_HOST is set; keys
 // on the requested Host only — see network.config.js).
 app.use(canonicalRedirect);
-// The admin panel answers only on ADMIN_HOST when it is set (network.config.js).
+// The admin panel answers only on ADMIN_HOST, and the merchant panel only on
+// MERCHANT_HOST, when each is set (network.config.js).
 app.use(adminHostGate);
+app.use(merchantHostGate);
 
 const corsOptions = { origin: corsOriginCheck, ...CORS_SHAPE };
 // AQ-6 (Express 5 / path-to-regexp 8): bare '*' is no longer a valid route

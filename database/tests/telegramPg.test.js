@@ -474,20 +474,29 @@ describePg('Telegram, Continue with Telegram (PostgreSQL)', () => {
       expect(rows[0].password_hash).toBeNull();
     });
 
-    it('never makes a merchant: a number with no merchant account is refused, and nothing is written', async () => {
-      // Owner, 2026-10-14: an admin makes merchant accounts; Telegram only
-      // confirms one. Even a caller that hands the writer a signup gets none.
+    it('a merchant with no account on that number APPLIES: a PENDING merchant, linked, approved by nobody yet', async () => {
+      // Owner, 2026-10-21: merchants sign up themselves; an admin only reviews.
       const userId = newUserId();
       const mobile = `96${String(Date.now()).slice(-8)}`;
       try {
         await expect(approve(await challenge({ audience: 'MERCHANT' }), tgUser('6'), {
           phone: mobile, signup: { userId },
-        })).resolves.toMatchObject({ ok: false, code: 'NO_MERCHANT_ACCOUNT' });
-        expect(await getUser(userId)).toBeNull();
-        expect(await getLinkByTelegramId('6', 'MERCHANT')).toBeNull();
+        })).resolves.toMatchObject({ ok: true, created: true, panel: 'MERCHANT', userId });
+        expect(await getUser(userId)).toMatchObject({ mobile, accountType: 'MERCHANT' });
+        expect(await getLinkByTelegramId('6', 'MERCHANT')).toMatchObject({ userId });
+        const { rows } = await pgQuery('SELECT status, merchant_approval_status FROM merchants WHERE user_id = $1', [userId]);
+        expect(rows[0]).toMatchObject({ merchant_approval_status: 'PENDING' });
       } finally {
+        await pgQuery('DELETE FROM telegram_links WHERE user_id = $1', [userId]);
         await pgQuery('DELETE FROM merchants WHERE user_id = $1', [userId]);
       }
+    });
+
+    it('a merchant Verify with no signup still makes nothing (NO_MERCHANT_ACCOUNT)', async () => {
+      const mobile = `95${String(Date.now()).slice(-8)}`;
+      await expect(approve(await challenge({ audience: 'MERCHANT' }), tgUser('16'), { phone: mobile }))
+        .resolves.toMatchObject({ ok: false, code: 'NO_MERCHANT_ACCOUNT' });
+      expect(await getLinkByTelegramId('16', 'MERCHANT')).toBeNull();
     });
 
     it('a number that already has an account links that account and makes no second one', async () => {

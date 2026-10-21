@@ -12,6 +12,7 @@ import { applyConfig, getConfig } from '#db/repositories/config.js';
 import * as cricket from '#db/repositories/cricket.js';
 import { fundWallet } from '#db/tests/_funding.js';
 import { mountRouter, actor, as, request } from './_harness.js';
+import { getXlsx, onlyTable } from '../_xlsx.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 const RUN = Math.random().toString(36).slice(2, 8);
@@ -135,13 +136,13 @@ describePg('cricket routes', () => {
     expect((await as(admin, games).post(`/cricket/polls/${encodeURIComponent(toss.pollId)}/void`).send({ reason: 'Toss not reported' })).status).toBe(200);
   });
 
-  it('reports each ended poll and exports the same rows as CSV', async () => {
+  it('reports each ended poll and exports the same rows as a workbook', async () => {
     const r = await as(admin, games).get('/cricket/report');
     expect(r.status).toBe(200);
     expect(r.body.polls.some((p) => p.matchId === matchId)).toBe(true);
-    const csv = await as(admin, games).get('/cricket/report.csv');
-    expect(csv.status).toBe(200);
-    expect(csv.text.split('\n')[0]).toBe('settled_at,match,poll,kind,status,winner,bets,stakes,claims_paid,wins_paid,fees,refunded,house_net');
+    const { res, book } = await getXlsx(as(admin, games).get('/cricket/report.xlsx'));
+    expect(res.status).toBe(200);
+    expect(onlyTable(book).header).toEqual(['Settled at', 'Match', 'Poll', 'Kind', 'Status', 'Winner', 'Bets', 'Stakes', 'Claims paid', 'Wins paid', 'Fees', 'Refunded', 'House net']);
     expect((await as(admin, games).get('/cricket/report?from=2026-01-01&to=2026-12-31')).body.code).toBe('WINDOW_TOO_LONG');
   });
 

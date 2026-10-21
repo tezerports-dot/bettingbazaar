@@ -8,13 +8,13 @@
  * balances, so it comes from `GET /api/admin/analytics/token-holders`, which
  * asks the players area (canManageUsers), and is offered only to an account
  * that holds it. Both read `tokenHolders` (database/repositories), which keeps
- * no figure of its own; the CSV is the same rows from the server.
+ * no figure of its own; the download is the same rows from the server.
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { Coins, Download } from 'lucide-react';
 import { Link } from 'react-router';
 import toast from 'react-hot-toast';
-import api, { downloadCsv, cleanParams } from '../../services/api';
+import api, { downloadFile, cleanParams } from '../../services/api';
 import { usePermissions } from '../../hooks/usePermission';
 import { useDebounce } from '../../hooks/useDebounce';
 
@@ -70,9 +70,9 @@ export const TokenSupplyPanel: React.FC = () => {
   useEffect(() => { loadHolders(); }, [loadHolders]);
   useEffect(() => { setPage(1); }, [kind, debounced]);
 
-  const exportCsv = async () => {
+  const exportExcel = async () => {
     try {
-      await downloadCsv('/api/admin/analytics/token-holders.csv', cleanParams({ kind, search: debounced }), 'token-holders.csv');
+      await downloadFile('/api/admin/analytics/token-holders.xlsx', cleanParams({ kind, search: debounced }), 'token-holders.xlsx');
     } catch {
       toast.error('Export failed');
     }
@@ -143,8 +143,8 @@ export const TokenSupplyPanel: React.FC = () => {
               <label className="label text-xs" htmlFor="holder-search">Search name or id</label>
               <input id="holder-search" value={search} onChange={(e) => setSearch(e.target.value)} className="input text-sm w-full" />
             </div>
-            <button type="button" onClick={exportCsv} className="btn-secondary text-sm flex items-center gap-1.5">
-              <Download size={14} />Download CSV
+            <button type="button" onClick={exportExcel} className="btn-secondary text-sm flex items-center gap-1.5">
+              <Download size={14} />Download Excel
             </button>
           </div>
           <div className="overflow-x-auto">

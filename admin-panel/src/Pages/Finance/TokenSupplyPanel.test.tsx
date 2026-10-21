@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * The token supply panel shows the 20 billion and who holds it, offers the
- * holder list only to the players area, and downloads the server's CSV.
+ * holder list only to the players area, and downloads the server's workbook.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -9,10 +9,10 @@ import { render as rtlRender, screen, waitFor, fireEvent } from '@testing-librar
 import { MemoryRouter } from 'react-router';
 const render = (ui: React.ReactElement) => rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
 
-const { get, downloadCsv, can } = vi.hoisted(() => ({ get: vi.fn(), downloadCsv: vi.fn(), can: vi.fn() }));
+const { get, downloadFile, can } = vi.hoisted(() => ({ get: vi.fn(), downloadFile: vi.fn(), can: vi.fn() }));
 vi.mock('../../services/api', () => ({
   default: { get },
-  downloadCsv,
+  downloadFile,
   cleanParams: (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== '' && v != null)),
 }));
 vi.mock('../../hooks/usePermission', () => ({ usePermissions: () => ({ can }) }));
@@ -33,7 +33,7 @@ const HOLDERS = {
 };
 
 beforeEach(() => {
-  get.mockReset(); downloadCsv.mockReset(); can.mockReset();
+  get.mockReset(); downloadFile.mockReset(); can.mockReset();
   get.mockImplementation((url: string) => Promise.resolve({ data: url.includes('token-holders') ? HOLDERS : SUPPLY }));
 });
 
@@ -48,11 +48,11 @@ describe('TokenSupplyPanel', () => {
     expect(get.mock.calls.some(([u]) => String(u).includes('token-holders'))).toBe(false);
   });
 
-  it('lists each holder and downloads the CSV for an account with the players area', async () => {
+  it('lists each holder and downloads the workbook for an account with the players area', async () => {
     can.mockReturnValue(true);
     render(<TokenSupplyPanel />);
     expect(await screen.findByText('asha')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /Download CSV/ }));
-    await waitFor(() => expect(downloadCsv).toHaveBeenCalledWith('/api/admin/analytics/token-holders.csv', {}, 'token-holders.csv'));
+    fireEvent.click(screen.getByRole('button', { name: /Download Excel/ }));
+    await waitFor(() => expect(downloadFile).toHaveBeenCalledWith('/api/admin/analytics/token-holders.xlsx', {}, 'token-holders.xlsx'));
   });
 });

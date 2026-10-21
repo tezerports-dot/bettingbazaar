@@ -12,7 +12,7 @@ import { emitCyclePhase, emitCycleResult } from '../../domains/notification/real
 import { announceRoundResults } from '../../domains/markets/roundResult.service.js';
 import { emitToStaff, maySeeLiveSplit } from '../../domains/notification/staffEventAreas.js';
 import { respondError } from '../../shared/httpError.js';
-import { toCsv } from '../../domains/reporting/csv.util.js';
+import { sendXlsx, oneTable, columnsOf, istText } from '../../domains/reporting/xlsx.util.js';
 
 const router = express.Router();
 
@@ -98,7 +98,7 @@ router.get('/cycles/phases', authenticate, hasPermission('canViewAnalytics'), as
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/admin/cycles/history(.csv)
+// GET /api/admin/cycles/history(.xlsx)
 // Finished cycles for Admin › Cycle History, with the full real/phantom
 // breakdown (admin-only data). Filters: type (board), audience (VIP/GENERAL),
 // search (part of the cycle id), from/to (IST days the round ended on). The
@@ -157,10 +157,10 @@ router.get('/cycles/history', authenticate, hasPermission('canViewAnalytics'), a
   }
 });
 
-router.get('/cycles/history.csv', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
+router.get('/cycles/history.xlsx', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const history = await db.markets.cycleHistory({ ...historyFilters(req.query), exportAll: true });
-    const csv = toCsv(history.cycles.map(historyRow).map((c) => ({
+    const table = history.cycles.map(historyRow).map((c) => ({
       cycle_id: c.cycleId,
       board: c.type,
       profile: c.audience,
@@ -178,13 +178,13 @@ router.get('/cycles/history.csv', authenticate, hasPermission('canViewAnalytics'
       paid_out: c.totalPaidOut ?? '',
       net_revenue: c.netProfit ?? '',
       settled_at: iso(c.settledAt),
-    })));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition',
-      `attachment; filename="cycle-history-${req.query.from || 'start'}-${req.query.to || 'now'}.csv"`);
-    res.send(csv);
+    }));
+    sendXlsx(res, `cycle-history-${req.query.from || 'start'}-${req.query.to || 'now'}.xlsx`, oneTable({
+      name: 'Cycle history', title: 'Cycle history', subtitle: `Downloaded ${istText(new Date())}`, accent: 'gold',
+      rows: table, columns: columnsOf(table, { money: ['real_delhi', 'real_bombay', 'phantom_delhi', 'phantom_bombay', 'paid_out', 'net_revenue'] }),
+    }));
   } catch (error) {
-    respondError(res, error, 'GET /admin/cycles/history.csv', { message: 'Could not build the export.' });
+    respondError(res, error, 'GET /admin/cycles/history.xlsx', { message: 'Could not build the export.' });
   }
 });
 

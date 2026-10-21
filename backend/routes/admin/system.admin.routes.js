@@ -18,7 +18,7 @@ import { ORDER_SIZE_RAILS, merchantSizes } from '../../domains/merchant/denomina
 import { assignQueuedOrders } from '../../domains/payment/paymentProcessing.service.js';
 import { db } from '#db';
 import { respondError } from '../../shared/httpError.js';
-import { toCsv } from '../../domains/reporting/csv.util.js';
+import { sendXlsx, oneTable, columnsOf, istText } from '../../domains/reporting/xlsx.util.js';
 import { systemConfigPayload, footerPagesOf, FOOTER_PAGE_KEYS, DEFAULT_FOOTER_PAGES } from '../../domains/configuration/systemConfigPayload.js';
 
 const router = express.Router();
@@ -60,11 +60,11 @@ router.get('/transactions', authenticate, hasPermission('canViewTransactions'), 
   }
 });
 
-/** GET /api/admin/transactions.csv — the same filtered ledger rows, as CSV. */
-router.get('/transactions.csv', authenticate, hasPermission('canViewTransactions'), async (req, res) => {
+/** GET /api/admin/transactions.xlsx — the same filtered ledger rows, as a workbook. */
+router.get('/transactions.xlsx', authenticate, hasPermission('canViewTransactions'), async (req, res) => {
   try {
     const ledger = await db.wallets.platformLedger({ ...ledgerFilters(req.query), exportAll: true });
-    const csv = toCsv(ledger.entries.map((t) => ({
+    const table = ledger.entries.map((t) => ({
       tx_id: t.txId,
       time: t.createdAt ? new Date(t.createdAt).toISOString() : '',
       user_id: t.userId,
@@ -76,13 +76,13 @@ router.get('/transactions.csv', authenticate, hasPermission('canViewTransactions
       balance_after: t.balanceAfter,
       reason: t.reason || '',
       ref_id: t.refId || '',
-    })));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition',
-      `attachment; filename="transactions-${req.query.startDate || 'start'}-${req.query.endDate || 'now'}.csv"`);
-    res.send(csv);
+    }));
+    sendXlsx(res, `transactions-${req.query.startDate || 'start'}-${req.query.endDate || 'now'}.xlsx`, oneTable({
+      name: 'Transactions', title: 'Wallet transactions', subtitle: `Downloaded ${istText(new Date())}`, accent: 'teal',
+      rows: table, columns: columnsOf(table, { money: ['amount', 'balance_before', 'balance_after'] }),
+    }));
   } catch (error) {
-    respondError(res, error, 'GET /admin/transactions.csv', { message: 'Could not build the export.' });
+    respondError(res, error, 'GET /admin/transactions.xlsx', { message: 'Could not build the export.' });
   }
 });
 

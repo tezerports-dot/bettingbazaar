@@ -3540,7 +3540,7 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 385 |
+| Route declarations in `backend/**` | 390 |
 | Reachable with **no auth middleware** | 49 |
 | Staff routes carrying an **area** (permission key) | 191 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 12 |
@@ -3609,7 +3609,7 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /cold-storage/:id  (backend/routes/admin/coldStorage.admin.routes.js)`
 - `GET /staff  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff-permissions  (backend/routes/admin/subadmins.admin.routes.js)`
-- `GET /staff.csv  (backend/routes/admin/subadmins.admin.routes.js)`
+- `GET /staff.xlsx  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff/:userId  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /staff/:userId/reset-authenticator  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
@@ -3623,16 +3623,17 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 546 |
-| Parameters only (safe by construction) | 357 |
-| Interpolating into statement text (each needs a reading) | 180 |
-| Statement text built elsewhere and passed in (each needs a reading) | 9 |
+| `pgQuery` call sites | 559 |
+| Parameters only (safe by construction) | 365 |
+| Interpolating into statement text (each needs a reading) | 184 |
+| Statement text built elsewhere and passed in (each needs a reading) | 10 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
 
 - `database/repositories/adminTokenConsiderations.js — text`
 - `database/repositories/cricket.js — ok`
 - `database/repositories/identity.js — text`
+- `database/repositories/merchantPaymentAccounts.js — sql`
 - `database/repositories/merchants.js — text`
 - `database/repositories/rtp.js — RESERVED_SQL`
 - `database/repositories/teamOversight.js — sql`
@@ -3647,7 +3648,7 @@ new route and decide. Each of the three questions is defined in §2.
 |---|---|---|---|
 | `user-panel` | 166 | 0 | 0 |
 | `admin-panel` | 151 | 0 | 0 |
-| `merchant-panel` | 68 | 0 | 0 |
+| `merchant-panel` | 72 | 0 | 0 |
 
 <!-- END GENERATED -->
 

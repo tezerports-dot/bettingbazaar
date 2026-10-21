@@ -23,6 +23,7 @@ import { miniAppBot, miniAppLink, miniAppAppLink } from '../telegram/telegramCli
 import { issueChallenge } from './twoFactorChallenge.js';
 import { refusal } from '../../shared/httpError.js';
 import { publicAppOrigin } from '../../config/publicAppOrigin.js';
+import { panelOrigin } from '../../config/network.config.js';
 
 /** How long a sign-in waits for Verify. */
 export const CHALLENGE_TTL_SECONDS = 5 * 60;
@@ -64,13 +65,17 @@ export function ticketHash(ticket) {
   return crypto.createHash('sha256').update(String(ticket)).digest('hex');
 }
 
-/** Where each panel lives on the public origin (the api role serves all three, deploy/vps/Caddyfile.vps). */
+/**
+ * Where each panel lives on its origin (the api role serves all three,
+ * deploy/vps/Caddyfile.vps): the player site's, or the merchant panel's own
+ * host when MERCHANT_HOST is set (`panelOrigin`, owner 2026-10-20).
+ */
 const PANEL_PATH = Object.freeze({ PLAYER: '/', MERCHANT: '/merchant/' });
 
 /**
  * Where Verify sends the person, decided here and never by the page:
- * `https://<site>/#/tg/<ticket>` for a player, `/merchant/#/tg/<ticket>` for a
- * merchant. The ticket rides in the FRAGMENT, which a browser never sends to a
+ * `https://<site>/#/tg/<ticket>` for a player, `<merchant origin>/merchant/#/tg/<ticket>`
+ * for a merchant. The ticket rides in the FRAGMENT, which a browser never sends to a
  * server or in a Referer. Null without a ticket: the site's address alone, for
  * the sentence the Mini App shows above Verify.
  *
@@ -83,14 +88,15 @@ export function destinationFor(audience, ticket = null) {
     throw refusal(503, 'SITE_ADDRESS_UNSET',
       'The website address is not set up yet, so Telegram cannot send you there. Please tell support.');
   }
-  const base = `${origin}${PANEL_PATH[audience] || '/'}`;
+  const base = `${panelOrigin(audience, origin)}${PANEL_PATH[audience] || '/'}`;
   return ticket ? `${base}#/tg/${ticket}` : base;
 }
 
 /**
  * How the approval of a new sign-in reaches its browser (§33.2), decided here.
  * HANDOFF only when the caller asks for it AND says it opens again at the
- * address Verify sends people to (`returnOrigin` equal to `PUBLIC_APP_ORIGIN`);
+ * address Verify sends people to (`returnOrigin` equal to that panel's origin:
+ * `PUBLIC_APP_ORIGIN`, or the merchant panel's own host when it has one);
  * MATCH otherwise. After a blocked domain is retired the site moves to a
  * standby, and an Android app or installed web app still answering at its old
  * address would never be the one Verify opens: it would wait for a session
@@ -98,9 +104,9 @@ export function destinationFor(audience, ticket = null) {
  * (docs/governance/DOMAIN_FAILOVER.md). Downgrading is always safe: a MATCH
  * is approved only with the number its own screen shows.
  */
-export function deliveryFor(requested, returnOrigin) {
+export function deliveryFor(requested, returnOrigin, audience = 'PLAYER') {
   if (requested !== 'HANDOFF') return 'MATCH';
-  const site = publicAppOrigin();
+  const site = publicAppOrigin() && panelOrigin(audience, publicAppOrigin());
   return site && typeof returnOrigin === 'string' && returnOrigin.replace(/\/+$/, '') === site ? 'HANDOFF' : 'MATCH';
 }
 

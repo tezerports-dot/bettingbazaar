@@ -59,12 +59,12 @@ describe('the Mini App', () => {
     expect(approve).not.toHaveBeenCalled();
   });
 
-  it('says a new merchant Verify confirms the account an admin created, and relays a refusal when there is none', async () => {
+  it('says a new merchant Verify sends an application, and relays a refusal', async () => {
     context.mockResolvedValue(newAccount({ panel: 'MERCHANT', account: { panel: 'MERCHANT', isNew: true, mobileHint: '' } }));
     approve.mockRejectedValue(Object.assign(new Error('There is no merchant account for this mobile number. Ask an admin to create your account with this mobile, then Continue with Telegram again.'), { status: 404, code: 'NO_MERCHANT_ACCOUNT' }));
     const a = app();
     render(<MiniApp app={a} />);
-    expect((await screen.findByTestId('verify-account')).textContent).toMatch(/merchant account an admin created/i);
+    expect((await screen.findByTestId('verify-account')).textContent).toMatch(/sends your merchant application/i);
     fireEvent.click(screen.getByRole('button', { name: /share contact and verify/i }));
     expect((await screen.findByRole('alert')).textContent).toMatch(/Ask an admin to create your account/i);
     expect(a.openLink).not.toHaveBeenCalled();

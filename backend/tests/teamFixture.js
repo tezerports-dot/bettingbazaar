@@ -111,6 +111,10 @@ export function teamFixture() {
       await pgQuery('DELETE FROM team_commissions WHERE team_id = ANY($1)', [teams]);
       await pgQuery('DELETE FROM dispute_compensations WHERE team_id = ANY($1)', [teams]);
       await pgQuery('DELETE FROM team_pool_entries WHERE team_id = ANY($1)', [teams]);
+      await pgQuery(
+        'DELETE FROM pool_usdt_transfers WHERE request_id IN (SELECT request_id FROM team_pool_requests WHERE team_id = ANY($1))', [teams]);
+      await pgQuery(
+        'DELETE FROM pool_usdt_addresses WHERE request_id IN (SELECT request_id FROM team_pool_requests WHERE team_id = ANY($1))', [teams]);
       await pgQuery('DELETE FROM team_pool_requests WHERE team_id = ANY($1)', [teams]);
       await pgQuery('DELETE FROM team_pools WHERE team_id = ANY($1)', [teams]);
       await pgQuery('DELETE FROM team_red_flags WHERE team_id = ANY($1)', [teams]);

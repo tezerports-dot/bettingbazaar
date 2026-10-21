@@ -5,7 +5,7 @@
  *
  * Every figure is the server's (GET /api/merchant/reports/orders): the totals
  * cover every row of the range, not this page, and nothing here adds them up
- * again. The CSV is the same rows from the server (…/orders.csv). A refusal
+ * again. The Excel download is the same rows from the server (…/orders.xlsx). A refusal
  * (a bad range) is said in the server's words.
  */
 import React, { useCallback, useEffect, useState } from 'react';
@@ -68,7 +68,7 @@ const OrderReportTable: React.FC<{ from?: string; to?: string }> = ({ from = '',
   const download = async () => {
     setDownloading(true); setRefusal('');
     try {
-      await api.downloadOrderReportCsv({ from, to, type });
+      await api.downloadOrderReport({ from, to, type });
     } catch (err) {
       setRefusal(errorText(err, 'Could not build the export.'));
     } finally {
@@ -88,7 +88,7 @@ const OrderReportTable: React.FC<{ from?: string; to?: string }> = ({ from = '',
           options={[{ value: '', label: 'All' }, { value: 'DEPOSIT', label: 'Buys' }, { value: 'WITHDRAWAL', label: 'Sells' }]}
         />
         <Button variant="outline" tone="neutral" onClick={() => void download()} busy={downloading} style={{ padding: '9px 14px', fontSize: 12.5 }}>
-          <Download size={15} /> Download CSV
+          <Download size={15} /> Download orders (Excel)
         </Button>
       </div>
 

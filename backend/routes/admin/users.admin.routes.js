@@ -15,7 +15,7 @@ import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 import { getRiskRules } from '../../domains/risk/riskValidation.service.js';
 import { notify } from '../../domains/communication/communication.service.js';
 import { respondError } from '../../shared/httpError.js';
-import { toCsv } from '../../domains/reporting/csv.util.js';
+import { sendXlsx, oneTable, columnsOf, istText } from '../../domains/reporting/xlsx.util.js';
 import { paiseToRupees } from '../../shared/money.js';
 
 const router = express.Router();
@@ -89,8 +89,8 @@ router.get('/users', authenticate, hasPermission('canManageUsers'), async (req, 
   }
 });
 
-/** GET /api/admin/users.csv — every player the table's filters match, as CSV (rupees). */
-router.get('/users.csv', authenticate, hasPermission('canManageUsers'), async (req, res) => {
+/** GET /api/admin/users.xlsx — every player the table's filters match, as a workbook (rupees). */
+router.get('/users.xlsx', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { status, search, sort, dir } = req.query;
     const { rows } = await db.adminDirectory.listPlayers({
@@ -101,7 +101,7 @@ router.get('/users.csv', authenticate, hasPermission('canManageUsers'), async (r
       exportAll: true,
     });
     const iso = (d) => (d ? new Date(d).toISOString() : '');
-    const csv = toCsv(rows.map((u) => ({
+    const table = rows.map((u) => ({
       user_id: u.userId,
       username: u.username,
       mobile: u.mobile,
@@ -118,12 +118,13 @@ router.get('/users.csv', authenticate, hasPermission('canManageUsers'), async (r
       net_win_loss: paiseToRupees(u.totals.netPaise),
       lost_disputes: u.lostDisputes,
       payment_flagged: u.paymentFlagged ? 'yes' : 'no',
-    })));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="players.csv"');
-    res.send(csv);
+    }));
+    sendXlsx(res, 'players.xlsx', oneTable({
+      name: 'Players', title: 'Players', subtitle: `Downloaded ${istText(new Date())}`, accent: 'blue',
+      rows: table, columns: columnsOf(table, { money: ['vip_balance', 'general_balance', 'locked_in_bets', 'deposits', 'withdrawals', 'net_win_loss'] }),
+    }));
   } catch (error) {
-    return respondError(res, error, 'GET /admin/users.csv', { message: 'Could not build the export.' });
+    return respondError(res, error, 'GET /admin/users.xlsx', { message: 'Could not build the export.' });
   }
 });
 

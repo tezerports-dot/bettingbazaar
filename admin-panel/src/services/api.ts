@@ -313,7 +313,7 @@ export const merchants = {
   getProfile: async (merchantId: string) => {
     const res = await api.get<any>(`/api/admin/merchants/${merchantId}/profile`);
     if (res.data?.success && res.data?.merchant) {
-      return { success: true, data: res.data.merchant, summary: res.data.summary, choices: res.data.choices };
+      return { success: true, data: res.data.merchant, summary: res.data.summary, choices: res.data.choices, merchantPanelUrl: res.data.merchantPanelUrl as string };
     }
     return res.data;
   },
@@ -409,15 +409,15 @@ export const cleanParams = (o: object): Record<string, unknown> =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== ''));
 
 /**
- * Download a CSV a route builds, under the name the server gives it
- * (`Content-Disposition`), else `fallbackName`. Every table's "Download CSV"
+ * Download a file a route builds (an Excel workbook, or the sweep CSV), under the name the server gives it
+ * (`Content-Disposition`), else `fallbackName`. Every table's "Download Excel"
  * goes through here, so the file is always the server's rows, never a copy
  * the screen assembled.
  */
-export async function downloadCsv(path: string, params: Record<string, unknown>, fallbackName: string): Promise<void> {
+export async function downloadFile(path: string, params: Record<string, unknown>, fallbackName: string): Promise<void> {
   const res = await api.get(path, { params, responseType: 'blob' });
   const named = /filename="?([^";]+)"?/.exec(String(res.headers?.['content-disposition'] || ''))?.[1];
-  const url = URL.createObjectURL(new Blob([res.data as BlobPart], { type: 'text/csv' }));
+  const url = URL.createObjectURL(new Blob([res.data as BlobPart], { type: String(res.headers?.['content-type'] || 'application/octet-stream') }));
   const a = document.createElement('a');
   a.href = url;
   a.download = named || fallbackName;
@@ -447,9 +447,9 @@ export const cycles = {
     return res.data;
   },
 
-  /** The same filtered rows as CSV (`GET /api/admin/cycles/history.csv`). */
-  downloadHistoryCsv: (filters: CycleHistoryFilters = {}) =>
-    downloadCsv('/api/admin/cycles/history.csv', cleanParams(filters), 'cycle-history.csv'),
+  /** The same filtered rows as a workbook (`GET /api/admin/cycles/history.xlsx`). */
+  downloadHistory: (filters: CycleHistoryFilters = {}) =>
+    downloadFile('/api/admin/cycles/history.xlsx', cleanParams(filters), 'cycle-history.xlsx'),
 
   triggerEqualizer: async (cycleId: string) => {
     const res = await api.post(`/api/admin/cycles/${cycleId}/equalize`);
@@ -503,7 +503,7 @@ export const boards = {
   importDemoResults: async (text: string) =>
     (await api.post<{ success: boolean; saved: Array<{ key: string; audience: string; count: number }> }>(
       '/api/admin/boards/demo-results/import', { text })).data,
-  downloadDemoResults: () => downloadCsv('/api/admin/boards/demo-results.csv', {}, 'demo-results.csv'),
+  downloadDemoResults: () => downloadFile('/api/admin/boards/demo-results.csv', {}, 'demo-results.csv'),
   saveRtp: async (game: string, audience: string, body: { enabled: boolean; ratePercent: number }) =>
     (await api.put<any>(`/api/admin/rtp/${encodeURIComponent(game)}/${encodeURIComponent(audience)}`, body)).data,
   rtpEntries: async (game: string, audience: string) =>
@@ -535,7 +535,7 @@ export const cricket = {
     (await api.post<any>(`/api/admin/cricket/polls/${encodeURIComponent(pollId)}/void`, { reason })).data,
   report: async (from: string, to: string) =>
     (await api.get<any>('/api/admin/cricket/report', { params: { from, to } })).data,
-  reportCsv: (from: string, to: string) => downloadCsv('/api/admin/cricket/report.csv', { from, to }, 'cricket-polls.csv'),
+  reportExcel: (from: string, to: string) => downloadFile('/api/admin/cricket/report.xlsx', { from, to }, 'cricket-polls.xlsx'),
 };
 
 // --- RULES POP-UP (owner, 2026-10-14) -------------------------------------------
@@ -1394,9 +1394,16 @@ export interface UsdtWatcherStatus {
 }
 /** The owner's own wallet the sweep sends to (`usdt_final_wallets`, newest row in use). */
 export interface UsdtFinalWallet { address: string; setBy: string; setAt: string }
+/** A merchant's pool buy paid in USDT (`listPoolDeposits`, usdtDeposits.js). */
+export interface UsdtPoolBuy {
+  requestId: string; teamId: string; teamName: string; requesterName: string; address: string;
+  status: 'PENDING' | 'FULFILLED' | 'REJECTED' | 'CANCELLED'; tokens: number;
+  usdtRequired: number; usdtReceived: number; rate: number; expiresAt: string; createdAt: string;
+  transfers: number; attention: 'LATE' | 'SHORT' | 'OVERPAID' | null; sweptAt: string | null; sweptTxHash: string | null;
+}
 export interface UsdtDepositsResponse {
   success: boolean; filters: string[]; filter: string; total: number; page: number; pages: number;
-  deposits: UsdtDeposit[]; totals: UsdtDepositTotals; watcher: UsdtWatcherStatus;
+  deposits: UsdtDeposit[]; totals: UsdtDepositTotals; watcher: UsdtWatcherStatus; poolBuys: UsdtPoolBuy[];
   finalWallet: UsdtFinalWallet | null; finalWalletHistory: UsdtFinalWallet[]; mayChangeFinalWallet: boolean;
 }
 export const usdtDeposits = {
@@ -1412,7 +1419,7 @@ export const usdtDeposits = {
   recordSweeps: async (results: string) =>
     (await api.post<{ success: boolean; recorded: number; results: Array<{ orderId: string; recorded: boolean; reason: string | null }> }>(
       '/api/admin/usdt-deposits/sweeps', { results })).data,
-  downloadSweepFile: () => downloadCsv('/api/admin/usdt-deposits/sweep.csv', {}, 'usdt-sweep.csv'),
+  downloadSweepFile: () => downloadFile('/api/admin/usdt-deposits/sweep.csv', {}, 'usdt-sweep.csv'),
   /** Full admins only. */
   setFinalWallet: async (address: string) =>
     (await api.put<{ success: boolean; changed: boolean; finalWallet: UsdtFinalWallet }>('/api/admin/usdt-deposits/final-wallet', { address })).data,

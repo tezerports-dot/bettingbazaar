@@ -22,7 +22,7 @@ import {
 import { personalStaffRoom } from '../../domains/notification/staffEventAreas.js';
 import { resetEnrolment } from '../../domains/identity/totp.service.js';
 import { respondError } from '../../shared/httpError.js';
-import { toCsv } from '../../domains/reporting/csv.util.js';
+import { sendXlsx, oneTable, columnsOf, istText } from '../../domains/reporting/xlsx.util.js';
 
 const router = express.Router();
 
@@ -92,15 +92,15 @@ router.get('/staff', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-/** GET /api/admin/staff.csv — every staff account the table's filters match, as CSV. */
-router.get('/staff.csv', authenticate, isAdmin, async (req, res) => {
+/** GET /api/admin/staff.xlsx — every staff account the table's filters match, as a workbook. */
+router.get('/staff.xlsx', authenticate, isAdmin, async (req, res) => {
   try {
     const { search, role, sort, dir } = req.query;
     const { rows } = await db.adminDirectory.listStaff({
       search: search || null, role: role || null, sort, dir, exportAll: true,
     });
     const iso = (d) => (d ? new Date(d).toISOString() : '');
-    const csv = toCsv(rows.map((u) => ({
+    const table = rows.map((u) => ({
       user_id: u.userId,
       username: u.username,
       mobile: u.mobile,
@@ -111,12 +111,13 @@ router.get('/staff.csv', authenticate, isAdmin, async (req, res) => {
       authenticator: u.authenticatorEnrolled ? 'yes' : 'no',
       joined_at: iso(u.joinedAt),
       last_login: iso(u.lastLogin),
-    })));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="staff.csv"');
-    res.send(csv);
+    }));
+    sendXlsx(res, 'staff.xlsx', oneTable({
+      name: 'Staff', title: 'Staff accounts', subtitle: `Downloaded ${istText(new Date())}`, accent: 'slate',
+      rows: table, columns: columnsOf(table, { money: [] }),
+    }));
   } catch (error) {
-    return respondError(res, error, 'GET /admin/staff.csv', { message: 'Could not build the export.' });
+    return respondError(res, error, 'GET /admin/staff.xlsx', { message: 'Could not build the export.' });
   }
 });
 

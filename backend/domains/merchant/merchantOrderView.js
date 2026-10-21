@@ -36,7 +36,6 @@
  * Top-level fields a merchant may see. Anything absent here does not reach
  * them, whatever `toOrder` maps or `order_states` grows.
  */
-import { toCsv } from '../reporting/csv.util.js';
 import { mayChangeHands } from '#db/repositories/orders.record.js';
 
 export const MERCHANT_ORDER_FIELDS = Object.freeze([
@@ -193,24 +192,6 @@ export function toMerchantReportRows(rows, { selfLabel = 'You' } = {}) {
     for (const key of MERCHANT_REPORT_FIELDS) if (plain[key] !== undefined) view[key] = plain[key];
     return view;
   });
-}
-
-const RESULT_MARK = Object.freeze({ CONFIRMED: '✓', REJECTED: '✗', NONE: '' });
-
-/** The report rows as CSV, the columns the owner named (2026-10-16). */
-export function merchantReportCsv(views) {
-  const iso = (v) => (v instanceof Date ? v.toISOString() : (v ?? ''));
-  return toCsv(views.map((r) => ({
-    transaction_id: r.orderId,
-    type: r.type === 'DEPOSIT' ? 'Buy' : 'Sell',
-    user: r.userId,
-    utr: r.utr ?? '',
-    amount_tokens: r.tokenAmount,
-    time: iso(r.at),
-    result: RESULT_MARK[r.result] ?? '',
-    acted_by: r.actedBy?.name ?? '',
-    state: r.state,
-  })));
 }
 
 /**

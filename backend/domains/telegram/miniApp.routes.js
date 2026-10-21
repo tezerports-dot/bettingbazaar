@@ -115,8 +115,8 @@ async function referrerFor(rawCode) {
 
 /** What a new account would be, should this approval create one. */
 async function signupFor(audience, rawCode = null) {
-  // Only a player is made by Telegram. A merchant, supervisor or agent account
-  // is made by an admin with the person's mobile (owner, 2026-10-14).
+  // A merchant's is an APPLICATION an admin approves (owner, 2026-10-21).
+  if (audience === 'MERCHANT') return { userId: db.users.newUserId() };
   if (audience !== 'PLAYER') return null;
   const { referrer } = await referrerFor(rawCode);
   return { userId: db.users.newUserId(), referralCode: generateReferralCode(), referredBy: referrer?.userId ?? null };

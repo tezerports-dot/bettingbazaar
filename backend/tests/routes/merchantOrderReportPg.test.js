@@ -9,7 +9,7 @@
  *   • the totals count all three when the page holds one;
  *   • another member's report does not contain them (trap 16);
  *   • `type` filters, and an unknown type or a bad range is a 400 saying so;
- *   • the CSV carries the same rows with ✓/✗.
+ *   • the workbook carries the same rows with ✓/✗, buys and sells apart.
  *
  * Every order is one production makes (§32 S16): created by the player and
  * routed to the one online member of a working team.
@@ -22,6 +22,7 @@ import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js'
 import { createDepositOrder, createWithdrawalOrder, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
+import { binary, readXlsx } from '../_xlsx.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -124,13 +125,23 @@ describePg('the merchant order report', () => {
     expect(range.body.code).toBe('INVALID_REPORT_RANGE');
   });
 
-  it('downloads the same rows as CSV', async () => {
-    const res = await as(app, member).get('/reports/orders.csv');
+  it('downloads the same rows as a workbook, buys and sells in their own tables', async () => {
+    const res = await as(app, member).get('/reports/orders.xlsx').buffer(true).parse(binary);
     expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toMatch(/text\/csv/);
-    const lines = res.text.split('\n');
-    expect(lines[0]).toBe('transaction_id,type,user,utr,amount_tokens,time,result,acted_by,state');
-    expect(lines.find((l) => l.startsWith(ids.confirmed))).toContain(',✓,You,');
-    expect(lines.find((l) => l.startsWith(ids.rejected))).toContain(',✗,You,');
+    expect(res.headers['content-type']).toMatch(/spreadsheetml/);
+    const { Orders } = readXlsx(res.body);
+    expect(Orders[0][0]).toBe('Order report');
+    const buys = Orders.findIndex((r) => String(r[0]).startsWith('Buys ('));
+    const sells = Orders.findIndex((r) => String(r[0]).startsWith('Sells ('));
+    expect(buys).toBeGreaterThan(0);
+    expect(sells).toBeGreaterThan(buys);
+    const header = Orders[buys + 1];
+    expect(header).toEqual(['Time (IST)', 'User', 'UTR', 'Amount (tokens)', '✓ / ✗', 'Pressed by', 'State', 'Transaction ID']);
+    const row = (id) => Orders.find((r) => r[r.length - 1] === id);
+    expect(row(ids.confirmed)).toContain('✓ Confirmed');
+    expect(row(ids.confirmed)).toContain('You');
+    expect(row(ids.rejected)).toContain('✗ Rejected');
+    // A buy sits in the buys table, above the sells heading.
+    expect(Orders.indexOf(row(ids.confirmed))).toBeLessThan(sells);
   });
 });

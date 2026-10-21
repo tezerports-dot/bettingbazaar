@@ -140,6 +140,8 @@ router.post('/team-pool-requests/:requestId/fulfil', authenticate, hasPermission
   try {
     const request = await db.teamPools.getRequest(req.params.requestId);
     if (!request) return refuse(res, 'request_not_found');
+    // A USDT pool buy is fulfilled by the chain watcher, against its own address.
+    if (request.usdt) return refuse(res, 'usdt_paid_on_chain');
     const direction = request.direction === 'BUY' ? CONSIDERATION_DIRECTIONS.RECEIVED : CONSIDERATION_DIRECTIONS.PAID;
     const { currency, fiatAmountMinor, rateUsed } = await resolveConsideration(req.body, direction);
     const out = await db.teamPools.fulfilRequest({

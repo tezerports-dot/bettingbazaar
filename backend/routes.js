@@ -462,7 +462,7 @@ export async function telegramLoginHandler(req, res) {
     const isPlayer = door.accountType === 'PLAYER';
     const opened = await openChallenge({
       door: door.accountType, req,
-      delivery: deliveryFor(req.body?.delivery, req.body?.returnOrigin),
+      delivery: deliveryFor(req.body?.delivery, req.body?.returnOrigin, door.accountType),
       referralCode: isPlayer ? normaliseReferralCode(req.body?.referralCode) : null,
     });
     return res.status(200).json({

@@ -25,7 +25,7 @@ import toast from 'react-hot-toast';
 import { RefreshCw, Users } from 'lucide-react';
 import {
   getMyTeam, createTeam, renameTeam, deleteTeam, addTeamMember, removeTeamMember,
-  getTeamPool, requestTeamPool, cancelTeamPoolRequest,
+  getTeamPool, requestTeamPool, buyTeamPoolUsdt, cancelTeamPoolRequest,
   getMemberLog, getTeamDisputes, getDisputeThread, postDisputeMessage,
 } from '../services/api';
 import type {
@@ -34,6 +34,7 @@ import type {
 } from '../types';
 import { Banner, Button, Card, CardTitle, CopyRow, ErrorState, Skeleton, inputStyle } from '../components/ui';
 import { PoolBreakdown } from '../components/PoolBreakdown';
+import { UsdtPayCard } from '../components/UsdtPayCard';
 
 const STRENGTH: Record<Team['strength'], { label: string; tone: 'ok' | 'warn' | 'danger'; body: string }> = {
   WORKING: { label: 'Working', tone: 'ok', body: 'The team takes orders. It can have up to 10 agents.' },
@@ -346,8 +347,25 @@ const TeamPoolSection: React.FC<{
         </span>
       </div>
       <div style={{ marginBottom: 12 }}><PoolBreakdown exposure={team.poolExposure} availablePaise={team.poolAvailablePaise} /></div>
+      {team.poolTrades && (
+        <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '0 0 12px' }}>
+          Bought from the platform: <strong className="bb-mono">{tokens(team.poolTrades.boughtPaise)}</strong> tokens
+          ({team.poolTrades.buys}) · Returned: <strong className="bb-mono">{tokens(team.poolTrades.returnedPaise)}</strong> tokens
+          ({team.poolTrades.returns})
+        </p>
+      )}
 
-      {pending.map((r) => (
+      {pending.map((r) => (r.usdt ? (
+        <div key={r.requestId} style={{ marginBottom: 8 }}>
+          <UsdtPayCard tokensText={tokens(r.tokenAmountPaise)} payment={r.usdt}
+            action={r.usdt.received === 0 ? (
+              <Button variant="ghost" tone="danger" disabled={!!busy}
+                onClick={() => void run(`pc-${r.requestId}`, () => cancelTeamPoolRequest(r.requestId), 'Request cancelled')}>
+                Cancel this request
+              </Button>
+            ) : null} />
+        </div>
+      ) : (
         <Banner key={r.requestId} tone="warn" style={{ marginBottom: 8 }}>
           {r.direction === 'BUY' ? 'Buying' : 'Selling back'} {tokens(r.tokenAmountPaise)} tokens — waiting for an admin.{' '}
           <Button variant="ghost" tone="danger" disabled={!!busy}
@@ -355,7 +373,7 @@ const TeamPoolSection: React.FC<{
             Cancel this request
           </Button>
         </Banner>
-      ))}
+      )))}
       {decided.map((r) => (
         <Banner key={r.requestId} tone="danger" style={{ marginBottom: 8 }}>
           An admin turned down {r.direction === 'BUY' ? 'buying' : 'selling back'} {tokens(r.tokenAmountPaise)} tokens
@@ -392,6 +410,15 @@ const TeamPoolSection: React.FC<{
           <input id={`pn-${team.teamId}`} value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} maxLength={200} />
         </div>
         <Button type="submit" disabled={!valid || !!busy}>Send {team.name} request</Button>
+        {direction === 'BUY' && (
+          <Button type="button" variant="outline" disabled={!valid || !!busy}
+            onClick={() => void run(`pu-${team.teamId}`, async () => {
+              await buyTeamPoolUsdt(team.teamId, whole);
+              setAmount(''); setNote('');
+            }, 'Pay the USDT shown above. The tokens arrive by themselves.')}>
+            Buy in USDT now (automatic)
+          </Button>
+        )}
       </form>
 
       <div style={{ marginTop: 10 }}>

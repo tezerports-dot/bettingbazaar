@@ -29,6 +29,7 @@ import { CashReadyCard } from '../components/CashReadyCard';
 import { PoolBreakdown } from '../components/PoolBreakdown';
 import { availabilityOf } from '../utils/availability';
 import type { OrdersLinkState } from './OrderManagement';
+import type { HistoryLinkState } from './HistoryViews';
 
 interface WeeklyPoint { date: string; earnings: number; orders: number; }
 
@@ -85,6 +86,10 @@ const Dashboard: React.FC = () => {
 
   // A tile or a row opens Orders on what it showed: the filter, or the order.
   const openOrders = (state: OrdersLinkState) => navigate(ROUTES.ORDERS, { state });
+  // A tile opens the place its figure comes from, never a filter that shows
+  // nothing: a filter matching no order sent the merchant to an empty list
+  // they had to clear to see their orders (owner, 2026-10-20).
+  const openHistory = (state: HistoryLinkState) => navigate(ROUTES.HISTORY, { state });
   const openOrder = (order: PaymentOrder) => openOrders({ orderId: orderKey(order) });
 
   // Why today's earnings may read 0 (team commission, §26): earned and waiting
@@ -131,7 +136,7 @@ const Dashboard: React.FC = () => {
       sub: stats ? `${stats.completedToday ?? 0} orders completed today` : 'Awaiting data',
       subTone: 'var(--dep)',
       note: commissionNote,
-      open: undefined as OrdersLinkState | undefined,
+      open: () => openHistory({ tab: 'earnings' }),
     },
     {
       label: 'Needs action',
@@ -141,7 +146,7 @@ const Dashboard: React.FC = () => {
       sub: `${counts.processing} in progress`,
       subTone: 'var(--muted)',
       note: null as string | null,
-      open: { statusFilter: 'ACTION' } as OrdersLinkState | undefined,
+      open: () => openOrders(counts.actionable > 0 ? { statusFilter: 'ACTION' } : {}),
     },
     {
       label: 'Success rate',
@@ -153,7 +158,7 @@ const Dashboard: React.FC = () => {
         : 'Awaiting data',
       subTone: 'var(--muted)',
       note: null as string | null,
-      open: undefined as OrdersLinkState | undefined,
+      open: () => openHistory({ tab: 'ledger' }),
     },
   ];
   // Derived from the tiles, so removing or adding one cannot leave a gap.
@@ -248,12 +253,13 @@ const Dashboard: React.FC = () => {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: kpiColumns, gap: 14 }}>
           {kpis.map((kpi) => {
-            const Tile = kpi.open ? 'button' : 'div';
             return (
-            <Tile
+            <button
               key={kpi.label}
-              {...(kpi.open ? { type: 'button' as const, onClick: () => openOrders(kpi.open!), className: 'bb-lift' } : {})}
-              style={{ ...cardStyle, padding: 17, textAlign: 'left', ...(kpi.open ? { cursor: 'pointer', width: '100%' } : {}) }}
+              type="button"
+              onClick={kpi.open}
+              className="bb-lift"
+              style={{ ...cardStyle, padding: 17, textAlign: 'left', cursor: 'pointer', width: '100%' }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 11 }}>
                 <span style={{
@@ -269,7 +275,7 @@ const Dashboard: React.FC = () => {
               </div>
               <div style={{ fontSize: 11.5, fontWeight: 600, color: kpi.subTone, marginTop: 3 }}>{kpi.sub}</div>
               {kpi.note && <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', marginTop: 4 }}>{kpi.note}</div>}
-            </Tile>
+            </button>
             );
           })}
         </div>

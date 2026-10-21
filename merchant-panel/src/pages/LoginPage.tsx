@@ -1,10 +1,11 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Operator sign-in — design handoff "BB Merchant Panel.dc.html". One button,
-// "Continue with Telegram" (owner, 2026-10-14): no password, no form. An admin
-// creates the account (merchant, supervisor or agent) with the person's mobile;
-// their first Verify shares the contact once, which finds that account by its
-// mobile, links it and signs them in. Telegram never makes a merchant. A
+// "Continue with Telegram" (owner, 2026-10-14): no password, no form. The first
+// Verify shares the contact once. A mobile with an account (one an admin made,
+// or an approved application) is linked and signed in; a mobile with none sends
+// a merchant APPLICATION, which signs in once an admin approves it (owner,
+// 2026-10-21: merchants sign up themselves, the admin only reviews). A
 // sub-member signs in the same way, with the Telegram on the mobile their
 // merchant added.
 //
@@ -233,9 +234,9 @@ const LoginPage: React.FC = () => {
                       <Send size={15} /> Continue with Telegram
                     </Button>
                     <p style={{ margin: 0, textAlign: 'center', fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55 }}>
-                      New here? An admin first creates your account with your mobile number. Then
-                      Continue with Telegram, on the Telegram of that mobile, confirms it is you and
-                      signs you in. Sub-members: use the Telegram on the mobile your merchant added.
+                      New here? Continue with Telegram and share your contact to apply. An admin reviews
+                      your application, and you can sign in as soon as it is approved. Sub-members: use
+                      the Telegram on the mobile your merchant added.
                     </p>
                   </>
                 ) : setup ? (
