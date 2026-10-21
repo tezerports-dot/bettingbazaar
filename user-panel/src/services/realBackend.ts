@@ -276,11 +276,10 @@ export class RealBackend implements Backend {
     };
 
     try {
-      const response = await secureFetch(`${apiBase()}${endpoint}`, { ...options, headers, credentials: 'include' });
+      const response = await secureFetch(`${apiBase()}${endpoint}`, { ...options, headers, credentials: 'omit' });
 
       if (response.status === 401) {
         localStorage.removeItem('auth_token');
-        document.cookie = 'auth_token=; Max-Age=0; path=/';
         this.sseBridge.syncAuth();   // off the player stream: the session is gone
         // The server's own sentence and code travel with it: a sign-in form
         // reads "Wrong mobile number or password", and a Telegram poll reads

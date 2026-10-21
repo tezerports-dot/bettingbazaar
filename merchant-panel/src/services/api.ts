@@ -140,7 +140,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
       ...options,
       headers,
       mode: 'cors',
-      credentials: 'include',
+      credentials: 'omit',
     });
     
     if (response.status === 401) {
@@ -765,7 +765,7 @@ export const downloadOrderReportCsv = async (query: OrderReportQuery): Promise<v
     method: 'GET',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     mode: 'cors',
-    credentials: 'include',
+    credentials: 'omit',
   });
   if (!response.ok) {
     let said = `The export failed (status ${response.status}).`;

@@ -25,12 +25,8 @@ export function attachSocketHandlers(io) {
   io.on('connection', async (socket) => {
     console.log('👤 Client connected:', socket.id);
 
-    const socketToken = () => {
-      const cookieHeader = socket.handshake.headers?.cookie || '';
-      const cookieToken  = cookieHeader.split(';').map(s => s.trim())
-        .find(s => s.startsWith('auth_token='))?.split('=')[1];
-      return socket.handshake.auth?.token || cookieToken;
-    };
+    // The handshake's own token only, never a cookie (routes.js `extractToken`).
+    const socketToken = () => socket.handshake.auth?.token;
 
     const loadActiveUser = async (decoded) => {
       if (!decoded?.userId) return null;

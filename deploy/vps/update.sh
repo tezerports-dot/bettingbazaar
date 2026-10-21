@@ -12,7 +12,8 @@
 #   3. warns about settings added to .env.template since the last deploy that
 #      your .env does not have yet, and asks before carrying on
 #   4. rebuilds and restarts the stack; the `migrate` service applies the
-#      database schema itself, so there is no separate migration step
+#      database schema itself, so there is no separate migration step; and
+#      recreates caddy when Caddyfile.vps changed (see below)
 #   5. checks migrate exited 0, the containers are up, and /health/ready answers
 #   6. removes dangling images left by the rebuild (old layers fill the disk)
 #
@@ -83,6 +84,19 @@ fi
 # ── 4. Build and restart (migrate runs inside this) ───────────────────────────
 bold "Building and restarting (this takes a few minutes)"
 "${COMPOSE[@]}" up -d --build --remove-orphans
+
+# Caddyfile.vps is mounted as a single file. `git pull` replaces the file, but a
+# running container keeps the one it was started with, so a header or route
+# change never reached the live site (outside checks, 2026-10-15: no
+# Permissions-Policy, `Via: 1.1 Caddy` still sent). Recreate caddy when the file
+# it is serving differs from the one in git: a second or two without answers.
+if ! "${COMPOSE[@]}" exec -T caddy cat /etc/caddy/Caddyfile 2>/dev/null | cmp -s - "$HERE/Caddyfile.vps"; then
+  bold "Caddyfile.vps changed: recreating caddy"
+  "${COMPOSE[@]}" up -d --force-recreate --no-deps caddy
+  ok "caddy is serving the Caddyfile in git"
+else
+  ok "caddy already serves the Caddyfile in git"
+fi
 
 # ── 5. Checks ─────────────────────────────────────────────────────────────────
 bold "Checking it came up"

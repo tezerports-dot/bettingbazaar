@@ -113,8 +113,8 @@ function isOutage(err: unknown): boolean {
 
 // ── Token helpers ─────────────────────────────────────────────────────────────
 function getToken(): string | null {
-  // Prefer HttpOnly cookie (set by server) — no JS access needed.
-  // Header token is only used when cookie transport isn't available (dev/mobile).
+  // The session travels only in the Authorization header; the server sets and
+  // reads no cookie (routes.js `extractToken`, cross-site request forgery).
   return typeof window !== 'undefined'
     ? window.__bbAuthToken__ ?? localStorage.getItem('auth_token')
     : null;
@@ -201,7 +201,7 @@ async function performFetch(
   const fetchPromise = secureFetch(url, {
     method,
     headers,
-    credentials: 'include',
+    credentials: 'omit',
     body:        body !== undefined ? JSON.stringify(body) : undefined,
     signal:      options.signal,
   });

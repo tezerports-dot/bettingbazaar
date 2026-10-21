@@ -56,22 +56,12 @@ import { formatMerchant } from './domains/merchant/merchantSelfView.js';
 
 const router = express.Router();
 
-// httpOnly cookie options — secure in production, lax in dev
-const COOKIE_OPTS = {
-  httpOnly: true,
-  secure:   process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-  maxAge:   7 * 24 * 60 * 60 * 1000,
-  path:     '/',
-};
-
-// Helper — extract token from cookie OR Authorization header
-// The bearer header wins: every panel is served from one origin, so a cookie
-// can belong to another panel's sign-in in the same browser.
+// A session travels ONLY in the Authorization header (owner, 2026-10-21). No
+// cookie is set or read: a browser attaches a cookie to a request another site
+// makes, never this header, so no page on another site can act for a signed-in
+// account (cross-site request forgery), whatever host each panel is served on.
 function extractToken(req) {
-  return req.headers.authorization?.replace('Bearer ', '')
-    || req.cookies?.auth_token
-    || null;
+  return req.headers.authorization?.replace('Bearer ', '') || null;
 }
 
 /** Admin, sub-admin, queue manager or mediator: `hasStaffRole`, the one rule. */
@@ -244,9 +234,6 @@ export async function issueSession(user, res, { amr, extra = {} } = {}) {
     phantomAccess: user.phantomAccess || 'NONE',
   };
 
-  // Only a player session rides in the cookie. The admin panel sends its
-  // bearer header; on one origin a staff cookie would reach the player app.
-  if (user.accountType === 'PLAYER') res.cookie('auth_token', token, COOKIE_OPTS);
   return res.json({ ...extra, success: true, token, user: userPayload });
 }
 
@@ -639,7 +626,6 @@ router.post('/logout', async (req, res) => {
         await revokeToken(token, { ttlSeconds: Math.max(1, Math.ceil((exp - Date.now()) / 1000)) });
       } catch (e) {
         console.error('[auth] logout could not revoke the token:', e.message);
-        res.clearCookie('auth_token', { path: '/' });
         return res.status(500).json({
           success: false,
           message: 'Signed out on this device, but the session could not be revoked. '
@@ -647,7 +633,6 @@ router.post('/logout', async (req, res) => {
         });
       }
     }
-    res.clearCookie('auth_token', { path: '/' });
     res.json({ success: true, message: 'Logged out successfully' });
   } catch {
     res.json({ success: true, message: 'Logged out successfully' });

@@ -297,11 +297,10 @@ export async function maintenanceRefusal(user) {
  */
 const makeAuthenticate = ({ accountTypes = ['PLAYER', 'STAFF'], admits = () => true } = {}) => async (req, res, next) => {
   try {
-    // The Authorization header first, the httpOnly cookie second: every panel
-    // is served from one origin, so a cookie may be another panel's sign-in.
+    // The Authorization header only, never a cookie (routes.js `extractToken`):
+    // a browser never attaches this header to another site's request.
     const authHeader = req.headers.authorization;
-    let token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null;
-    if (!token) token = req.cookies?.auth_token;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null;
     if (!token) {
       return res.status(401).json({ success: false, message: 'No authorization token provided' });
     }

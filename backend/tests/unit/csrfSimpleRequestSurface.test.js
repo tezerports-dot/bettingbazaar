@@ -2,11 +2,10 @@
 /**
  * CSRF: the app must not parse a "simple request" body.
  *
- * Auth cookies are issued with sameSite:'none' in production (routes.js) so the
- * Capacitor/Android shell receives them. That means the browser attaches
- * auth_token to CROSS-SITE requests, and authenticate() accepts the cookie as
- * identity. CORS does not save us: for a simple request the browser SENDS the
- * request and only withholds the response, so the mutation has already run.
+ * No session rides in a cookie any more (routes.js `extractToken`, owner
+ * 2026-10-21), so a cross-site request carries no identity. This is the second
+ * wall: CORS does not stop a simple request (the browser SENDS it and only
+ * withholds the response), so its body must never be parsed either.
  *
  * The simple content types are application/x-www-form-urlencoded,
  * multipart/form-data, and text/plain. While express.urlencoded was mounted

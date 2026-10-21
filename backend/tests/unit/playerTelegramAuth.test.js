@@ -9,7 +9,7 @@
  * deleted for players and merchants. A test that pins a design decision is
  * rewritten by the change that reverses it, keeping what survived:
  *
- *   • one session issuer, still (`issueSession`, one `res.cookie` in the file);
+ *   • one session issuer, still (`issueSession`), and no session cookie;
  *   • the door is asked on every leg, so an approval opened at one door cannot
  *     be redeemed at another;
  *   • a handler mounted without a door refuses rather than defaulting.
@@ -107,14 +107,12 @@ describe('the Telegram surface grants access only through the one issuer', () =>
 describe('one session issuer, and a door that says who it admits', () => {
   it('mints sessions in exactly one place', () => {
     expect(routes).toMatch(/export async function issueSession/);
-    expect((routes.match(/res\.cookie\('auth_token'/g) || []).length).toBe(1);
   });
 
-  it('puts only a player session in the cookie, and reads the bearer header first', () => {
-    // Every panel is served from one origin: a staff cookie would reach the
-    // player app and be refused there as WRONG_PANEL.
-    expect(routes).toMatch(/if \(user\.accountType === 'PLAYER'\) res\.cookie\('auth_token'/);
-    expect(routes).toMatch(/return req\.headers\.authorization\?\.replace\('Bearer ', ''\)\s*\|\| req\.cookies\?\.auth_token/);
+  it('sets no session cookie and reads the bearer header only (cross-site request forgery)', () => {
+    expect(routes).not.toMatch(/res\.cookie\(/);
+    expect(routes).not.toMatch(/req\.cookies/);
+    expect(routes).toMatch(/return req\.headers\.authorization\?\.replace\('Bearer ', ''\) \|\| null;/);
   });
 
   it('states the guest list as a DOOR rather than a hardcoded predicate', () => {
