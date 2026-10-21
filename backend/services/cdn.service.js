@@ -37,22 +37,32 @@ import crypto from 'crypto';
 // S3 CLIENT INITIALIZATION (VULTR)
 // ═══════════════════════════════════════════════════════════════════════
 
-const s3Client = new S3Client({
-  region: process.env.S3_REGION || 'us-east-1',
-  endpoint: (() => { const e = process.env.S3_ENDPOINT || ''; return e.startsWith('http') ? e : 'https://' + e; })(),
-  credentials: {
-    accessKeyId: process.env.S3_ACCESS_KEY,
-    secretAccessKey: process.env.S3_SECRET_KEY,
-  },
-  forcePathStyle: true, // Required for Vultr S3
-  // Checksums only where the operation requires one. Since SDK 3.729 the
-  // default is WHEN_SUPPORTED, which bakes `x-amz-checksum-crc32` of an EMPTY
-  // body (AAAAAA==) into every presigned PUT: the browser then uploads the real
-  // image, the storage compares it to the empty-body checksum and refuses it,
-  // so every image upload failed (2026-10-17). `presignedPutCarriesNoChecksum`
-  // in tests/unit/cdnPresignChecksum.test.js holds this.
-  requestChecksumCalculation: 'WHEN_REQUIRED',
-  responseChecksumValidation: 'WHEN_REQUIRED',
+/**
+ * An S3 client for one account. The public upload bucket below uses the S3_*
+ * settings; the private backup bucket (backup.service.js) passes its own.
+ */
+export function createS3Client({ endpoint, region, accessKeyId, secretAccessKey }) {
+  return new S3Client({
+    region: region || 'us-east-1',
+    endpoint: (() => { const e = endpoint || ''; return e.startsWith('http') ? e : 'https://' + e; })(),
+    credentials: { accessKeyId, secretAccessKey },
+    forcePathStyle: true, // Required for Vultr S3
+    // Checksums only where the operation requires one. Since SDK 3.729 the
+    // default is WHEN_SUPPORTED, which bakes `x-amz-checksum-crc32` of an EMPTY
+    // body (AAAAAA==) into every presigned PUT: the browser then uploads the real
+    // image, the storage compares it to the empty-body checksum and refuses it,
+    // so every image upload failed (2026-10-17). `presignedPutCarriesNoChecksum`
+    // in tests/unit/cdnPresignChecksum.test.js holds this.
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
+  });
+}
+
+const s3Client = createS3Client({
+  endpoint: process.env.S3_ENDPOINT,
+  region: process.env.S3_REGION,
+  accessKeyId: process.env.S3_ACCESS_KEY,
+  secretAccessKey: process.env.S3_SECRET_KEY,
 });
 
 const BUCKET_NAME = process.env.S3_BUCKET_NAME;
@@ -345,25 +355,7 @@ export async function uploadBufferToS3(fileKey, buffer, contentType) {
   return `${ep}/${BUCKET_NAME}/${fileKey}`; // path-style (forcePathStyle S3)
 }
 
-/**
- * uploadStreamToS3 — multipart streaming upload for LARGE objects (database
- * backups, exports) where buffering in memory is not acceptable. Same
- * deterministic-key semantics as uploadBufferToS3. (Plan item 45, 2026-07-13.)
- */
-export async function uploadStreamToS3(fileKey, stream, contentType = 'application/octet-stream') {
-  if (!isS3Configured()) throw new Error('S3 is not configured');
-  const { Upload } = await import('@aws-sdk/lib-storage');
-  const up = new Upload({
-    client: s3Client,
-    params: { Bucket: BUCKET_NAME, Key: fileKey, Body: stream, ContentType: contentType },
-  });
-  await up.done();
-  if (CDN_URL) return `${CDN_URL}/${fileKey}`;
-  const ep = process.env.S3_ENDPOINT.startsWith('http') ? process.env.S3_ENDPOINT : 'https://' + process.env.S3_ENDPOINT;
-  return `${ep}/${BUCKET_NAME}/${fileKey}`;
-}
-
-/** listFiles — keys under a prefix (used by backup retention pruning). */
+/** listFiles — keys under a prefix of the PUBLIC bucket (backup.service.js sweeps old `backups/` out of it). */
 export async function listFiles(prefix) {
   if (!isS3Configured()) return [];
   const out = await s3Client.send(new ListObjectsV2Command({ Bucket: BUCKET_NAME, Prefix: prefix, MaxKeys: 1000 }));
