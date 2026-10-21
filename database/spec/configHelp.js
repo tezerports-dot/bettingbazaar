@@ -66,7 +66,7 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
   },
   'adminTokenSupply.total': {
     what: 'How many tokens exist in total. The platform starts holding all of them; every pool and wallet balance is moved out of this supply, none are ever created.',
-    example: '20000000000 (20 billion). Lowering it never takes tokens back from anyone.',
+    example: '100000000000 (100 billion). Lowering it never takes tokens back from anyone.',
   },
   'merchantOrderLimits.maxConsecutiveRejections': {
     what: 'How many refusals in a row (declines, plus paid buys left unanswered) an agent may make before they are suspended. Any completed order resets the count. Only an admin lifts the suspension.',

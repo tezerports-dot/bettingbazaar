@@ -4191,7 +4191,7 @@ $$;
 
 -- ── The supply ceiling ─────────────────────────────────────────────────────
 -- `SystemConfig.adminTokenSupply.total` tokens exist (owner, 2026-09-23: 20
--- billion). The platform cannot release more than that: past it, it would be
+-- billion; 2026-10-20: 100 billion). The platform cannot release more than that: past it, it would be
 -- holding fewer than none. The fallback is the spec's default
 -- (`database/spec/config.spec.js`); `conservationPg.test.js` holds them equal.
 CREATE OR REPLACE FUNCTION bb_token_supply_paise() RETURNS BIGINT
@@ -4199,7 +4199,7 @@ LANGUAGE sql STABLE AS $$
   SELECT (COALESCE(
     (SELECT (settings #>> '{adminTokenSupply,total}')::numeric
        FROM config_documents WHERE scope = 'system' AND doc_key = 'main'),
-    20000000000) * 100)::bigint
+    100000000000) * 100)::bigint
 $$;
 
 -- Asked only when a write RELEASES tokens (TOKEN_SUPPLY going down), so a

@@ -138,7 +138,7 @@ export const SYSTEM_CONFIG_SPEC = group({
   //
   // always, and the books prove it (`reconcileAgainstSubLedgers`). How much the
   // platform has handed out is DERIVED from the treasury, never counted here.
-  adminTokenSupply: group({ total: n(20000000000, 0) }),
+  adminTokenSupply: group({ total: n(100000000000, 0) }),  // 100 billion (owner, 2026-10-20; was 20 billion)
 
   // Per-merchant order rules. Concurrency per member is `teamRouting`.
   merchantOrderLimits: group({
