@@ -33,3 +33,49 @@ export const ACCOUNT_IS_A_MOBILE_MESSAGE =
 export function isAccountMobileRefusal(error) {
   return error?.code === '23514' && ACCOUNT_IS_A_MOBILE_CONSTRAINTS.includes(error.constraint);
 }
+
+/**
+ * A player's UPI ID (owner, 2026-10-21): the member paying a sell is shown a
+ * link built from it, so its name part may not be a mobile. The rule is the
+ * row's (`users_upi_id_shape`, schema.sql); this is the same pattern, asked
+ * first so a mistyped ID is told apart from a mobile one.
+ */
+export const UPI_ID_PATTERN = /^[A-Za-z0-9._-]{2,255}@[A-Za-z][A-Za-z0-9.-]{1,64}$/;
+
+export const UPI_ID_INVALID_MESSAGE =
+  'That is not a UPI ID. It looks like name@bank, for example rahul.k@okaxis.';
+
+export const UPI_ID_IS_A_MOBILE_MESSAGE =
+  'That UPI ID is your mobile number. The merchant paying your sell sees your UPI ID, and nobody is shown '
+  + 'anyone\'s mobile number, so it cannot be used. Make a UPI ID that is not your mobile number in your '
+  + 'UPI app (most apps let you choose one), and save that.';
+
+/**
+ * The refusals of a save of a player's payout details, phrased for the player:
+ * a mobile in the account or the UPI ID, and the lock (schema.sql "PAYOUT
+ * DETAILS LOCK"): 48 hours after a save, and while an order is open. Null when
+ * the error is none of them.
+ */
+export function payoutDetailsRefusal(error, lockedUntil = null) {
+  if (error?.code !== '23514') return null;
+  if (ACCOUNT_IS_A_MOBILE_CONSTRAINTS.includes(error.constraint)) {
+    return { status: 400, code: 'ACCOUNT_IS_A_MOBILE', message: ACCOUNT_IS_A_MOBILE_MESSAGE };
+  }
+  if (error.constraint === 'users_upi_id_shape') {
+    return { status: 400, code: 'UPI_ID_IS_A_MOBILE', message: UPI_ID_IS_A_MOBILE_MESSAGE };
+  }
+  if (error.constraint === 'users_payout_details_locked') {
+    return {
+      status: 409, code: 'PAYOUT_DETAILS_LOCKED', lockedUntil,
+      message: 'Your bank details and UPI ID were saved less than 48 hours ago, so they cannot be changed yet. '
+             + 'You can change them after the time shown.',
+    };
+  }
+  if (error.constraint === 'users_payout_details_in_use') {
+    return {
+      status: 409, code: 'PAYOUT_DETAILS_IN_USE',
+      message: 'You have an order in progress, and it uses these details. You can change them once it is finished.',
+    };
+  }
+  return null;
+}

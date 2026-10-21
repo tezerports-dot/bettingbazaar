@@ -84,7 +84,10 @@ export interface User {
     accountNumber: string;
     ifscCode: string;
     bankName: string;
+    upiId?: string;
   };
+  /** Bank details and UPI ID fixed until then (backend schema.sql "PAYOUT DETAILS LOCK"). */
+  payoutDetailsLockedUntil?: string | null;
 
   // 'NONE', a board's key, or 'BOTH' (= every board); the server's
   // `users_phantom_access_known` trigger holds it to an existing board.

@@ -59,7 +59,7 @@ import { renderBoardRules } from '../markets/boardRules.js';
 import { enabledBoards, publicBoard } from '../markets/cycleTypes.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
 import { serverError, respondError, refusal } from '../../shared/httpError.js';
-import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
+import { payoutDetailsRefusal, UPI_ID_PATTERN, UPI_ID_INVALID_MESSAGE } from '../payment/payoutAccount.js';
 import { PROMO_DEVICES } from '#db/spec/promoDevices.js';
 
 const router = express.Router();
@@ -188,6 +188,7 @@ router.get('/v1/user/:id/data', authenticatePlayer, async (req, res) => {
         walletBalance,    // BUG-U6 fix — Header now shows real balance
         totalBalance:     walletBalance,
         bankDetails: user.bankDetails || null,
+        payoutDetailsLockedUntil: user.payoutDetailsLockedUntil ?? null,
         profilePic:       user.profilePic || '',
         joinedAt:         user.joinedAt,
         lastLogin:        user.lastLogin,
@@ -276,8 +277,12 @@ router.put('/user/:userId/bank-details', authenticatePlayer, async (req, res) =>
     }
 
     const { accountHolderName, accountNumber, ifscCode, bankName } = req.body;
-    if (!accountHolderName || !accountNumber || !ifscCode || !bankName) {
-      return res.status(400).json({ success: false, message: 'All bank detail fields are required' });
+    const upiId = String(req.body?.upiId ?? '').trim();
+    if (!accountHolderName || !accountNumber || !ifscCode || !bankName || !upiId) {
+      return res.status(400).json({ success: false, message: 'Fill in all the bank details and your UPI ID.' });
+    }
+    if (!UPI_ID_PATTERN.test(upiId)) {
+      return res.status(400).json({ success: false, code: 'UPI_ID_INVALID', message: UPI_ID_INVALID_MESSAGE });
     }
 
     // The IFSC is uppercased once, here. A code stored in two cases is two
@@ -288,6 +293,8 @@ router.put('/user/:userId/bank-details', authenticatePlayer, async (req, res) =>
       bankDetails: {
         accountHolderName, accountNumber,
         ifscCode: String(ifscCode).toUpperCase(), bankName,
+        // A UPI ID is one address however it is cased; lowercased once, here.
+        upiId: upiId.toLowerCase(),
       },
     });
 
@@ -305,12 +312,24 @@ router.put('/user/:userId/bank-details', authenticatePlayer, async (req, res) =>
       }).catch(() => {});
     }
 
-    res.json({ success: true, payoutHoldUntil: holdUntil });
+    res.json({
+      success: true,
+      payoutHoldUntil: holdUntil,
+      payoutDetailsLockedUntil: updated?.payoutDetailsLockedUntil ?? null,
+    });
   } catch (error) {
-    // The member who pays a sell is shown this account, so one whose number
-    // is the player's mobile is refused by the row (§24, Step 2d).
-    if (isAccountMobileRefusal(error)) {
-      return res.status(400).json({ success: false, code: 'ACCOUNT_IS_A_MOBILE', message: ACCOUNT_IS_A_MOBILE_MESSAGE });
+    // The member who pays a sell is shown this account and UPI ID, so one
+    // carrying the player's mobile is refused by the row (§24), and the row
+    // holds them fixed 48 hours and while an order is open (owner, 2026-10-21).
+    const refused = payoutDetailsRefusal(
+      error,
+      error?.constraint === 'users_payout_details_locked'
+        ? (await db.users.getUser(req.params.userId).catch(() => null))?.payoutDetailsLockedUntil ?? null
+        : null,
+    );
+    if (refused) {
+      const { status, ...body } = refused;
+      return res.status(status).json({ success: false, ...body });
     }
     console.error('Update bank details error:', error);
     res.status(500).json({ success: false, message: 'Failed to update bank details' });
@@ -731,6 +750,7 @@ router.get('/v1/user/profile', authenticatePlayer, async (req, res) => {
         winningsBalance:  balances.winningsBalance || 0,
         lockedBalance:    balances.lockedBalance   || 0,
         bankDetails:      user.bankDetails     || null,
+        payoutDetailsLockedUntil: user.payoutDetailsLockedUntil ?? null,
         profilePic:       user.profilePic      || null,
         joinedAt:         user.joinedAt,
       },

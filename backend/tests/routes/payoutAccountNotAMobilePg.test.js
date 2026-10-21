@@ -56,7 +56,7 @@ describePg('an account number that is a mobile number', () => {
 
   describe('a player saving where their sells are paid', () => {
     const save = (me, accountNumber, ifscCode, names = {}) => as(userApp, me).put(`/user/${me.userId}/bank-details`)
-      .send({ accountHolderName: 'A Player', accountNumber, ifscCode, bankName: 'Some Bank', ...names });
+      .send({ accountHolderName: 'A Player', accountNumber, ifscCode, bankName: 'Some Bank', upiId: 'a.player@okaxis', ...names });
 
     it('refuses a payments-bank account, whoever\'s number it is', async () => {
       const me = await newPlayer();
@@ -88,8 +88,10 @@ describePg('an account number that is a mobile number', () => {
       const kotak = someoneElse();
       expect((await save(me, kotak, 'KKBK0000123')).status).toBe(200);
       expect((await getUser(me.userId)).bankDetails.accountNumber).toBe(kotak);
-      expect((await save(me, '100012345678', 'IPOS0000001')).status).toBe(200);
-      expect((await getUser(me.userId)).bankDetails.accountNumber).toBe('100012345678');
+      // Another player: a save locks the details for 48 hours.
+      const other = await newPlayer();
+      expect((await save(other, '100012345678', 'IPOS0000001')).status).toBe(200);
+      expect((await getUser(other.userId)).bankDetails.accountNumber).toBe('100012345678');
     });
   });
 

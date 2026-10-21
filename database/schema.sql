@@ -3931,12 +3931,12 @@ ALTER TABLE users ADD CONSTRAINT users_bank_account_not_a_mobile
      AND NOT bb_text_has_a_mobile(bank_details->>'accountHolderName')
      AND NOT bb_text_has_a_mobile(bank_details->>'bankName'));
 
--- A player's payout account is a BANK account: the four fields a transfer
--- needs, and no fifth. Every sell is a bank transfer to it, and no UPI handle
--- is ever a destination or shown (CLAUDE.md §2 "How each rail is paid", §24).
--- The Profile screen asked for a UPI ID and the sell copied
--- `bank_details.upiId` onto every order a member reads; an allowlist, so a
--- handle under any other name is refused the same way.
+-- A player's payout account: the four fields a bank transfer needs and the
+-- player's UPI ID (owner, 2026-10-21: the member paying a sell is shown the
+-- bank details and a UPI link built for that order's amount), and no other
+-- key; an allowlist, so a handle under any other name is refused the same way.
+-- A UPI ID whose name part is a mobile is refused by the row
+-- (`users_upi_id_shape`), since the member sees it (§24).
 -- Converged first (§32 S31): a stray key is dropped from a row written before
 -- the rule, and a JSON null becomes no value, or the constraint below would
 -- stop the apply here.
@@ -3945,14 +3945,59 @@ UPDATE users SET bank_details = NULL
 UPDATE users
    SET bank_details = bank_details - ARRAY(
          SELECT k FROM jsonb_object_keys(bank_details) AS k
-          WHERE k <> ALL (ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName']))
+          WHERE k <> ALL (ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName', 'upiId']))
  WHERE jsonb_typeof(bank_details) = 'object'
-   AND (bank_details - ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName']) <> '{}'::jsonb;
+   AND (bank_details - ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName', 'upiId']) <> '{}'::jsonb;
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_bank_details_bank_account_only;
 ALTER TABLE users ADD CONSTRAINT users_bank_details_bank_account_only
   CHECK (bank_details IS NULL
       OR (jsonb_typeof(bank_details) = 'object'
-          AND (bank_details - ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName']) = '{}'::jsonb));
+          AND (bank_details - ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName', 'upiId']) = '{}'::jsonb));
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_upi_id_shape;
+ALTER TABLE users ADD CONSTRAINT users_upi_id_shape
+  CHECK (bank_details->>'upiId' IS NULL
+      OR ((bank_details->>'upiId') ~ '^[A-Za-z0-9._-]{2,255}@[A-Za-z][A-Za-z0-9.-]{1,64}$'
+          AND NOT bb_text_has_a_mobile(split_part(bank_details->>'upiId', '@', 1))));
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 🔒 PAYOUT DETAILS LOCK (owner, 2026-10-21)
+-- Once saved, a player's bank details and UPI ID stay as they are for
+-- bb_payout_details_lock() (48 hours, fixed), and never change while one of
+-- the player's orders is open: queued, started, paid, disputed, or rejected
+-- inside its dispute window. Every save of a different value starts the lock
+-- again, the first save included. The row's trigger asks both, so every
+-- writer is held to it; a withdrawal INSERT holds a share lock on the row
+-- (order_states_payout_hold), so a save and a new sell are serialised (§32 S6).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS payout_details_locked_until TIMESTAMPTZ;
+
+CREATE OR REPLACE FUNCTION bb_payout_details_lock() RETURNS interval
+  LANGUAGE sql IMMUTABLE AS $$ SELECT interval '48 hours' $$;
+
+CREATE OR REPLACE FUNCTION bb_lock_payout_details() RETURNS trigger AS $$
+BEGIN
+  IF NEW.bank_details IS NOT DISTINCT FROM OLD.bank_details THEN RETURN NEW; END IF;
+  -- Clearing them points no money anywhere (an open order keeps its own copy),
+  -- and the lock stays as it was, so a new account still waits it out.
+  IF NEW.bank_details IS NULL THEN RETURN NEW; END IF;
+  -- Nor does dropping a key and changing none (the convergence above).
+  IF OLD.bank_details IS NOT NULL AND OLD.bank_details @> NEW.bank_details THEN RETURN NEW; END IF;
+  IF OLD.payout_details_locked_until IS NOT NULL AND OLD.payout_details_locked_until > now() THEN
+    RAISE EXCEPTION 'payout details of % are locked until %', OLD.user_id, OLD.payout_details_locked_until
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'users_payout_details_locked';
+  END IF;
+  IF EXISTS (SELECT 1 FROM order_states o
+              WHERE o.user_id = OLD.user_id
+                AND (o.state IN ('PENDING_QUEUE', 'PROCESSING', 'PAID', 'DISPUTED')
+                     OR (o.state = 'REJECTED' AND o.dispute_window_until > now()))) THEN
+    RAISE EXCEPTION 'payout details of % are in use by an open order', OLD.user_id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'users_payout_details_in_use';
+  END IF;
+  NEW.payout_details_locked_until := now() + bb_payout_details_lock();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER users_payout_details_lock
+  BEFORE UPDATE OF bank_details ON users FOR EACH ROW EXECUTE FUNCTION bb_lock_payout_details();
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Order commission (owner, 2026-10-21; it replaced the matched-volume cycle

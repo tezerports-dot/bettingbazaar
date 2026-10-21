@@ -553,7 +553,7 @@ export class RealBackend implements Backend {
   // `/api/p2p/*` prefix. WalletPage.tsx owns this flow via apiClient.
 
   // -- BANKING ----------------------------------------------------------------
-  // The four fields of a bank account; the server keeps nothing else (§24).
+  // The bank account and UPI ID a sell is paid to; the server keeps nothing else (§24).
   async updateBankDetails(userId: string, details: User['bankDetails']) {
     return this.request<User>(`/user/${userId}/bank-details`, { method: 'PUT', body: JSON.stringify(details) });
   }
