@@ -21,7 +21,7 @@
  * Nothing below the HTTP boundary is mocked.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
+import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { getUser } from '#db/repositories/users.js';
 import { mountRouter, actor, as, request } from './_harness.js';
 
@@ -104,14 +104,14 @@ describePg('user account routes', () => {
   });
 
   // ── Bank details: the withdrawal destination ───────────────────────────────
-  it('requires every bank field — a partial destination is no destination', async () => {
+  it('requires every bank field and the UPI ID — a partial destination is no destination', async () => {
     const me = await actor({});
-    const full = { accountHolderName: 'A Player', accountNumber: '123456789012', ifscCode: 'hdfc0001234', bankName: 'HDFC' };
+    const full = { accountHolderName: 'A Player', accountNumber: '123456789012', ifscCode: 'hdfc0001234', bankName: 'HDFC', upiId: 'a.player@okaxis' };
     for (const missing of Object.keys(full)) {
       const body = { ...full }; delete body[missing];
       const res = await as(app, me).put(`/user/${me.userId}/bank-details`).send(body);
       expect(res.status, `accepted a body missing ${missing}`).toBe(400);
-      expect(res.body.message).toMatch(/required/i);
+      expect(res.body.message).toMatch(/fill in all the bank details and your UPI ID/i);
     }
     expect((await getUser(me.userId)).bankDetails, 'a refused update still wrote bank details').toBeNull();
   });
@@ -122,7 +122,7 @@ describePg('user account routes', () => {
     const me = await actor({});
     const res = await as(app, me).put(`/user/${me.userId}/bank-details`).send({
       accountHolderName: 'A Player', accountNumber: '123456789012',
-      ifscCode: 'hdfc0001234', bankName: 'HDFC Bank',
+      ifscCode: 'hdfc0001234', bankName: 'HDFC Bank', upiId: 'a.player@okaxis',
     });
     expect(res.status, res.body.message).toBe(200);
 
@@ -133,31 +133,66 @@ describePg('user account routes', () => {
     expect(bankDetails.bankName).toBe('HDFC Bank');
   });
 
-  it('replaces the destination wholesale on a second write', async () => {
+  it('locks the details 48 hours after a save, and says until when (owner, 2026-10-21)', async () => {
+    const me = await actor({});
+    const put = (b) => as(app, me).put(`/user/${me.userId}/bank-details`).send(b);
+    const first = await put({ accountHolderName: 'Old Name', accountNumber: '111', ifscCode: 'aaaa0000001', bankName: 'Old Bank', upiId: 'old.name@okaxis' });
+    expect(first.status, first.body.message).toBe(200);
+    expect(new Date(first.body.payoutDetailsLockedUntil).getTime()).toBeGreaterThan(Date.now() + 47 * 3_600_000);
+    const second = await put({ accountHolderName: 'New Name', accountNumber: '222', ifscCode: 'bbbb0000002', bankName: 'New Bank', upiId: 'new.name@okaxis' });
+    expect(second.status).toBe(409);
+    expect(second.body.code).toBe('PAYOUT_DETAILS_LOCKED');
+    expect(new Date(second.body.lockedUntil).getTime()).toBe(new Date((await getUser(me.userId)).payoutDetailsLockedUntil).getTime());
+    expect((await getUser(me.userId)).bankDetails.accountNumber).toBe('111');
+  });
+
+  it('refuses a change while an order is in progress, in words the player can act on', async () => {
+    const me = await actor({});
+    const put = (accountNumber) => as(app, me).put(`/user/${me.userId}/bank-details`).send({
+      accountHolderName: 'A Player', accountNumber, ifscCode: 'HDFC0001234', bankName: 'HDFC Bank', upiId: 'a.player@okaxis',
+    });
+    expect((await put('111')).status).toBe(200);
+    await pgQuery('UPDATE users SET payout_details_locked_until = NULL WHERE user_id = $1', [me.userId]);
+    const orderId = `o-inuse-${me.userId}`;
+    await pgQuery(`INSERT INTO order_states (order_id, user_id, order_type, state, token_amount_paise)
+                   VALUES ($1, $2, 'WITHDRAWAL', 'PENDING_QUEUE', 100000)`, [orderId, me.userId]);
+    try {
+      const res = await put('222');
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('PAYOUT_DETAILS_IN_USE');
+      expect(res.body.message).toMatch(/order in progress/);
+      expect((await getUser(me.userId)).bankDetails.accountNumber).toBe('111');
+    } finally {
+      await pgQuery('DELETE FROM order_states WHERE order_id = $1', [orderId]);
+    }
+  });
+
+  it('replaces the destination wholesale once the lock has passed', async () => {
     // A player who re-enters their details expects the new account, not a merge
     // that leaves a stale field from the old one.
     const me = await actor({});
     const put = (b) => as(app, me).put(`/user/${me.userId}/bank-details`).send(b);
-    await put({ accountHolderName: 'Old Name', accountNumber: '111', ifscCode: 'aaaa0000001', bankName: 'Old Bank' });
-    await put({ accountHolderName: 'New Name', accountNumber: '222', ifscCode: 'bbbb0000002', bankName: 'New Bank' });
-
-    expect((await getUser(me.userId)).bankDetails).toMatchObject({
-      accountHolderName: 'New Name', accountNumber: '222', ifscCode: 'BBBB0000002', bankName: 'New Bank',
+    await put({ accountHolderName: 'Old Name', accountNumber: '111', ifscCode: 'aaaa0000001', bankName: 'Old Bank', upiId: 'old.name@okaxis' });
+    await pgQuery("UPDATE users SET payout_details_locked_until = now() - interval '1 second' WHERE user_id = $1", [me.userId]);
+    const res = await put({ accountHolderName: 'New Name', accountNumber: '222', ifscCode: 'bbbb0000002', bankName: 'New Bank', upiId: 'New.Name@OKAXIS' });
+    expect(res.status, res.body.message).toBe(200);
+    expect((await getUser(me.userId)).bankDetails).toEqual({
+      accountHolderName: 'New Name', accountNumber: '222', ifscCode: 'BBBB0000002', bankName: 'New Bank', upiId: 'new.name@okaxis',
     });
   });
 
-  it('saves the bank account and not a UPI handle sent beside it', async () => {
-    // Every sell is a bank transfer to this account; no UPI handle is ever a
-    // destination or shown (§2, §24). The Profile screen used to ask for one.
+  it('refuses a UPI ID that is a mobile, or not a UPI ID, and names which', async () => {
     const me = await actor({});
-    const res = await as(app, me).put(`/user/${me.userId}/bank-details`).send({
-      accountHolderName: 'A Player', accountNumber: '123456789012',
-      ifscCode: 'HDFC0001234', bankName: 'HDFC Bank', upiId: 'aplayer@okaxis',
+    const put = (upiId) => as(app, me).put(`/user/${me.userId}/bank-details`).send({
+      accountHolderName: 'A Player', accountNumber: '123456789012', ifscCode: 'HDFC0001234', bankName: 'HDFC Bank', upiId,
     });
-    expect(res.status, res.body.message).toBe(200);
-    expect((await getUser(me.userId)).bankDetails).toEqual({
-      accountHolderName: 'A Player', accountNumber: '123456789012',
-      ifscCode: 'HDFC0001234', bankName: 'HDFC Bank',
-    });
+    for (const upiId of [`${me.mobile}@ybl`, '9876543210@paytm', `91${me.mobile}@okaxis`]) {
+      const res = await put(upiId);
+      expect(res.status, upiId).toBe(400);
+      expect(res.body.code).toBe('UPI_ID_IS_A_MOBILE');
+      expect(res.body.message).toMatch(/not your mobile number/);
+    }
+    expect((await put('not-a-upi-id')).body.code).toBe('UPI_ID_INVALID');
+    expect((await getUser(me.userId)).bankDetails ?? null).toBeNull();
   });
 });

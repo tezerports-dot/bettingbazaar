@@ -96,10 +96,10 @@ export const BalanceAdjustment: React.FC = () => {
             <input id="adjust-player-search" value={userSearch} onChange={e=>setUserSearch(e.target.value)} onKeyDown={e=>e.key==='Enter'&&searchUsers()} className="flex-1 input" placeholder="Username or mobile..."/>
             <button onClick={searchUsers} className="btn-secondary" aria-label="Search players"><Search size={14}/></button>
           </div>
-          {selectedUser&&<div className="mt-2 p-2 bg-green-500/10 border border-green-500/30 rounded-sm text-sm text-green-400">Selected: {selectedUser.username} ({selectedUser.mobile})</div>}
+          {selectedUser&&<div className="mt-2 p-2 bg-green-500/10 border border-green-500/30 rounded-sm text-sm text-green-400">Selected: {selectedUser.username}{selectedUser.mobile ? ` (${selectedUser.mobile})` : ''}</div>}
           {users.length>0&&(
             <div className="mt-2 bg-dark-700 rounded-lg border border-dark-600 overflow-hidden">
-              {users.map(u=><button key={u.userId} onClick={()=>selectUser(u)} className="w-full text-left px-3 py-2 hover:bg-dark-600 text-sm border-b border-dark-600 last:border-0">{u.username} — {u.mobile} — Dep: ₹{u.depositBalance ?? 0} · Win: ₹{u.winningsBalance ?? 0}</button>)}
+              {users.map(u=><button key={u.userId} onClick={()=>selectUser(u)} className="w-full text-left px-3 py-2 hover:bg-dark-600 text-sm border-b border-dark-600 last:border-0">{u.username}{u.mobile ? ` — ${u.mobile}` : ''} — Dep: ₹{u.depositBalance ?? 0} · Win: ₹{u.winningsBalance ?? 0}</button>)}
             </div>
           )}
         </div>

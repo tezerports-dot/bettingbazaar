@@ -7,10 +7,10 @@ import {
   Stats,
   MyTeam,
   Team,
-  PoolDirection,
   TeamPool,
   TeamPoolEntry,
   TeamPoolRequest,
+  CashOut,
   MemberLog,
   SupervisorOrder,
   DisputeThreadMessage,
@@ -560,6 +560,8 @@ export const setCashReady = async (ready: boolean): Promise<boolean> => {
 // to the platform (owner, 2026-10-18).
 export const updateProfile = async (data: {
   bankDetails: { accountHolderName?: string; bankName?: string; accountNo?: string; ifsc?: string };
+  // The UPI ID a UPI buy's link is built from (owner, 2026-10-21); '' clears it.
+  upiId?: string;
 }): Promise<any> => {
   const result = await request<any>(ENDPOINTS.PROFILE.UPDATE, {
     method: 'PUT',
@@ -623,13 +625,17 @@ export const removeTeamMember = async (teamId: string, merchantId: string): Prom
 export const getTeamPool = async (teamId: string): Promise<{ pool: TeamPool; entries: TeamPoolEntry[] }> =>
   request<{ pool: TeamPool; entries: TeamPoolEntry[] }>(ENDPOINTS.TEAM.POOL(teamId));
 
-/** BUY asks the platform for tokens; SELL asks it to buy pool tokens back. Whole tokens. */
+/** Asks the platform for tokens; nothing is sold back to it (owner, 2026-10-21). Whole tokens. */
 export const requestTeamPool = async (
-  teamId: string, direction: PoolDirection, tokenAmount: number, note: string,
+  teamId: string, tokenAmount: number, note: string,
 ): Promise<string> =>
   (await request<{ message: string }>(ENDPOINTS.TEAM.POOL_REQUEST(teamId), {
-    method: 'POST', body: JSON.stringify({ direction, tokenAmount, note: note || null }),
+    method: 'POST', body: JSON.stringify({ tokenAmount, note: note || null }),
   })).message;
+
+/** Start (`true`) or stop a team pool's cash out (owner, 2026-10-21). */
+export const setTeamCashOut = async (teamId: string, start: boolean): Promise<CashOut> =>
+  (await request<{ cashOut: CashOut }>(ENDPOINTS.TEAM.CASH_OUT(teamId), { method: start ? 'POST' : 'DELETE' })).cashOut;
 
 /** Buy pool tokens from the platform in USDT: the request, with where to pay (owner, 2026-10-21). */
 export const buyTeamPoolUsdt = async (teamId: string, tokenAmount: number): Promise<TeamPoolRequest> =>
@@ -731,11 +737,16 @@ export const unassignSubMemberAccount = async (staffId: string, accountId: strin
   (await accountRequest<{ staff: SubMember }, [string, string, string]>(
     ENDPOINTS.ACCOUNT.UNASSIGN_ACCOUNT, [staffId, accountId, duty])).staff;
 
-/** BUY asks the platform to sell tokens into the pool; SELL asks it to buy them back. Whole tokens. */
-export const requestMerchantPool = async (direction: PoolDirection, tokens: number, note: string): Promise<string> =>
+/** Asks the platform to sell tokens into the pool; nothing is sold back. Whole tokens. */
+export const requestMerchantPool = async (tokens: number, note: string): Promise<string> =>
   (await accountRequest<{ requestId: string }, []>(ENDPOINTS.ACCOUNT.REQUEST_POOL, [], {
-    direction, tokens, note: note || null,
+    tokens, note: note || null,
   })).requestId;
+
+/** Start (`true`) or stop the merchant account's cash out (owner, 2026-10-21). */
+export const setMerchantCashOut = async (start: boolean): Promise<CashOut> =>
+  (await accountRequest<{ cashOut: CashOut }, []>(
+    start ? ENDPOINTS.ACCOUNT.START_CASH_OUT : ENDPOINTS.ACCOUNT.STOP_CASH_OUT, [])).cashOut;
 
 /** A merchant account buys pool tokens in USDT: the request, with where to pay (owner, 2026-10-21). */
 export const buyMerchantPoolUsdt = async (tokens: number): Promise<TeamPoolRequest> =>
@@ -868,6 +879,8 @@ export const api = {
   unassignSubMemberAccount,
   requestMerchantPool,
   buyMerchantPoolUsdt,
+  setMerchantCashOut,
+  setTeamCashOut,
   cancelMerchantPoolRequest,
   getMerchantReport,
   getOrderReport,

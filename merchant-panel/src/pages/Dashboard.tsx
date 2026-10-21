@@ -1,8 +1,11 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Dashboard — design handoff "BB Merchant Panel.dc.html": availability hero,
-// the cash team's Ready switch, three KPI tiles, the weekly earnings bars, what
-// is expiring soon, recent assignments and the merchant's record.
+// the cash team's Ready switch, the swipeable pool, sell capacity, disputes and
+// commission cards with their ledger profit and loss (owner, 2026-10-21),
+// three KPI tiles, the weekly earnings bars, what is expiring soon, the orders
+// to work (open buys, open sells, in process and disputed, approved or
+// rejected in place) and the merchant's record.
 //
 // A merchant holds no tokens — their team's pool does (PROJECT_STATUS §3.10).
 // "Your tokens" shows that pool, split by what it is locked in, beside what
@@ -13,7 +16,7 @@
 // backend source the tile shows an em-dash rather than an invented number
 // (GOVERNANCE §2/§3: no hardcoded business values).
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, ChevronRight, Clock, Coins, Power, ShieldCheck } from 'lucide-react';
+import { ArrowRight, Clock, Coins, Power, ShieldCheck } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
@@ -23,10 +26,12 @@ import { useNow, formatCountdown, secondsLeft } from '../hooks/useCountdown';
 import { useViewport } from '../hooks/useViewport';
 import { ROUTES } from '../constants';
 import { counterpartyOf, formatMoney, formatTokens } from '../utils/rail';
-import { OrderStatus, type Earnings, type PaymentOrder, type Stats } from '../types';
-import { Card, CardTitle, Skeleton, StatusPill, cardStyle } from '../components/ui';
+import { OrderStatus, type BusinessLedger, type Earnings, type PaymentOrder, type Stats } from '../types';
+import { Card, CardTitle, SegmentedControl, Skeleton, cardStyle } from '../components/ui';
 import { CashReadyCard } from '../components/CashReadyCard';
-import { PoolBreakdown } from '../components/PoolBreakdown';
+import { HomeCards } from '../components/HomeCards';
+import OrderWorkList, { orderKey } from '../components/OrderWorkList';
+import { mayReadReports } from '../utils/actor';
 import { availabilityOf } from '../utils/availability';
 import type { OrdersLinkState } from './OrderManagement';
 import type { HistoryLinkState } from './HistoryViews';
@@ -35,7 +40,22 @@ interface WeeklyPoint { date: string; earnings: number; orders: number; }
 
 const UPCOMING_WINDOW_SECONDS = 480; // "expiring soon" cut-off from the design
 
-const orderKey = (order: PaymentOrder): string => String(order._id || order.id || order.orderId);
+/**
+ * The home orders card's tabs (owner, 2026-10-21): what waits on the merchant
+ * by direction, what waits on someone else, and what is in dispute. Each test
+ * is the queue's own (`needsAction`), so Home and Orders agree.
+ */
+type HomeOrdersTab = 'BUYS' | 'SELLS' | 'IN_PROCESS' | 'DISPUTED';
+const HOME_ORDER_TABS: Array<{ value: HomeOrdersTab; label: string; empty: string; holds: (o: PaymentOrder) => boolean }> = [
+  { value: 'BUYS', label: 'Open buys', empty: 'No buy waits on you.',
+    holds: (o) => o.type === 'DEPOSIT' && needsAction(o) },
+  { value: 'SELLS', label: 'Open sells', empty: 'No sell waits on you.',
+    holds: (o) => o.type === 'WITHDRAWAL' && needsAction(o) },
+  { value: 'IN_PROCESS', label: 'In process', empty: 'Nothing is waiting on a player or a hold window.',
+    holds: (o) => (o.status === OrderStatus.PROCESSING || o.status === OrderStatus.PAID) && !needsAction(o) },
+  { value: 'DISPUTED', label: 'Disputed', empty: 'No order of yours is in dispute.',
+    holds: (o) => o.status === OrderStatus.DISPUTED },
+];
 
 /** Tokens from paise, for the commission figures (`toSummary` sends paise). */
 const tokensOfPaise = (paise: number): string => formatTokens(paise / 100);
@@ -43,7 +63,7 @@ const tokensOfPaise = (paise: number): string => formatTokens(paise / 100);
 const Dashboard: React.FC = () => {
   const { merchant, refreshProfile } = useAuth();
   const navigate = useNavigate();
-  const { orders, state, counts } = useOrders();
+  const { orders, state, counts, reload } = useOrders();
   const now = useNow();
   const { isMobile, isDesktop } = useViewport();
 
@@ -56,6 +76,17 @@ const Dashboard: React.FC = () => {
   const [earnings, setEarnings] = useState<Earnings | null>(null);
   const [weekly, setWeekly] = useState<WeeklyPoint[] | null>(null);
   const [metricsReady, setMetricsReady] = useState(false);
+  // The last seven days of the business ledger, for the cards' profit and loss
+  // lines: only for those who may read reports (`ownerOrAudit`).
+  const readsLedger = mayReadReports(merchant);
+  const [ledger, setLedger] = useState<BusinessLedger | null>(null);
+  useEffect(() => {
+    if (!readsLedger) { setLedger(null); return undefined; }
+    let alive = true;
+    api.getBusinessLedger('', '').then((l) => { if (alive) setLedger(l); }).catch(() => { /* the cards show no ledger line */ });
+    return () => { alive = false; };
+  }, [readsLedger]);
+  const [ordersTab, setOrdersTab] = useState<HomeOrdersTab>('BUYS');
 
   useEffect(() => {
     let alive = true;
@@ -92,17 +123,14 @@ const Dashboard: React.FC = () => {
   const openHistory = (state: HistoryLinkState) => navigate(ROUTES.HISTORY, { state });
   const openOrder = (order: PaymentOrder) => openOrders({ orderId: orderKey(order) });
 
-  // Why today's earnings may read 0 (team commission, §26): earned and waiting
-  // for the platform's commission pool, or no matched volume yet, because
-  // commission is paid on min(completed buys, completed sells).
+  // Why today's earnings may read 0 (order commission, §26): earned and
+  // waiting for the platform's commission pool, or no completed order yet.
   const commission = stats?.commission ?? null;
   const commissionNote = !commission ? null
     : commission.owedPaise > 0
       ? `${tokensOfPaise(commission.owedPaise)} earned, waiting for the platform's commission pool`
-      : commission.matchedPaise === 0
-        ? (commission.buysPaise === 0 && commission.sellsPaise === 0
-          ? `Commission is ${commission.commissionPercent}% of matched buys and sells`
-          : `Commission starts once a ${commission.buysPaise === 0 ? 'buy' : 'sell'} completes too`)
+      : commission.paidPaise === 0
+        ? `Commission is ${commission.depositPercent}% of each completed buy and ${commission.withdrawalPercent}% of each completed sell`
         : `${tokensOfPaise(commission.paidPaise)} commission paid to your ${commission.supervisorSharePercent ? 'team' : 'account'} so far`;
 
   const expiring = useMemo(
@@ -114,10 +142,11 @@ const Dashboard: React.FC = () => {
     [orders, now]
   );
 
-  const recent = useMemo(
-    () => orders.filter((o) => o.status !== OrderStatus.COMPLETED && o.status !== OrderStatus.CANCELLED).slice(0, 4),
+  const tabbed = useMemo(
+    () => Object.fromEntries(HOME_ORDER_TABS.map((tab) => [tab.value, orders.filter(tab.holds)])) as Record<HomeOrdersTab, PaymentOrder[]>,
     [orders]
   );
+  const activeTab = HOME_ORDER_TABS.find((tab) => tab.value === ordersTab) ?? HOME_ORDER_TABS[0];
 
   const weeklyMax = useMemo(() => Math.max(1, ...(weekly ?? []).map((point) => point.earnings)), [weekly]);
   const weekTotal = useMemo(() => (weekly ?? []).reduce((sum, point) => sum + (point.earnings || 0), 0), [weekly]);
@@ -152,7 +181,7 @@ const Dashboard: React.FC = () => {
       label: 'Success rate',
       icon: <ShieldCheck size={16} style={{ color: 'var(--ok)' }} />,
       iconBg: 'var(--ok-bg)',
-      value: merchant?.successRate !== undefined ? `${(merchant.successRate * 100).toFixed(1)}%` : '—',
+      value: typeof merchant?.successRate === 'number' ? `${(merchant.successRate * 100).toFixed(1)}%` : '—',
       sub: merchant?.avgResponseMinutes !== undefined
         ? `Avg response ${merchant.avgResponseMinutes.toFixed(1)}m`
         : 'Awaiting data',
@@ -227,22 +256,24 @@ const Dashboard: React.FC = () => {
         </div>
       )}
 
-      {/* Where the tokens are (owner, 2026-10-14): the pool this merchant
-          works from, and what their own orders lock or are about to add. */}
-      {stats?.money && (stats.money.pool || stats.money.own.openBuys + stats.money.own.openSells > 0) && (
-        <Card>
-          <CardTitle title="Your tokens" sub={stats.money.pool ? 'The pool your buy orders are paid from' : 'What your open orders hold'} />
-          {stats.money.pool
-            ? <PoolBreakdown exposure={stats.money.pool.exposure} availablePaise={stats.money.pool.availablePaise} />
-            : <PoolBreakdown exposure={stats.money.own} />}
-          {stats.money.pool && (stats.money.own.openBuys + stats.money.own.openSells > 0) && (
-            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 10 }}>
-              Your own orders: {formatTokens(stats.money.own.heldOpenPaise / 100)} locked in {stats.money.own.openBuys} open buy{stats.money.own.openBuys === 1 ? '' : 's'},
-              {' '}{formatTokens(stats.money.own.heldDisputedPaise / 100)} in disputes,
-              {' '}{formatTokens(stats.money.own.sellsSettlingPaise / 100)} incoming from sells.
-            </div>
-          )}
-        </Card>
+      {/* The pool, its sell capacity, the disputes and the commission, side
+          by side to swipe, each with its bar and its ledger line (owner,
+          2026-10-21). What the merchant's own orders hold is under them. */}
+      {metricsReady && (
+        <HomeCards
+          money={stats?.money}
+          commission={stats?.commission}
+          ledger={ledger}
+          disputes={tabbed.DISPUTED}
+          onOpenOrder={openOrder}
+        />
+      )}
+      {stats?.money?.pool && (stats.money.own.openBuys + stats.money.own.openSells > 0) && (
+        <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+          Your own orders: {formatTokens(stats.money.own.heldOpenPaise / 100)} locked in {stats.money.own.openBuys} open buy{stats.money.own.openBuys === 1 ? '' : 's'},
+          {' '}{formatTokens(stats.money.own.heldDisputedPaise / 100)} in disputes,
+          {' '}{formatTokens(stats.money.own.sellsSettlingPaise / 100)} incoming from sells.
+        </div>
       )}
 
       {/* KPI row */}
@@ -366,7 +397,8 @@ const Dashboard: React.FC = () => {
       <div style={{ display: 'grid', gridTemplateColumns: splitColumns, gap: 14 }}>
         <Card>
           <CardTitle
-            title="Recent assigned"
+            title="Your orders"
+            sub="Approve or reject here; a tap opens the details"
             action={
               <button
                 onClick={() => navigate(ROUTES.ORDERS)}
@@ -376,49 +408,20 @@ const Dashboard: React.FC = () => {
               </button>
             }
           />
+          <SegmentedControl<HomeOrdersTab>
+            value={ordersTab}
+            onChange={setOrdersTab}
+            style={{ marginBottom: 12, flexWrap: 'wrap' }}
+            options={HOME_ORDER_TABS.map((tab) => ({ value: tab.value, label: `${tab.label} (${tabbed[tab.value].length})` }))}
+          />
           {state === 'loading' ? (
             <Skeleton height={180} />
-          ) : recent.length === 0 ? (
-            <div style={{ padding: '28px 0', textAlign: 'center', fontSize: 12.5, fontWeight: 600, color: 'var(--muted)' }}>
-              No active orders right now.
+          ) : tabbed[activeTab.value].length === 0 ? (
+            <div style={{ padding: '24px 0', textAlign: 'center', fontSize: 12.5, fontWeight: 600, color: 'var(--muted)' }}>
+              {activeTab.empty}
             </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              {recent.map((order) => (
-                <button
-                  key={orderKey(order)}
-                  onClick={() => openOrder(order)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 12, padding: '11px 4px', width: '100%',
-                    border: 0, borderBottom: '1px solid var(--border-2)', background: 'none',
-                    cursor: 'pointer', textAlign: 'left',
-                  }}
-                >
-                  <span style={{
-                    width: 32, height: 32, borderRadius: 9, flexShrink: 0,
-                    background: order.type === 'DEPOSIT' ? 'var(--dep-bg)' : 'var(--wd-bg)',
-                    color: order.type === 'DEPOSIT' ? 'var(--dep)' : 'var(--wd)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 800,
-                  }}>
-                    {order.type === 'DEPOSIT' ? '↓' : '↑'}
-                  </span>
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
-                      {formatMoney(order.fiatAmount ?? order.amount)}
-                      <span style={{ fontWeight: 600, color: 'var(--muted)', fontSize: 11 }}>
-                        {' · '}{order.type === 'DEPOSIT' ? 'Deposit' : 'Withdrawal'}
-                      </span>
-                    </span>
-                    <span className="bb-mono" style={{ display: 'block', fontSize: 10.5, fontWeight: 500, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {order.orderId || order._id}
-                    </span>
-                  </span>
-                  <StatusPill status={order.status} />
-                  <ChevronRight size={14} style={{ color: 'var(--muted)', flexShrink: 0 }} />
-                </button>
-              ))}
-            </div>
-          )}
+          ) : null}
+          <OrderWorkList orders={state === 'loading' ? [] : tabbed[activeTab.value]} allOrders={orders} reload={reload} />
         </Card>
 
         <Card>

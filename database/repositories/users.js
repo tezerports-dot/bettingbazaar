@@ -52,7 +52,7 @@ const COLUMNS = `
   sub_admin_role, sub_admin_permissions, phantom_access,
   is_blocked, block_reason, blocked_at, blocked_by,
   bank_details, last_login, roles, deleted_at, deleted_by, joined_at, updated_at,
-  account_type, sessions_valid_from, payout_hold_until, maintenance_tester`;
+  account_type, sessions_valid_from, payout_hold_until, maintenance_tester, payout_details_locked_until`;
 
 /**
  * The columns a caller may set through `updateUser`.
@@ -171,6 +171,9 @@ function toUser(row) {
     bankDetails: row.bank_details ?? null,
     // Withdrawals refused until then (schema.sql "PAYOUT HOLD"); null = none.
     payoutHoldUntil: row.payout_hold_until ?? null,
+    // Bank details and UPI ID fixed until then (schema.sql "PAYOUT DETAILS
+    // LOCK", written only by the row's trigger); null = never saved.
+    payoutDetailsLockedUntil: row.payout_details_locked_until ?? null,
     lastLogin: row.last_login,
     roles: row.roles ?? [],
     // Present so an admin reading a deleted account can see who removed it and
@@ -681,7 +684,7 @@ export async function softDeleteUser(userId, { actor }) {
  */
 export async function listUsers({
   status = null, isAdmin = null, isSubAdmin = null, isQueueManager = null,
-  blocked = null, flagged = null, search = null,
+  blocked = null, flagged = null, search = null, byMobile = false,
   excludeRole = null, accountType = null, limit = 50, cursor = null, page = null,
 } = {}) {
   const where = [];
@@ -718,7 +721,10 @@ export async function listUsers({
   if (accountType) add('account_type = $?', String(accountType));
   // Anchored prefix match, so the index is usable and the pattern cannot be
   // turned into a leading-wildcard scan of every account by the search box.
-  if (search) add('(username ILIKE $? || \'%\' OR mobile LIKE $? || \'%\')', String(search));
+  // A search by mobile answers "whose number is this", so it is a full admin's
+  // only (`byMobile`, staffContactShield.js; CLAUDE.md §24).
+  if (search && byMobile) add('(username ILIKE $? || \'%\' OR mobile LIKE $? || \'%\')', String(search));
+  else if (search) add('username ILIKE $? || \'%\'', String(search));
   if (cursor?.joinedAt && cursor?.userId) {
     params.push(cursor.joinedAt, cursor.userId);
     where.push(`(joined_at, user_id) < ($${params.length - 1}, $${params.length})`);

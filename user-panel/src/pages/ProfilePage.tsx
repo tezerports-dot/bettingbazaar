@@ -6,10 +6,13 @@
  * (net placed / winnings / win-rate / cycles), the bank account a sell is paid
  * into (backend.updateBankDetails), theme appearance toggle, and logout.
  *
- * A bank account and nothing else. Every sell is a bank transfer to it and no
- * UPI handle is ever a destination or shown (CLAUDE.md §2, §24); the row keeps
- * the four fields only (`users_bank_details_bank_account_only`). A UPI ID field
- * stood above them here, typed into and never sent.
+ * The bank account and UPI ID a sell is paid to (owner, 2026-10-21): the member
+ * paying it is shown the bank details and a UPI link for the exact amount. The
+ * row keeps those five fields only (`users_bank_details_bank_account_only`),
+ * refuses a UPI ID that is a mobile (`users_upi_id_shape`), and holds them
+ * fixed for 48 hours after a save and while an order is open (schema.sql
+ * "PAYOUT DETAILS LOCK"); this screen shows the server's `payoutDetailsLockedUntil`
+ * and its refusals as worded, and keeps no copy of either rule.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
@@ -22,7 +25,7 @@ import ScreenShell, { card, goldButton, inputStyle, fieldLabel } from '../redesi
 const backend = getBackend();
 
 const ProfilePage: React.FC = () => {
-  const { user, userBets, updateProfile, logout } = useGame();
+  const { user, userBets, updateProfile, logout, refreshUserWallet } = useGame();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -30,7 +33,10 @@ const ProfilePage: React.FC = () => {
   const [bankOpen, setBankOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [localPic, setLocalPic] = useState<string | null>(null);
-  const [bank, setBank] = useState({ accountHolderName: '', accountNumber: '', ifscCode: '', bankName: '' });
+  const [bank, setBank] = useState({ accountHolderName: '', accountNumber: '', ifscCode: '', bankName: '', upiId: '' });
+  const [bankRefusal, setBankRefusal] = useState('');
+  const lockedUntil = user?.payoutDetailsLockedUntil && new Date(user.payoutDetailsLockedUntil).getTime() > Date.now()
+    ? new Date(user.payoutDetailsLockedUntil) : null;
 
   const stats = useMemo(() => {
     const settled = (userBets || []).filter(b => b.status === 'WON' || b.status === 'LOST');
@@ -51,18 +57,23 @@ const ProfilePage: React.FC = () => {
 
   const openBank = () => {
     const d = user?.bankDetails;
-    setBank({ accountHolderName: d?.accountHolderName || '', accountNumber: d?.accountNumber || '', ifscCode: d?.ifscCode || '', bankName: d?.bankName || '' });
+    setBank({ accountHolderName: d?.accountHolderName || '', accountNumber: d?.accountNumber || '', ifscCode: d?.ifscCode || '', bankName: d?.bankName || '', upiId: d?.upiId || '' });
+    setBankRefusal('');
     setBankOpen(true);
   };
 
   const saveBank = async () => {
-    if (!bank.accountHolderName || !bank.accountNumber || !bank.ifscCode || !bank.bankName) { alert('All bank fields are required.'); return; }
-    setSaving(true);
+    if (!bank.accountHolderName || !bank.accountNumber || !bank.ifscCode || !bank.bankName || !bank.upiId.trim()) {
+      setBankRefusal('Fill in all the bank details and your UPI ID.');
+      return;
+    }
+    setSaving(true); setBankRefusal('');
     try {
-      await backend.updateBankDetails(user!.id, { accountHolderName: bank.accountHolderName, accountNumber: bank.accountNumber, ifscCode: bank.ifscCode.toUpperCase(), bankName: bank.bankName });
+      await backend.updateBankDetails(user!.id, { accountHolderName: bank.accountHolderName, accountNumber: bank.accountNumber, ifscCode: bank.ifscCode.toUpperCase(), bankName: bank.bankName, upiId: bank.upiId.trim() });
+      await refreshUserWallet();
       setBankOpen(false);
-      alert('Bank details saved!');
-    } catch (e: any) { alert(e?.message || 'Failed to save.'); }
+      alert('Payout details saved. They stay fixed for 48 hours.');
+    } catch (e: any) { setBankRefusal(e?.message || 'Failed to save.'); }
     finally { setSaving(false); }
   };
 
@@ -173,7 +184,8 @@ const ProfilePage: React.FC = () => {
         <div onClick={() => setBankOpen(false)} style={{ position: 'absolute', inset: 0, zIndex: 140, background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px 16px' }}>
           <div onClick={e => e.stopPropagation()} className="bb-rise" style={{ width: '100%', maxWidth: 420, maxHeight: '92%', overflowY: 'auto', background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 20, padding: 22, boxShadow: 'var(--shadow)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}><span className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>Bank account</span><button onClick={() => setBankOpen(false)} style={{ width: 30, height: 30, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 12 }}>✕</button></div>
-            <p style={{ fontSize: 11, color: 'var(--text2)', margin: '0 0 14px' }}>Required to receive sell-order payouts. Stored securely.</p>
+            <p style={{ fontSize: 11, color: 'var(--text2)', margin: '0 0 14px' }}>Where your sell orders are paid: the merchant sees these details and your UPI ID, never your mobile number. Once saved they cannot be changed for 48 hours, or while an order is in progress.</p>
+            {lockedUntil && <p role="status" style={{ fontSize: 11.5, color: 'var(--gold-ink)', margin: '0 0 12px', fontWeight: 700 }}>Locked until {lockedUntil.toLocaleString()}.</p>}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
               <div><label style={fieldLabel} htmlFor="account-holder-name">Account holder name</label><input id="account-holder-name" value={bank.accountHolderName} onChange={e => setBank({ ...bank, accountHolderName: e.target.value })} placeholder="Full name as per bank" style={inputStyle} /></div>
               <div><label style={fieldLabel} htmlFor="account-number">Account number</label><input id="account-number" value={bank.accountNumber} onChange={e => setBank({ ...bank, accountNumber: e.target.value })} inputMode="numeric" placeholder="0000 0000 0000" className="font-grotesk" style={inputStyle} /></div>
@@ -181,7 +193,9 @@ const ProfilePage: React.FC = () => {
                 <div><label style={fieldLabel} htmlFor="ifsc">IFSC</label><input id="ifsc" value={bank.ifscCode} onChange={e => setBank({ ...bank, ifscCode: e.target.value.toUpperCase() })} placeholder="HDFC0001234" style={{ ...inputStyle, textTransform: 'uppercase' }} /></div>
                 <div><label style={fieldLabel} htmlFor="bank">Bank</label><input id="bank" value={bank.bankName} onChange={e => setBank({ ...bank, bankName: e.target.value })} placeholder="HDFC Bank" style={inputStyle} /></div>
               </div>
-              <button onClick={saveBank} disabled={saving} style={{ ...goldButton, opacity: saving ? .6 : 1 }}>{saving ? 'Saving…' : 'Save details'}</button>
+              <div><label style={fieldLabel} htmlFor="upi-id">UPI ID</label><input id="upi-id" value={bank.upiId} onChange={e => setBank({ ...bank, upiId: e.target.value })} autoCapitalize="none" autoCorrect="off" placeholder="name@okaxis (not your mobile number)" style={inputStyle} /></div>
+              {bankRefusal && <p role="alert" style={{ fontSize: 12, color: 'var(--danger, #f87171)', margin: 0 }}>{bankRefusal}</p>}
+              <button onClick={saveBank} disabled={saving || !!lockedUntil} style={{ ...goldButton, opacity: saving || lockedUntil ? .6 : 1 }}>{saving ? 'Saving…' : lockedUntil ? 'Locked for now' : 'Save details'}</button>
             </div>
           </div>
         </div>

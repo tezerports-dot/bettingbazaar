@@ -113,7 +113,7 @@ router.get('/account', merchantAuth, requireMerchantAccount, async (req, res) =>
       accounts,
       // Which sizes the platform sends here, and which no account takes yet.
       sizes,
-      // Tokens bought from the platform, and returned to it (owner, 2026-10-21).
+      // Tokens bought from the platform (owner, 2026-10-21).
       poolTrades,
       ...(owner ? { staff, poolRequests } : {}),
       flags,
@@ -265,8 +265,9 @@ router.delete('/account/staff/:staffId/accounts/:accountId/:duty', merchantAuth,
 
 /**
  * POST /api/merchant/account/pool-requests — ask the platform to sell tokens
- * into the merchant account's pool (BUY) or buy them back (SELL), in whole
- * tokens. An admin with `canFundMerchants` fulfils it (Team pool requests).
+ * into the merchant account's pool, in whole tokens. An admin with
+ * `canFundMerchants` fulfils it (Team pool requests). Nothing is sold back
+ * (owner, 2026-10-21): another `direction` is 400 POOL_BUY_ONLY.
  */
 router.post('/account/pool-requests', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
   try {
@@ -276,7 +277,7 @@ router.post('/account/pool-requests', merchantAuth, requireMerchantAccount, owne
     }
     const out = await db.teamPools.createRequest({
       teamId: req.directTeam.teamId, supervisorId: req.merchantId,
-      direction: req.body?.direction, tokenAmountPaise: rupeesToPaise(tokens), note: req.body?.note,
+      direction: String(req.body?.direction ?? 'BUY').toUpperCase(), tokenAmountPaise: rupeesToPaise(tokens), note: req.body?.note,
     });
     if (!out.ok) return refuseTeam(res, out.reason);
     res.status(201).json({ success: true, requestId: out.requestId });
@@ -306,6 +307,28 @@ router.post('/account/pool-requests/usdt', merchantAuth, requireMerchantAccount,
     respondError(res, err, 'POST /merchant/account/pool-requests/usdt', { message: 'Could not start the USDT payment.' });
   }
 });
+
+/**
+ * POST /api/merchant/account/cash-out — start the merchant account's cash out;
+ * DELETE stops it early (owner, 2026-10-21; `teamCashOut.js`).
+ */
+const accountCashOut = (start) => async (req, res) => {
+  try {
+    const args = { teamId: req.directTeam.teamId, merchantId: req.merchantId };
+    const out = start ? await db.teamCashOut.startCashOut(args) : await db.teamCashOut.stopCashOut(args);
+    if (!out.ok) return refuseTeam(res, out.reason);
+    await db.audit.recordDetailed({
+      performedBy: req.merchantId, category: 'TREASURY', targetType: 'TEAM',
+      action: start ? 'TEAM_CASH_OUT_STARTED' : 'TEAM_CASH_OUT_STOPPED',
+      targetId: req.directTeam.teamId, ip: req.ip, details: out.cashOut,
+    });
+    res.json({ success: true, cashOut: out.cashOut });
+  } catch (err) {
+    respondError(res, err, `${start ? 'POST' : 'DELETE'} /merchant/account/cash-out`, { message: 'Could not change the cash out.' });
+  }
+};
+router.post('/account/cash-out', merchantAuth, requireMerchantAccount, ownerOnly, accountCashOut(true));
+router.delete('/account/cash-out', merchantAuth, requireMerchantAccount, ownerOnly, accountCashOut(false));
 
 router.delete('/account/pool-requests/:requestId', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
   try {

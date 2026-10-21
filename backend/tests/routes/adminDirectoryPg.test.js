@@ -128,9 +128,9 @@ describePg('admin directory — players and merchants tables', () => {
   it('shows a supervisor\'s pool, commission today and this month, and an agent\'s team pool', async () => {
     const commission = nextId('ad-tc');
     await pgQuery(
-      `INSERT INTO team_commissions (commission_id, team_id, supervisor_id, from_high_paise, to_high_paise,
-         buys_paise, sells_paise, commission_paise)
-       VALUES ($1, $2, $3, 0, 100000, 100000, 100000, 10000)`, [commission, team.teamId, team.supervisorId]);
+      `INSERT INTO team_commissions (commission_id, team_id, supervisor_id, order_id, order_type,
+         base_paise, commission_bp, commission_paise)
+       VALUES ($1, $2, $3, $1, 'DEPOSIT', 200000, 500, 10000)`, [commission, team.teamId, team.supervisorId]);
     await pgQuery(
       `INSERT INTO team_commission_shares (commission_id, merchant_id, role, share_paise)
        VALUES ($1, $2, 'SUPERVISOR', 1600)`, [commission, team.supervisorId]);

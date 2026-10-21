@@ -1,4 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
+/** Shown where a contact detail is withheld from a staff account that is not a full admin. */
+export const CONTACT_HIDDEN = 'contact: full admins only';
+
 export const formatters = {
   currency: (amount: number | undefined | null): string => {
     const n = Number(amount);
@@ -40,7 +43,10 @@ export const formatters = {
     });
   },
 
-  phone: (phone: string): string => {
+  // A mobile reaches full admins only (staffContactShield.js, CLAUDE.md §24):
+  // anyone else is sent none, and is told so.
+  phone: (phone?: string | null): string => {
+    if (!phone) return CONTACT_HIDDEN;
     if (phone.length === 10) {
       return `+91 ${phone.slice(0, 5)}-${phone.slice(5)}`;
     }

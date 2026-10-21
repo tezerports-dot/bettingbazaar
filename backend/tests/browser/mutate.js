@@ -442,7 +442,7 @@ async function disputedBuys(n) {
     for (let i = 0; i < n; i++) {
       const player = await seedPlayer({ balancePaise: 0 });
       const pT = playerToken(player);
-      const made = await call(pT, 'POST', '/api/payment/deposit/create', { tokenAmount: BUY_TOKENS });
+      const made = await call(pT, 'POST', '/api/payment/deposit/create', { tokenAmount: BUY_TOKENS, payMethod: 'BANK' });
       const orderId = made.body?.order?.orderId;
       if (!orderId) throw new Error(`the buy was refused: ${made.status} ${String(made.body?.message ?? '').slice(0, 100)}`);
       buys.push({ orderId, player });
@@ -1974,7 +1974,7 @@ const CASES = [
       for (let i = 0; i < 3; i++) {
         const player = await seedPlayer({});
         const pT = playerToken(player);
-        const res = await call(pT, 'POST', '/api/payment/deposit/create', { tokenAmount: 50000 }); // the smallest UPI/bank size (2d)
+        const res = await call(pT, 'POST', '/api/payment/deposit/create', { tokenAmount: 50000, payMethod: 'BANK' }); // the smallest UPI/bank size (2d)
         const orderId = res.body?.order?.orderId;
         if (!orderId) { refused.push(`${res.status} ${String(res.body?.message ?? '').slice(0, 80)}`); continue; }
         made.push(orderId);

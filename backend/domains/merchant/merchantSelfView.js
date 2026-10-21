@@ -33,6 +33,7 @@ export function formatMerchant(merchant, user = null) {
     acceptsDeposits:      merchant.acceptsDeposits,
     acceptsWithdrawals:   merchant.acceptsWithdrawals,
     bankDetails:          merchant.bankDetails,
+    upiId:                merchant.upiId ?? null,
     limits:               merchant.limits,
     // Whether the platform has stopped sending them new buy orders (three
     // unpaid in a row, §2). A merchant was never told: the Dashboard read
@@ -50,7 +51,10 @@ export function formatMerchant(merchant, user = null) {
     totalDepositAmount:        merchant.totalDepositAmount,
     totalWithdrawalsProcessed: merchant.totalWithdrawalsProcessed,
     totalWithdrawalAmount:     merchant.totalWithdrawalAmount,
+    // Counted from the order rows (`bb_merchant_track_record`): null until one is decided.
     successRate:               merchant.successRate,
+    ordersSucceeded:           merchant.ordersSucceeded,
+    ordersFailed:              merchant.ordersFailed,
     avgResponseMinutes:        merchant.avgResponseMinutes,
     disputeRate:               merchant.disputeRate,
     totalOrdersCompleted:      merchant.totalOrdersCompleted,

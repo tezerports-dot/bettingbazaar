@@ -100,10 +100,9 @@ describePg('the merchant business ledger', () => {
     expect(res.body.pool).toHaveLength(1);
     expect(res.body.pool[0]).toMatchObject({ direction: 'BUY', tokensPaise: 10_000_000, currency: 'INR', inrPaise: 10_000_000 });
     const t = res.body.totals;
-    expect(t).toMatchObject({ boughtPaise: 10_000_000, paidToAdminPaise: 10_000_000, netWithAdminPaise: 10_000_000, pools: 1 });
+    expect(t).toMatchObject({ boughtPaise: 10_000_000, paidToAdminPaise: 10_000_000, pools: 1 });
     // Net profit is the rows' arithmetic: bought at par, nothing earned yet.
-    expect(t.netProfitPaise).toBe((t.boughtPaise - t.paidToAdminPaise) - (t.returnedPaise - t.receivedFromAdminPaise)
-      + t.commissionPaise - t.compensationPaise);
+    expect(t.netProfitPaise).toBe((t.boughtPaise - t.paidToAdminPaise) + t.commissionPaise - t.compensationPaise);
     // The pool now: what was bought, less the buy the member spent out of it.
     expect(t.poolAvailablePaise + t.poolHeldPaise).toBe(10_000_000 - 5_000_000);
   });

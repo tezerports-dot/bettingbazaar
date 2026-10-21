@@ -14,7 +14,9 @@
  * Buying in USDT (owner, 2026-10-21) needs no admin: the request comes back
  * with an address of its own and the price, and the tokens arrive in the pool
  * once the USDT does (`UsdtPayCard`). What the pool bought from the platform
- * and returned to it is shown under the balance (`poolTrades`).
+ * is shown under the balance (`poolTrades`). Nothing is sold back to the
+ * platform (owner, 2026-10-21); the pool is turned into cash by a cash out
+ * (`CashOutCard`).
  */
 import React, { useState } from 'react';
 import { Coins, X } from 'lucide-react';
@@ -28,7 +30,7 @@ import { Button, Card, CardTitle, Field, SegmentedControl, Skeleton, inputStyle 
 import AccountShell, { Refusal } from './AccountShell';
 import { PoolBreakdown } from '../../components/PoolBreakdown';
 import { UsdtPayCard } from '../../components/UsdtPayCard';
-import type { PoolDirection } from '../../types';
+import { CashOutCard } from '../../components/CashOutCard';
 
 const errorText = (err: any, fallback: string): string => err?.message || fallback;
 const tokensOf = (paise: number) => formatTokens((Number(paise) || 0) / 100);
@@ -36,7 +38,6 @@ const tokensOf = (paise: number) => formatTokens((Number(paise) || 0) / 100);
 type PayWith = 'USDT' | 'ADMIN';
 
 export const PoolRequestForm: React.FC<{ onSent: () => Promise<void> }> = ({ onSent }) => {
-  const [direction, setDirection] = useState<PoolDirection>('BUY');
   const [payWith, setPayWith] = useState<PayWith>('USDT');
   const [tokens, setTokens] = useState('');
   const [note, setNote] = useState('');
@@ -47,11 +48,11 @@ export const PoolRequestForm: React.FC<{ onSent: () => Promise<void> }> = ({ onS
     setRefusal('');
     setBusy(true);
     try {
-      if (direction === 'BUY' && payWith === 'USDT') {
+      if (payWith === 'USDT') {
         await api.buyMerchantPoolUsdt(Number(tokens));
         toast.success('Pay the USDT shown below. The tokens arrive by themselves.');
       } else {
-        await api.requestMerchantPool(direction, Number(tokens), note.trim());
+        await api.requestMerchantPool(Number(tokens), note.trim());
         toast.success('Request sent. An admin fulfils it.');
       }
       setTokens(''); setNote('');
@@ -65,35 +66,24 @@ export const PoolRequestForm: React.FC<{ onSent: () => Promise<void> }> = ({ onS
 
   return (
     <Card>
-      <CardTitle title="Buy tokens, or return them"
-        sub={direction === 'BUY' && payWith === 'USDT'
+      <CardTitle title="Buy tokens"
+        sub={payWith === 'USDT'
           ? 'Pay in USDT and the tokens arrive by themselves, like a player\'s buy.'
           : 'An admin fulfils the request and records what was paid.'} />
-      <SegmentedControl<PoolDirection>
-        value={direction}
-        onChange={setDirection}
+      <SegmentedControl<PayWith>
+        value={payWith}
+        onChange={setPayWith}
         options={[
-          { value: 'BUY', label: 'Add tokens to the pool' },
-          { value: 'SELL', label: 'Return tokens to the platform' },
+          { value: 'USDT', label: 'Pay in USDT now (automatic)' },
+          { value: 'ADMIN', label: 'Pay an admin another way' },
         ]}
         style={{ marginBottom: 12, alignSelf: 'flex-start', width: 'fit-content' }}
       />
-      {direction === 'BUY' && (
-        <SegmentedControl<PayWith>
-          value={payWith}
-          onChange={setPayWith}
-          options={[
-            { value: 'USDT', label: 'Pay in USDT now (automatic)' },
-            { value: 'ADMIN', label: 'Pay an admin another way' },
-          ]}
-          style={{ marginBottom: 12, alignSelf: 'flex-start', width: 'fit-content' }}
-        />
-      )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
         <Field label="Tokens (whole number)" htmlFor="pool-tokens">
           <input id="pool-tokens" value={tokens} inputMode="numeric" onChange={(e) => setTokens(e.target.value)} style={inputStyle} />
         </Field>
-        {!(direction === 'BUY' && payWith === 'USDT') && (
+        {payWith !== 'USDT' && (
           <Field label="Note for the admin (optional)" htmlFor="pool-note">
             <input id="pool-note" value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} maxLength={300} />
           </Field>
@@ -101,7 +91,7 @@ export const PoolRequestForm: React.FC<{ onSent: () => Promise<void> }> = ({ onS
       </div>
       <Refusal message={refusal} style={{ marginTop: 10 }} />
       <Button onClick={() => void submit()} busy={busy} style={{ marginTop: 12 }}>
-        {direction === 'BUY' && payWith === 'USDT' ? 'Get the USDT address' : 'Send request'}
+        {payWith === 'USDT' ? 'Get the USDT address' : 'Send request'}
       </Button>
     </Card>
   );
@@ -139,8 +129,7 @@ const PoolBody: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 11, marginTop: 11 }}>
           {[
             { label: `Bought from the platform (${poolTrades?.buys ?? 0})`, value: tokensOf(poolTrades?.boughtPaise ?? 0) },
-            { label: `Returned to the platform (${poolTrades?.returns ?? 0})`, value: tokensOf(poolTrades?.returnedPaise ?? 0) },
-            { label: `Commission paid (${team.commission.commissionPercent}%)`, value: tokensOf(team.commission.paidPaise) },
+            { label: `Commission paid (${team.commission.depositPercent}% buys · ${team.commission.withdrawalPercent}% sells)`, value: tokensOf(team.commission.paidPaise) },
             { label: 'Commission owed', value: tokensOf(team.commission.owedPaise) },
           ].map((tile) => (
             <div key={tile.label} style={{ background: 'var(--surface-2)', borderRadius: 13, padding: 14 }}>
@@ -151,7 +140,10 @@ const PoolBody: React.FC = () => {
         </div>
       </Card>
 
-      {owner && <PoolRequestForm onSent={reload} />}
+      <CashOutCard cashOut={team.cashOut} canAct={owner} change={api.setMerchantCashOut} onChanged={reload} />
+
+      {/* A pool cashing out, or paused after one, buys no tokens (teamCashOut.js). */}
+      {owner && !team.cashOut.active && !team.cashOut.pausedUntil && <PoolRequestForm onSent={reload} />}
 
       {owner && (
         <Card>
@@ -173,7 +165,7 @@ const PoolBody: React.FC = () => {
                 <div key={r.requestId} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--surface-2)', borderRadius: 12 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
-                      {r.direction === 'BUY' ? 'Add' : 'Return'} {tokensOf(r.tokenAmountPaise)}
+                      Add {tokensOf(r.tokenAmountPaise)}
                     </div>
                     <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>
                       {r.status}{r.usdt ? ` · paid in USDT (${r.usdt.amount} USDT)` : ''} · {new Date(r.createdAt).toLocaleString()}{r.decisionNote ? ` · ${r.decisionNote}` : ''}

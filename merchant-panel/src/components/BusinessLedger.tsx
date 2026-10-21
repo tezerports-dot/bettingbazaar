@@ -2,7 +2,7 @@
 /**
  * The business ledger (owner, 2026-10-21): what the business did over a range
  * of IST days, one coloured table per kind (player buys, player sells,
- * commission, pool tokens bought from or returned to the platform, disputes
+ * commission, pool tokens bought from the platform, disputes
  * with what they cost), the transaction ID last in every row, and a block of
  * totals: net with the platform, net with players, net commission after
  * compensation, net profit, and the pool's tokens now.
@@ -175,15 +175,15 @@ const BusinessLedger: React.FC<{ from?: string; to?: string }> = (props) => {
           <section aria-label="Totals" style={{ ...cardStyle, padding: 16 }}>
             <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 800, color: 'var(--text)' }}>Totals</h3>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12 }}>
-              <Tile label="Net with the platform" value={signed(t.netWithAdminPaise)} tone="var(--warn)" toneBg="var(--warn-bg)"
-                sub={`Bought ${tokens(t.boughtPaise)} for ₹${tokens(t.paidToAdminPaise)} · returned ${tokens(t.returnedPaise)} for ₹${tokens(t.receivedFromAdminPaise)}`} />
+              <Tile label="Bought from the platform" value={tokens(t.boughtPaise)} tone="var(--warn)" toneBg="var(--warn-bg)"
+                sub={`Paid ₹${tokens(t.paidToAdminPaise)} for them`} />
               <Tile label="Net with players" value={signed(t.netUserPaise)} tone="var(--info)" toneBg="var(--info-bg)"
                 sub={`${t.userBuys} buys ${tokens(t.userBuysPaise)} · ${t.userSells} sells ${tokens(t.userSellsPaise)}`} />
               <Tile label="Net commission" value={signed(t.netCommissionPaise)} tone="var(--dep)" toneBg="var(--dep-bg)"
                 sub={`Earned ${tokens(t.commissionPaise)} · compensation paid ${tokens(t.compensationPaise)}`} />
               <Tile label="Net profit" value={signed(t.netProfitPaise)} tone={t.netProfitPaise < 0 ? 'var(--danger)' : 'var(--ok)'}
                 toneBg={t.netProfitPaise < 0 ? 'var(--danger-bg)' : 'var(--ok-bg)'} strong
-                sub="Commission less compensation, plus any gain on tokens traded with the platform" />
+                sub="Commission less compensation, plus any gain on tokens bought from the platform" />
               <Tile label="Pool tokens now" value={tokens(t.poolAvailablePaise + t.poolHeldPaise)} tone="var(--wd)" toneBg="var(--wd-bg)"
                 sub={`${tokens(t.poolAvailablePaise)} free · ${tokens(t.poolHeldPaise)} held for open buys`} />
             </div>
@@ -206,12 +206,11 @@ const BusinessLedger: React.FC<{ from?: string; to?: string }> = (props) => {
               { label: 'Commission', render: (r) => tokens(r.sharePaise), align: 'right', mono: true },
             ]}
             idOf={(r) => r.commissionId} total={tokens(t.commissionPaise)} empty="No commission in this range." />
-          <Section title="Pool tokens bought from and returned to the platform" tone="var(--wd)" toneBg="var(--wd-bg)" rows={ledger.pool}
+          <Section title="Pool tokens bought from the platform" tone="var(--wd)" toneBg="var(--wd-bg)" rows={ledger.pool}
             columns={[
               { label: 'Time', render: (r) => when(r.at), mono: true },
-              { label: 'What', render: (r) => (r.direction === 'BUY' ? 'Bought' : 'Returned') },
               { label: 'Pool', render: (r) => r.team },
-              { label: 'Paid or received', render: (r) => (r.amountMinor === null ? '—' : `${(r.amountMinor / 100).toLocaleString('en-IN')} ${r.currency}`), mono: true },
+              { label: 'Paid', render: (r) => (r.amountMinor === null ? '—' : `${(r.amountMinor / 100).toLocaleString('en-IN')} ${r.currency}`), mono: true },
               { label: 'Tokens', render: (r) => tokens(r.tokensPaise), align: 'right', mono: true },
             ]}
             idOf={(r) => r.requestId} empty="No pool trades with the platform in this range." />

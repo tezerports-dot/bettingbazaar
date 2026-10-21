@@ -197,7 +197,7 @@ describePg('the merchant record', () => {
     expect(m.totalWithdrawalAmount).toBe(500);
   });
 
-  it('keeps success_rate describing the same orders total_orders_all counts', async () => {
+  it('keeps the dispute rate describing the same orders total_orders_all counts; counters move no success rate', async () => {
     await make();
     await recordCompletedOrder(ID, { direction: 'DEPOSIT', amountRupees: 100 });
     await recordCompletedOrder(ID, { direction: 'DEPOSIT', amountRupees: 100 });
@@ -206,8 +206,9 @@ describePg('the merchant record', () => {
     const m = await getMerchant(ID);
     expect(m.totalOrdersAll).toBe(3);
     expect(m.totalOrdersCompleted).toBe(2);
-    expect(m.successRate).toBeCloseTo(2 / 3, 6);
     expect(m.disputeRate).toBeCloseTo(1 / 3, 6);
+    // The success rate is counted from order rows (bb_merchant_track_record), and this merchant has none.
+    expect(m.successRate).toBeNull();
   });
 
   it('leaves the response average alone when an order was not measured', async () => {
@@ -342,7 +343,7 @@ describePg('the merchant record', () => {
     await applySchema();
     const cols = await pgQuery(
       `SELECT column_name FROM information_schema.columns
-        WHERE table_name = 'merchants' AND column_name LIKE '%upi%'`);
+        WHERE table_name = 'merchants' AND column_name = 'bank_upi_id'`);
     expect(cols.rows).toEqual([]);
     const idx = await pgQuery(`SELECT 1 FROM pg_indexes WHERE indexname = 'merchants_upi_unique'`);
     expect(idx.rows).toEqual([]);

@@ -528,7 +528,7 @@ export async function merchantLeaderboard({ days = 30, limit = 20, sortBy = 'vol
   const ORDER_BY = {
     volume:      'completed_volume DESC',
     orders:      'completed_orders DESC',
-    successRate: 'success_rate DESC',
+    successRate: 'success_rate DESC NULLS LAST',
     bonus:       'bonus_paise DESC',
   }[sortBy] || 'completed_volume DESC';
 
@@ -538,7 +538,6 @@ export async function merchantLeaderboard({ days = 30, limit = 20, sortBy = 'vol
        SELECT merchant_id,
               COUNT(*)::int AS total_orders,
               COUNT(*) FILTER (WHERE state IN ('COMPLETED','PAID'))::int AS completed_orders,
-              COUNT(*) FILTER (WHERE state IN ('FAILED','CANCELLED','REJECTED'))::int AS failed_orders,
               -- TOKENS. This one RANKS merchants against each other, so the
               -- cross-currency sum did not merely misreport: a USDT merchant's
               -- 50,000-token order counted as 555 beside an INR merchant's
@@ -554,17 +553,22 @@ export async function merchantLeaderboard({ days = 30, limit = 20, sortBy = 'vol
         WHERE created_at >= $1
         GROUP BY merchant_id
      )
-     SELECT o.merchant_id, o.total_orders, o.completed_orders, o.failed_orders,
+     SELECT o.merchant_id, o.total_orders, o.completed_orders,
             o.completed_volume,
             COALESCE(b.bonus_paise, 0) AS bonus_paise,
             COALESCE(m.username, m.name, 'unknown') AS username,
             COALESCE(m.is_online, FALSE) AS is_online,
-            CASE WHEN o.total_orders > 0
-                 THEN ROUND((o.completed_orders::numeric / o.total_orders) * 100, 2)
-                 ELSE 0 END AS success_rate
+            -- Succeeded and failed in the window, counted the one way
+            -- (bb_merchant_track_record, owner 2026-10-21): disputes by
+            -- their loser, player cancels left out.
+            tr.track[1] AS succeeded, tr.track[2] AS failed,
+            CASE WHEN tr.track[1] + tr.track[2] > 0
+                 THEN ROUND((tr.track[1]::numeric / (tr.track[1] + tr.track[2])) * 100, 2)
+                 END AS success_rate
        FROM orders o
        LEFT JOIN bonuses b ON b.merchant_id = o.merchant_id
        LEFT JOIN merchants m ON m.merchant_id = o.merchant_id
+       CROSS JOIN LATERAL (SELECT bb_merchant_track_record(o.merchant_id, $1) AS track) tr
       ORDER BY ${ORDER_BY}
       LIMIT ${Math.min(Math.max(Number(limit) || 20, 1), 200)}`,
     [since], 'stats_merchant_leaderboard',
@@ -576,9 +580,10 @@ export async function merchantLeaderboard({ days = 30, limit = 20, sortBy = 'vol
     isOnline: r.is_online,
     totalOrders: r.total_orders,
     completedOrders: r.completed_orders,
-    failedOrders: r.failed_orders,
+    failedOrders: r.failed,
     completedVolume: rupees(r.completed_volume),
-    successRate: Number(r.success_rate),
+    // Percent, or null with nothing decided in the window.
+    successRate: r.success_rate === null ? null : Number(r.success_rate),
     bonusIssued: rupees(r.bonus_paise),
   }));
 }
@@ -587,8 +592,8 @@ export async function merchantLeaderboard({ days = 30, limit = 20, sortBy = 'vol
  * One merchant's funding picture.
  *
  * `matchedCycleVolume` is the smaller of the deposit and withdrawal volumes —
- * the amount this merchant took round a buy→sell cycle. Commission is paid on
- * the TEAM's matched volume (`teamCommission.js`), not on this.
+ * the amount this merchant took round a buy→sell cycle. Commission is paid per
+ * completed order into the TEAM's pool (`teamCommission.js`), not on this.
  */
 export async function merchantFundingStats(merchantId) {
   const { rows } = await pgQuery(
@@ -759,10 +764,8 @@ export async function merchantEarnings(merchantId, { from = null, to = null } = 
   const r = rows[0];
   return {
     today: {
-      // ONE figure, because commission is not attributed per order and cannot
-      // honestly be split across the two directions. It is paid on the TEAM's
-      // matched volume — min(buys, sells) — so a deposit's "share" of it does
-      // not exist to be reported.
+      // ONE figure: the merchant's recorded share of the commission paid on
+      // their team's completed orders (16% supervisor / the rest members).
       earned: rupees(r.today_paid),
       deposits: {
         count: r.today_deposit_count,

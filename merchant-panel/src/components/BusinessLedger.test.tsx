@@ -23,7 +23,7 @@ const LEDGER = {
   pool: [{ requestId: 'tpr_1', at: '2026-10-04T09:00:00Z', direction: 'BUY', team: 'Alpha', tokensPaise: 10_000_000, currency: 'INR', amountMinor: 10_000_000, inrPaise: 10_000_000 }],
   disputes: [{ orderId: 'WD_9', at: '2026-10-05T13:00:00Z', type: 'SELL', tokensPaise: 500_000, state: 'COMPLETED', decision: 'FAVOR_USER', lostBy: 'MERCHANT', compensationPaise: 25_000 }],
   totals: {
-    boughtPaise: 10_000_000, paidToAdminPaise: 10_000_000, returnedPaise: 0, receivedFromAdminPaise: 0, netWithAdminPaise: 10_000_000,
+    boughtPaise: 10_000_000, paidToAdminPaise: 10_000_000,
     userBuys: 1, userBuysPaise: 5_000_000, userSells: 1, userSellsPaise: 1_000_000, netUserPaise: 4_000_000,
     commissionPaise: 42_000, compensationPaise: 25_000, netCommissionPaise: 17_000, netProfitPaise: 17_000,
     pools: 1, poolAvailablePaise: 4_000_000, poolHeldPaise: 1_000_000,
@@ -40,7 +40,7 @@ describe('BusinessLedger', () => {
     expect(within(totals).getByText('Net profit')).toBeInTheDocument();
     expect(within(totals).getByText('Net commission')).toBeInTheDocument();
     expect(within(totals).getByText('Pool tokens now')).toBeInTheDocument();
-    for (const name of ['Player buys', 'Player sells', 'Commission', 'Pool tokens bought from and returned to the platform', 'Disputes']) {
+    for (const name of ['Player buys', 'Player sells', 'Commission', 'Pool tokens bought from the platform', 'Disputes']) {
       const table = screen.getByRole('table', { name });
       const headers = within(table).getAllByRole('columnheader');
       expect(headers[headers.length - 1]).toHaveTextContent('Transaction ID');

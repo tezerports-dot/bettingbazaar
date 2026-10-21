@@ -40,7 +40,8 @@ const served = {
     assignmentWaitSeconds: 1300,
     processingWindowSeconds: { DEPOSIT: 600, WITHDRAWAL: 1200 },
   },
-  directMerchants: { commissionPercent: 12, dailyProblemFlagThreshold: 6 },
+  directMerchants: { dailyProblemFlagThreshold: 6 },
+  orderCommission: { depositPercent: 4.5, withdrawalPercent: 5 },
 };
 
 const field = (id: string) => document.getElementById(id) as HTMLInputElement;
@@ -86,20 +87,22 @@ describe('each INR size goes to: Agents / Merchant accounts', () => {
     expect(field('mr-conc-DEPOSIT').value).toBe('12');
     expect(field('mr-proc-WITHDRAWAL').value).toBe('1200');
     expect(field('mr-assignmentWaitSeconds').value).toBe('1300');
-    expect(field('dm-commissionPercent').value).toBe('12');
+    expect(field('oc-depositPercent').value).toBe('4.5');
     fireEvent.change(field('dm-dailyProblemFlagThreshold'), { target: { value: '9' } });
+    fireEvent.change(field('oc-withdrawalPercent'), { target: { value: '6.25' } });
     fireEvent.click(saveButton());
     await waitFor(() => expect(updateConfig).toHaveBeenCalled());
     expect(updateConfig.mock.calls[0][0]).toMatchObject({
       merchantRouting: served.merchantRouting,
-      directMerchants: { commissionPercent: 12, dailyProblemFlagThreshold: 9 },
+      directMerchants: { dailyProblemFlagThreshold: 9 },
+      orderCommission: { depositPercent: 4.5, withdrawalPercent: 6.25 },
     });
   });
 
   it('an out-of-range commission is announced and the save is off', async () => {
     await paint();
-    fireEvent.change(field('dm-commissionPercent'), { target: { value: '80' } });
-    expect(screen.getByRole('alert')).toHaveTextContent('Must be 1–50.');
+    fireEvent.change(field('oc-depositPercent'), { target: { value: '80' } });
+    expect(screen.getByRole('alert')).toHaveTextContent('Must be 0–20.');
     expect(saveButton()).toBeDisabled();
   });
 });

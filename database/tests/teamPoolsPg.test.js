@@ -2,11 +2,11 @@
 /**
  * Team token pools, against a REAL PostgreSQL (PROJECT_STATUS §3.10, 2b).
  *
- * A team's pool is bought from and sold back to the platform. Every sale is a
- * treasury TRANSFER (TOKEN_SUPPLY → TEAM_FLOAT) — no token is created — and
- * every fulfilment records what was paid for it. What needs a database: the
- * once-only fulfilment is a status flip RACED here, the buyback floor is the
- * UPDATE's own WHERE, and TEAM_FLOAT must equal the sum of every pool.
+ * A team's pool is bought from the platform and never sold back to it (owner,
+ * 2026-10-21). Every sale is a treasury TRANSFER (TOKEN_SUPPLY → TEAM_FLOAT) —
+ * no token is created — and every fulfilment records what was paid for it.
+ * What needs a database: the once-only fulfilment is a status flip RACED here,
+ * the row refuses a buyback, and TEAM_FLOAT must equal the sum of every pool.
  *
  * Trap 10: every merchant, team and request is this run's own, removed after;
  * assertions on the treasury are DELTAS, never global totals.
@@ -80,16 +80,24 @@ describePg('team token pools (PostgreSQL)', () => {
   });
 
   // ── Requests ─────────────────────────────────────────────────────────────
-  it('a supervisor asks to buy; one pending request per direction per team', async () => {
+  it('a supervisor asks to buy; one pending request per team', async () => {
     const t = await team();
     const id = await ask(t, 'BUY', 1000);
     expect(await getRequest(id)).toMatchObject({ teamId: t.teamId, direction: 'BUY', status: 'PENDING', tokenAmountPaise: T(1000) });
     expect(await createRequest({ teamId: t.teamId, supervisorId: t.sup, direction: 'BUY', tokenAmountPaise: T(5) }))
       .toEqual({ ok: false, reason: 'request_pending' });
-    // A pending BUY does not stop a SELL being asked — they are different questions.
-    // (The pool is empty, so the SELL is refused for that reason, not for the BUY.)
-    expect(await createRequest({ teamId: t.teamId, supervisorId: t.sup, direction: 'SELL', tokenAmountPaise: T(5) }))
-      .toEqual({ ok: false, reason: 'pool_short' });
+  });
+
+  it('never sells tokens back to the platform: the module refuses it by name, and so does the row', async () => {
+    const t = await funded(1000);
+    await expect(createRequest({ teamId: t.teamId, supervisorId: t.sup, direction: 'SELL', tokenAmountPaise: T(5) }))
+      .rejects.toMatchObject({ status: 400, code: 'POOL_BUY_ONLY' });
+    // Any writer: a buyback row written by hand is refused by the CHECK.
+    await expect(pgQuery(
+      `INSERT INTO team_pool_requests (request_id, team_id, supervisor_id, direction, token_amount_paise)
+       VALUES ($1, $2, $3, 'SELL', $4)`, [`tpr_test_sell_${t.teamId}`, t.teamId, t.sup, T(5)]))
+      .rejects.toMatchObject({ code: '23514' });
+    expect((await getPool(t.teamId)).availablePaise).toBe(T(1000));
   });
 
   it('refuses another supervisor\'s team as not found, and a bad direction or amount by name', async () => {
@@ -140,36 +148,7 @@ describePg('team token pools (PostgreSQL)', () => {
     expect((await getTeam(t.teamId)).poolAvailablePaise).toBe(T(2500));
   });
 
-  it('a buyback takes tokens back to the platform and records a rupee payment', async () => {
-    const t = await funded(1000);
-    const id = await ask(t, 'SELL', 400);
-    const before = await getTreasuryBalances();
-    expect((await fulfilRequest({ requestId: id, actor: 'admin-1', consideration: INR(390) })).ok).toBe(true);
-    const after = await getTreasuryBalances();
-    expect(after[ACCOUNTS.TOKEN_SUPPLY] - before[ACCOUNTS.TOKEN_SUPPLY]).toBe(T(400));
-    expect(after[ACCOUNTS.TEAM_FLOAT] - before[ACCOUNTS.TEAM_FLOAT]).toBe(-T(400));
-    expect((await getPool(t.teamId)).availablePaise).toBe(T(600));
-    const { rows } = await pgQuery('SELECT direction FROM admin_token_considerations WHERE movement_id = $1', [`team_pool_${id}`]);
-    expect(rows[0].direction).toBe('PAID');
-  });
-
-  it('a buyback larger than the pool is refused at fulfilment, and nothing moves', async () => {
-    const t = await funded(500);
-    const sell = await ask(t, 'SELL', 500);
-    // The pool is drawn down after the request was made: the courtesy check at
-    // asking time is not the guard, the fulfilment's own write is.
-    await pgQuery('UPDATE team_pool_requests SET token_amount_paise = $2 WHERE request_id = $1', [sell, T(501)]);
-    const before = await getTreasuryBalances();
-    expect(await fulfilRequest({ requestId: sell, actor: 'admin-1', consideration: INR(501) }))
-      .toEqual({ ok: false, reason: 'pool_short' });
-    const after = await getTreasuryBalances();
-    expect(after[ACCOUNTS.TEAM_FLOAT]).toBe(before[ACCOUNTS.TEAM_FLOAT]);
-    expect((await getPool(t.teamId)).availablePaise).toBe(T(500));
-    // The refusal rolled the status flip back with everything else.
-    expect((await getRequest(sell)).status).toBe('PENDING');
-  });
-
-  it('a USDT payment is recorded in USDT with its rate, but a buyback must be paid in rupees', async () => {
+  it('a USDT payment is recorded in USDT with its rate', async () => {
     const t = await team();
     const id = await ask(t, 'BUY', 50000);
     const out = await fulfilRequest({
@@ -178,12 +157,6 @@ describePg('team token pools (PostgreSQL)', () => {
     });
     expect(out.ok).toBe(true);
     expect(out.consideration).toMatchObject({ currency: 'USDT', fiatAmountMinor: 55000 });
-
-    const sell = await ask(t, 'SELL', 100);
-    await expect(fulfilRequest({
-      requestId: sell, actor: 'admin-1', consideration: { currency: 'USDT', fiatAmountMinor: 100, rateUsed: 90 },
-    })).rejects.toThrow();
-    expect((await getRequest(sell)).status).toBe('PENDING');
   });
 
   // ── Once only ────────────────────────────────────────────────────────────
@@ -219,13 +192,11 @@ describePg('team token pools (PostgreSQL)', () => {
     const { rows: s0 } = await pgQuery('SELECT COALESCE(SUM(available_paise + held_paise),0)::bigint AS s FROM team_pools');
     const a = await funded(120);
     const b = await funded(80);
-    const id = await ask(b, 'SELL', 30);
-    await fulfilRequest({ requestId: id, actor: 'admin-1', consideration: INR(30) });
     const end = (await getTreasuryBalances())[ACCOUNTS.TEAM_FLOAT];
     const { rows: s1 } = await pgQuery('SELECT COALESCE(SUM(available_paise + held_paise),0)::bigint AS s FROM team_pools');
-    expect(end - start).toBe(T(170));
-    expect(Number(s1[0].s) - Number(s0[0].s)).toBe(T(170));
-    expect((await getPool(a.teamId)).availablePaise + (await getPool(b.teamId)).availablePaise).toBe(T(170));
+    expect(end - start).toBe(T(200));
+    expect(Number(s1[0].s) - Number(s0[0].s)).toBe(T(200));
+    expect((await getPool(a.teamId)).availablePaise + (await getPool(b.teamId)).availablePaise).toBe(T(200));
   });
 
   it('the pool ledger is append-only', async () => {

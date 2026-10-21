@@ -342,9 +342,10 @@ describePg('accounts (PostgreSQL)', () => {
         expect(found.users.map((u) => u.userId)).toEqual(['u-3']);
       });
 
-      it('matches a mobile prefix — the other half of the same OR', async () => {
-        const found = await listUsers({ search: '9770000004' });
+      it('matches a mobile prefix for a full admin only (byMobile, CLAUDE.md §24)', async () => {
+        const found = await listUsers({ search: '9770000004', byMobile: true });
         expect(found.users.map((u) => u.userId)).toEqual(['u-4']);
+        expect((await listUsers({ search: '9770000004' })).users).toEqual([]);
       });
 
       it('a prefix nobody has returns nothing, rather than throwing', async () => {
@@ -424,11 +425,10 @@ describePg('accounts (PostgreSQL)', () => {
     });
   });
 
-  // ── The payout account is a bank account, and nothing else (§2, §24) ──────
-  // Every sell is a bank transfer to the player's account and no UPI handle is
-  // ever a destination or shown. The Profile screen still had a UPI ID field
-  // (typed, never sent) and the sell copied `bankDetails.upiId` onto every
-  // order a member reads. The row now holds the four fields a transfer needs.
+  // ── The payout account: a bank account and a UPI ID, nothing else (§2, §24)
+  // The member paying a sell is shown the bank details and a UPI link for the
+  // order's amount (owner, 2026-10-21); the row holds those five fields, a UPI
+  // ID that is not a mobile, and fixes them 48 hours and while an order is open.
   describe('the payout account', () => {
     const ACCOUNT = {
       accountHolderName: 'Asha Rao', accountNumber: '000111222333',
@@ -442,11 +442,9 @@ describePg('accounts (PostgreSQL)', () => {
       expect(u.bankDetails).toEqual(ACCOUNT);
     });
 
-    it('refuses a UPI handle, or any other field, beside the account', async () => {
+    it('refuses any other field beside the account and the UPI ID', async () => {
       await createUser(mk());
-      await expect(updateUser('u-1', { bankDetails: { ...ACCOUNT, upiId: 'asha@okaxis' } }))
-        .rejects.toThrow(CONSTRAINT);
-      // Whatever it is called: the row admits the four names and no fifth.
+      // Whatever it is called: the row admits the five names and no sixth.
       await expect(pgQuery(
         `UPDATE users SET bank_details = $2 WHERE user_id = $1`,
         ['u-1', JSON.stringify({ ...ACCOUNT, vpa: '9990000001@ybl' })],
@@ -466,11 +464,85 @@ describePg('accounts (PostgreSQL)', () => {
 
       await applySchema();
 
-      expect((await getUser('u-1')).bankDetails).toEqual(ACCOUNT);
+      expect((await getUser('u-1')).bankDetails).toEqual({ ...ACCOUNT, upiId: 'asha@okaxis' });
       expect((await getUser('u-2')).bankDetails).toBeNull();
       const { rows } = await pgQuery(
         `SELECT 1 FROM pg_constraint WHERE conname = 'users_bank_details_bank_account_only' AND convalidated`);
       expect(rows, 'the constraint is not back, validated').toHaveLength(1);
+    });
+
+    it('keeps a UPI ID, and refuses one that is a mobile or not a UPI ID at all', async () => {
+      await createUser(mk());
+      await createUser(mk({ userId: 'u-2', username: 'bob', mobile: '9990000002' }));
+      for (const upiId of ['9876543210@ybl', '+919876543210@paytm', 'asha.9876543210@okaxis', 'asha', '@okaxis']) {
+        await expect(updateUser('u-1', { bankDetails: { ...ACCOUNT, upiId } }), upiId)
+          .rejects.toMatchObject({ code: '23514', constraint: 'users_upi_id_shape' });
+      }
+      expect((await getUser('u-1')).bankDetails, 'a refused write still landed').toBeNull();
+      // The opposite case: a name, and a short number that is no mobile.
+      const u = await updateUser('u-2', { bankDetails: { ...ACCOUNT, upiId: 'asha.rao42@okaxis' } });
+      expect(u.bankDetails.upiId).toBe('asha.rao42@okaxis');
+    });
+
+    describe('the lock (schema.sql "PAYOUT DETAILS LOCK")', () => {
+      const other = { ...ACCOUNT, accountNumber: '000111222444', upiId: 'asha.rao@okicici' };
+
+      it('fixes the details 48 hours from the first save, and every later save', async () => {
+        await createUser(mk());
+        const first = await updateUser('u-1', { bankDetails: ACCOUNT });
+        const hours = (new Date(first.payoutDetailsLockedUntil).getTime() - Date.now()) / 3_600_000;
+        expect(hours).toBeGreaterThan(47.9);
+        expect(hours).toBeLessThanOrEqual(48);
+        await expect(updateUser('u-1', { bankDetails: other }))
+          .rejects.toMatchObject({ code: '23514', constraint: 'users_payout_details_locked' });
+        expect((await getUser('u-1')).bankDetails).toEqual(ACCOUNT);
+        // The same details again change nothing, so nothing is refused.
+        await updateUser('u-1', { bankDetails: ACCOUNT });
+        // Once the lock has passed, a new account is taken and locks again.
+        await pgQuery("UPDATE users SET payout_details_locked_until = now() - interval '1 second' WHERE user_id = 'u-1'");
+        const second = await updateUser('u-1', { bankDetails: other });
+        expect(second.bankDetails).toEqual(other);
+        expect(new Date(second.payoutDetailsLockedUntil).getTime()).toBeGreaterThan(Date.now() + 47 * 3_600_000);
+      });
+
+      it('clearing them is not refused and keeps the lock, so a new account still waits', async () => {
+        await createUser(mk());
+        const first = await updateUser('u-1', { bankDetails: ACCOUNT });
+        await pgQuery("UPDATE users SET bank_details = NULL WHERE user_id = 'u-1'");
+        expect(String((await getUser('u-1')).payoutDetailsLockedUntil)).toBe(String(first.payoutDetailsLockedUntil));
+        await expect(updateUser('u-1', { bankDetails: other }))
+          .rejects.toMatchObject({ constraint: 'users_payout_details_locked' });
+      });
+
+      it('refuses a change while an order of theirs is open, and allows it once none is', async () => {
+        const run = `${Date.now()}`;
+        await createUser(mk());
+        await updateUser('u-1', { bankDetails: ACCOUNT });
+        await pgQuery("UPDATE users SET payout_details_locked_until = NULL WHERE user_id = 'u-1'");
+        try {
+          for (const [state, extra] of [['PENDING_QUEUE', ''], ['PROCESSING', ''], ['PAID', ''], ['DISPUTED', ''],
+                                        ['REJECTED', ", dispute_window_until = now() + interval '1 hour'"]]) {
+            const id = `o-open-${state}-${run}`;
+            await pgQuery(`INSERT INTO order_states (order_id, user_id, order_type, state, token_amount_paise)
+                           VALUES ($1, 'u-1', 'DEPOSIT', 'PENDING_QUEUE', 50000)`, [id]);
+            await pgQuery(`UPDATE order_states SET state = $2${extra} WHERE order_id = $1`, [id, state]);
+            await expect(updateUser('u-1', { bankDetails: other }), state)
+              .rejects.toMatchObject({ code: '23514', constraint: 'users_payout_details_in_use' });
+            await pgQuery("UPDATE order_states SET state = 'CANCELLED' WHERE order_id = $1", [id]);
+          }
+          // A finished order, and a rejection whose window has passed, hold nothing.
+          for (const [state, extra] of [['COMPLETED', ''], ['CANCELLED', ''],
+                                        ['REJECTED', ", dispute_window_until = now() - interval '1 minute'"]]) {
+            await pgQuery(`INSERT INTO order_states (order_id, user_id, order_type, state, token_amount_paise)
+                           VALUES ('o-done-' || $1, 'u-1', 'DEPOSIT', 'PENDING_QUEUE', 50000)`, [`${state}${extra.length}-${run}`]);
+            await pgQuery(`UPDATE order_states SET state = $1${extra} WHERE order_id = 'o-done-' || $2`, [state, `${state}${extra.length}-${run}`]);
+          }
+          expect((await updateUser('u-1', { bankDetails: other })).bankDetails).toEqual(other);
+        } finally {
+          // Every row this run wrote, whichever assertion failed (trap 10).
+          await pgQuery("DELETE FROM order_states WHERE order_id LIKE '%-' || $1", [run]);
+        }
+      });
     });
   });
 });

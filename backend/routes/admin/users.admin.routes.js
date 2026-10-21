@@ -1,5 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** users.admin.routes.js — User management, balance adjust, block/unblock, phantom, queue managers */
+import { seesContact } from '../../domains/identity/staffContactShield.js';
 import {
   authenticate, express, hasPermission, isAdmin,
 } from './_adminShared.js';
@@ -66,6 +67,7 @@ router.get('/users', authenticate, hasPermission('canManageUsers'), async (req, 
     const { status, search, sort, dir, page = 1, limit = 50 } = req.query;
     const size = Math.min(Number(limit) || 50, 200);
     const { rows, total } = await db.adminDirectory.listPlayers({
+      byMobile: seesContact(req.user),
       status: status && status !== 'ALL' && status !== 'all' ? String(status) : null,
       search: search ? String(search) : null,
       sort: sort ? String(sort) : undefined,
@@ -94,6 +96,7 @@ router.get('/users.xlsx', authenticate, hasPermission('canManageUsers'), async (
   try {
     const { status, search, sort, dir } = req.query;
     const { rows } = await db.adminDirectory.listPlayers({
+      byMobile: seesContact(req.user),
       status: status && status !== 'ALL' && status !== 'all' ? String(status) : null,
       search: search ? String(search) : null,
       sort: sort ? String(sort) : undefined,

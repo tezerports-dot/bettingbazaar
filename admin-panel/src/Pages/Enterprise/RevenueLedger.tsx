@@ -150,8 +150,8 @@ export const RevenueLedger: React.FC = () => {
             <PiggyBank size={18} className="text-gold-500" /> Fund Team Commission Pool
           </h3>
           <p className="text-xs text-gray-400 mb-3">
-            Moves distributable platform revenue into the pool team commission is paid from:
-            a share of each rise in a team&apos;s matched volume, as tokens into its pool. Commission
+            Moves distributable platform revenue into the pool order commission is paid from:
+            a percent of each completed buy and sell, as tokens into the serving team&apos;s pool. Commission
             the pool could not cover is paid as soon as it is funded. Hard rule: never funded
             from user money — the backend refuses anything beyond distributable revenue.
           </p>

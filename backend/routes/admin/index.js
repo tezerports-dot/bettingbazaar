@@ -43,6 +43,7 @@ import usdtDepositAdminRoutes from '../../domains/payment/usdtDeposit.admin.rout
 import cricketAdminRoutes from '../../domains/cricket/cricket.admin.routes.js';
 import coldStorageRoutes from './coldStorage.admin.routes.js';
 import { authenticateStaff } from '../../domains/identity/auth.middleware.js';
+import { shieldContactForStaff } from '../../domains/identity/staffContactShield.js';
 
 const router = express.Router();
 
@@ -50,6 +51,9 @@ const router = express.Router();
 // or merchant's session is refused here, 403 WRONG_PANEL, before any route
 // asks for an area; sub-routes still ask for theirs.
 router.use(authenticateStaff);
+// Contact and payout details reach full admins only (owner, 2026-10-21;
+// CLAUDE.md §24): every other staff answer is shielded here, at the door.
+router.use(shieldContactForStaff);
 
 router.use('/', analyticsRoutes);
 router.use('/', usersRoutes);

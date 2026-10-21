@@ -70,10 +70,17 @@ function switchToVip(userId) {
 // identity check.
 router.post('/deposit/create', authenticatePlayer, depositCreateLimiter, async (req, res) => {
   try {
-    const result = await requestDeposit({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
+    const result = await requestDeposit({
+      userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount),
+      // UPI or BANK, on a buy of a UPI/bank size (owner, 2026-10-21).
+      payMethod: typeof req.body.payMethod === 'string' ? req.body.payMethod.toUpperCase() : null,
+    });
     const profile = await switchToVip(req.user.userId);
     res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result, profile });
-  } catch (err) { return respondError(res, err, 'POST /payment/deposit/create'); }
+  } catch (err) {
+    // The ways to pay, named on the refusal so the screen offers them.
+    return respondError(res, err, 'POST /payment/deposit/create', { passthrough: ['payMethods'] });
+  }
 });
 
 /**

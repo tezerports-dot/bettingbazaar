@@ -58,20 +58,16 @@ async function order({ id, type = 'DEPOSIT', state = 'COMPLETED', tokens, fiat, 
 }
 
 /**
- * A team commission payment of which `paise` is this merchant's share, as
- * `teamCommission.payTeamCommission` records one (Step 2e): each payment
- * starts at the mark the last one left, and is a tenth of its rise.
+ * An order commission payment of which `paise` is this merchant's share, as
+ * `teamCommission.payOrderCommission` records one (owner, 2026-10-21): one
+ * order's 5% (500 basis points).
  */
-let mark = 0;
 async function paid({ key, paise, at = 'now()' }) {
-  const from = mark;
-  mark += paise * 10;
   await pgQuery(
     `INSERT INTO team_commissions
-       (commission_id, team_id, supervisor_id, from_high_paise, to_high_paise,
-        buys_paise, sells_paise, commission_paise, created_at)
-     VALUES ($1, $2, $3, $4, $5, $5, $5, $6, ${at})`,
-    [key, TEAM, M, from, mark, paise]);
+       (commission_id, team_id, supervisor_id, order_id, order_type, base_paise, commission_bp, commission_paise, created_at)
+     VALUES ($1, $2, $3, $1, 'DEPOSIT', $4, 500, $5, ${at})`,
+    [key, TEAM, M, paise * 20, paise]);
   await pgQuery(
     `INSERT INTO team_commission_shares (commission_id, merchant_id, role, share_paise, created_at)
      VALUES ($1, $2, 'SUPERVISOR', $3, ${at})`,
@@ -90,7 +86,6 @@ describe('a merchant’s earnings', () => {
     await pgQuery(`TRUNCATE order_states, order_transitions, accounting_events,
                             team_commission_shares, team_commissions
                    RESTART IDENTITY CASCADE`);
-    mark = 0;
   });
 
   it('reports the merchant\'s recorded share of team commission, not a column nothing writes', async () => {

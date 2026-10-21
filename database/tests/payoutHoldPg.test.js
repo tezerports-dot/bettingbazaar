@@ -35,6 +35,10 @@ describePg('payout hold (PostgreSQL)', () => {
     await createUser({ userId: 'p2', username: 'ravi', mobile: '9990000102' });
   });
 
+  // A save fixes the details for 48 hours (schema.sql "PAYOUT DETAILS LOCK");
+  // these tests move them sooner, as a player could once the lock has passed.
+  const unlock = (id = 'p1') => pgQuery('UPDATE users SET payout_details_locked_until = NULL WHERE user_id = $1', [id]);
+
   it('setting bank details the first time starts no hold', async () => {
     await updateUser('p1', { bankDetails: BANK_A });
     expect((await getUser('p1')).payoutHoldUntil).toBeNull();
@@ -43,6 +47,7 @@ describePg('payout hold (PostgreSQL)', () => {
 
   it('moving to another bank account holds withdrawals for 24 hours', async () => {
     await updateUser('p1', { bankDetails: BANK_A });
+    await unlock();
     await updateUser('p1', { bankDetails: BANK_B });
     const until = new Date((await getUser('p1')).payoutHoldUntil).getTime();
     expect(until - Date.now()).toBeGreaterThan(23.9 * 3600_000);
@@ -56,6 +61,7 @@ describePg('payout hold (PostgreSQL)', () => {
 
   it('saving the same account again (a name or bank-name fix) starts no hold', async () => {
     await updateUser('p1', { bankDetails: BANK_A });
+    await unlock();
     await updateUser('p1', { bankDetails: { ...BANK_A, accountHolderName: 'Asha K', bankName: 'HDFC Bank' } });
     expect((await getUser('p1')).payoutHoldUntil).toBeNull();
   });
@@ -63,6 +69,7 @@ describePg('payout hold (PostgreSQL)', () => {
   it('the hold lifts once it has passed, and never moves earlier', async () => {
     await updateUser('p1', { bankDetails: BANK_A });
     await pgQuery(`UPDATE users SET payout_hold_until = now() + interval '48 hours' WHERE user_id = 'p1'`);
+    await unlock();
     await updateUser('p1', { bankDetails: BANK_B });
     const until = new Date((await getUser('p1')).payoutHoldUntil).getTime();
     expect(until - Date.now()).toBeGreaterThan(47 * 3600_000);

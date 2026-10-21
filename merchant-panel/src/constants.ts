@@ -75,6 +75,8 @@ export const ENDPOINTS = {
     DISPUTES:      '/api/merchant/supervisor/disputes',
     DISPUTE_CHAT:  (orderId: string) => `/api/merchant/supervisor/disputes/${orderId}/chat`,
     POOL_CANCEL:   (requestId: string) => `/api/merchant/supervisor/pool-requests/${requestId}`,
+    // Cash out (owner, 2026-10-21): POST starts it, DELETE stops it.
+    CASH_OUT:      (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/cash-out`,
   },
   // A merchant account's own screens (owner, 2026-10-11). Backend:
   // backend/domains/merchant/merchantAccount.routes.js. Each entry carries its
@@ -97,6 +99,8 @@ export const ENDPOINTS = {
     BUY_POOL_USDT:     { method: 'POST',   path: () => '/api/merchant/account/pool-requests/usdt' },
     CANCEL_POOL:       { method: 'DELETE', path: (requestId: string) => `/api/merchant/account/pool-requests/${requestId}` },
     REPORTS:           { method: 'GET',    path: () => '/api/merchant/account/reports' },
+    START_CASH_OUT:    { method: 'POST',   path: () => '/api/merchant/account/cash-out' },
+    STOP_CASH_OUT:     { method: 'DELETE', path: () => '/api/merchant/account/cash-out' },
   },
   // The order report, every merchant's (owner, 2026-10-16): a row per order
   // with ✓/✗ and who pressed it; the workbook is the same rows. Backend:

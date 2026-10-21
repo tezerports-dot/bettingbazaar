@@ -31,7 +31,7 @@ export default async function run() {
   // ── The rail is DERIVED from the size, not chosen by a policy ─────────────
   const upiPlayer = await seedPlayer({});
   const upiPT = playerToken(upiPlayer);
-  const big = await POST(upiPT, '/api/payment/deposit/create', { tokenAmount: 50000 });
+  const big = await POST(upiPT, '/api/payment/deposit/create', { tokenAmount: 50000, payMethod: 'BANK' });
   const bigId = big.body?.order?.orderId;
   const bigRow = bigId ? await stateOf(bigId) : {};
   check(A, 'system', 'a 50,000-token buy runs on UPI/bank, not cash', 'P2P_UPI',

@@ -126,17 +126,6 @@ describePg('what the platform got, or gave, for a team\'s tokens', () => {
     expect((await fulfil(requestId, { settlementAmount: 1000 })).status).toBe(200);
   });
 
-  it('refuses a buyback that does not say what the platform paid', async () => {
-    const requestId = await ask(team, 'SELL', 100);
-    const before = await snapshot(team, requestId);
-
-    const res = await fulfil(requestId, { settlementCurrency: 'INR' });
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/paid/i);
-    await expectNothingMoved(team, requestId, before);
-    await as(app, admin).post(`/api/team-pool-requests/${requestId}/reject`).send({ reason: 'test over' });
-  });
-
   it('takes ZERO as a real answer — tokens moved for no money, and the row says so', async () => {
     const requestId = await ask(team, 'BUY', 100);
     const before = await getPool(team.teamId);
@@ -148,7 +137,7 @@ describePg('what the platform got, or gave, for a team\'s tokens', () => {
     expect(await recorded(requestId)).toMatchObject({ fiatAmountMinor: 0, inrEquivalentPaise: 0 });
   });
 
-  // ── The money is recorded, both directions, with the tokens it paid for ──
+  // ── The money is recorded, with the tokens it paid for ──
 
   it('records what came in for a rupee sale, against the same movement as the tokens', async () => {
     const requestId = await ask(team, 'BUY', 1000);
@@ -171,25 +160,6 @@ describePg('what the platform got, or gave, for a team\'s tokens', () => {
     expect(after[ACCOUNTS.TOKEN_SUPPLY] - treasury[ACCOUNTS.TOKEN_SUPPLY]).toBe(-T(1000));
     expect(after[ACCOUNTS.TEAM_FLOAT] - treasury[ACCOUNTS.TEAM_FLOAT]).toBe(T(1000));
     expect((await getPool(team.teamId)).availablePaise - pool.availablePaise).toBe(T(1000));
-  });
-
-  it('records what went out for a rupee buyback', async () => {
-    const requestId = await ask(team, 'SELL', 500);
-    const treasury = await getTreasuryBalances();
-    const pool = await getPool(team.teamId);
-
-    const res = await fulfil(requestId, { settlementAmount: 500 });
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-
-    expect(await recorded(requestId)).toMatchObject({
-      direction: 'PAID', currency: 'INR',
-      fiatAmountMinor: 50000, inrEquivalentPaise: 50000, rateUsed: null,
-      tokenAmountPaise: T(500), teamId: team.teamId,
-    });
-    const after = await getTreasuryBalances();
-    expect(after[ACCOUNTS.TEAM_FLOAT] - treasury[ACCOUNTS.TEAM_FLOAT]).toBe(-T(500));
-    expect(after[ACCOUNTS.TOKEN_SUPPLY] - treasury[ACCOUNTS.TOKEN_SUPPLY]).toBe(T(500));
-    expect((await getPool(team.teamId)).availablePaise - pool.availablePaise).toBe(-T(500));
   });
 
   // ── Trap 15, which is the whole reason there are two amount columns ──────
@@ -259,16 +229,6 @@ describePg('what the platform got, or gave, for a team\'s tokens', () => {
     expect((await fulfil(requestId, { settlementAmount: 1000, settlementCurrency: 'INR' })).status).toBe(200);
   });
 
-  it('refuses a USDT PAYOUT — the platform buys its tokens back in rupees', async () => {
-    const requestId = await ask(team, 'SELL', 100);
-    const before = await snapshot(team, requestId);
-    const res = await fulfil(requestId, { settlementAmount: 1, settlementCurrency: 'USDT' });
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/pays merchants back in INR/i);
-    await expectNothingMoved(team, requestId, before);
-    await as(app, admin).post(`/api/team-pool-requests/${requestId}/reject`).send({ reason: 'test over' });
-  });
-
   // ── One movement, one trade ──────────────────────────────────────────────
 
   it('books ONE trade for a redelivered fulfilment, not two', async () => {
@@ -321,19 +281,18 @@ describePg('what the platform got, or gave, for a team\'s tokens', () => {
 
     expect((await fulfil(await ask(solo, 'BUY', 1000), { settlementAmount: 950 })).status).toBe(200);
     expect((await fulfil(await ask(solo, 'BUY', 9000), { settlementAmount: 100, settlementCurrency: 'USDT' })).status).toBe(200);
-    expect((await fulfil(await ask(solo, 'SELL', 500), { settlementAmount: 480 })).status).toBe(200);
 
     const t = await db.adminTokenConsiderations.merchantConsiderationTotals(solo.supervisorId);
-    // ₹950 + (100 USDT × 90 = ₹9,000) = ₹9,950 in; ₹480 out.
+    // ₹950 + (100 USDT × 90 = ₹9,000) = ₹9,950 in; nothing out (pools never sell back).
     expect(t.receivedInrPaise).toBe(95000 + 900000);
-    expect(t.paidInrPaise).toBe(48000);
-    expect(t.netInrPaise).toBe(95000 + 900000 - 48000);
+    expect(t.paidInrPaise).toBe(0);
+    expect(t.netInrPaise).toBe(95000 + 900000);
     expect(t.tokensSoldPaise).toBe(T(10000));
-    expect(t.tokensBoughtBackPaise).toBe(T(500));
+    expect(t.tokensBoughtBackPaise).toBe(0);
     // The settled figures stay apart, because only apart do they mean anything.
     expect(t.byCurrency.INR.receivedMinor).toBe(95000);
     expect(t.byCurrency.USDT.receivedMinor).toBe(10000);
-    expect(t.byCurrency.INR.paidMinor).toBe(48000);
+    expect(t.byCurrency.INR.paidMinor ?? 0).toBe(0);
   });
 
   it('serves those figures to the screen that shows them', async () => {

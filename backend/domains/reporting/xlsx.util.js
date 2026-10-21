@@ -19,6 +19,7 @@
  * Column types: 'text' (default), 'money' (two decimals, thousands), 'int',
  * 'time' (a Date or ISO string, shown as IST).
  */
+import { seesContact, shieldWorkbook } from '../identity/staffContactShield.js';
 import { deflateRawSync, crc32 } from 'node:zlib';
 
 /** Heading colours, one per kind of table (§11: a file's palette, not the brand's). */
@@ -287,6 +288,11 @@ export const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsh
 
 /** Send a workbook as a download named `filename` (which ends in .xlsx). */
 export function sendXlsx(res, filename, workbook) {
+  // A staff download for anyone but a full admin carries no contact or payout
+  // column (staffContactShield.js, CLAUDE.md §24); a merchant's own report is
+  // not a staff download and is sent whole.
+  const viewer = res.req?.user;
+  if (viewer?.accountType === 'STAFF' && !seesContact(viewer)) workbook = shieldWorkbook(workbook);
   res.setHeader('Content-Type', XLSX_TYPE);
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.send(toXlsx(workbook));

@@ -112,6 +112,18 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[team-commission] cron error:', e.message); }
   });
 
+  // ── Cash outs — every minute ────────────────────────────────────────────────
+  // A pool cashing out serves buys only; once it cannot cover the smallest buy
+  // it could be sent and none is open, the cash out ends and its 48-hour pause
+  // starts (owner, 2026-10-21; teamCashOut.js holds the test in its WHERE).
+  registerRecurring('team-cash-out', 60 * 1000, async () => {
+    try {
+      const { finishCashOuts } = await import('../domains/team/teamCashOut.service.js');
+      const ended = await finishCashOuts();
+      if (ended.length) console.log(`[cash-out] ended: ${ended.map((e) => e.teamId).join(', ')}`);
+    } catch (e) { console.error('[cash-out] cron error:', e.message); }
+  });
+
   // ── Red flags — hourly, each IST day evaluated once ────────────────────────
   // Step 2f: low activity per member, for the days that have ended. The day's row is the once-only guard, so the hourly
   // run is a catch-up after downtime rather than a repeat.

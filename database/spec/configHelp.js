@@ -129,7 +129,7 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     example: '900 (15 minutes).',
   },
   'teamRouting.processingWindowSeconds.UPI_BANK': {
-    what: 'Once a UPI or bank order is assigned to an agent, how long it has to be completed before it expires.',
+    what: 'Once a sell of 50,000 or more is assigned to an agent, how long the agent has to pay the player before it goes to a dispute. Buys of that size use the UPI and Bank payment windows instead.',
     example: '900 (15 minutes).',
   },
   'teamRouting.utrSubmitSeconds': {
@@ -156,17 +156,25 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'How long an order for merchant accounts may wait for a free one before it expires.',
     example: '1500 (25 minutes).',
   },
-  'merchantRouting.processingWindowSeconds.DEPOSIT': {
-    what: 'Once a buy is assigned to a merchant account, how long it has to be completed before it expires.',
-    example: '900 (15 minutes).',
+  'buyPayWindowSeconds.UPI': {
+    what: 'How long a player has to pay a UPI or bank-size buy they chose to pay by UPI, counted from when it is assigned. Agents and merchant accounts alike. Cash buys use the cash window.',
+    example: '900 (15 minutes): the player pays the UPI link within 15 minutes or the order expires.',
+  },
+  'buyPayWindowSeconds.BANK': {
+    what: 'How long a player has to pay a UPI or bank-size buy they chose to pay by bank transfer, counted from when it is assigned. Bank transfers can take longer than UPI.',
+    example: '1800 (30 minutes).',
   },
   'merchantRouting.processingWindowSeconds.WITHDRAWAL': {
     what: 'Once a sell is assigned to a merchant account, how long it has to pay the player before it expires.',
     example: '900 (15 minutes).',
   },
-  'directMerchants.commissionPercent': {
-    what: 'The commission a merchant account earns, as a percent of each rise in its matched volume, paid into its own pool.',
-    example: '10: matched volume rising by ₹1,00,000 pays ₹10,000 commission.',
+  'orderCommission.depositPercent': {
+    what: 'The commission paid into a merchant\'s pool for every completed buy (a player\'s deposit), as a percent of its tokens. Agents\' teams and merchant accounts alike; 0 turns it off.',
+    example: '5: a completed 10,000-token buy pays 500 tokens commission.',
+  },
+  'orderCommission.withdrawalPercent': {
+    what: 'The commission paid into a merchant\'s pool for every completed sell (a player\'s withdrawal), as a percent of its tokens. 0 turns it off.',
+    example: '5: a completed 50,000-token sell pays 2,500 tokens commission.',
   },
   'directMerchants.dailyProblemFlagThreshold': {
     what: 'How many problems (refusals, unpaid buys that were its fault, lost disputes) a merchant account may have in one day before it is flagged to admins. A flag only warns; it stops nothing.',

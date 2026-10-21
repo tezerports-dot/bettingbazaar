@@ -36,6 +36,10 @@ const REFUSALS = Object.freeze({
   // USDT pool buys (owner, 2026-10-21)
   usdt_received:         [409, 'USDT has already arrived for this request, so it can no longer be cancelled. It completes once the full amount arrives; otherwise an admin settles it with you.'],
   usdt_paid_on_chain:    [409, 'This request is paid in USDT on chain and completes by itself when the USDT arrives. Nothing to fulfil by hand.'],
+  // Cash out (owner, 2026-10-21)
+  cash_out_running:      [409, 'This pool is cashing out: it takes buy orders only and buys no tokens. Stop the cash out first if you need tokens.'],
+  cash_out_paused:       [409, 'This pool is in its 48-hour pause after a cash out. It takes no new orders and buys no tokens until the time shown on the pool.'],
+  cash_out_not_running:  [409, 'This pool is not cashing out. Refresh to see its state.'],
   // Oversight (Step 2f)
   member_not_found:      [404, 'That merchant is not an approved member of one of your teams. A member\'s log opens once an admin approves them.'],
   dispute_not_found:     [404, 'That dispute is not on an order of one of your teams.'],
