@@ -3972,39 +3972,6 @@ ALTER TABLE dispute_faults ADD CONSTRAINT dispute_faults_compensation_known CHEC
 CREATE INDEX IF NOT EXISTS dispute_faults_user_idx ON dispute_faults (user_id) WHERE user_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS dispute_faults_merchant_idx ON dispute_faults (merchant_id) WHERE merchant_id IS NOT NULL;
 
--- A merchant's TRACK RECORD (owner, 2026-10-21): how many of their orders
--- succeeded and how many failed, counted from the order rows every time it is
--- read, never kept as a counter (trap 6). Replaces `merchants.success_rate`,
--- which counted only completions and so read 100% whatever happened.
---   A decided dispute counts by its loser (`dispute_faults`): the player's
---   loss is the merchant's success, the merchant's loss a failure.
---   Otherwise: COMPLETED, or a sell marked PAID, succeeded; REJECTED and
---   FAILED failed, and so did a cash buy that lapsed with no QR scanned (the
---   merchant's, `playerCouldPay`). A decline (`order_rejections`) of an order
---   that went on to someone else is a failure too.
---   Not counted: a cancel, an open or undecided order, and an expiry that was
---   the player's.
--- Returns {succeeded, failed}, over orders created (and declines made) since
--- `p_since` (all time by default).
-ALTER TABLE merchants DROP COLUMN IF EXISTS success_rate;
-CREATE OR REPLACE FUNCTION bb_merchant_track_record(p_merchant TEXT, p_since TIMESTAMPTZ DEFAULT '-infinity')
-RETURNS INTEGER[] AS $$
-  SELECT ARRAY[
-    count(*) FILTER (WHERE f.party = 'PLAYER'
-                        OR (f.party IS NULL AND (o.state = 'COMPLETED'
-                                                 OR (o.order_type = 'WITHDRAWAL' AND o.state = 'PAID'))))::int,
-    count(*) FILTER (WHERE f.party = 'MERCHANT'
-                        OR (f.party IS NULL AND (o.state IN ('REJECTED', 'FAILED')
-                                                 OR (o.state = 'EXPIRED' AND o.order_type = 'DEPOSIT'
-                                                     AND o.payment_mode = 'CASH_ATM' AND o.cash_link IS NULL))))::int
-      + (SELECT count(*)::int FROM order_rejections r JOIN order_states x ON x.order_id = r.order_id
-          WHERE r.merchant_id = p_merchant AND x.merchant_id IS DISTINCT FROM p_merchant
-            AND r.rejected_at >= p_since)]
-    FROM order_states o
-    LEFT JOIN dispute_faults f ON f.order_id = o.order_id
-   WHERE o.merchant_id = p_merchant AND o.created_at >= p_since
-$$ LANGUAGE sql STABLE;
-
 -- Lost disputes, lifetime, and the HIGH-RISK review a third one opens. Only a
 -- full admin lifts a suspension while `high_risk_at` is set; that lift clears it.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS lost_disputes INTEGER NOT NULL DEFAULT 0;
@@ -4048,6 +4015,39 @@ ALTER TABLE order_states ADD CONSTRAINT order_states_cash_link_shape CHECK (
     AND cash_link_at IS NOT NULL
   )
 );
+
+-- A merchant's TRACK RECORD (owner, 2026-10-21): how many of their orders
+-- succeeded and how many failed, counted from the order rows every time it is
+-- read, never kept as a counter (trap 6). Replaces `merchants.success_rate`,
+-- which counted only completions and so read 100% whatever happened.
+--   A decided dispute counts by its loser (`dispute_faults`): the player's
+--   loss is the merchant's success, the merchant's loss a failure.
+--   Otherwise: COMPLETED, or a sell marked PAID, succeeded; REJECTED and
+--   FAILED failed, and so did a cash buy that lapsed with no QR scanned (the
+--   merchant's, `playerCouldPay`). A decline (`order_rejections`) of an order
+--   that went on to someone else is a failure too.
+--   Not counted: a cancel, an open or undecided order, and an expiry that was
+--   the player's.
+-- Returns {succeeded, failed}, over orders created (and declines made) since
+-- `p_since` (all time by default).
+ALTER TABLE merchants DROP COLUMN IF EXISTS success_rate;
+CREATE OR REPLACE FUNCTION bb_merchant_track_record(p_merchant TEXT, p_since TIMESTAMPTZ DEFAULT '-infinity')
+RETURNS INTEGER[] AS $$
+  SELECT ARRAY[
+    count(*) FILTER (WHERE f.party = 'PLAYER'
+                        OR (f.party IS NULL AND (o.state = 'COMPLETED'
+                                                 OR (o.order_type = 'WITHDRAWAL' AND o.state = 'PAID'))))::int,
+    count(*) FILTER (WHERE f.party = 'MERCHANT'
+                        OR (f.party IS NULL AND (o.state IN ('REJECTED', 'FAILED')
+                                                 OR (o.state = 'EXPIRED' AND o.order_type = 'DEPOSIT'
+                                                     AND o.payment_mode = 'CASH_ATM' AND o.cash_link IS NULL))))::int
+      + (SELECT count(*)::int FROM order_rejections r JOIN order_states x ON x.order_id = r.order_id
+          WHERE r.merchant_id = p_merchant AND x.merchant_id IS DISTINCT FROM p_merchant
+            AND r.rejected_at >= p_since)]
+    FROM order_states o
+    LEFT JOIN dispute_faults f ON f.order_id = o.order_id
+   WHERE o.merchant_id = p_merchant AND o.created_at >= p_since
+$$ LANGUAGE sql STABLE;
 
 -- The link is the machine the order's member is standing at. When the order
 -- changes hands (reassignment, requeue, an admin move) the next member is at a
