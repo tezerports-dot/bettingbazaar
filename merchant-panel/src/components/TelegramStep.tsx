@@ -83,7 +83,7 @@ export const TelegramStep: React.FC<TelegramStepProps> = ({
         }}
       >
         <Send size={16} />
-        Open Telegram{telegram.botUsername ? ` (@${telegram.botUsername})` : ''}
+        Open Telegram
       </a>
     )}
 

@@ -38,7 +38,17 @@ const MiniApp: React.FC<{ app: WebApp | null }> = ({ app }) => {
   }, [app, initData]);
 
   if (!app || !initData) {
-    return <main style={PAGE}><p role="alert">Open this page from Telegram. It works only inside the Telegram app.</p></main>;
+    // Inside Telegram with no launch data (Telegram's script missing, or the
+    // page opened as a plain link) the old "open this page from Telegram" read
+    // as nonsense to someone already in Telegram: say what to do instead.
+    return (
+      <main style={PAGE}>
+        <h1 style={{ fontSize: 20, margin: '0 0 12px' }}>Betting Bazaar</h1>
+        <p role="alert">Telegram did not pass your sign-in to this page.</p>
+        <p style={HINT}>Close this window and press Login with Telegram again on the website or in the app. If you came from an invite link, open the link again.</p>
+        {app && <button type="button" style={SECONDARY} onClick={() => app.close()}>Close</button>}
+      </main>
+    );
   }
 
   const start = ctx?.start;

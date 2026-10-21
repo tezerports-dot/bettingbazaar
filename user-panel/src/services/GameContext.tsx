@@ -122,7 +122,7 @@ interface GameContextType {
   isAuthenticated: boolean;
   isOnline: boolean;
   /** "Continue with Telegram", the one way in: the step to open. */
-  signInWithTelegram: (opts?: { delivery?: TelegramDelivery; referralCode?: string }) => Promise<SignInStep>;
+  signInWithTelegram: (opts?: { delivery?: TelegramDelivery; referralCode?: string; captchaToken?: string | null }) => Promise<SignInStep>;
   /** The `#/tg/<ticket>` page: the ticket exchanged for the session, and the player seated. */
   signInWithTicket: (ticket: string) => Promise<void>;
   /** Ask once whether Telegram has answered; seats the player when it has. */
@@ -933,7 +933,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   // ── AUTH ──────────────────────────────────────────────────────────────────
   // The transport seats the token (realBackend's one seater); these seat the
   // PLAYER, from the user the same response carried.
-  const signInWithTelegram = async (opts?: { delivery?: TelegramDelivery; referralCode?: string }): Promise<SignInStep> =>
+  const signInWithTelegram = async (opts?: { delivery?: TelegramDelivery; referralCode?: string; captchaToken?: string | null }): Promise<SignInStep> =>
     backend.loginWithTelegram(opts);
 
   const signInWithTicket = async (ticket: string) => {

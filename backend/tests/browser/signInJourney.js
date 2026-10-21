@@ -114,7 +114,7 @@ const linkOf = async (userId) => (await pgQuery(
 
 /** The Telegram link and, on a laptop, the number the waiting screen shows. */
 async function waitingStep(page) {
-  const open = page.getByRole('link', { name: /Open Telegram/ });
+  const open = page.getByRole('link', { name: /Open Telegram|Login with Telegram/ });
   await open.waitFor({ timeout: 15_000 }).catch(() => {});
   const param = startParamOf(await open.getAttribute('href').catch(() => null));
   const shown = page.getByTestId('match-number');
@@ -138,7 +138,9 @@ async function playerModal(browser, device) {
   const opener = page.getByRole('button', { name: /Sign in or join|Sign in\s*to play/i }).filter({ visible: true }).first();
   await opener.waitFor({ timeout: 30_000 });
   await opener.click();
-  await page.getByRole('button', { name: 'Continue with Telegram' }).waitFor({ timeout: 10_000 });
+  // The player's screen asks for the sign-in when its captcha ticks (none
+  // here), and its one control is the "Login with Telegram" link.
+  await page.getByRole('link', { name: 'Login with Telegram' }).waitFor({ timeout: 15_000 });
   return { ctx, page };
 }
 const playerSignedIn = (page) => until(async () => Boolean(await stored(page, 'auth_token'))
@@ -152,7 +154,6 @@ async function playerJourney(browser) {
   const laptop = await playerModal(browser, LAPTOP);
   record('player: the sign-in offers no mobile or password box',
     (await laptop.page.locator('input[type="password"], input[type="tel"]').count()) === 0);
-  await laptop.page.getByRole('button', { name: 'Continue with Telegram' }).click();
   const first = await waitingStep(laptop.page);
   record('player: a laptop shows a number, the Telegram link and its QR',
     Boolean(first.param) && Number.isInteger(first.number)
@@ -182,7 +183,6 @@ async function playerJourney(browser) {
 
   // ── A phone: the handoff ticket ──────────────────────────────────────────
   const phone = await playerModal(browser, PHONE);
-  await phone.page.getByRole('button', { name: 'Continue with Telegram' }).click();
   const second = await waitingStep(phone.page);
   record('player: a phone shows no number, only the Telegram link', Boolean(second.param) && second.number === null,
     `startapp=${second.param}`);
@@ -214,7 +214,6 @@ async function playerJourney(browser) {
 
   // ── Deny ─────────────────────────────────────────────────────────────────
   const deny = await playerModal(browser, LAPTOP);
-  await deny.page.getByRole('button', { name: 'Continue with Telegram' }).click();
   const third = await waitingStep(deny.page);
   const tg3 = await openMiniApp(browser, { tgId, startParam: third.param });
   await tg3.page.getByRole('button', { name: 'Deny' }).click();
