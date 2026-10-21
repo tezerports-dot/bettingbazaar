@@ -488,26 +488,44 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
 // non-exported getDashboardStats helper, so keeping it here created a latent
 // runtime failure if route order changed.
 
-router.get('/error-reports', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
+// ── The error log (owner, 2026-10-20) ────────────────────────────────────────
+// Every failure, server and panels, one row per distinct error
+// (database/repositories/errorLog.js). Filters are the repository's own
+// vocabulary, sent back with every answer so the screen keeps no copy (§2 S25).
+const ERROR_LOG_VOCAB = Object.freeze({
+  sources: db.errorLog.ERROR_SOURCES,
+  categories: db.errorLog.ERROR_CATEGORIES,
+  severities: db.errorLog.ERROR_SEVERITIES,
+  statuses: db.errorLog.ERROR_STATUSES,
+});
+
+router.get('/error-log', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
   try {
-    const reports = await db.operations.listFrontendErrors({ limit: 200 });
-    res.json({ success: true, reports });
+    const { source, category, severity, status, limit } = req.query;
+    const { entries, totals } = await db.errorLog.listErrors({ source, category, severity, status, limit });
+    res.json({ success: true, entries, totals, ...ERROR_LOG_VOCAB });
   } catch (err) {
-    console.error('[error-reports] list failed:', err.message);
-    res.status(500).json({ success: false, message: 'Failed to fetch error reports' });
+    respondError(res, err, 'GET /admin/error-log', { message: 'Failed to fetch the error log' });
   }
 });
 
-router.delete('/error-reports', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
+router.patch('/error-log/:id', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
   try {
-    // The count is reported. "All error reports cleared" for a delete that
-    // removed nothing looks the same as one that removed nine hundred, so an
-    // admin could not tell a clear from a no-op against an empty table.
-    const cleared = await db.operations.clearFrontendErrors();
-    res.json({ success: true, cleared, message: `${cleared} error report(s) cleared` });
+    const entry = await db.errorLog.setErrorStatus(req.params.id, req.body?.status, req.user?.username || req.userId);
+    if (!entry) return res.status(404).json({ success: false, message: 'That error is no longer in the log.' });
+    res.json({ success: true, entry });
   } catch (err) {
-    console.error('[error-reports] clear failed:', err.message);
-    res.status(500).json({ success: false, message: 'Failed to clear error reports' });
+    respondError(res, err, 'PATCH /admin/error-log/:id', { message: 'Could not change that error' });
+  }
+});
+
+router.delete('/error-log/fixed', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
+  try {
+    // The count is reported, so a clear that removed nothing reads as one.
+    const cleared = await db.errorLog.clearFixedErrors();
+    res.json({ success: true, cleared, message: `${cleared} fixed error(s) removed` });
+  } catch (err) {
+    respondError(res, err, 'DELETE /admin/error-log/fixed', { message: 'Could not remove the fixed errors' });
   }
 });
 

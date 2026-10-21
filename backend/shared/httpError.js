@@ -25,6 +25,8 @@
  * SAY which kind of failure it is holding rather than defaulting into leaking.
  */
 
+import { logServerFailure, withoutCapture } from '../services/errorLog.service.js';
+
 /**
  * An unexpected failure. Logged in full, answered with nothing.
  *
@@ -36,7 +38,10 @@
 export function serverError(res, err, where, message = 'Something went wrong. Please try again.') {
   // Logged BEFORE responding: a handler that throws while responding still
   // leaves the operator a record of what actually failed.
-  console.error(`[${where}]`, err?.stack || err?.message || err);
+  // And into the error log (Admin › Error Logs), once: the console line is
+  // not captured a second time.
+  logServerFailure(where, err);
+  withoutCapture(() => console.error(`[${where}]`, err?.stack || err?.message || err));
   return res.status(500).json({ success: false, message });
 }
 

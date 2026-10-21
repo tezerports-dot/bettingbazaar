@@ -1072,22 +1072,55 @@ export const utr = {
 };
 
 
-// --- ERROR REPORTS --------------------------------------------------------
+// --- ERROR LOG --------------------------------------------------------------
+// Every failure, server and panels, one row per distinct error (owner,
+// 2026-10-20; backend/routes/admin/system.admin.routes.js, the vocabulary
+// arriving with each answer).
 
-export const errorReports = {
-  getAll: async () => {
-    const res = await api.get<any>('/api/admin/error-reports');
-    if (res.data?.success && res.data?.reports) {
-      return { success: true, data: res.data.reports as Array<{
-        _id: string; message: string; stack?: string; component?: string;
-        url?: string; panel: string; ts: string;
-      }>};
-    }
+export type ErrorSeverity = 'CRITICAL' | 'WARNING' | 'MINOR';
+export type ErrorStatus = 'OPEN' | 'FIXED';
+export interface ErrorLogEntry {
+  id: number;
+  source: string;
+  category: string;
+  severity: ErrorSeverity;
+  message: string;
+  detail: string | null;
+  component: string | null;
+  location: string | null;
+  occurrences: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  status: ErrorStatus;
+  fixedAt: string | null;
+  fixedBy: string | null;
+  reopened: number;
+}
+export interface ErrorLogPage {
+  entries: ErrorLogEntry[];
+  totals: { total: number; open: number; critical: number; warning: number; minor: number; fixed: number };
+  sources: string[];
+  categories: string[];
+  severities: ErrorSeverity[];
+  statuses: ErrorStatus[];
+}
+
+export const errorLog = {
+  list: async (filters: Partial<Record<'source' | 'category' | 'severity' | 'status', string>>): Promise<ErrorLogPage> => {
+    const res = await api.get<ErrorLogPage & { success: boolean }>('/api/admin/error-log', { params: filters });
     return res.data;
   },
-  clearAll: async () => {
-    const res = await api.delete<any>('/api/admin/error-reports');
+  setStatus: async (id: number, status: ErrorStatus): Promise<ErrorLogEntry> => {
+    const res = await api.patch<{ success: boolean; entry: ErrorLogEntry }>(`/api/admin/error-log/${id}`, { status });
+    return res.data.entry;
+  },
+  clearFixed: async (): Promise<{ cleared: number; message: string }> => {
+    const res = await api.delete<{ success: boolean; cleared: number; message: string }>('/api/admin/error-log/fixed');
     return res.data;
+  },
+  /** A failure on this panel (`POST /api/internal/error-report`). Best-effort: never throws. */
+  report: (report: Record<string, unknown>): void => {
+    api.post('/api/internal/error-report', { ...report, panel: 'admin' }).catch(() => {});
   },
 };
 
@@ -1318,7 +1351,7 @@ export default {
   disputes,
   utr,
   usdtDeposits,
-  errorReports,
+  errorLog,
   appAssets,
   orderActions,
   chat,

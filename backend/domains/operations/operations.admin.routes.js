@@ -126,7 +126,7 @@ router.get('/operations/config-catalog', authenticate, hasPermission('canViewAna
     // Business Config Audit (2026-07-11): payment order window, was hardcoded 15m.
     { value: 'Payment order windows and per-member concurrency, per rail', owner: 'Business Policy — SystemConfig.teamRouting (read by teamRouting.routingSettings)', edit: 'PUT /api/admin/system/config' },
     // Phase X X-7: operational-data retention window.
-    { value: 'Data retention (months of crash reports kept; expired referral clicks and notifications go after 30 days; bets, cycles, money and audit are never pruned)', owner: 'Business Policy — SystemConfig.retentionMonths (read by operations/retention.service)', edit: 'PUT /api/admin/system/config' },
+    { value: 'Data retention (months an error-log entry is kept once last seen (a fixed one 30 days after the fix); expired referral clicks and notifications go after 30 days; bets, cycles, money and audit are never pruned)', owner: 'Business Policy — SystemConfig.retentionMonths (read by operations/retention.service)', edit: 'PUT /api/admin/system/config' },
     { value: 'Team commission pool funding', owner: 'Revenue & Settlement (from distributable revenue only)', edit: 'POST /api/admin/revenue/bonus-pool/fund' },
     { value: 'Team pool tokens (supervisor requests, admin fulfils)', owner: 'Team pools — teamPools.js', edit: 'POST /api/admin/team-pool-requests/:id/fulfil' },
     { value: 'Funding providers (P2P / USDT / gateways)', owner: 'Funding Platform — providerRegistry adapters', edit: 'code adapter + registry entry (activation is a deploy, not a constant)' },

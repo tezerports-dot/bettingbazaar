@@ -532,20 +532,4 @@ router.put('/merchants/:merchantId/panel-url', authenticate, hasPermission('canM
   }
 });
 
-// ---------------------------------------------------------------------------
-// FRONTEND ERROR REPORTS  (FIX-4b)
-// POST /internal/error-report  -- NO auth (ErrorBoundary fires on crashes)
-// GET  /error-reports          -- admin only, returns last 200 reports
-// DELETE /error-reports        -- admin only, wipes all reports
-// ---------------------------------------------------------------------------
-
-// NOTE: POST /internal/error-report is intentionally NOT here.
-// ErrorBoundary in user-panel and merchant-panel calls POST /api/internal/error-report
-// which is mounted directly in server.js (no /admin prefix, no JWT required so a
-// crashing panel can still report errors). The admin-prefixed version at
-// /api/admin/internal/error-report was dead code — ErrorBoundary never reached it.
-// Reading and clearing reports IS admin-only:
-
-
-
 export default router;

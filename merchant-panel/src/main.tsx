@@ -6,6 +6,8 @@ import { Toaster } from 'react-hot-toast';
 import App from './App';
 import { applyTheme, readStoredTheme } from './theme';
 import { captureTelegramTicket } from './services/telegramTicket';
+import { installErrorReporter } from './services/errorReporter';
+import PanelErrorBoundary from './components/PanelErrorBoundary';
 import './index.css';
 
 // Set the theme attribute before the first paint so the panel never flashes the
@@ -15,9 +17,14 @@ applyTheme(readStoredTheme());
 // A ticket Verify opened the panel with leaves the address bar before anything renders.
 captureTelegramTicket();
 
+// Uncaught errors and unhandled promises go to the admin's error log.
+installErrorReporter();
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <BrowserRouter basename="/merchant">
-    <App />
+    <PanelErrorBoundary>
+      <App />
+    </PanelErrorBoundary>
     <Toaster
       position="top-center"
       toastOptions={{

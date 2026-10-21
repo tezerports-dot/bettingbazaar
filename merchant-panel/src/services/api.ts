@@ -97,6 +97,22 @@ export const signedOutReason = (): string | null => {
   return signedOutReasonValue;
 };
 
+/**
+ * A failure on this panel, for the admin's error log (owner, 2026-10-20;
+ * `POST /api/internal/error-report`, no session: a crashing panel may have
+ * none). Best-effort: never throws, never signs anybody out.
+ */
+export const reportPanelError = (report: Record<string, unknown>): void => {
+  try {
+    void fetch(`${BASE_URL}/api/internal/error-report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...report, panel: 'merchant' }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch { /* reporting never breaks the panel */ }
+};
+
 export const isAuthenticated = (): boolean => {
   return !!getAuthToken();
 };

@@ -331,7 +331,7 @@ const lazy = (node: React.ReactNode) => <Suspense fallback={<PageSkeleton />}>{n
 
 const App: React.FC = () => (
   <ThemeProvider>
-    <ErrorBoundary panel="user">
+    <ErrorBoundary>
       <EndpointGate>
       {/* Outside SystemGuard on purpose: a required update must show even
           during maintenance or while the web gate is loading. */}
@@ -347,7 +347,7 @@ const App: React.FC = () => (
                       {/* The pop-up when a member rejects a buy as unpaid,
                           wherever the player is in the app (2c+). */}
                       <RejectedBuyPopup />
-                      <ErrorBoundary panel="user">
+                      <ErrorBoundary>
                         <Routes>
                           <Route path="/"                element={<GamePage />} />
                           <Route path="/casino"          element={lazy(<CasinoPage />)} />

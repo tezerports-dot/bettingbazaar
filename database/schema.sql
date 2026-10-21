@@ -2229,18 +2229,43 @@ CREATE INDEX IF NOT EXISTS enhanced_audit_failures_idx ON enhanced_audit_logs (c
 CREATE OR REPLACE TRIGGER enhanced_audit_logs_append_only
   BEFORE UPDATE OR DELETE ON enhanced_audit_logs FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
--- Client-side crash reports. High volume, low value individually, pruned by
--- retention — deliberately NOT append-only.
-CREATE TABLE IF NOT EXISTS frontend_error_reports (
-  id         BIGSERIAL PRIMARY KEY,
-  message    TEXT NOT NULL,
-  stack      TEXT,
-  component  TEXT,
-  url        TEXT,
-  panel      TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+-- ── The error log (owner, 2026-10-20) ───────────────────────────────────────
+-- Every failure the platform sees, wherever it happened: the server (a request
+-- that failed, a background job, a money alert, anything logged as an error)
+-- and the three panels (a screen that crashed, a script error, an update that
+-- failed to load). One row per DISTINCT error (`fingerprint`): a repeat adds to
+-- `occurrences` and moves `last_seen_at`, so a storm is one row, not a million.
+-- Written only by database/repositories/errorLog.js. An admin marks a row
+-- FIXED; the same error arriving again reopens it (`reopened`). Pruned by
+-- retention, deliberately NOT append-only.
+DROP TABLE IF EXISTS frontend_error_reports;
+CREATE TABLE IF NOT EXISTS error_log (
+  id            BIGSERIAL PRIMARY KEY,
+  fingerprint   TEXT NOT NULL UNIQUE,
+  source        TEXT NOT NULL,
+  category      TEXT NOT NULL,
+  severity      TEXT NOT NULL,
+  message       TEXT NOT NULL,
+  detail        TEXT,
+  component     TEXT,
+  location      TEXT,
+  occurrences   INTEGER NOT NULL DEFAULT 1,
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  status        TEXT NOT NULL DEFAULT 'OPEN',
+  fixed_at      TIMESTAMPTZ,
+  fixed_by      TEXT,
+  reopened      INTEGER NOT NULL DEFAULT 0,
+  CONSTRAINT error_log_source_known   CHECK (source IN ('SERVER', 'PLAYER_APP', 'MERCHANT_PANEL', 'ADMIN_PANEL')),
+  CONSTRAINT error_log_category_known CHECK (category IN (
+    'API', 'JOB', 'MONEY_ALERT', 'SERVER_LOG', 'SCREEN_CRASH', 'SCRIPT', 'PROMISE', 'UPDATE_LOAD')),
+  CONSTRAINT error_log_severity_known CHECK (severity IN ('CRITICAL', 'WARNING', 'MINOR')),
+  CONSTRAINT error_log_status_known   CHECK (status IN ('OPEN', 'FIXED')),
+  CONSTRAINT error_log_fixed_has_time CHECK ((status = 'FIXED') = (fixed_at IS NOT NULL)),
+  CONSTRAINT error_log_occurrences    CHECK (occurrences >= 1)
 );
-CREATE INDEX IF NOT EXISTS frontend_error_reports_recent_idx ON frontend_error_reports (created_at DESC);
+CREATE INDEX IF NOT EXISTS error_log_recent_idx ON error_log (last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS error_log_open_idx   ON error_log (severity, last_seen_at DESC) WHERE status = 'OPEN';
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- The PAN registry was removed 2026-09-30. Nothing in the product called it,

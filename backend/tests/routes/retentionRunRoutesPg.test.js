@@ -53,24 +53,25 @@ describePg('the retention run route', () => {
   }, 60_000);
 
   afterAll(async () => {
-    await pgQuery(`DELETE FROM frontend_error_reports WHERE message LIKE $1`, [`${RUN}%`]);
+    await pgQuery(`DELETE FROM error_log WHERE message LIKE $1`, [`${RUN}%`]);
     await closePg();
   });
 
-  /** Crash reports of this run: two far past any window, one from today. */
+  /** Error-log rows of this run: two last seen far past any window, one today. */
+  const LOG_COLS = `(fingerprint, source, category, severity, message, first_seen_at, last_seen_at)`;
   const plant = async (tag) => {
     const { rows } = await pgQuery(
-      `INSERT INTO frontend_error_reports (message, panel, created_at) VALUES
-         ($1, 'admin', now() - interval '400 days'),
-         ($2, 'admin', now() - interval '400 days'),
-         ($3, 'admin', now())
+      `INSERT INTO error_log ${LOG_COLS} VALUES
+         ($1, 'ADMIN_PANEL', 'SCRIPT', 'MINOR', $1, now() - interval '400 days', now() - interval '400 days'),
+         ($2, 'ADMIN_PANEL', 'SCRIPT', 'MINOR', $2, now() - interval '400 days', now() - interval '400 days'),
+         ($3, 'ADMIN_PANEL', 'SCRIPT', 'MINOR', $3, now() - interval '400 days', now())
        RETURNING id, message`,
       [`${RUN}-${tag}-old-1`, `${RUN}-${tag}-old-2`, `${RUN}-${tag}-young`],
     );
     return rows;
   };
   const surviving = async (tag) => (await pgQuery(
-    `SELECT message FROM frontend_error_reports WHERE message LIKE $1 ORDER BY message`, [`${RUN}-${tag}-%`],
+    `SELECT message FROM error_log WHERE message LIKE $1 ORDER BY message`, [`${RUN}-${tag}-%`],
   )).rows.map((r) => r.message);
 
   it('previews: counts the old rows and deletes nothing', async () => {
@@ -78,8 +79,8 @@ describePg('the retention run route', () => {
     const res = await as(app, maintainer).post('/operations/retention/run').send({ dryRun: true });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.dryRun).toBe(true);
-    expect(res.body.results.frontendErrors).toBeGreaterThanOrEqual(2);
-    expect(Object.keys(res.body.results).sort()).toEqual(['frontendErrors', 'notifications', 'referralClicks']);
+    expect(res.body.results.errorLog).toBeGreaterThanOrEqual(2);
+    expect(Object.keys(res.body.results).sort()).toEqual(['errorLog', 'notifications', 'referralClicks']);
     expect(await surviving('preview')).toHaveLength(3);
   });
 
@@ -107,8 +108,9 @@ describePg('the retention run route', () => {
 
   it('never deletes a row younger than 30 days, whatever window it is asked for', async () => {
     const { rows } = await pgQuery(
-      `INSERT INTO frontend_error_reports (message, panel, created_at)
-       VALUES ($1, 'admin', now() - interval '20 days') RETURNING id`, [`${RUN}-floor-20d`]);
+      `INSERT INTO error_log ${LOG_COLS}
+       VALUES ($1, 'ADMIN_PANEL', 'SCRIPT', 'MINOR', $1, now() - interval '20 days', now() - interval '20 days')
+       RETURNING id`, [`${RUN}-floor-20d`]);
     expect(rows).toHaveLength(1);
     const res = await as(app, maintainer).post('/operations/retention/run').send({ dryRun: false, months: 0 });
     expect(res.status).toBe(200);

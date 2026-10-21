@@ -80,6 +80,7 @@ import * as rtp from './repositories/rtp.js';
 import * as cricket from './repositories/cricket.js';
 import * as audit from './repositories/audit.js';
 import * as operations from './repositories/operations.js';
+import * as errorLog from './repositories/errorLog.js';
 import * as supportDocuments from './repositories/supportDocuments.js';
 import * as depositPolicy from './repositories/depositPolicy.js';
 import * as teams from './repositories/teams.js';
@@ -190,6 +191,8 @@ export const db = Object.freeze({
   tokenLedger,
   disputeFaults,
   operations,
+  // Every failure, server and panels, one row per distinct error (owner, 2026-10-20)
+  errorLog,
   supportDocuments,
   stats,
 });

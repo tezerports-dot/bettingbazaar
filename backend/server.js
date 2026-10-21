@@ -131,8 +131,11 @@ import { db } from '#db';
 import { isDatabaseReachable } from '#db/client.js';
 import { mountSpaFallbacks } from './startup/spaFallbacks.js';
 import { isServableOrigin } from './config/servedHosts.js';
+import { installServerErrorCapture, flushErrorLog, logError } from './services/errorLog.service.js';
 
 // ─── APP SETUP ────────────────────────────────────────────────────────────────
+// Every console.error from here on is also an Admin › Error Logs entry.
+installServerErrorCapture();
 const runtime = runtimeProfile();
 console.log(`✅ Runtime role: ${runtime.role} (api=${runtime.acceptsHttpApi}, realtime=${runtime.acceptsRealtime}, schedulers=${runtime.runsSchedulers}, workers=${runtime.runsWorkers})`);
 const app = express();
@@ -594,19 +597,30 @@ const errorReportLimiter = rateLimit({ windowMs: 60000, max: 10, store: createRa
 app.use('/api', clientTelemetryRoutes);
 // Where player apps should connect (Admin > Settings > API Host) — discovery's answer.
 app.use('/api', clientEndpointRoutes);
-app.post('/api/internal/error-report', errorReportLimiter, async (req, res) => {
-  try {
-    const { message, stack, component, url, panel } = req.body;
-    if (!message) return res.status(400).json({ success: false, message: 'message required' });
-    await db.operations.recordFrontendError({
-      message, stack, component, url,
-      panel: ['user', 'merchant'].includes(panel) ? panel : 'unknown',
-    });
-    res.json({ success: true });
-  } catch (err) {
-    console.error('[error-report] insert failed:', err.message);
-    res.json({ success: true });
-  }
+// A panel's report: which panel, what kind of failure. The severity is the
+// server's, from the kind, never the caller's (owner, 2026-10-20).
+const PANEL_SOURCES = { user: 'PLAYER_APP', merchant: 'MERCHANT_PANEL', admin: 'ADMIN_PANEL' };
+const PANEL_KINDS = {
+  crash:   { category: 'SCREEN_CRASH', severity: 'CRITICAL' },
+  error:   { category: 'SCRIPT',       severity: 'WARNING' },
+  promise: { category: 'PROMISE',      severity: 'MINOR' },
+  update:  { category: 'UPDATE_LOAD',  severity: 'MINOR' },
+};
+app.post('/api/internal/error-report', errorReportLimiter, (req, res) => {
+  const { message, stack, component, url, panel, kind } = req.body ?? {};
+  if (!message || typeof message !== 'string') return res.status(400).json({ success: false, message: 'message required' });
+  const source = PANEL_SOURCES[panel];
+  if (!source) return res.status(400).json({ success: false, message: 'panel must be user, merchant or admin' });
+  // A chunk that failed to load is a stale page after a deploy, whatever the panel called it.
+  const how = /dynamically imported module|Loading chunk|Importing a module script failed/i.test(message)
+    ? PANEL_KINDS.update : (PANEL_KINDS[kind] ?? PANEL_KINDS.crash);
+  logError({
+    source, ...how, message,
+    detail: typeof stack === 'string' ? stack : null,
+    component: typeof component === 'string' ? component : null,
+    location: typeof url === 'string' ? url : null,
+  });
+  res.json({ success: true });
 });
 
 // /api/download/android and /api/app/android/update — the uploaded, published
@@ -850,6 +864,7 @@ const _shutdown = (sig) => {
   // Stop background producers immediately (no new cycles/settlement work).
   try { gameEngine?.stop(); } catch (_) {}
   try { cycleGenerator?.stop(); } catch (_) {}
+  void flushErrorLog();
 
   const DRAIN_DELAY_MS = Number(process.env.SHUTDOWN_DRAIN_MS || 5000);
   const DEADLINE_MS    = Number(process.env.SHUTDOWN_DEADLINE_MS || 25000);

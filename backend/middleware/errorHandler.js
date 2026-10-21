@@ -4,6 +4,7 @@
  * Catches and handles all errors in the application
  */
 import { logger } from '../services/logger.js';
+import { logServerFailure, withoutCapture } from '../services/errorLog.service.js';
 
 export const errorHandler = (err, req, res, next) => {
     if (res.headersSent) return next(err);
@@ -21,13 +22,16 @@ export const errorHandler = (err, req, res, next) => {
 
     // X-6: structured error log carrying the correlation id + request context.
     // Logged in full either way: the operator needs the real error.
-    logger.error(`Unhandled error: ${err?.message || err}`, {
+    // A failure nobody decided goes into the error log (Admin › Error Logs);
+    // a refusal somebody wrote is not an error.
+    if (!decided) logServerFailure(`${req.method} ${req.baseUrl || ''}${req.route?.path || req.path || ''}`, err);
+    withoutCapture(() => logger.error(`Unhandled error: ${err?.message || err}`, {
         status,
         method: req.method,
         url: req.originalUrl,
         code: err?.code,
         stack: err?.stack,
-    });
+    }));
 
     // The correlation id is echoed so support/clients can quote it and it can
     // be found in the logs — which is where the detail lives.
