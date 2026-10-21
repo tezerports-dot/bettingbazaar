@@ -1,9 +1,9 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // One staff account's page (owner, 2026-10-14): its roles, its areas as
-// toggles, queue-manager access as a switch, and the authenticator reset and
-// sub-admin removal, each on the page itself, no pop-ups. A step that cannot
-// be undone from here asks for a second press beside the first.
+// toggles, and the authenticator reset and sub-admin removal, each on the
+// page itself, no pop-ups. A step that cannot be undone from here asks for a
+// second press beside the first.
 //
 // Every route is a full admin's (staffPermissions.js ADMIN_ONLY_AREAS). The
 // areas and their labels are the server's catalogue (`GET /staff-permissions`),
@@ -79,7 +79,6 @@ export const StaffProfile: React.FC = () => {
 
   const isAdmin = staff.roles.includes('ADMIN');
   const isSub = staff.roles.includes('SUB_ADMIN');
-  const isQueueManager = staff.roles.includes('QUEUE_MANAGER');
   const saved = grantOf(staff.areas);
   const changed = Object.keys({ ...saved, ...grant }).some((k) => Boolean(saved[k]) !== Boolean(grant[k]));
 
@@ -142,18 +141,6 @@ export const StaffProfile: React.FC = () => {
       ) : (
         <Section title="Areas" sub="Areas are given to sub-admins. This account is not one.">
           <p className="text-sm text-gray-400">No areas.</p>
-        </Section>
-      )}
-
-      {!isAdmin && (
-        <Section title="Queue manager" sub="A queue manager assigns payment orders to agents and merchants: they decide where a player's money goes.">
-          <label className="inline-flex items-center gap-3 text-sm">
-            <input type="checkbox" role="switch" aria-checked={isQueueManager} checked={isQueueManager} disabled={busy !== ''}
-              onChange={(e) => void run('queue', () => api.subAdmins.setQueueManager(staff.userId, e.target.checked),
-                e.target.checked ? 'Queue-manager access granted' : 'Queue-manager access removed',
-                'Failed to change queue-manager access')} />
-            Queue-manager access
-          </label>
         </Section>
       )}
 

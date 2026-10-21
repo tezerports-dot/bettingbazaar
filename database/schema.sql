@@ -628,7 +628,6 @@ CREATE TABLE IF NOT EXISTS users (
   -- ── Roles ────────────────────────────────────────────────────────────────
   is_admin           BOOLEAN NOT NULL DEFAULT FALSE,
   is_sub_admin       BOOLEAN NOT NULL DEFAULT FALSE,
-  is_queue_manager   BOOLEAN NOT NULL DEFAULT FALSE,
   is_mediator        BOOLEAN NOT NULL DEFAULT FALSE,
   sub_admin_role     TEXT NOT NULL DEFAULT 'CUSTOM',
   -- JSONB rather than 8 boolean columns: the permission set is read as a whole
@@ -679,6 +678,13 @@ ALTER TABLE users DROP COLUMN IF EXISTS two_factor_pending_secret;
 ALTER TABLE users DROP COLUMN IF EXISTS two_factor_last_counter;
 ALTER TABLE users DROP COLUMN IF EXISTS two_factor_enrolled_at;
 ALTER TABLE users DROP COLUMN IF EXISTS backup_codes;
+
+-- ── No queue manager ──────────────────────────────────────────────────────
+-- Orders route themselves (`routingCandidates`), so the queue manager role is
+-- gone (owner, 2026-10-21): a staff account with the merchants area works the
+-- queue. Dropped so a database that had it converges (§32 S31); the staff-flag
+-- CHECK below is re-added without it.
+ALTER TABLE users DROP COLUMN IF EXISTS is_queue_manager;
 
 -- Coarse role tags, distinct from the is_* booleans that gate authorisation.
 -- The booleans decide what an account MAY DO and are what every check reads;
@@ -3221,7 +3227,7 @@ ALTER TABLE users ADD CONSTRAINT users_account_type_check
 -- merchants, both of which are written at creation.
 UPDATE users SET account_type = 'STAFF'
  WHERE account_type = 'PLAYER'
-   AND (is_admin OR is_sub_admin OR is_queue_manager OR is_mediator);
+   AND (is_admin OR is_sub_admin OR is_mediator);
 UPDATE users SET account_type = 'MERCHANT'
  WHERE account_type = 'PLAYER' AND roles @> ARRAY['merchant'];
 
@@ -3256,12 +3262,11 @@ END $$;
 -- ── Staff authority lives on STAFF rows, and nowhere else ─────────────────
 -- The doors keep a PLAYER row out of the staff LOGIN. They do not keep staff
 -- authority out of a PLAYER SESSION: `isAdmin`, `hasPermission` and
--- `queueManagerOrPermission` read the flags on whatever row the session
--- belongs to. So a flag written onto a player's row is staff authority riding
--- a player's password, the player app's session and none of the staff
--- door's 2FA. Measured 2026-10-01: `POST /api/admin/users/:id/queue-manager`
--- with a PLAYER id answered 200, and that player's own session then read the
--- whole payment queue (`GET /api/admin/payment-queue`, 200).
+-- the stream doors read the flags on whatever row the session belongs to. So
+-- a flag written onto a player's row is staff authority riding a player's
+-- password, the player app's session and none of the staff door's 2FA.
+-- Measured 2026-10-01: a role grant with a PLAYER id answered 200, and that
+-- player's own session then read the whole payment queue.
 --
 -- Stated here rather than in each route because two routes wrote these flags
 -- and neither asked, and the next one would not either. Clearing a flag is
@@ -3269,7 +3274,7 @@ END $$;
 -- definition names the flag set, which may grow.
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_staff_flags_need_staff;
 ALTER TABLE users ADD CONSTRAINT users_staff_flags_need_staff
-  CHECK (account_type = 'STAFF' OR NOT (is_admin OR is_sub_admin OR is_queue_manager OR is_mediator));
+  CHECK (account_type = 'STAFF' OR NOT (is_admin OR is_sub_admin OR is_mediator));
 
 -- The same rule from the other side: phantom access is a PLAYER's. Phantom
 -- bets are placed from the player app, and the player's routes admit a
@@ -5110,7 +5115,7 @@ CREATE OR REPLACE TRIGGER merchant_flags_append_only
 -- ═══════════════════════════════════════════════════════════════════════════
 -- STAFF AUTHENTICATOR (owner, 2026-10-13)
 -- ═══════════════════════════════════════════════════════════════════════════
--- A STAFF account (admin, sub-admin, queue manager, mediator) signs in with its
+-- A STAFF account (admin, sub-admin, mediator) signs in with its
 -- mobile, its password and a code from an authenticator app (RFC 6238 TOTP).
 -- No Telegram. Written only by database/repositories/totp.js.
 --

@@ -294,7 +294,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         // result — the last thing a revoked admin should keep receiving.
         const adminUser = await db.users.getUser(decoded.userId);
         if (!adminUser || adminUser.isBlocked || adminUser.accountType !== 'STAFF'
-            || (!adminUser.isAdmin && !adminUser.isSubAdmin && !adminUser.isQueueManager)) {
+            || (!adminUser.isAdmin && !adminUser.isSubAdmin)) {
             return res.status(403).json({ success: false, message: 'Admin access required' });
         }
         // A password reset ends this stream too, not only the REST API.

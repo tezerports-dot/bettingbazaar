@@ -972,7 +972,7 @@ export async function paymentQueue({ state = null, limit = 200 } = {}) {
   const byState = Object.fromEntries(counts.map((r) => [r.state, r.n]));
   const orders = rows.map((r) => ({
     ...toOrder(r),
-    // Whether the queue manager may move it to another member: the same answer
+    // Whether an admin may move it to another member: the same answer
     // the reassign route asks (`mayChangeHands`), so the screen keeps no copy.
     canReassign: mayChangeHands(toOrder(r)),
     // A LEFT JOIN, so an order survives a party row that is gone. The money
@@ -1322,7 +1322,7 @@ export async function mirrorSettlementState(orderId, settlementStatus, {
 }
 
 /**
- * The queue manager's worklist: orders waiting for a merchant, oldest first,
+ * The payment queue's worklist: orders waiting for a merchant, oldest first,
  * with the player's identity attached.
  *
  * ── One query, not one per row ──────────────────────────────────────────────
@@ -1333,7 +1333,7 @@ export async function mirrorSettlementState(orderId, settlementStatus, {
  * closed account. A LEFT JOIN says which it is: the columns come back null and
  * the caller can tell the difference.
  *
- * Oldest first, because the queue manager works a queue and the order that has
+ * Oldest first, because the payment queue is worked as a queue and the order that has
  * waited longest is the one a player is complaining about.
  */
 export async function queuePendingOrders({ limit = 50 } = {}) {

@@ -404,11 +404,12 @@ describePg('accounts (PostgreSQL)', () => {
       // A STAFF row: `users_staff_flags_need_staff` refuses these flags on any
       // other type, and the listing fixtures are players (§32 S16).
       await createUser(mk({ userId: 'u-staff', username: 'staff4', mobile: '9770000099', accountType: 'STAFF' }));
-      const admin = await setRoles('u-staff', ['admin', 'queue_manager']);
-      expect(admin.roles.sort()).toEqual(['admin', 'queue_manager']);
+      const admin = await setRoles('u-staff', ['admin', 'subadmin']);
+      expect(admin.roles.sort()).toEqual(['admin', 'subadmin']);
       expect(admin.isAdmin).toBe(true);
-      expect(admin.isQueueManager).toBe(true);
-      expect(admin.isSubAdmin).toBe(false);
+      expect(admin.isSubAdmin).toBe(true);
+      // There is no queue manager flag (owner, 2026-10-21).
+      expect(admin).not.toHaveProperty('isQueueManager');
 
       // Removing the role removes the flag in the same statement. The four
       // separate assignments this replaced could leave `roles` saying one thing
@@ -416,7 +417,7 @@ describePg('accounts (PostgreSQL)', () => {
       const stripped = await setRoles('u-staff', []);
       expect(stripped.roles).toEqual([]);
       expect(stripped.isAdmin).toBe(false);
-      expect(stripped.isQueueManager).toBe(false);
+      expect(stripped.isSubAdmin).toBe(false);
     });
 
     it('refuses an authorisation flag on a PLAYER row, and still lets it be cleared', async () => {

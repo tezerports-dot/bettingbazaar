@@ -124,12 +124,11 @@ export const auth = {
    * loginType:
    *   'admin'         -- full admin
    *   'subadmin'      -- sub-admin
-   *   'queue_manager' -- queue manager (sees only queue dashboard)
    */
   login: async (
     mobile: string,
     password: string,
-    loginType: 'admin' | 'subadmin' | 'queue_manager' = 'admin',
+    loginType: 'admin' | 'subadmin' = 'admin',
   ): Promise<LoginAnswer> => {
     const res = await api.post<any>('/api/admin/login', { mobile, password, loginType });
     // Not an error: the password was accepted and a code is next.
@@ -600,9 +599,9 @@ export const depositPolicy = {
   },
 };
 
-// --- QUEUE MANAGER ------------------------------------------------------------
+// --- PAYMENT QUEUE (canManageMerchants) --------------------------------------
 
-export const queueManager = {
+export const paymentQueue = {
   getPendingOrders: async () => {
     const res = await api.get<any>('/api/admin/queue/pending-orders');
     if (res.data?.success && res.data?.orders) {
@@ -880,15 +879,6 @@ export const subAdmins = {
   /** Every area a sub-admin can be given, grouped — the picker is rendered from this. */
   permissionCatalog: async (): Promise<StaffPermissionCatalog> => {
     const res = await api.get<any>('/api/admin/staff-permissions');
-    return res.data;
-  },
-
-  /**
-   * Queue-manager authority: routes players' payments, so a STAFF account
-   * only (the server refuses any other with 409 and says what to do).
-   */
-  setQueueManager: async (userId: string, enable: boolean) => {
-    const res = await api.post(`/api/admin/users/${userId}/queue-manager`, { enable });
     return res.data;
   },
 
@@ -1476,7 +1466,7 @@ export default {
   boards,
   boardRules,
   depositPolicy,
-  queueManager,
+  paymentQueue,
   teams,
   telegram,
   account,

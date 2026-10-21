@@ -1,7 +1,7 @@
 # domains/configuration/ — MIGRATED
 
 Owns `SystemConfig` (business policy values: bet limits, deposit/withdrawal limits,
-feature flags, queue manager merchant pool) and `TokenRates` (buy/sell rate).
+feature flags) and `TokenRates` (buy/sell rate).
 Moved from `backend/models/systemConfig.model.js` on 2026-07-02.
 
 The payment-gateway settings surface (`backend/routes/payment-config.routes.js`)

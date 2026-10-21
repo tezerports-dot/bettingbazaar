@@ -12,7 +12,7 @@ import { MemoryRouter, Routes, Route } from 'react-router';
 const { subAdmins } = vi.hoisted(() => ({
   subAdmins: {
     listStaff: vi.fn(), getStaff: vi.fn(), permissionCatalog: vi.fn(), create: vi.fn(),
-    updatePermissions: vi.fn(), setQueueManager: vi.fn(), resetAuthenticator: vi.fn(), delete: vi.fn(),
+    updatePermissions: vi.fn(), resetAuthenticator: vi.fn(), delete: vi.fn(),
   },
 }));
 vi.mock('../../services/api', () => ({ default: { subAdmins } }));
@@ -48,10 +48,10 @@ beforeEach(() => {
   subAdmins.permissionCatalog.mockResolvedValue(CATALOG);
   subAdmins.listStaff.mockResolvedValue({
     success: true, staff: [SUB], sorts: ['joined', 'lastLogin', 'areas', 'name'],
-    roles: ['ADMIN', 'SUB_ADMIN', 'QUEUE_MANAGER', 'MEDIATOR'], pagination: { total: 1, pages: 1 },
+    roles: ['ADMIN', 'SUB_ADMIN', 'MEDIATOR'], pagination: { total: 1, pages: 1 },
   });
   subAdmins.getStaff.mockResolvedValue({ success: true, staff: SUB, isSelf: false });
-  for (const fn of ['updatePermissions', 'setQueueManager', 'resetAuthenticator', 'delete'] as const) {
+  for (const fn of ['updatePermissions', 'resetAuthenticator', 'delete'] as const) {
     subAdmins[fn].mockResolvedValue({ success: true });
   }
 });
@@ -63,8 +63,10 @@ describe('staff table', () => {
     expect(within(row).getByText('Sub-admin')).toBeInTheDocument();
     expect(within(row).getByText('1: Chat')).toBeInTheDocument();
     expect(within(row).getByText('Set up')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Queue manager' }));
-    await waitFor(() => expect(subAdmins.listStaff).toHaveBeenLastCalledWith(expect.objectContaining({ role: 'QUEUE_MANAGER', page: 1 })));
+    fireEvent.click(screen.getByRole('button', { name: 'Mediator' }));
+    await waitFor(() => expect(subAdmins.listStaff).toHaveBeenLastCalledWith(expect.objectContaining({ role: 'MEDIATOR', page: 1 })));
+    // There is no queue manager role (owner, 2026-10-21).
+    expect(screen.queryByRole('button', { name: 'Queue manager' })).toBeNull();
   });
 
   it('sorts by a server key', async () => {
@@ -116,10 +118,10 @@ describe('staff profile', () => {
       expect.objectContaining({ canManageUsers: true, canModerateChat: true })));
   });
 
-  it('switches queue-manager access on for this account', async () => {
+  it('offers no queue-manager switch (the role is gone; owner, 2026-10-21)', async () => {
     renderAt('/staff/stf-1');
-    fireEvent.click(await screen.findByRole('switch', { name: 'Queue-manager access' }));
-    await waitFor(() => expect(subAdmins.setQueueManager).toHaveBeenCalledWith('stf-1', true));
+    await screen.findByRole('button', { name: 'Save areas' });
+    expect(screen.queryByRole('switch', { name: /Queue-manager/i })).toBeNull();
   });
 
   it('resets the authenticator only on the second press', async () => {
@@ -142,10 +144,11 @@ describe('staff profile', () => {
   });
 
   it('shows the server\'s refusal where it was pressed', async () => {
-    subAdmins.setQueueManager.mockRejectedValue({ response: { data: { message: 'Only a staff account can be a queue manager.' } } });
+    subAdmins.updatePermissions.mockRejectedValue({ response: { data: { message: 'A sub-admin needs at least one area.' } } });
     renderAt('/staff/stf-1');
-    fireEvent.click(await screen.findByRole('switch', { name: 'Queue-manager access' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Only a staff account can be a queue manager.');
+    fireEvent.click(await screen.findByLabelText(/Players/));
+    fireEvent.click(screen.getByRole('button', { name: 'Save areas' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('A sub-admin needs at least one area.');
   });
 
   it('offers a full admin no toggles, and nobody their own authenticator reset', async () => {

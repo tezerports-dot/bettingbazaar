@@ -4,10 +4,10 @@
  * never be sent (owner, 2026-10-21: "only a full admin can know users details
  * and their records"; CLAUDE.md §24).
  *
- * A sub-admin, a dispute manager and a queue manager work orders, disputes and
- * people without their contact or payout details: no mobile (not even masked
- * digits), no email, no Telegram handle, no account number, IFSC or UPI ID,
- * no link built from one, and every mobile written into free text hidden.
+ * A sub-admin and a dispute manager work orders, disputes and people without
+ * their contact or payout details: no mobile (not even masked digits), no
+ * email, no Telegram handle, no account number, IFSC or UPI ID, no link
+ * built from one, and every mobile written into free text hidden.
  * Names stay: the holder's and the bank's name are what a dispute is judged by.
  *
  * Applied at the doors rather than in each route, so a route added later is

@@ -74,7 +74,6 @@ export interface User {
   profilePic?: string;
   isAdmin?: boolean;
   isMerchant?: boolean;
-  isQueueManager?: boolean;
   isMediator?: boolean;
   status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED';
 

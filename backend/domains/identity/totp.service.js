@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * domains/identity/totp.service.js — the STAFF second factor: an authenticator
- * app (owner, 2026-10-13: admin, sub-admin, queue manager and mediator sign in
+ * app (owner, 2026-10-13: admin, sub-admin and mediator sign in
  * with mobile + password + Google Authenticator; no Telegram).
  *
  * RFC 6238 over `node:crypto`, no dependency: HMAC-SHA-1, 6 digits, 30-second

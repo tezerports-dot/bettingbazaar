@@ -311,7 +311,7 @@ class SSEManager {
      */
     /**
      * @param {import('http').ServerResponse} res
-     * @param {{userId:string,isAdmin?:boolean,isSubAdmin?:boolean,isQueueManager?:boolean,subAdminPermissions?:object}} viewer
+     * @param {{userId:string,isAdmin?:boolean,isSubAdmin?:boolean,subAdminPermissions?:object}} viewer
      *   REQUIRED. A stream with no viewer would have to be sent everything or
      *   nothing, and "everything" is the defect this exists to stop.
      */

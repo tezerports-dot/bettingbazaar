@@ -84,7 +84,7 @@ function routes() {
 
 const AUTH = new Set(['authenticate', 'merchantAuth', 'isAdmin', 'hasPermission',
   'orderAccessGuard',
-  'optionalAuth', 'queueManagerOrPermission']);
+  'optionalAuth']);
 
 /**
  * A VARIANT of a known guard counts as that guard.
@@ -106,7 +106,7 @@ const AUTH = new Set(['authenticate', 'merchantAuth', 'isAdmin', 'hasPermission'
  * rather than the code (CLAUDE.md §28).
  */
 const isAuthGuard = (name) => AUTH.has(name) || /^authenticate[A-Z]/.test(name);
-const PERM = /^(hasPermission|queueManagerOrPermission)$/;
+const PERM = /^hasPermission$/;
 
 // ── SQL: interpolation into statement text ──────────────────────────────────
 // A parameterised query is safe by construction. An interpolated one is safe

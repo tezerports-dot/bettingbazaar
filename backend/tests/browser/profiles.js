@@ -31,9 +31,9 @@ import { seedPlayer, seedMerchant, seedTeam, seedAdmin } from '../e2e/seed.js';
 import { playerToken, merchantToken, adminToken } from '../e2e/harness.js';
 
 /** The admin panel caches what `/me` returned; a returning operator has it before first paint. */
-const staffCache = (u, { isAdmin = false, isSubAdmin = false, isQueueManager = false, permissions = {} } = {}) => ({
+const staffCache = (u, { isAdmin = false, isSubAdmin = false, permissions = {} } = {}) => ({
   id: u.userId, _id: u.userId, userId: u.userId, username: u.username ?? u.userId, mobile: u.mobile,
-  isAdmin, isSubAdmin, isQueueManager, permissions,
+  isAdmin, isSubAdmin, permissions,
 });
 const merchantCache = (m, extra = {}) => ({
   id: m.merchantId, merchantId: m.merchantId, username: m.username, email: m.email, mobile: m.mobile,
@@ -50,20 +50,20 @@ const player = (opts, then) => ({
 });
 
 /** A staff account: seeded as an admin, then demoted to exactly what the profile says. */
-const staff = ({ isSubAdmin = false, isQueueManager = false, keys = [] }) => ({ panel: 'admin-panel', seed: async () => {
+const staff = ({ isSubAdmin = false, keys = [] }) => ({ panel: 'admin-panel', seed: async () => {
   const u = await seedAdmin();
   const grant = normaliseGrant(Object.fromEntries(keys.map((k) => [k, true])));
   await pgQuery(
-    `UPDATE users SET is_admin = FALSE, is_sub_admin = $2, is_queue_manager = $3,
-                      sub_admin_permissions = $4::jsonb, roles = $5
+    `UPDATE users SET is_admin = FALSE, is_sub_admin = $2,
+                      sub_admin_permissions = $3::jsonb, roles = $4
       WHERE user_id = $1`,
-    [u.userId, isSubAdmin, isQueueManager, JSON.stringify(isSubAdmin ? grant : {}),
-      [isSubAdmin ? 'subadmin' : null, isQueueManager ? 'queue_manager' : null].filter(Boolean)],
+    [u.userId, isSubAdmin, JSON.stringify(isSubAdmin ? grant : {}),
+      [isSubAdmin ? 'subadmin' : null].filter(Boolean)],
     'profile_staff',
   );
   return {
     token: adminToken(u),
-    cached: staffCache(u, { isSubAdmin, isQueueManager, permissions: isSubAdmin ? grant : {} }),
+    cached: staffCache(u, { isSubAdmin, permissions: isSubAdmin ? grant : {} }),
     who: u.userId,
   };
 } });
@@ -124,10 +124,6 @@ export const PROFILES = {
   'subadmin-all': {
     what: 'a sub-admin granted every area',
     ...staff({ isSubAdmin: true, keys: PERMISSION_KEYS }),
-  },
-  'queue-manager': {
-    what: 'a queue manager (no areas; works the payment queue)',
-    ...staff({ isQueueManager: true }),
   },
   // The server refuses this session (`/me`: 401 SESSION_SUPERSEDED), so the
   // panel signs itself out; `signsOut` is what its sign-in form must then say

@@ -48,7 +48,7 @@ export function attachSocketHandlers(io) {
         if (!token) return;
         const decoded = verifyJwt(token);
         const user = await loadActiveUser(decoded);
-        if ((user?.isAdmin || user?.isSubAdmin || user?.isQueueManager) && await sessionIsLive(token, decoded, user)) {
+        if ((user?.isAdmin || user?.isSubAdmin) && await sessionIsLive(token, decoded, user)) {
           // One room per AREA the account holds, not one room for all staff:
           // an emit then reaches exactly who `staffMayReceive` allows, and the
           // personal room lets a permission change disconnect this socket.

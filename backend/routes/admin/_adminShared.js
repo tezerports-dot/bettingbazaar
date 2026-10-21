@@ -25,30 +25,3 @@ import { authenticateStaff, isAdmin, hasPermission } from '../../domains/identit
 const authenticate = authenticateStaff;
 
 export { express, authenticate, isAdmin, hasPermission };
-
-/**
- * The payment queue: admins, queue managers, and sub-admins holding `permission`.
- *
- * Every queue route, read and write, asks this — and only this. Three of them
- * used to ask it AND then refuse any sub-admin inside the handler, so the
- * Queue Manager screen the panel offered a sub-admin holding the key failed
- * on load (2026-10-01). A role check after the gate is a second answer.
- *
- * `isAdminOrSubAdminOrQueueManager` is a TIER check, so on the three queue
- * writes (assign a queued order, reassign an order, edit the merchant pool) a
- * sub-admin holding nothing but `canModerateChatPublic` could send any
- * player's order to any merchant. The audit gate counted only the exact name
- * `isAdminOrSubAdmin` and never saw these (R6, F-042 — F-001's shape again).
- * Queue managers keep the access the role exists for; `hasPermission` alone
- * would refuse them, because it admits admins and sub-admins only.
- */
-export const queueManagerOrPermission = (permission) => {
-  const byPermission = hasPermission(permission);
-  const gate = (req, res, next) => {
-    if (req.user?.isQueueManager && !req.user?.isBlocked) return next();
-    return byPermission(req, res, next);
-  };
-  gate.permission = permission;
-  gate.queueManager = true;
-  return gate;
-};

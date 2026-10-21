@@ -248,12 +248,12 @@ export function belongsElsewhere(user, accountTypes) {
 }
 
 /**
- * Whether a STAFF row holds a staff role at all: admin, sub-admin, queue
- * manager or mediator. A STAFF row with none is nobody's admin (§33.5), so the
+ * Whether a STAFF row holds a staff role at all: admin, sub-admin or
+ * mediator. A STAFF row with none is nobody's admin (§33.5), so the
  * staff door and every staff route refuse it the same way.
  */
 export function hasStaffRole(user) {
-  return Boolean(user?.isAdmin || user?.isSubAdmin || user?.isQueueManager || user?.isMediator);
+  return Boolean(user?.isAdmin || user?.isSubAdmin || user?.isMediator);
 }
 
 export function refuseWrongPanel(res, user) {

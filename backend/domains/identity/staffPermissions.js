@@ -130,8 +130,6 @@ export const STAFF_PERMISSIONS = Object.freeze([
 export const ADMIN_ONLY_AREAS = Object.freeze([
   { area: 'Sub-admins', why: 'Creating a sub-admin or changing one\'s permissions grants authority; a holder could grant themselves everything.',
     routes: ['GET /staff', 'GET /staff.xlsx', 'GET /staff/:userId', 'POST /sub-admins', 'PUT /sub-admins/:subAdminId/permissions', 'DELETE /sub-admins/:subAdminId', 'GET /staff-permissions'] },
-  { area: 'Queue managers', why: 'The queue-manager role routes players\' payments; granting it is granting authority.',
-    routes: ['POST /users/:userId/queue-manager'] },
   { area: 'Staff authenticators', why: 'Resetting a staff account\'s authenticator lets whoever holds its password enrol a new one; a holder could take over any staff account whose password they know.',
     routes: ['POST /staff/:userId/reset-authenticator'] },
   { area: 'USDT final wallet', why: 'It decides where every swept USDT goes; a holder could point the platform\'s money at their own wallet.',
