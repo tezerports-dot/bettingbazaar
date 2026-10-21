@@ -1428,6 +1428,38 @@ CREATE TABLE IF NOT EXISTS cycle_history_rollups (
     real_staked_paise >= 0 AND house_staked_paise >= 0 AND paid_out_paise >= 0 AND fees_paise >= 0)
 );
 
+-- ════════════════════════════════════════════════════════════════════════════
+-- COLD STORAGE (owner, 2026-10-20: "only the server readable ... admin can
+-- access that separately ... no one can request those old cold histories")
+-- ════════════════════════════════════════════════════════════════════════════
+-- Old rows leave the live tables and are kept here whole, never deleted:
+--   CYCLE         a round past the 1,440 kept per board and audience, with its
+--                 settlement rows (cycleHistoryRetention.js, in the pruning
+--                 transaction, beside its rollup)
+--   CHAT          an ended order's whole chat, once its last message is past
+--                 COLD_AFTER_DAYS
+--   NOTIFICATION  a player's notifications past COLD_AFTER_DAYS
+-- Written only by `database/repositories/coldArchive.js`; read only by the
+-- full-admin routes `GET /api/admin/cold-storage(/:id)`. Append-only.
+CREATE TABLE IF NOT EXISTS cold_archive (
+  id          BIGSERIAL PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  -- The cycle id, the order id, or the player's user id.
+  ref         TEXT NOT NULL,
+  first_at    TIMESTAMPTZ NOT NULL,
+  last_at     TIMESTAMPTZ NOT NULL,
+  row_count   INTEGER NOT NULL,
+  rows        JSONB NOT NULL,
+  archived_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT cold_archive_kind_known CHECK (kind IN ('CYCLE', 'CHAT', 'NOTIFICATION')),
+  CONSTRAINT cold_archive_rows CHECK (row_count > 0 AND jsonb_typeof(rows) = 'array'
+    AND jsonb_array_length(rows) = row_count AND first_at <= last_at)
+);
+CREATE INDEX IF NOT EXISTS cold_archive_kind_idx ON cold_archive (kind, archived_at DESC);
+CREATE INDEX IF NOT EXISTS cold_archive_ref_idx  ON cold_archive (kind, ref);
+CREATE OR REPLACE TRIGGER cold_archive_append_only
+  BEFORE UPDATE OR DELETE ON cold_archive FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
 CREATE TABLE IF NOT EXISTS game_providers (
   provider_key   TEXT PRIMARY KEY,
   name           TEXT NOT NULL,

@@ -1153,6 +1153,35 @@ export const errorLog = {
   },
 };
 
+// --- COLD STORAGE -------------------------------------------------------------
+// Old rounds, chats and notifications moved off every live screen, readable by
+// a full admin only (owner, 2026-10-20; backend/routes/admin/coldStorage.admin.routes.js).
+
+export type ColdKind = 'CYCLE' | 'CHAT' | 'NOTIFICATION';
+export interface ColdEntry {
+  id: number;
+  kind: ColdKind;
+  ref: string;
+  firstAt: string;
+  lastAt: string;
+  rowCount: number;
+  archivedAt: string;
+}
+export interface ColdPage {
+  kinds: ColdKind[];
+  coldAfterDays: number;
+  entries: ColdEntry[];
+  totals: Record<ColdKind, { entries: number; rows: number }>;
+}
+
+export const coldStorage = {
+  list: async (filters: { kind?: string; ref?: string; offset?: number }): Promise<ColdPage> =>
+    (await api.get<ColdPage & { success: boolean }>('/api/admin/cold-storage', { params: filters })).data,
+  open: async (id: number): Promise<ColdEntry & { rows: Array<{ table: string; row: Record<string, unknown> }> }> =>
+    (await api.get<{ success: boolean; entry: ColdEntry & { rows: Array<{ table: string; row: Record<string, unknown> }> } }>(
+      `/api/admin/cold-storage/${id}`)).data.entry,
+};
+
 // --- APP ASSETS ---------------------------------------------------------------
 
 export const appAssets = {
@@ -1381,6 +1410,7 @@ export default {
   utr,
   usdtDeposits,
   errorLog,
+  coldStorage,
   appAssets,
   orderActions,
   chat,

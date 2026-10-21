@@ -112,7 +112,7 @@ describe('the operations console', () => {
   // was the only way it ever ran, and nobody could see what it would take.
   const PREVIEW = {
     success: true, dryRun: true, cutoff: '2026-04-01T00:00:00.000Z', totalDeleted: 7,
-    results: { errorLog: 4, referralClicks: 2, notifications: 1 },
+    results: { errorLog: 5, referralClicks: 2 },
   };
   const DONE = { ...PREVIEW, dryRun: false };
 
@@ -148,7 +148,7 @@ describe('the operations console', () => {
   });
 
   it('does not offer a prune when the preview found nothing', async () => {
-    post.mockResolvedValueOnce({ data: { ...PREVIEW, totalDeleted: 0, results: { errorLog: 0, referralClicks: 0, notifications: 0 } } });
+    post.mockResolvedValueOnce({ data: { ...PREVIEW, totalDeleted: 0, results: { errorLog: 0, referralClicks: 0 } } });
     await openChannels();
     fireEvent.click(await screen.findByRole('button', { name: /Preview retention/ }));
     expect(await screen.findByRole('button', { name: 'Prune now' })).toBeDisabled();

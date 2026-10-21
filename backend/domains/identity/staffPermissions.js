@@ -134,6 +134,8 @@ export const ADMIN_ONLY_AREAS = Object.freeze([
     routes: ['POST /staff/:userId/reset-authenticator'] },
   { area: 'USDT final wallet', why: 'It decides where every swept USDT goes; a holder could point the platform\'s money at their own wallet.',
     routes: ['PUT /usdt-deposits/final-wallet'] },
+  { area: 'Cold storage', why: 'Old chats, notifications and rounds kept off every live screen (owner, 2026-10-20: only the admin may open them).',
+    routes: ['GET /cold-storage', 'GET /cold-storage/:id'] },
 ]);
 
 /**

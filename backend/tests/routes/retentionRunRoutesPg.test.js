@@ -80,7 +80,7 @@ describePg('the retention run route', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.dryRun).toBe(true);
     expect(res.body.results.errorLog).toBeGreaterThanOrEqual(2);
-    expect(Object.keys(res.body.results).sort()).toEqual(['errorLog', 'notifications', 'referralClicks']);
+    expect(Object.keys(res.body.results).sort()).toEqual(['errorLog', 'referralClicks']);
     expect(await surviving('preview')).toHaveLength(3);
   });
 

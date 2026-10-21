@@ -346,6 +346,27 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[retention] round history error:', e.message); }
   });
 
+  // ── Cold storage: old chats and notifications — runs hourly ──────────────
+  // An ended order's chat and a player's notifications, once COLD_AFTER_DAYS
+  // old, move whole into `cold_archive`, readable only by a full admin
+  // (owner, 2026-10-20; coldArchive.js). Rounds move with cycle-history-retention.
+  registerRecurring('cold-storage', 60 * 60 * 1000, async () => {
+    try {
+      let chats = 0; let notes = 0;
+      for (let i = 0; i < 50; i += 1) {
+        const { orders } = await db.coldArchive.archiveOldChats();
+        chats += orders;
+        if (!orders) break;
+      }
+      for (let i = 0; i < 50; i += 1) {
+        const { notifications } = await db.coldArchive.archiveOldNotifications();
+        notes += notifications;
+        if (!notifications) break;
+      }
+      if (chats || notes) console.log(`[cold-storage] Moved ${chats} chat(s) and ${notes} notification(s) to cold storage`);
+    } catch (e) { console.error('[cold-storage] cron error:', e.message); }
+  });
+
   // ── Payment proof retention — runs hourly ──────────────────────────────────
   // Keeps the ORDER — it is the financial record — while dropping the
   // high-volume proof screenshot once its retention window has passed. One

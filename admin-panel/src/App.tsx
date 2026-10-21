@@ -37,6 +37,7 @@ import { SystemSettings } from './Pages/Settings/SystemSettings';
 import { PlayerScreenSettings } from './Pages/Settings/PlayerScreenSettings';
 import { AuditLogs } from './Pages/Settings/AuditLogs';
 import ErrorLogs from './Pages/Settings/ErrorLogs';
+import ColdStorage from './Pages/Settings/ColdStorage';
 import { DisputeManager } from './Pages/Disputes/DisputeManager';
 import { StalledWithdrawals } from './Pages/Disputes/StalledWithdrawals';
 import { UtrMonitor } from './Pages/Utr/UtrMonitor';
@@ -382,6 +383,9 @@ const App: React.FC = () => {
         } />
         <Route path="/audit-logs" element={
           <PermRoute permission="canViewAuditLogs"><Layout><AuditLogs /></Layout></PermRoute>
+        } />
+        <Route path="/cold-storage" element={
+          <AdminOnly><Layout><ColdStorage /></Layout></AdminOnly>
         } />
         <Route path="/error-logs" element={
           <PermRoute permission="canViewAuditLogs"><Layout><ErrorLogs /></Layout></PermRoute>

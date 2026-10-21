@@ -13,7 +13,7 @@ import {
   MessageCircle, Shield, History, Scale, Search, Sun, Moon, Bell,
   SlidersHorizontal, Trophy, Star, Gamepad2, Bot, Share2,
   type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, Hourglass, Fingerprint,
-  Ghost, Smartphone, ShieldBan, KeyRound, Wallet, ScrollText, Coins } from 'lucide-react';
+  Ghost, Smartphone, ShieldBan, KeyRound, Wallet, ScrollText, Coins, Archive } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -116,6 +116,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/blocked-ips',      icon: ShieldBan,   label: 'Blocked IPs',      title: 'Blocked IPs',      sub: 'Refuse every request from an address or range', permission: 'canManageIpBlocks' },
     { path: '/audit-logs',       icon: Shield,      label: 'Audit Logs',       title: 'Audit Logs',       sub: 'Administrative action trail', permission: 'canViewAuditLogs' },
     { path: '/error-logs',       icon: Shield,      label: 'Error Logs',       title: 'Error Logs',       sub: 'Runtime errors & failed jobs', permission: 'canViewAuditLogs' },
+    { path: '/cold-storage',     icon: Archive,     label: 'Cold Storage',     title: 'Cold Storage',     sub: 'Old rounds, chats and notifications kept off every live screen', adminOnly: true },
     { path: '/account/security', icon: KeyRound,    label: 'My Authenticator', title: 'My Authenticator', sub: 'Your authenticator app and recovery codes' },
   ] },
 ];

@@ -174,7 +174,8 @@ export async function getCounter(key) {
  * Prune operational data past the retention window.
  *
  * Deliberately narrow. Financial, audit and user data is NEVER pruned — this
- * touches the error log, expired referral clicks and expired notifications, and
+ * touches the error log and expired referral clicks (old notifications move to
+ * cold storage instead, coldArchive.js), and
  * a hard floor stops a misconfigured `retentionMonths` from deleting anything
  * recent whatever the admin set.
  */
@@ -202,11 +203,6 @@ const PRUNABLE = Object.freeze({
   referralClicks: {
     table: 'referral_clicks',
     where: "expires_at < now() - interval '30 days'",
-    usesInterval: false,
-  },
-  notifications: {
-    table: 'notifications',
-    where: "expires_at IS NOT NULL AND expires_at < now() - interval '30 days'",
     usesInterval: false,
   },
 });

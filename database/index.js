@@ -66,6 +66,7 @@ import * as config from './repositories/config.js';
 import * as balanceAdjustments from './repositories/balanceAdjustments.js';
 import * as markets from './repositories/markets.js';
 import * as cycleHistoryRetention from './repositories/cycleHistoryRetention.js';
+import * as coldArchive from './repositories/coldArchive.js';
 import * as games from './repositories/games.js';
 import * as content from './repositories/content.js';
 import * as androidReleases from './repositories/androidReleases.js';
@@ -139,6 +140,7 @@ export const db = Object.freeze({
   // Trading
   markets,
   cycleHistoryRetention,
+  coldArchive,
   bets: merge(betsCore, betsApi),
   settlements,
   casino: merge(casinoCore, casinoApi),
