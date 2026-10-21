@@ -1098,20 +1098,20 @@ const MUTATIONS = [
   // M201 deleted with telegram.routes.js; MS2 guards the same check in the Mini App.
   // M202 (Aadhaar recovery took a contact card with no user_id) deleted
   // 2026-10-02 with the recovery service. M201 still guards the same check on
-  // the one contact-share path that remains.  // ── A referral disbursal reserves its budget before it pays (R6) ────────
+  // the one contact-share path that remains.  // ── A referral payout run stays within its amount (R6; budget removed 2026-10-20) ──
   {
     id: 'M203', file: 'backend/domains/referral/referral.service.js', config: UNIT,
-    test: 'backend/tests/unit/referralDisbursalBudget.test.js',
-    why: 'a disbursal whose budget reservation was refused pays anyway, so the programme ceiling is crossed',
-    from: `  if (!reservation.ok) {`,
-    to: `  if (false) {`,
+    test: 'backend/tests/unit/referralAutopay.test.js',
+    why: 'a "Pay now" whose amount is spent keeps paying, so the run pays past what the admin entered',
+    from: `      if (!reserved.ok) break;`,
+    to: `      if (false) break;`,
   },
   {
     id: 'M204', file: 'database/repositories/referrals.js', config: PG,
     test: 'database/tests/newDomains.test.js',
-    why: 'returning unspent budget can drive the drawn total below zero, inventing budget',
-    from: `WHERE programme_key = $1 AND disbursed_paise - $2 >= 0`,
-    to: `WHERE programme_key = $1`,
+    why: 'concurrent payments against one run each pass on their own count, so a run overspends its amount',
+    from: `        AND spent_paise + $2 <= pool_paise`,
+    to: ``,
   },  // ── Commission recorded is commission delivered; one pass at a time (R6) ─
   // ── Queue writes are gated on a permission, not a tier (R6) ──────────────
   {
