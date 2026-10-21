@@ -41,6 +41,7 @@ import { createAccountFromSignup } from './identity.js';
 import { recordJoinerEarnings } from './referrals.js';
 import { referralRewardsFrom } from '../../backend/domains/referral/referralRewards.js';
 import { getSystemConfig } from './config.js';
+import { createMerchantAccountWithin } from './merchants.js';
 
 /**
  * The account types Telegram serves: players and merchants. A STAFF account has
@@ -558,9 +559,9 @@ async function linkWithin(client, account, { telegramUser, phone }) {
  *   - this Telegram account's link on the challenge's panel: that account;
  *   - a contact from this Telegram account (once, at the first Verify on that
  *     panel): the account of that mobile, linked (or relinked: the person
- *     changed Telegram account, not SIM) — or, with `signup`, a new PLAYER.
- *     A merchant with no account on that mobile is refused
- *     (NO_MERCHANT_ACCOUNT): an admin makes merchant accounts.
+ *     changed Telegram account, not SIM) — or, with `signup`, a new PLAYER,
+ *     or a merchant APPLICATION (PENDING until an admin approves it; owner,
+ *     2026-10-21: merchants sign up themselves, the admin only reviews).
  *
  * A DENY needs only the fresh `initData`: the challenge id reached nobody but
  * the browser that asked, and refusing grants nothing.
@@ -632,13 +633,17 @@ export async function answerChallenge({
         // commit with the approval, or none of them do.
         account = await signUpWithin(client, contact.phone, signup);
         created = true;
+      } else if (!account && signup && ch.audience === 'MERCHANT') {
+        // A merchant's first Verify on a number with no merchant account is
+        // their APPLICATION (owner, 2026-10-21). It commits with the approval;
+        // the sign-in it approves is then refused at the door "waiting for an
+        // admin's approval" (`merchantRefusal`) until an admin approves it.
+        account = await applyWithin(client, contact.phone, signup);
+        created = true;
       }
     } else {
       refuse('CONTACT_REQUIRED');
     }
-    // A merchant, supervisor or agent account is made by an admin, with the
-    // person's mobile (owner, 2026-10-14); their first Verify finds it by that
-    // mobile and links it. Telegram never makes one.
     if (!account) refuse(ch.audience === 'MERCHANT' ? 'NO_MERCHANT_ACCOUNT' : 'NO_ACCOUNT');
 
     let outcome = { verified: false, relinked: false };
@@ -685,6 +690,15 @@ async function signUpWithin(client, phone, signup) {
   });
   if (!made.ok) refuse(made.reason === 'mobile_taken' ? 'MOBILE_TAKEN' : 'DUPLICATE');
   return lockAccount(client, 'user_id = $1 AND account_type = $2', [made.userId, 'PLAYER']);
+}
+
+/** The merchant application a first Verify makes, inside the approving transaction. */
+async function applyWithin(client, phone, signup) {
+  const made = await createMerchantAccountWithin(client, {
+    userId: signup.userId, username: `Merchant ${String(phone).slice(-4)}`, mobile: phone,
+  });
+  if (!made.ok) refuse('MOBILE_TAKEN');
+  return lockAccount(client, 'user_id = $1 AND account_type = $2', [made.userId, 'MERCHANT']);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

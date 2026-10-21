@@ -674,12 +674,16 @@ Ask each question of the change in front of you.
   with Telegram" opens a sign-in; the Mini App's Verify (or Deny) answers it.
   A Telegram account with no link on that panel shares its contact once, at
   that Verify (Telegram's signed string, its user equal to the opener): the
-  account of that mobile is linked, or, for a player only, one is made in the
-  same transaction (with the invite the sign-in carried, locked). A merchant,
-  supervisor or agent account is made by an admin with the person's mobile
-  (`POST /api/admin/merchants/create`); their first Verify links it and signs
-  them in, and a mobile with none is refused `NO_MERCHANT_ACCOUNT` (owner,
-  2026-10-14). Nothing is typed; no password exists for a player or a
+  account of that mobile is linked, or one is made in the same transaction:
+  a player (with the invite the sign-in carried, locked), or a merchant
+  APPLICATION (`createMerchantAccountWithin`, approval `PENDING`). Merchants
+  sign up themselves; an admin only reviews and approves or rejects the
+  application (`PUT /api/admin/merchants/:id/approve|reject`) and decides
+  what it becomes (an agent, a supervisor, or a merchant account); until
+  then the merchant door answers `MERCHANT_NOT_ACTIVE` "waiting for an
+  admin's approval" (owner, 2026-10-21). An admin may still make one with the
+  person's mobile (`POST /api/admin/merchants/create`); its first Verify links
+  it. Nothing is typed; no password exists for a player or a
   merchant (`users_password_staff_only`). A staff account is made by an admin,
   never by Telegram. A referral counts in the transaction that makes the
   account.
