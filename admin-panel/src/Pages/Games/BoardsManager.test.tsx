@@ -10,7 +10,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const api = vi.hoisted(() => ({
-  list: vi.fn(), create: vi.fn(), update: vi.fn(), setOrder: vi.fn(),
+  list: vi.fn(), create: vi.fn(), update: vi.fn(), setOrder: vi.fn(), demoResults: vi.fn(),
 }));
 vi.mock('../../services/api', () => ({ boards: api }));
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
@@ -27,6 +27,7 @@ beforeEach(() => {
   Object.values(api).forEach((f) => f.mockReset());
   api.list.mockResolvedValue({ success: true, boards: BOARDS, intervalMinutes: [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60] });
   api.update.mockResolvedValue({ success: true });
+  api.demoResults.mockResolvedValue({ success: true, boards: [], audiences: ['VIP', 'GENERAL'], max: 1440 });
   api.setOrder.mockResolvedValue({ success: true, boards: [BOARDS[1], BOARDS[0]] });
 });
 

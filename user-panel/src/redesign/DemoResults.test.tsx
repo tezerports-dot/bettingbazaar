@@ -38,7 +38,7 @@ describe('demo results', () => {
     const out = withDemoResults(['BOMBAY'], 'b1', 1440, true, 'BBD');
     expect(out).toEqual({ winners: ['BOMBAY', 'DELHI', 'BOMBAY', 'BOMBAY'], real: 1 });
     // With a nearly full window only the newest typed ones are used.
-    expect(withDemoResults(Array(1439).fill('DELHI'), 'b1', 1440, true, 'BBD').winners.at(-1)).toBe('DELHI');
+    expect(withDemoResults(Array(1439).fill('DELHI'), 'b1', 1440, true, 'BBD').winners[1439]).toBe('DELHI');
     // Switched off, typed results are not shown either.
     expect(withDemoResults(['BOMBAY'], 'b1', 1440, false, 'BBD').winners).toEqual(['BOMBAY']);
   });

@@ -33,10 +33,7 @@ const rawConsoleError = console.error.bind(console);
 const pending = new Map(); // fingerprint -> { report, count }
 let timer = null;
 let quiet = 0;
-let enabled = process.env.NODE_ENV !== 'test' && !process.env.VITEST;
-
-/** Turn recording on or off (tests that assert it switch it on). */
-export function setErrorLogEnabled(on) { enabled = Boolean(on); }
+const enabled = process.env.NODE_ENV !== 'test' && !process.env.VITEST;
 
 async function flush() {
   timer = null;

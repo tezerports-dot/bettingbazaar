@@ -219,9 +219,12 @@ const GatewayStatusLine: React.FC<{ status: GatewayDocumentStatus | null }> = ({
  */
 const MaintenanceTesters: React.FC = () => {
   const [testers, setTesters] = useState<Array<{ userId: string; username: string; joiningNumber: number | null }> | null>(null);
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     let live = true;
-    api.users.maintenanceTesters().then((t) => { if (live) setTesters(t); }).catch(() => { if (live) setTesters([]); });
+    Promise.resolve().then(() => api.users.maintenanceTesters())
+      .then((t) => { if (live) setTesters(t); })
+      .catch(() => { if (live) setFailed(true); });
     return () => { live = false; };
   }, []);
   return (
@@ -231,7 +234,8 @@ const MaintenanceTesters: React.FC = () => {
         These players keep using the app while maintenance is on, so you can test a release live first.
         Add or remove one from the player&apos;s page under Players.
       </p>
-      {testers === null ? <div className="text-xs text-gray-500">Loading…</div>
+      {failed ? <div className="text-xs text-red-400" role="alert">The tester list could not be loaded. Reload the page to try again.</div>
+        : testers === null ? <div className="text-xs text-gray-500">Loading…</div>
         : testers.length === 0 ? <div className="text-xs text-gray-400">No testers yet.</div>
           : (
             <ul className="flex flex-wrap gap-2">
