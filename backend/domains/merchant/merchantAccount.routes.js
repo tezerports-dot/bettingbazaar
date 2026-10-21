@@ -33,6 +33,8 @@ import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/
 import { ownerOnly, ownerOrAudit } from './merchantActor.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import { refuse as refuseTeam } from '../team/teamRefusals.js';
+import { getSystemConfig } from '#db/repositories/config.js';
+import { merchantSizes, offeredSizes } from './denominations.js';
 
 const router = express.Router();
 
@@ -65,6 +67,26 @@ function accountRefusal(res, err) {
   return null;
 }
 
+/**
+ * The sizes the platform sends to merchant accounts now, per direction: the
+ * admin's merchant sizes that are also on offer (owner, 2026-10-20). Every one
+ * must be taken by some account of the merchant (merchantPaymentAccounts.js).
+ */
+async function requiredSizes() {
+  const cfg = await getSystemConfig();
+  const of = (direction) => merchantSizes(cfg, direction).filter((n) => offeredSizes(cfg, direction).includes(n));
+  return { DEPOSIT: of('DEPOSIT'), WITHDRAWAL: of('WITHDRAWAL') };
+}
+
+/** A write that would leave a size with no account, in the owner's words, with what is left out. */
+function sizesRefusal(res, err) {
+  if (err?.code !== 'SIZES_UNCOVERED' && err?.code !== 'INVALID_ORDER_SIZES') return null;
+  return res.status(err.status).json({
+    success: false, code: err.code, message: err.message,
+    ...(err.uncovered ? { uncovered: err.uncovered } : {}),
+  });
+}
+
 // ── The overview ─────────────────────────────────────────────────────────────
 
 /**
@@ -76,16 +98,19 @@ function accountRefusal(res, err) {
 router.get('/account', merchantAuth, requireMerchantAccount, async (req, res) => {
   try {
     const owner = req.merchantActor?.isOwner !== false;
-    const [accounts, staff, flags, poolRequests] = await Promise.all([
+    const [accounts, staff, flags, poolRequests, sizes] = await Promise.all([
       db.merchantPaymentAccounts.listAccounts(req.merchantId),
       owner ? db.merchantStaff.listStaff(req.merchantId) : null,
       db.merchantProblems.listFlags({ merchantId: req.merchantId, days: 30 }),
       owner ? db.teamPools.listRequests({ teamId: req.directTeam.teamId, limit: 50 }) : null,
+      requiredSizes().then((required) => db.merchantPaymentAccounts.sizeCoverage(req.merchantId, required)),
     ]);
     res.json({
       success: true,
       team: req.directTeam,
       accounts,
+      // Which sizes the platform sends here, and which no account takes yet.
+      sizes,
       ...(owner ? { staff, poolRequests } : {}),
       flags,
     });
@@ -98,32 +123,54 @@ router.get('/account', merchantAuth, requireMerchantAccount, async (req, res) =>
 
 router.post('/account/payment-accounts', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
   try {
-    const out = await db.merchantPaymentAccounts.addAccount(req.merchantId, req.body ?? {});
+    const out = await db.merchantPaymentAccounts.addAccount(req.merchantId, req.body ?? {}, { required: await requiredSizes() });
     if (!out.ok) return res.status(403).json({ success: false, code: 'NOT_A_MERCHANT_ACCOUNT', message: 'This is not a merchant account.' });
     res.status(201).json({ success: true, account: out.account });
   } catch (err) {
-    if (accountRefusal(res, err)) return;
+    if (accountRefusal(res, err) || sizesRefusal(res, err)) return;
     respondError(res, err, 'POST /merchant/account/payment-accounts', { message: 'Could not add the account.' });
+  }
+});
+
+/**
+ * PUT /api/merchant/account/payment-accounts/sizes `{ accounts: [{ accountId,
+ * buySizes, sellSizes }] }` — which order sizes go to which account, in one
+ * save (owner, 2026-10-20). Refused 409 SIZES_UNCOVERED, with `uncovered`,
+ * when a size the platform sends here would be left with no account.
+ */
+// Mounted before `/:accountId`, which would otherwise read "sizes" as an id.
+router.put('/account/payment-accounts/sizes', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
+  try {
+    const out = await db.merchantPaymentAccounts.setAccountSizes(req.merchantId, req.body?.accounts,
+      { required: await requiredSizes() });
+    if (!out.ok) return res.status(404).json({ success: false, code: 'ACCOUNT_NOT_FOUND', message: 'One of those accounts is not a live account of yours.' });
+    res.json({ success: true, accounts: out.accounts });
+  } catch (err) {
+    if (sizesRefusal(res, err)) return;
+    respondError(res, err, 'PUT /merchant/account/payment-accounts/sizes', { message: 'Could not save the sizes.' });
   }
 });
 
 router.put('/account/payment-accounts/:accountId', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
   try {
-    const out = await db.merchantPaymentAccounts.updateAccount(req.merchantId, req.params.accountId, req.body ?? {});
+    const out = await db.merchantPaymentAccounts.updateAccount(req.merchantId, req.params.accountId, req.body ?? {},
+      { required: await requiredSizes() });
     if (!out.ok) return res.status(404).json({ success: false, code: 'ACCOUNT_NOT_FOUND', message: 'No such account.' });
     res.json({ success: true, account: out.account });
   } catch (err) {
-    if (accountRefusal(res, err)) return;
+    if (accountRefusal(res, err) || sizesRefusal(res, err)) return;
     respondError(res, err, 'PUT /merchant/account/payment-accounts/:id', { message: 'Could not save the account.' });
   }
 });
 
 router.delete('/account/payment-accounts/:accountId', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
   try {
-    const out = await db.merchantPaymentAccounts.removeAccount(req.merchantId, req.params.accountId);
+    const out = await db.merchantPaymentAccounts.removeAccount(req.merchantId, req.params.accountId,
+      { required: await requiredSizes() });
     if (!out.ok) return res.status(404).json({ success: false, code: 'ACCOUNT_NOT_FOUND', message: 'No such account.' });
     res.json({ success: true });
   } catch (err) {
+    if (sizesRefusal(res, err)) return;
     respondError(res, err, 'DELETE /merchant/account/payment-accounts/:id', { message: 'Could not remove the account.' });
   }
 });

@@ -279,7 +279,8 @@ export async function directCandidates(order, { cap, barredMerchantIds = [], lim
         AND NOT (owner.merchant_id = ANY($4))
         AND EXISTS (SELECT 1 FROM merchant_payment_accounts acct
                      WHERE acct.merchant_id = owner.merchant_id AND acct.status = 'ACTIVE'
-                       AND (CASE WHEN $2 THEN acct.accepts_deposits ELSE acct.pays_withdrawals END))
+                       AND (CASE WHEN $2 THEN acct.accepts_deposits ELSE acct.pays_withdrawals END)
+                       AND ($3 / 100)::int = ANY (CASE WHEN $2 THEN acct.buy_sizes ELSE acct.sell_sizes END))
       ORDER BY owner.routing_priority DESC,
                owner.avg_response_minutes ASC NULLS LAST,
                open_this_way ASC,
@@ -305,10 +306,12 @@ export async function assignToDirect(order, { cap, barredMerchantIds = [], build
   const isBuy = order.type === 'DEPOSIT';
   const oid = String(order.orderId);
   const candidates = await directCandidates(order, { cap, barredMerchantIds });
+  // The order's size in tokens: the account must take it (owner, 2026-10-20).
+  const sizeTokens = Number(order.tokenAmountPaise) / 100;
   let lastRefusal = 'no_candidate';
 
   for (const cand of candidates) {
-    const account = isBuy ? await leastUsedDepositAccount(cand.merchantId) : null;
+    const account = isBuy ? await leastUsedDepositAccount(cand.merchantId, sizeTokens) : null;
     if (isBuy && !account) { lastRefusal = 'no_pay_account'; continue; }
     const set = { ...(await buildSet(cand, account)), merchantId: cand.merchantId };
     let moved;
@@ -326,7 +329,7 @@ export async function assignToDirect(order, { cap, barredMerchantIds = [], build
             [cand.merchantId, OPEN_STATES, order.type, oid]);
           if (open[0].n >= cap) throw new PoolRefused('merchant_busy');
           if (isBuy) {
-            const taken = await takeDepositAccountWithin(client, cand.merchantId, account.accountId);
+            const taken = await takeDepositAccountWithin(client, cand.merchantId, account.accountId, sizeTokens);
             if (!taken) throw new PoolRefused('no_pay_account');
             await holdForBuyWithin(client, {
               orderId: oid, teamId: cand.teamId, amountPaise: order.tokenAmountPaise, actor,

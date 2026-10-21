@@ -85,6 +85,7 @@ export const ENDPOINTS = {
     ADD_ACCOUNT:       { method: 'POST',   path: () => '/api/merchant/account/payment-accounts' },
     UPDATE_ACCOUNT:    { method: 'PUT',    path: (accountId: string) => `/api/merchant/account/payment-accounts/${accountId}` },
     REMOVE_ACCOUNT:    { method: 'DELETE', path: (accountId: string) => `/api/merchant/account/payment-accounts/${accountId}` },
+    SET_SIZES:         { method: 'PUT',    path: () => '/api/merchant/account/payment-accounts/sizes' },
     ADD_STAFF:         { method: 'POST',   path: () => '/api/merchant/account/staff' },
     SET_STAFF_ROLES:   { method: 'PUT',    path: (staffId: string) => `/api/merchant/account/staff/${staffId}/roles` },
     REMOVE_STAFF:      { method: 'DELETE', path: (staffId: string) => `/api/merchant/account/staff/${staffId}` },

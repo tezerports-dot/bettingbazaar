@@ -496,11 +496,11 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             ? String(req.body?.paidFromAccountId ?? '').trim() : null;
         const allowedPayFrom = req.merchantActor?.isOwner === false ? req.merchantActor.withdrawalAccountIds : null;
         if (paidFromAccountId !== null && !(await db.merchantPaymentAccounts.mayPayFrom(
-            req.merchantId, paidFromAccountId, { allowedAccountIds: allowedPayFrom }))) {
+            req.merchantId, paidFromAccountId, { allowedAccountIds: allowedPayFrom, sizeTokens: order.tokenAmount }))) {
             return res.status(400).json({
                 success: false,
                 code: 'PAID_FROM_ACCOUNT_REQUIRED',
-                message: 'Choose the account you paid this withdrawal from: an active account that pays withdrawals'
+                message: 'Choose the account you paid this withdrawal from: an active account that pays withdrawals of this size'
                     + (allowedPayFrom ? ', assigned to you.' : '.'),
             });
         }

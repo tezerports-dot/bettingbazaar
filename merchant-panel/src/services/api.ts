@@ -667,8 +667,16 @@ export interface PaymentAccountInput {
   bankName?: string;
   acceptsDeposits?: boolean;
   paysWithdrawals?: boolean;
+  buySizes?: number[];
+  sellSizes?: number[];
   status?: 'ACTIVE' | 'PAUSED';
 }
+
+/** Which sizes go to which account, every account in one save (refused 409 SIZES_UNCOVERED if one is left out). */
+export const setPaymentAccountSizes = async (
+  accounts: Array<{ accountId: string; buySizes: number[]; sellSizes: number[] }>,
+): Promise<PaymentAccount[]> =>
+  (await accountRequest<{ accounts: PaymentAccount[] }, []>(ENDPOINTS.ACCOUNT.SET_SIZES, [], { accounts })).accounts;
 
 export const addPaymentAccount = async (input: PaymentAccountInput): Promise<PaymentAccount> =>
   (await accountRequest<{ account: PaymentAccount }, []>(ENDPOINTS.ACCOUNT.ADD_ACCOUNT, [], input)).account;
@@ -809,6 +817,7 @@ export const api = {
   addPaymentAccount,
   updatePaymentAccount,
   removePaymentAccount,
+  setPaymentAccountSizes,
   addSubMember,
   setSubMemberRoles,
   removeSubMember,

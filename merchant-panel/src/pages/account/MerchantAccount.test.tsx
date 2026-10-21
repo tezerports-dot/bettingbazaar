@@ -30,6 +30,7 @@ const api = vi.hoisted(() => ({
   addPaymentAccount: vi.fn(),
   updatePaymentAccount: vi.fn(),
   removePaymentAccount: vi.fn(),
+  setPaymentAccountSizes: vi.fn(),
   addSubMember: vi.fn(),
   setSubMemberRoles: vi.fn(),
   removeSubMember: vi.fn(),
@@ -63,6 +64,7 @@ const ACCOUNT = {
   accountId: 'mpa_1', merchantId: 'm-1', kind: 'BANK', label: 'Shop HDFC', upiId: null, upiName: null, upiLink: null,
   holderName: 'Shop Ltd', accountNo: '123456789012', ifsc: 'HDFC0001234', bankName: 'HDFC',
   acceptsDeposits: true, paysWithdrawals: true, status: 'ACTIVE', lastUsedAt: null, createdAt: '', updatedAt: '', removedAt: null,
+  buySizes: [50000, 100000], sellSizes: [50000, 100000],
 };
 const OVERVIEW = {
   success: true,
@@ -74,6 +76,7 @@ const OVERVIEW = {
     createdAt: '',
   },
   accounts: [ACCOUNT],
+  sizes: { required: { DEPOSIT: [50000, 100000], WITHDRAWAL: [50000, 100000] }, uncovered: { DEPOSIT: [], WITHDRAWAL: [] } },
   staff: [{ staffId: 'mst_1', merchantId: 'm-1', userId: 'u-9', name: 'Ravi', mobile: '9876543210', roles: ['DEPOSITS'], status: 'ACTIVE', createdAt: '', removedAt: null, assignments: [] }],
   poolRequests: [],
   flags: [],
@@ -141,9 +144,10 @@ describe('who sees the merchant account screens', () => {
 
   it('an auditor reads the payment accounts and is offered no control on them', async () => {
     at(ROUTES.ACCOUNT_PAYMENT_ACCOUNTS, AUDITOR, <PaymentAccountsPage />);
-    expect(await screen.findByText('Shop HDFC')).toBeInTheDocument();
+    expect((await screen.findAllByText('Shop HDFC')).length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: /Add a UPI scanner|Add a bank account|Edit|Pause|Remove/ })).toBeNull();
     expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save sizes' })).toBeNull();
   });
 
   it('an agent opening an account screen is told these are for merchant accounts', () => {
@@ -310,5 +314,42 @@ describe('pool and reports', () => {
       { from: '2026-10-01', to: '2026-10-07', type: '' }, { limit: 50, skip: 0 }));
     fireEvent.click(screen.getByRole('button', { name: /Download CSV/ }));
     await waitFor(() => expect(api.downloadOrderReportCsv).toHaveBeenCalledWith({ from: '2026-10-01', to: '2026-10-07', type: '' }));
+  });
+});
+
+describe('which sizes go to which account', () => {
+  const SECOND = { ...ACCOUNT, accountId: 'mpa_2', label: 'Shop ICICI', buySizes: [], sellSizes: [] };
+
+  it('sends every account\'s ticks in one save, and shows a size with no account in red', async () => {
+    api.getMerchantAccount.mockResolvedValue({ ...OVERVIEW, accounts: [ACCOUNT, SECOND] });
+    api.setPaymentAccountSizes.mockResolvedValue([]);
+    at(ROUTES.ACCOUNT_PAYMENT_ACCOUNTS, OWNER, <PaymentAccountsPage />);
+    const tick = await screen.findByRole('checkbox', { name: /Buys of ₹1,00,000 on Shop HDFC/ });
+    fireEvent.click(tick);
+    // Nothing takes ₹1,00,000 buys now: said before anything is sent.
+    expect(screen.getByRole('alert')).toHaveTextContent(/buy ₹1,00,000/);
+    fireEvent.click(screen.getByRole('checkbox', { name: /Buys of ₹1,00,000 on Shop ICICI/ }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Save sizes' }));
+    await waitFor(() => expect(api.setPaymentAccountSizes).toHaveBeenCalledWith([
+      { accountId: 'mpa_1', buySizes: [50000], sellSizes: [50000, 100000] },
+      { accountId: 'mpa_2', buySizes: [100000], sellSizes: [] },
+    ]));
+  });
+
+  it('says the server\'s refusal as it says it', async () => {
+    api.getMerchantAccount.mockResolvedValue({ ...OVERVIEW, accounts: [ACCOUNT, SECOND] });
+    api.setPaymentAccountSizes.mockRejectedValue(Object.assign(new Error('Every size must go to at least one of your accounts.'), { status: 409 }));
+    at(ROUTES.ACCOUNT_PAYMENT_ACCOUNTS, OWNER, <PaymentAccountsPage />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Sells of ₹50,000 on Shop ICICI/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save sizes' }));
+    expect(await screen.findByText('Every size must go to at least one of your accounts.')).toBeInTheDocument();
+  });
+
+  it('a sub-member sees the ticks and cannot change them', async () => {
+    at(ROUTES.ACCOUNT_PAYMENT_ACCOUNTS, { ...AUDITOR, actor: { ...AUDITOR.actor, roles: ['WITHDRAWALS'] } }, <PaymentAccountsPage />);
+    const tick = await screen.findByRole('checkbox', { name: /Buys of ₹50,000 on Shop HDFC/ });
+    expect(tick).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save sizes' })).toBeNull();
   });
 });

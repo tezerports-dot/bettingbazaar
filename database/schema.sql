@@ -4619,6 +4619,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS merchant_payment_accounts_one_handle
 CREATE INDEX IF NOT EXISTS merchant_payment_accounts_merchant_idx
   ON merchant_payment_accounts (merchant_id, status);
 
+-- Which order sizes each account takes (owner, 2026-10-20): a buy of a listed
+-- size may be paid into it, a sell of a listed size paid from it. Only the
+-- seven ORDER_SIZES (denominations.js). An account made before this column
+-- takes every size, which is what it did. That every size the platform sends
+-- to merchant accounts is taken by some account is the writer's, asked after
+-- each write (merchantPaymentAccounts.js `coveredWrite`).
+ALTER TABLE merchant_payment_accounts ADD COLUMN IF NOT EXISTS buy_sizes INTEGER[] NOT NULL
+  DEFAULT '{500,1000,5000,10000,50000,100000,500000}';
+ALTER TABLE merchant_payment_accounts ADD COLUMN IF NOT EXISTS sell_sizes INTEGER[] NOT NULL
+  DEFAULT '{500,1000,5000,10000,50000,100000,500000}';
+ALTER TABLE merchant_payment_accounts DROP CONSTRAINT IF EXISTS merchant_payment_accounts_sizes_known;
+ALTER TABLE merchant_payment_accounts ADD CONSTRAINT merchant_payment_accounts_sizes_known CHECK (
+      buy_sizes <@ '{500,1000,5000,10000,50000,100000,500000}'::int[]
+  AND sell_sizes <@ '{500,1000,5000,10000,50000,100000,500000}'::int[]
+  AND array_position(buy_sizes, NULL) IS NULL AND array_position(sell_sizes, NULL) IS NULL);
+
 -- Nothing on an account may be or carry a mobile number (§24): the account
 -- number against the payments banks and the owner's own mobile, the names and
 -- the label as text, and the UPI handle's name part (a handle such as

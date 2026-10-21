@@ -3540,7 +3540,7 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 357 |
+| Route declarations in `backend/**` | 358 |
 | Reachable with **no auth middleware** | 44 |
 | Staff routes carrying an **area** (permission key) | 183 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 10 |
@@ -3616,16 +3616,17 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 533 |
-| Parameters only (safe by construction) | 354 |
+| `pgQuery` call sites | 531 |
+| Parameters only (safe by construction) | 351 |
 | Interpolating into statement text (each needs a reading) | 170 |
-| Statement text built elsewhere and passed in (each needs a reading) | 9 |
+| Statement text built elsewhere and passed in (each needs a reading) | 10 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
 
 - `database/repositories/adminTokenConsiderations.js — text`
 - `database/repositories/cricket.js — ok`
 - `database/repositories/identity.js — text`
+- `database/repositories/merchantPaymentAccounts.js — sql`
 - `database/repositories/merchants.js — text`
 - `database/repositories/rtp.js — RESERVED_SQL`
 - `database/repositories/teamOversight.js — sql`

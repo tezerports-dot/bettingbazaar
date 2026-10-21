@@ -522,7 +522,19 @@ export interface PaymentAccount {
   upiId: string | null; upiName: string | null; upiLink: string | null;
   holderName: string; accountNo: string; ifsc: string; bankName: string;
   acceptsDeposits: boolean; paysWithdrawals: boolean; status: PaymentAccountStatus;
+  /** The order sizes, in tokens, a buy is paid into it / a sell is paid from it (owner, 2026-10-20). */
+  buySizes: number[]; sellSizes: number[];
   lastUsedAt: string | null; createdAt: string; updatedAt: string; removedAt: string | null;
+}
+
+/**
+ * `sizeCoverage` (merchantPaymentAccounts.js): the sizes, in tokens, the
+ * platform sends to merchant accounts per direction, and which of them no
+ * account of this merchant takes yet.
+ */
+export interface SizeCoverage {
+  required: { DEPOSIT: number[]; WITHDRAWAL: number[] };
+  uncovered: { DEPOSIT: number[]; WITHDRAWAL: number[] };
 }
 
 /**
@@ -569,6 +581,7 @@ export interface MerchantAccountOverview {
   success: boolean;
   team: DirectTeam;
   accounts: PaymentAccount[];
+  sizes: SizeCoverage;
   staff?: SubMember[];
   poolRequests?: Array<TeamPoolRequest & { teamKind?: 'AGENT' | 'DIRECT' }>;
   flags: MerchantFlag[];
