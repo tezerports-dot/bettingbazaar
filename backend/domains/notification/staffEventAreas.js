@@ -108,5 +108,8 @@ export function emitToStaff(io, event, data) {
   // or payout details (staffContactShield.js, CLAUDE.md §24).
   io.to(FULL_ADMIN_ROOM).emit(event, data);
   const others = roomsForEvent(event).filter((r) => r !== FULL_ADMIN_ROOM);
-  if (others.length) io.to(others).except(FULL_ADMIN_ROOM).emit(event, shieldContact(data));
+  if (!others.length) return;
+  // `except` keeps a full admin who also manages the queue from a second, shielded copy.
+  const target = io.to(others);
+  (typeof target.except === 'function' ? target.except(FULL_ADMIN_ROOM) : target).emit(event, shieldContact(data));
 }
