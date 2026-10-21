@@ -3838,6 +3838,62 @@ const MUTATIONS = [
     why: 'a cancelled order counts against the merchant',
     from: "                        OR (f.party IS NULL AND (o.state IN ('REJECTED', 'FAILED')",
     to: "                        OR (f.party IS NULL AND (o.state IN ('REJECTED', 'FAILED', 'CANCELLED')",
+  },  // ── Payout details and how a buy is paid (owner, 2026-10-21) ────────────
+  {
+    id: 'M497', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/userPg.test.js',
+    why: 'a player changes the account their sells are paid to minutes after saving it',
+    from: "  IF OLD.payout_details_locked_until IS NOT NULL AND OLD.payout_details_locked_until > now() THEN",
+    to: "  IF FALSE THEN",
+  },
+  {
+    id: 'M498', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/userPg.test.js',
+    why: 'a player repoints their payout while a sell to them is being paid',
+    from: "                AND (o.state IN ('PENDING_QUEUE', 'PROCESSING', 'PAID', 'DISPUTED')",
+    to: "                AND (o.state IN ('PENDING_QUEUE')",
+  },
+  {
+    id: 'M499', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/userPg.test.js',
+    why: 'a player saves a UPI ID that is their mobile, and the member paying them sees it',
+    from: "          AND NOT bb_text_has_a_mobile(split_part(bank_details->>'upiId', '@', 1))));",
+    to: "          AND TRUE));",
+  },
+  {
+    id: 'M500', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderPrivacyRoutes.test.js',
+    why: 'the member paying a sell is not given the UPI link for its amount',
+    from: "    if (upiId && Number(plain.fiatAmount) > 0) {",
+    to: "    if (false) {",
+  },
+  {
+    id: 'M501', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'backend/tests/routes/buyPayMethodPg.test.js',
+    why: 'a UPI buy goes to a member with no UPI ID, and the player is shown nowhere to pay',
+    from: "    THEN COALESCE(${m}.upi_id, '') <> ''",
+    to: "    THEN TRUE",
+  },
+  {
+    id: 'M502', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'backend/tests/routes/buyPayMethodPg.test.js',
+    why: 'a buy is given another pay method\'s window',
+    from: "  if (order.buyPayMethod) return buyPayWindowSettings(cfg)[order.buyPayMethod];",
+    to: "  if (order.buyPayMethod) return buyPayWindowSettings(cfg).UPI;",
+  },
+  {
+    id: 'M503', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'backend/tests/routes/merchantAccountPg.test.js',
+    why: 'a merchant account\'s buy is paid into the kind of account the player did not choose',
+    from: "                       AND (NOT $2 OR acct.kind = $7))",
+    to: "                       AND (NOT $2 OR $7::text IS NOT NULL))",
+  },
+  {
+    id: 'M504', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/buyPayMethodPg.test.js',
+    why: 'a UPI/bank buy is created without the player choosing how to pay it',
+    from: "      && !BUY_PAY_METHOD_LIST.includes(attempt.payMethod)) {",
+    to: "      && false) {",
   },
 ];
 

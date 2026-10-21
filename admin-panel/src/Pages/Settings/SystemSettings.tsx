@@ -106,14 +106,16 @@ const routingDefaults = (): TeamRoutingForm => ({
 // the input; the server refuses an out-of-range value by name. `fallback` is a
 // LOADING placeholder equal to the spec default beside it (§4).
 type OrderDirection = 'DEPOSIT' | 'WITHDRAWAL';
+// A merchant account's buy is always UPI or bank, so its window is the
+// player's pay method's (`buyPayWindowSeconds`, below): only sells keep one here.
 const MERCHANT_ROUTING_DIRECTIONS: Array<{
   direction: OrderDirection; label: string;
   concurrency: { min: number; max: number; fallback: number };
-  processing: { min: number; max: number; fallback: number };
+  processing: { min: number; max: number; fallback: number } | null;
 }> = [
   { direction: 'DEPOSIT', label: 'Buys',
     concurrency: { min: 1, max: 100, fallback: 10 },     // spec default: 10
-    processing:  { min: 60, max: 7200, fallback: 900 } }, // spec default: 900
+    processing:  null },
   { direction: 'WITHDRAWAL', label: 'Sells',
     concurrency: { min: 1, max: 100, fallback: 10 },     // spec default: 10
     processing:  { min: 60, max: 7200, fallback: 900 } }, // spec default: 900
@@ -135,17 +137,31 @@ const MERCHANT_SIZE_LISTS: Array<{ key: MerchantSizeKey; verb: string }> = [
 
 interface MerchantRoutingForm {
   concurrency: Record<OrderDirection, number>;
-  processingWindowSeconds: Record<OrderDirection, number>;
+  processingWindowSeconds: Partial<Record<OrderDirection, number>>;
   assignmentWaitSeconds: number;
   [other: string]: unknown;
 }
 const merchantRoutingDefaults = (): MerchantRoutingForm => ({
   concurrency: Object.fromEntries(MERCHANT_ROUTING_DIRECTIONS.map((d) => [d.direction, d.concurrency.fallback])) as Record<OrderDirection, number>,
-  processingWindowSeconds: Object.fromEntries(MERCHANT_ROUTING_DIRECTIONS.map((d) => [d.direction, d.processing.fallback])) as Record<OrderDirection, number>,
+  processingWindowSeconds: Object.fromEntries(MERCHANT_ROUTING_DIRECTIONS
+    .filter((d) => d.processing).map((d) => [d.direction, d.processing!.fallback])) as Partial<Record<OrderDirection, number>>,
   assignmentWaitSeconds: MERCHANT_ASSIGNMENT_WAIT.fallback,
 });
 const directMerchantDefaults = () =>
   Object.fromEntries(DIRECT_MERCHANT_FIELDS.map((f) => [f.key, f.fallback])) as Record<'dailyProblemFlagThreshold', number>;
+
+/**
+ * How long a player has to pay a UPI/bank buy, by how they chose to pay it
+ * (`buyPayWindowSeconds`, config.spec.js; read by `buyPayWindowSettings`,
+ * database/repositories/teamRouting.js; owner, 2026-10-21). §5 mirror.
+ */
+type BuyPayMethodKey = 'UPI' | 'BANK';
+const BUY_PAY_WINDOWS: Array<{ key: BuyPayMethodKey; label: string; min: number; max: number; fallback: number }> = [
+  { key: 'UPI', label: 'Paid by UPI (seconds)', min: 60, max: 7200, fallback: 900 },             // spec default: 900
+  { key: 'BANK', label: 'Paid by bank transfer (seconds)', min: 60, max: 7200, fallback: 1800 }, // spec default: 1800
+];
+const buyPayWindowDefaults = () =>
+  Object.fromEntries(BUY_PAY_WINDOWS.map((f) => [f.key, f.fallback])) as Record<BuyPayMethodKey, number>;
 
 /** Commission per completed order, in percent, two decimals at most (`orderCommission`, §5 mirror). */
 type CommissionKey = 'depositPercent' | 'withdrawalPercent';
@@ -268,6 +284,7 @@ export const SystemSettings: React.FC = () => {
     merchantRouting: merchantRoutingDefaults(),
     directMerchants: directMerchantDefaults(),
     orderCommission: orderCommissionDefaults(),
+    buyPayWindowSeconds: buyPayWindowDefaults(),
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
     generalPayoutMultiplier: 1.8, // schema default: 1.8 (General boards)
@@ -390,6 +407,7 @@ export const SystemSettings: React.FC = () => {
           })(),
           directMerchants: { ...directMerchantDefaults(), ...(response.data.directMerchants ?? {}) },
           orderCommission: { ...orderCommissionDefaults(), ...(response.data.orderCommission ?? {}) },
+          buyPayWindowSeconds: { ...buyPayWindowDefaults(), ...(response.data.buyPayWindowSeconds ?? {}) },
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
           generalPayoutMultiplier: response.data.generalPayoutMultiplier ?? 1.8, // schema default: 1.8
           phantomBetsLabel:     response.data.phantomBetsLabel     ?? '',
@@ -1116,6 +1134,7 @@ export const SystemSettings: React.FC = () => {
                       )}
                       <SettingHelp path={`merchantRouting.concurrency.${d.direction}`} />
                     </div>
+                    {d.processing ? (() => { const bounds = d.processing; return (
                     <div>
                       <label className="label" htmlFor={`mr-proc-${d.direction}`}>Window to serve an assigned order (seconds)</label>
                       <input id={`mr-proc-${d.direction}`} type="number" step={1}
@@ -1129,11 +1148,13 @@ export const SystemSettings: React.FC = () => {
                           },
                         })}
                         className="input" />
-                      {outOfRange(proc, d.processing)
-                        ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {d.processing.min}–{d.processing.max} seconds.</p>
-                        : <p className="text-xs text-gray-500 mt-1">{Math.round(proc / 60)} min</p>}
+                      {outOfRange(proc ?? NaN, bounds)
+                        ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {bounds.min}–{bounds.max} seconds.</p>
+                        : <p className="text-xs text-gray-500 mt-1">{Math.round((proc ?? 0) / 60)} min</p>}
                       <SettingHelp path={`merchantRouting.processingWindowSeconds.${d.direction}`} />
-                    </div>
+                    </div>); })() : (
+                    <p className="text-xs text-gray-500">The time to pay a buy is set under Buy Payment Windows.</p>
+                    )}
                   </div>
                 );
               })}
@@ -1177,6 +1198,35 @@ export const SystemSettings: React.FC = () => {
           {/* ── Commission per order (owner, 2026-10-21) ─────────────────────
               Into the pool of the team or merchant account that served it,
               agents and merchant accounts alike. */}
+          <div className="pt-4 border-t border-dark-700">
+            <h3 className="font-semibold mb-1">Buy Payment Windows</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              A buy of a UPI / bank size is paid by UPI or by bank transfer, as the player chooses. Each has its own
+              time to pay, counted from assignment, for agents and merchant accounts alike. Cash buys use the cash window.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {BUY_PAY_WINDOWS.map((f) => {
+                const v = formData.buyPayWindowSeconds[f.key];
+                return (
+                  <div key={f.key}>
+                    <label className="label" htmlFor={`bpw-${f.key}`}>{f.label}</label>
+                    <input id={`bpw-${f.key}`} type="number" step={1} min={f.min} max={f.max}
+                      value={Number.isFinite(v) ? v : ''}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        buyPayWindowSeconds: { ...formData.buyPayWindowSeconds, [f.key]: Math.floor(Number(e.target.value)) },
+                      })}
+                      className="input" />
+                    {outOfRange(v, f)
+                      ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {f.min}–{f.max} seconds.</p>
+                      : <p className="text-xs text-gray-500 mt-1">{Math.round(v / 60)} min</p>}
+                    <SettingHelp path={`buyPayWindowSeconds.${f.key}`} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           <div className="pt-4 border-t border-dark-700">
             <h3 className="font-semibold mb-1">Merchant Commission</h3>
             <p className="text-xs text-gray-500 mb-3">
@@ -1742,7 +1792,8 @@ export const SystemSettings: React.FC = () => {
           || ROUTING_TIMERS.some((t) => outOfRange(formData.teamRouting[t.key], t))
           || USDT_DEPOSIT_FIELDS.some((f) => outOfRange(formData.usdtDeposits[f.key], f))
           || MERCHANT_ROUTING_DIRECTIONS.some((d) => outOfRange(formData.merchantRouting.concurrency[d.direction], d.concurrency)
-            || outOfRange(formData.merchantRouting.processingWindowSeconds[d.direction], d.processing))
+            || (d.processing !== null && outOfRange(formData.merchantRouting.processingWindowSeconds[d.direction] ?? NaN, d.processing)))
+          || BUY_PAY_WINDOWS.some((f) => outOfRange(formData.buyPayWindowSeconds[f.key], f))
           || outOfRange(formData.merchantRouting.assignmentWaitSeconds, MERCHANT_ASSIGNMENT_WAIT)
           || DIRECT_MERCHANT_FIELDS.some((f) => outOfRange(formData.directMerchants[f.key], f))
           || ORDER_COMMISSION_FIELDS.some((f) => outOfRange(formData.orderCommission[f.key], f))}

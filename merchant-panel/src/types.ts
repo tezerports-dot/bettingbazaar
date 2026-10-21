@@ -217,13 +217,15 @@ export interface MerchantProfile {
   // Settlement credentials as stored on the Merchant document — this is the
   // shape GET /api/merchant/profile returns (backend formatMerchant).
   // `settlementDetails` below is an older alias kept for compatibility.
-  // A bank account only: no UPI handle is kept or sent (CLAUDE.md §2, §24).
+  // The bank account a BANK buy is paid into.
   bankDetails?: {
     accountHolderName?: string;
     bankName?: string;
     accountNo?: string;
     ifsc?: string;
   };
+  // The UPI ID a UPI buy's link is built from (owner, 2026-10-21), never a mobile.
+  upiId?: string | null;
 
   // Settlement details
   settlementDetails?: {

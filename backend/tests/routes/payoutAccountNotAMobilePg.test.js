@@ -137,21 +137,33 @@ describePg('an account number that is a mobile number', () => {
   // one route that writes a member's account. What the application used to
   // be held to is held there.
   //
-  // A UPI handle is usually the holder's mobile with a bank suffix, and a
-  // member keeps none (`merchants.bank_upi_id` was dropped; §2, §24).
-  describe('a member\'s UPI handle', () => {
-    it('is never kept, top-level or inside the bank details', async () => {
+  // A member's UPI ID (owner, 2026-10-21): a player paying a UPI buy is given
+  // a link built from it, so one that is a mobile is refused by the row
+  // (`merchants_upi_id_shape`), and one inside the bank details is not read.
+  describe('a member\'s UPI ID', () => {
+    it('refuses one that is a mobile, however it is spelled, and keeps the one they had', async () => {
       const member = await newMember();
       const handle = someoneElse();
+      for (const upiId of [`${handle}@okaxis`, `${member.mobile}@ybl`, `91${handle}@paytm`]) {
+        const res = await as(merchantApp, member).put('/profile').send({ upiId });
+        expect(res.status, upiId).toBe(400);
+        expect(res.body.code).toBe('UPI_ID_IS_A_MOBILE');
+      }
+      expect((await getMerchant(member.merchantId)).upiId).toBeNull();
+    });
+
+    it('keeps one that is not a mobile, and never one inside the bank details', async () => {
+      const member = await newMember();
       const res = await as(merchantApp, member).put('/profile').send({
-        upiId: `${handle}@okaxis`,
-        bankDetails: { accountHolderName: 'A Member', accountNo: regularAccount(), ifsc: 'HDFC0000778', bankName: 'Some Bank', upiId: `${handle}@ybl` },
+        upiId: 'Shop.Counter42@OKAXIS',
+        bankDetails: { accountHolderName: 'A Member', accountNo: regularAccount(), ifsc: 'HDFC0000778', bankName: 'Some Bank', upiId: 'other@ybl' },
       });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       const merchant = await getMerchant(member.merchantId);
-      expect(merchant.bankDetails.bankName).toBe('Some Bank');
+      expect(merchant.upiId).toBe('shop.counter42@okaxis');
       expect(merchant.bankDetails).not.toHaveProperty('upiId');
-      expect(JSON.stringify(merchant)).not.toMatch(/@okaxis|@ybl/);
+      expect(JSON.stringify(merchant)).not.toMatch(/other@ybl/);
+      expect((await as(merchantApp, member).put('/profile').send({ upiId: 'no-at-sign' })).body.code).toBe('UPI_ID_INVALID');
     });
   });
 });

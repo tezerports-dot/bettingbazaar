@@ -61,6 +61,23 @@ export function paymentModeFor({ currency, tokenAmountPaise, inrRouting }) {
   return paise <= MAX_CASH_SIZE_PAISE ? PAYMENT_MODES.CASH_ATM : PAYMENT_MODES.P2P_UPI;
 }
 
+/**
+ * How a player pays an INR buy on the UPI/bank rail (owner, 2026-10-21),
+ * `order_states.buy_pay_method`: chosen by them at creation, each with its own
+ * window (`SystemConfig.buyPayWindowSeconds`). UPI: a link for the order's
+ * amount built from the member's UPI ID (`merchants.upi_id`) or a merchant
+ * account's UPI QR account. BANK: a bank transfer to the member's or the
+ * account's bank account.
+ */
+export const BUY_PAY_METHODS = Object.freeze({ UPI: 'UPI', BANK: 'BANK' });
+export const BUY_PAY_METHOD_LIST = Object.freeze(Object.values(BUY_PAY_METHODS));
+
+/** Whether an order carries a pay method: an INR buy on the UPI/bank rail. */
+export function takesPayMethod({ type, currency, paymentMode }) {
+  return type === 'DEPOSIT' && String(currency ?? 'INR').toUpperCase() === 'INR'
+    && paymentMode === PAYMENT_MODES.P2P_UPI;
+}
+
 /** The `inr_routing` an order is stamped with: the mode for INR, null for USDT. */
 export function inrRoutingFor({ currency, mode }) {
   return String(currency ?? 'INR').toUpperCase() === 'USDT' ? null : mode;

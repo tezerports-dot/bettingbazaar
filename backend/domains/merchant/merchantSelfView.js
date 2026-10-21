@@ -33,6 +33,7 @@ export function formatMerchant(merchant, user = null) {
     acceptsDeposits:      merchant.acceptsDeposits,
     acceptsWithdrawals:   merchant.acceptsWithdrawals,
     bankDetails:          merchant.bankDetails,
+    upiId:                merchant.upiId ?? null,
     limits:               merchant.limits,
     // Whether the platform has stopped sending them new buy orders (three
     // unpaid in a row, §2). A merchant was never told: the Dashboard read

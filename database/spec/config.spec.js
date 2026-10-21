@@ -268,12 +268,20 @@ export const SYSTEM_CONFIG_SPEC = group({
       WITHDRAWAL: int(10, 1, 100),
     }),
     // Seconds, as `teamRouting`: a queued order nobody could take expires
-    // after assignmentWait; an assigned order after its processing window.
+    // after assignmentWait; an assigned sell after its processing window (a
+    // buy is always on the UPI/bank rail here, so `buyPayWindowSeconds`).
     assignmentWaitSeconds:   n(1500, 60, 86400),
     processingWindowSeconds: group({
-      DEPOSIT:    n(900, 60, 7200),
       WITHDRAWAL: n(900, 60, 7200),
     }),
+  }),
+  // ── How long a player has to pay a UPI/bank buy (owner, 2026-10-21) ──────
+  // Seconds from assignment, by how the player chose to pay it
+  // (`order_states.buy_pay_method`), whoever serves it, agents or merchant
+  // accounts. Cash buys keep `teamRouting.processingWindowSeconds.CASH`.
+  buyPayWindowSeconds: group({
+    UPI:  n(900, 60, 7200),
+    BANK: n(1800, 60, 7200),
   }),
   // ── Merchant accounts (owner, 2026-10-11) ───────────────────────────────
   directMerchants: group({

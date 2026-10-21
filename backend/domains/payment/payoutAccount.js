@@ -50,6 +50,11 @@ export const UPI_ID_IS_A_MOBILE_MESSAGE =
   + 'anyone\'s mobile number, so it cannot be used. Make a UPI ID that is not your mobile number in your '
   + 'UPI app (most apps let you choose one), and save that.';
 
+export const MEMBER_UPI_ID_IS_A_MOBILE_MESSAGE =
+  'That UPI ID is your mobile number. Players paying you by UPI are given a link with your UPI ID in it, and '
+  + 'nobody is shown anyone\'s mobile number, so it cannot be used. Make a UPI ID that is not your mobile '
+  + 'number in your UPI app, and save that.';
+
 /**
  * The refusals of a save of a player's payout details, phrased for the player:
  * a mobile in the account or the UPI ID, and the lock (schema.sql "PAYOUT

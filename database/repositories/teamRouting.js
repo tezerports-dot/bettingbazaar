@@ -37,9 +37,9 @@
  * order moved. A refusal unwinds the move and the next candidate is tried.
  */
 import { pgQuery } from '../client.js';
-import { RAILS, railOf } from './orderRails.js';
+import { RAILS, railOf, routedToMerchants } from './orderRails.js';
 import { holdForBuyWithin, PoolRefused, poolStandingSql } from './teamPools.js';
-import { leastUsedDepositAccount, takeDepositAccountWithin } from './merchantPaymentAccounts.js';
+import { leastUsedDepositAccount, takeDepositAccountWithin, accountKindFor } from './merchantPaymentAccounts.js';
 import { transitionOrder } from './orders.js';
 
 export { RAILS, railOf, PAYMENT_MODES, paymentModeFor, routedToMerchants } from './orderRails.js';
@@ -72,6 +72,17 @@ const sellRoomOrderSql = (isBuy) => `
   CASE WHEN ${isBuy} THEN 0
        ELSE GREATEST(st.size_paise - COALESCE(pool.available_paise, 0) - COALESCE(pool.held_paise, 0)
                      - st.sells_owed_paise, 0) END DESC`;
+
+/**
+ * Whether a member can be paid a UPI/bank buy by `method` (owner, 2026-10-21):
+ * UPI needs their UPI ID (`merchants.upi_id`, never a mobile), BANK their bank
+ * account, number, IFSC and holder. One expression for the candidate read and
+ * the re-check under the member's lock (§32 S6).
+ */
+const MEMBER_CAN_BE_PAID_SQL = (m, method) => `(CASE WHEN ${method}::text = 'UPI'
+    THEN COALESCE(${m}.upi_id, '') <> ''
+    ELSE COALESCE(${m}.bank_account_no, '') <> '' AND COALESCE(${m}.bank_ifsc, '') <> ''
+     AND COALESCE(${m}.bank_account_holder_name, '') <> '' END)`;
 
 /**
  * The routing settings, with the schema defaults (config.spec.js teamRouting)
@@ -149,12 +160,12 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
         AND (NOT ($3 AND $1 = 'CASH') OR m.cash_ready)
         AND (NOT (NOT $3 AND $1 = 'CASH') OR COALESCE(o.buys, 0) = 0)
         AND NOT (m.merchant_id = ANY($5))
-        -- A UPI/bank buy is paid by bank transfer to the member's own account
-        -- (owner, 2026-10-03), so a member without one is not a candidate: the
-        -- player would be shown nowhere to pay and take the expiry for it.
-        AND (NOT ($3 AND $1 = 'UPI_BANK') OR (
-              COALESCE(m.bank_account_no, '') <> '' AND COALESCE(m.bank_ifsc, '') <> ''
-          AND COALESCE(m.bank_account_holder_name, '') <> ''))
+        -- A UPI/bank buy is paid the way the player chose (owner, 2026-10-21):
+        -- by UPI, through a link built from the member's UPI ID; by bank
+        -- transfer, to the member's own account. A member without the one it
+        -- needs is not a candidate: the player would be shown nowhere to pay
+        -- and take the expiry for it.
+        AND (NOT ($3 AND $1 = 'UPI_BANK') OR ${MEMBER_CAN_BE_PAID_SQL('m', '$8')})
       ORDER BY (t.cash_out_started_at IS NOT NULL) DESC,
                m.routing_priority DESC,
                ${poolOrderSql('$3', '$4')},
@@ -164,7 +175,7 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
                m.last_assigned_at ASC NULLS FIRST,
                m.merchant_id
       LIMIT $6`,
-    [rail, cap, isBuy, amount, barred, limit, OPEN_STATES], 'team_routing_candidates');
+    [rail, cap, isBuy, amount, barred, limit, OPEN_STATES, order.buyPayMethod ?? null], 'team_routing_candidates');
   return rows.map((r) => ({ merchantId: r.merchant_id, teamId: r.team_id, openOrders: Number(r.open_total) }));
 }
 
@@ -196,9 +207,11 @@ export async function assignToTeam(order, { cap, barredMerchantIds = [], buildSe
         within: async (client) => {
           // The member, locked: every assignment to them serialises here.
           const { rows: m } = await client.query(
-            `SELECT is_online, cash_ready, status FROM merchants WHERE merchant_id = $1 FOR UPDATE`,
-            [cand.merchantId]);
+            `SELECT is_online, cash_ready, status, ${MEMBER_CAN_BE_PAID_SQL('merchants', '$2')} AS payable
+               FROM merchants WHERE merchant_id = $1 FOR UPDATE`,
+            [cand.merchantId, order.buyPayMethod ?? null]);
           if (!m[0]?.is_online || m[0].status !== 'ACTIVE') throw new PoolRefused('member_unavailable');
+          if (isBuy && rail === RAILS.UPI_BANK && !m[0].payable) throw new PoolRefused('member_cannot_be_paid');
           if (isBuy && rail === RAILS.CASH && !m[0].cash_ready) throw new PoolRefused('member_not_ready');
           // Counted AGAIN, in a statement that starts after the lock: it sees
           // every assignment committed before this one was allowed to proceed.
@@ -281,10 +294,34 @@ export function merchantRoutingSettings(cfg) {
     },
     assignmentWaitSeconds: Number(r.assignmentWaitSeconds ?? 1500), // schema default: 1500
     processingWindowSeconds: {
-      DEPOSIT: Number(p.DEPOSIT ?? 900),       // schema default: 900
       WITHDRAWAL: Number(p.WITHDRAWAL ?? 900), // schema default: 900
     },
   };
+}
+
+/** How long a player has to pay a UPI/bank buy, by its pay method (config.spec.js buyPayWindowSeconds). */
+export function buyPayWindowSettings(cfg) {
+  const w = cfg?.buyPayWindowSeconds ?? {};
+  return {
+    UPI: Number(w.UPI ?? 900),    // schema default: 900
+    BANK: Number(w.BANK ?? 1800), // schema default: 1800
+  };
+}
+
+/**
+ * The seconds an order has from assignment (owner, 2026-10-21): a UPI/bank
+ * buy by how the player chose to pay it, whoever serves it; a merchant
+ * account's sell by `merchantRouting`; an agent's order by its rail.
+ */
+export function orderWindowSeconds(cfg, order) {
+  if (order.buyPayMethod) return buyPayWindowSettings(cfg)[order.buyPayMethod];
+  if (routedToMerchants(order)) {
+    if (order.type !== 'WITHDRAWAL') {
+      throw new TypeError(`orderWindowSeconds: merchant-account buy ${order.orderId} has no pay method`);
+    }
+    return merchantRoutingSettings(cfg).processingWindowSeconds.WITHDRAWAL;
+  }
+  return routingSettings(cfg).processingWindowSeconds[railOf(order)];
 }
 
 /** The eligible merchant accounts for an order, best first. A READ; `assignToDirect` re-checks under a lock. */
@@ -323,7 +360,9 @@ export async function directCandidates(order, { cap, barredMerchantIds = [], lim
         AND EXISTS (SELECT 1 FROM merchant_payment_accounts acct
                      WHERE acct.merchant_id = owner.merchant_id AND acct.status = 'ACTIVE'
                        AND (CASE WHEN $2 THEN acct.accepts_deposits ELSE acct.pays_withdrawals END)
-                       AND ($3 / 100)::int = ANY (CASE WHEN $2 THEN acct.buy_sizes ELSE acct.sell_sizes END))
+                       AND ($3 / 100)::int = ANY (CASE WHEN $2 THEN acct.buy_sizes ELSE acct.sell_sizes END)
+                       -- A buy, into the kind of account the player chose to pay.
+                       AND (NOT $2 OR acct.kind = $7))
       ORDER BY (t.cash_out_started_at IS NOT NULL) DESC,
                owner.routing_priority DESC,
                ${poolOrderSql('$2', '$3')},
@@ -333,7 +372,8 @@ export async function directCandidates(order, { cap, barredMerchantIds = [], lim
                owner.last_assigned_at ASC NULLS FIRST,
                owner.merchant_id
       LIMIT $5`,
-    [cap, isBuy, amount, barred, limit, OPEN_STATES], 'direct_routing_candidates');
+    [cap, isBuy, amount, barred, limit, OPEN_STATES, isBuy ? accountKindFor(order.buyPayMethod) : null],
+    'direct_routing_candidates');
   return rows.map((r) => ({ merchantId: r.merchant_id, teamId: r.team_id, openOrders: Number(r.open_this_way) }));
 }
 
@@ -357,7 +397,7 @@ export async function assignToDirect(order, { cap, barredMerchantIds = [], build
   let lastRefusal = 'no_candidate';
 
   for (const cand of candidates) {
-    const account = isBuy ? await leastUsedDepositAccount(cand.merchantId, sizeTokens) : null;
+    const account = isBuy ? await leastUsedDepositAccount(cand.merchantId, sizeTokens, order.buyPayMethod) : null;
     if (isBuy && !account) { lastRefusal = 'no_pay_account'; continue; }
     const set = { ...(await buildSet(cand, account)), merchantId: cand.merchantId };
     let moved;
@@ -375,7 +415,7 @@ export async function assignToDirect(order, { cap, barredMerchantIds = [], build
             [cand.merchantId, OPEN_STATES, order.type, oid]);
           if (open[0].n >= cap) throw new PoolRefused('merchant_busy');
           if (isBuy) {
-            const taken = await takeDepositAccountWithin(client, cand.merchantId, account.accountId, sizeTokens);
+            const taken = await takeDepositAccountWithin(client, cand.merchantId, account.accountId, sizeTokens, order.buyPayMethod);
             if (!taken) throw new PoolRefused('no_pay_account');
             await holdForBuyWithin(client, {
               orderId: oid, teamId: cand.teamId, amountPaise: order.tokenAmountPaise, actor,

@@ -54,7 +54,7 @@ import {
 import { listScopeFor, refuseWork, ownerOnly, ownerOrAudit, merchantActorTag } from './merchantActor.js';
 // What a cash buy's ATM link may be (Step 2d).
 import { checkCashLink } from '../payment/cashLink.js';
-import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
+import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE, UPI_ID_PATTERN, UPI_ID_INVALID_MESSAGE, MEMBER_UPI_ID_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
 import { recordMerchantRefusal, REFUSAL } from './merchantRefusal.service.js';
 
 const router     = express.Router();
@@ -146,15 +146,20 @@ router.get('/profile', merchantAuth, async (req, res) => {
 
 // FIX B5-d: PUT /profile — merchant edits their own bank account.
 //
-// There is no UPI handle to edit, so `upiId` is not read from the body: a
-// UPI_BANK buy is paid into the member's bank account and nobody is shown a
-// handle (§2 "How each rail is paid", §24).
+// And the member's UPI ID (owner, 2026-10-21): a player who chose to pay a
+// UPI/bank buy by UPI is given a link built from it for the order's amount.
+// One that is a mobile is refused by the row (`merchants_upi_id_shape`, §24).
+// Only top-level `upiId`; one inside `bankDetails` is not read.
 //
 // No merchant holds a USDT address: USDT buys are paid to the platform
 // (owner, 2026-10-18), so the profile takes bank details only.
 router.put('/profile', merchantAuth, ownerOnly, async (req, res) => {
     try {
         const { bankDetails } = req.body;
+        const upiId = req.body.upiId === undefined ? undefined : String(req.body.upiId ?? '').trim().toLowerCase();
+        if (upiId && !UPI_ID_PATTERN.test(upiId)) {
+            return res.status(400).json({ success: false, code: 'UPI_ID_INVALID', message: UPI_ID_INVALID_MESSAGE });
+        }
 
         const current = await db.merchants.getMerchant(req.merchantId);
         if (!current) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
@@ -166,6 +171,7 @@ router.put('/profile', merchantAuth, ownerOnly, async (req, res) => {
             if (bankDetails.accountNo !== undefined) update['bankDetails.accountNo'] = bankDetails.accountNo;
             if (bankDetails.ifsc      !== undefined) update['bankDetails.ifsc']      = bankDetails.ifsc;
         }
+        if (upiId !== undefined) update.upiId = upiId || null;
 
         if (!Object.keys(update).length) {
             return res.status(400).json({ success: false, message: 'No valid profile fields provided.' });
@@ -186,6 +192,9 @@ router.put('/profile', merchantAuth, ownerOnly, async (req, res) => {
             }
             if (isAccountMobileRefusal(e)) {
                 return res.status(400).json({ success: false, code: 'ACCOUNT_IS_A_MOBILE', message: ACCOUNT_IS_A_MOBILE_MESSAGE });
+            }
+            if (e.code === '23514' && e.constraint === 'merchants_upi_id_shape') {
+                return res.status(400).json({ success: false, code: 'UPI_ID_IS_A_MOBILE', message: MEMBER_UPI_ID_IS_A_MOBILE_MESSAGE });
             }
             if (e.code === '23514') {
                 return res.status(400).json({ success: false, message: 'Those payment details are not in a valid format.' });

@@ -27,7 +27,7 @@
 import { pgQuery } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 import { deriveOrderHmac } from '../../backend/middleware/order-crypto-access.js';
-import { paymentModeFor, inrRoutingFor } from './orderRails.js';
+import { paymentModeFor, inrRoutingFor, takesPayMethod, BUY_PAY_METHODS, BUY_PAY_METHOD_LIST } from './orderRails.js';
 import { getSystemConfig } from './config.js';
 import { routingForSize } from '../../backend/domains/merchant/denominations.js';
 
@@ -127,6 +127,9 @@ export function toOrder(r) {
     // worker and every screen branches on this: after a switch both rails run
     // side by side until the last pre-flip order settles.
     paymentMode: r.payment_mode,
+    // How the player pays a UPI/bank buy, UPI or BANK, chosen by them (owner,
+    // 2026-10-21); null on every other order.
+    buyPayMethod: r.buy_pay_method ?? null,
     // The team serving it, and what a buy holds in that team's pool (Step 2c).
     teamId: r.team_id ?? null,
     poolHeldPaise: Number(r.pool_held_paise ?? 0),
@@ -336,6 +339,12 @@ async function newOrderStatement({
   // order alone. Named for the same reason as the chain: frozen by trigger
   // (`order_states_usdt_pay_address_frozen`), never SETTABLE.
   usdtPayAddress = null,
+  // How the player pays an INR buy on the UPI/bank rail (owner, 2026-10-21):
+  // named, never SETTABLE, frozen by trigger. Ignored on every other order,
+  // where it has no meaning; on one of those buys the player's choice, and
+  // for a writer that names none the row's default
+  // (`bb_order_pay_method_default`, schema.sql).
+  buyPayMethod = null,
   ...detail
 }) {
   if (!orderId) throw new Error('createOrderRecord requires an orderId');
@@ -361,10 +370,15 @@ async function newOrderStatement({
     currency: detail.currency, mode: routingForSize(await getSystemConfig(), tokenPaise / 100, type),
   });
   const paymentMode = paymentModeFor({ currency: detail.currency, tokenAmountPaise: tokenPaise, inrRouting });
+  const payMethod = takesPayMethod({ type, currency: detail.currency, paymentMode }) ? buyPayMethod ?? null : null;
+  if (payMethod !== null && !BUY_PAY_METHOD_LIST.includes(payMethod)) {
+    throw Object.assign(new Error(`Choose how you will pay: ${BUY_PAY_METHOD_LIST.join(' or ')}.`),
+      { status: 400, code: 'PAY_METHOD_UNKNOWN', payMethods: BUY_PAY_METHOD_LIST });
+  }
   const columns = ['order_id', 'user_id', 'order_type', 'state', 'token_amount_paise', 'fiat_amount_paise',
-    'payment_mode', 'inr_routing', 'usdt_chain', 'usdt_pay_address', 'order_hmac'];
+    'payment_mode', 'inr_routing', 'buy_pay_method', 'usdt_chain', 'usdt_pay_address', 'order_hmac'];
   const params = [String(orderId), String(userId), type, state, tokenPaise, rupeesToPaise(fiatAmountRupees),
-    paymentMode, inrRouting, usdtChain, usdtPayAddress ? String(usdtPayAddress).toLowerCase() : null,
+    paymentMode, inrRouting, payMethod, usdtChain, usdtPayAddress ? String(usdtPayAddress).toLowerCase() : null,
     deriveOrderHmac(orderId)];
 
   // The same allowlist `setOrderFields` uses, so a field this create accepts is
@@ -433,7 +447,7 @@ export async function queuedOrdersForAssignment({ limit = 200 } = {}) {
  */
 export async function rerailWaitingOrders(cfg, { orderId = null, limit = 500 } = {}) {
   const { rows } = await pgQuery(
-    `SELECT order_id, order_type, token_amount_paise, currency, inr_routing FROM order_states
+    `SELECT order_id, order_type, token_amount_paise, currency, inr_routing, buy_pay_method FROM order_states
       WHERE state = 'PENDING_QUEUE' AND inr_routing IS NOT NULL
         AND team_id IS NULL AND pool_held_paise = 0 AND cash_link IS NULL
         AND ($1::text IS NULL OR order_id = $1)
@@ -447,11 +461,16 @@ export async function rerailWaitingOrders(cfg, { orderId = null, limit = 500 } =
     const paymentMode = paymentModeFor({
       currency: r.currency, tokenAmountPaise: Number(r.token_amount_paise), inrRouting: mode,
     });
+    // A cash buy moved to the UPI/bank rail is paid by UPI, the nearest to the
+    // QR it was going to scan; one moved back to cash has no pay method; one
+    // that stays on the rail keeps the player's choice.
+    const payMethod = !takesPayMethod({ type: r.order_type, currency: r.currency, paymentMode }) ? null
+      : (r.buy_pay_method ?? BUY_PAY_METHODS.UPI);
     const { rowCount } = await pgQuery(
-      `UPDATE order_states SET inr_routing = $2, payment_mode = $3, updated_at = now()
+      `UPDATE order_states SET inr_routing = $2, payment_mode = $3, buy_pay_method = $4, updated_at = now()
         WHERE order_id = $1 AND state = 'PENDING_QUEUE' AND inr_routing IS NOT NULL AND inr_routing <> $2
           AND team_id IS NULL AND pool_held_paise = 0 AND cash_link IS NULL`,
-      [r.order_id, String(mode), paymentMode], 'orders_rerail');
+      [r.order_id, String(mode), paymentMode, payMethod], 'orders_rerail');
     if (rowCount) moved.push(r.order_id);
   }
   return moved;

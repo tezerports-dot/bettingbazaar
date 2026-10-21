@@ -42,7 +42,7 @@ export function newMerchantId() {
 const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email,
   status, suspension_reason, is_online,
   accepts_deposits, accepts_withdrawals,
-  bank_account_holder_name, bank_name, bank_account_no, bank_ifsc,
+  bank_account_holder_name, bank_name, bank_account_no, bank_ifsc, upi_id,
   min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
   total_processed_volume_paise, earnings_paise, total_deposit_amount_paise,
   total_withdrawal_amount_paise, total_deposits_processed, total_withdrawals_processed,
@@ -108,13 +108,16 @@ function toMerchant(row) {
     acceptsDeposits: row.accepts_deposits,
     acceptsWithdrawals: row.accepts_withdrawals,
 
-    // A bank account and nothing else: no UPI handle is kept (§2, §24).
+    // The bank account a BANK buy is paid into.
     bankDetails: {
       accountHolderName: row.bank_account_holder_name,
       bankName: row.bank_name,
       accountNo: row.bank_account_no,
       ifsc: row.bank_ifsc,
     },
+    // The UPI ID a UPI buy's link is built from (owner, 2026-10-21); never a
+    // mobile (`merchants_upi_id_shape`). Players see it only inside that link.
+    upiId: row.upi_id ?? null,
 
     limits: {
       minDeposit: rupees(row.min_deposit_paise),
@@ -245,7 +248,7 @@ export async function getMerchantByPublicRef(publicRef) {
 const UPDATABLE = new Set([
   'user_id', 'name', 'username', 'mobile', 'email',
   'status', 'suspension_reason', 'accepts_deposits', 'accepts_withdrawals',
-  'bank_account_holder_name', 'bank_name', 'bank_account_no', 'bank_ifsc',
+  'bank_account_holder_name', 'bank_name', 'bank_account_no', 'bank_ifsc', 'upi_id',
   'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise', 'max_withdraw_paise',
   'rating', 'panel_url',
   'merchant_approval_status', 'merchant_approved_by', 'merchant_approved_at',

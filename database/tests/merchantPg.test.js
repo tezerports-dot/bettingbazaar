@@ -343,7 +343,7 @@ describePg('the merchant record', () => {
     await applySchema();
     const cols = await pgQuery(
       `SELECT column_name FROM information_schema.columns
-        WHERE table_name = 'merchants' AND column_name LIKE '%upi%'`);
+        WHERE table_name = 'merchants' AND column_name = 'bank_upi_id'`);
     expect(cols.rows).toEqual([]);
     const idx = await pgQuery(`SELECT 1 FROM pg_indexes WHERE indexname = 'merchants_upi_unique'`);
     expect(idx.rows).toEqual([]);

@@ -69,6 +69,7 @@ const OwnerProfileSettings: React.FC = () => {
     bankName: '',
     accountNo: '',
     ifsc: '',
+    upiId: '',
   });
 
   const [prefs, setPrefs] = useState({ acceptsDeposits: true, acceptsWithdrawals: true });
@@ -82,6 +83,7 @@ const OwnerProfileSettings: React.FC = () => {
       bankName: merchant.bankDetails?.bankName ?? merchant.settlementDetails?.bankName ?? '',
       accountNo: merchant.bankDetails?.accountNo ?? merchant.settlementDetails?.accountNumber ?? '',
       ifsc: merchant.bankDetails?.ifsc ?? merchant.settlementDetails?.ifsc ?? '',
+      upiId: merchant.upiId ?? '',
     });
     setPrefs({
       acceptsDeposits: merchant.acceptsDeposits ?? merchant.orderPreferences?.acceptDeposits ?? true,
@@ -99,6 +101,7 @@ const OwnerProfileSettings: React.FC = () => {
           accountNo: form.accountNo.trim(),
           ifsc: form.ifsc.trim().toUpperCase(),
         },
+        upiId: form.upiId.trim(),
       });
       await refreshProfile();
       setEditingPayment(false);
@@ -220,9 +223,9 @@ const OwnerProfileSettings: React.FC = () => {
 
         {!editingPayment && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
-            {/* A bank account only. A UPI ID row stood above this, saved and
-                copied into every order, and nothing ever read it: a UPI_BANK
-                buy is paid into this account and nobody is shown a handle. */}
+            {/* The bank account a player paying by bank transfer pays into,
+                and the UPI ID a player paying by UPI is given a link from
+                (owner, 2026-10-21; never a mobile, the server refuses one). */}
             <div style={{ padding: '14px 15px', background: 'var(--surface-2)', borderRadius: 13 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 9 }}>Bank settlement account</div>
               <div style={{ display: 'grid', gridTemplateColumns: twoColumns, gap: '9px 18px' }}>
@@ -231,6 +234,7 @@ const OwnerProfileSettings: React.FC = () => {
                   { label: 'Bank', value: form.bankName },
                   { label: 'Account no.', value: maskedAccount, mono: true },
                   { label: 'IFSC', value: form.ifsc, mono: true },
+                  { label: 'UPI ID', value: form.upiId, mono: true },
                 ].map((row) => (
                   <div key={row.label}>
                     <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)' }}>{row.label}</div>
@@ -267,6 +271,16 @@ const OwnerProfileSettings: React.FC = () => {
                   value={form.ifsc}
                   onChange={(e) => setForm((f) => ({ ...f, ifsc: e.target.value.toUpperCase() }))}
                   autoCapitalize="characters"
+                  className="bb-mono"
+                  style={inputStyle}
+                />
+              </Field>
+              <Field label="UPI ID (not your mobile number)">
+                <input
+                  value={form.upiId}
+                  onChange={(e) => setForm((f) => ({ ...f, upiId: e.target.value }))}
+                  autoCapitalize="none"
+                  placeholder="name@okaxis"
                   className="bb-mono"
                   style={inputStyle}
                 />

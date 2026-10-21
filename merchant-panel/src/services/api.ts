@@ -544,6 +544,8 @@ export const setCashReady = async (ready: boolean): Promise<boolean> => {
 // to the platform (owner, 2026-10-18).
 export const updateProfile = async (data: {
   bankDetails: { accountHolderName?: string; bankName?: string; accountNo?: string; ifsc?: string };
+  // The UPI ID a UPI buy's link is built from (owner, 2026-10-21); '' clears it.
+  upiId?: string;
 }): Promise<any> => {
   const result = await request<any>(ENDPOINTS.PROFILE.UPDATE, {
     method: 'PUT',

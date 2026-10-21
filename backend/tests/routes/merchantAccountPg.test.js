@@ -212,11 +212,13 @@ describePg('merchant accounts', () => {
     return res.body.staff;
   };
 
-  const queuedBuy = async (tokens, who = null) => {
+  // Paid by UPI unless named (owner, 2026-10-21): the accounts above take buys
+  // on their UPI QR account only.
+  const queuedBuy = async (tokens, who = null, buyPayMethod = 'UPI') => {
     const p = who ?? await player();
     const orderId = oid();
     const order = await createOrderRecord({
-      orderId, userId: p.userId, type: 'DEPOSIT',
+      orderId, userId: p.userId, type: 'DEPOSIT', buyPayMethod,
       tokenAmountRupees: tokens, fiatAmountRupees: tokens, depositAllocation: tokens, reserveAllocation: 0,
     });
     return { order, orderId, player: p };
@@ -337,7 +339,8 @@ describePg('merchant accounts', () => {
 
     const endToEnd = async (tokens, expectAccount) => {
       const paise = tokens * 100;
-      const { order, orderId, player: p } = await queuedBuy(tokens);
+      // Paid the way the account it should land in is paid (owner, 2026-10-21).
+      const { order, orderId, player: p } = await queuedBuy(tokens, null, expectAccount.kind === 'BANK' ? 'BANK' : 'UPI');
       const poolBefore = await getPool(m.team.teamId);
       expect(await tryAssignMerchant(order), 'the buy was not routed').toBe(true);
       const assigned = await getOrderRecord(orderId);
@@ -397,6 +400,19 @@ describePg('merchant accounts', () => {
       }
     });
 
+    it('a buy is paid into the kind of account the player chose, and never another (owner, 2026-10-21)', async () => {
+      const { directCandidates } = await import('#db/repositories/teamRouting.js');
+      const { takeDepositAccountWithin } = await import('#db/repositories/merchantPaymentAccounts.js');
+      // Only the UPI QR account takes buys: a BANK buy has nowhere to go here.
+      const { order: bankBuy } = await queuedBuy(1_000, null, 'BANK');
+      expect((await directCandidates(bankBuy, { cap: 10 })).map((c) => c.merchantId)).not.toContain(String(m.merchantId));
+      expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, m.upi.accountId, 1_000, 'BANK'))).toBe(null);
+      // The opposite case: a UPI buy is routed to it.
+      const { order: upiBuy } = await queuedBuy(1_000, null, 'UPI');
+      expect((await directCandidates(upiBuy, { cap: 10 })).map((c) => c.merchantId)).toContain(String(m.merchantId));
+      await pgQuery("UPDATE order_states SET state = 'CANCELLED' WHERE order_id = ANY($1)", [[bankBuy.orderId, upiBuy.orderId]]);
+    });
+
     it('a paused account is no reason to route, and is not taken under its lock', async () => {
       const { directCandidates } = await import('#db/repositories/teamRouting.js');
       const { takeDepositAccountWithin } = await import('#db/repositories/merchantPaymentAccounts.js');
@@ -405,10 +421,10 @@ describePg('merchant accounts', () => {
       await as(accountApp, m).put(`/account/payment-accounts/${m.upi.accountId}`).send({ status: 'PAUSED' });
       try {
         expect((await directCandidates(order, { cap: 10 })).map((c) => c.merchantId)).not.toContain(String(m.merchantId));
-        expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, m.upi.accountId, 1_000))).toBe(null);
+        expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, m.upi.accountId, 1_000, 'UPI'))).toBe(null);
         // Another merchant's account is never taken for this one.
         const other = await merchantAccount({ poolTokens: 0 });
-        expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, other.upi.accountId, 1_000))).toBe(null);
+        expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, other.upi.accountId, 1_000, 'UPI'))).toBe(null);
         await onlyDirectOnline(m.merchantId);
       } finally {
         await as(accountApp, m).put(`/account/payment-accounts/${m.upi.accountId}`).send({ status: 'ACTIVE' });
@@ -524,9 +540,9 @@ describePg('merchant accounts', () => {
       try {
         // Asked again where the account is taken, under its lock (trap 18).
         const { takeDepositAccountWithin } = await import('#db/repositories/merchantPaymentAccounts.js');
-        expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, m.upi.accountId, 1_000))).toBe(null);
+        expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, m.upi.accountId, 1_000, 'UPI'))).toBe(null);
         for (const [tokens, account] of [[1_000, m.bank], [5_000, m.upi]]) {
-          const { order, orderId } = await queuedBuy(tokens);
+          const { order, orderId } = await queuedBuy(tokens, null, account.kind === 'BANK' ? 'BANK' : 'UPI');
           await onlyDirectOnline(m.merchantId);
           expect(await tryAssignMerchant(order), `the ${tokens} buy was not routed`).toBe(true);
           expect((await getOrderRecord(orderId)).payAccountId).toBe(account.accountId);

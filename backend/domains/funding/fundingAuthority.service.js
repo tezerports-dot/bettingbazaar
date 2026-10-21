@@ -25,7 +25,7 @@ import { getProvider, listProviders, DEFAULT_PROVIDER } from './providerRegistry
  * An "intent-based deposit": the returned order is an intent that a
  * provider (merchant P2P today, gateway/crypto later) fulfils and verifies.
  */
-export async function requestDeposit({ userId, tokenAmount, provider = DEFAULT_PROVIDER, usdtChain = null, usdtAmount = null }) {
+export async function requestDeposit({ userId, tokenAmount, provider = DEFAULT_PROVIDER, usdtChain = null, usdtAmount = null, payMethod = null }) {
   const adapter = getProvider(provider);
   if (!adapter.active) throw Object.assign(new Error(`Funding provider ${adapter.label} is not active.`), { status: 503 });
   if (!adapter.capabilities.deposit) throw Object.assign(new Error(`${adapter.label} does not support deposits.`), { status: 400 });
@@ -34,7 +34,9 @@ export async function requestDeposit({ userId, tokenAmount, provider = DEFAULT_P
   // by the others.
   // Passed through rather than read here: which fields an adapter needs is the
   // adapter's business, and this platform is the one entry point for all of them.
-  const result = await adapter.createDeposit({ userId, tokenAmount, usdtChain, usdtAmount });
+  // `payMethod` (UPI or BANK) is the player's choice for a UPI/bank buy
+  // (owner, 2026-10-21); this door is the player's, so they must make it.
+  const result = await adapter.createDeposit({ userId, tokenAmount, usdtChain, usdtAmount, payMethod });
 
   // Funding event — non-blocking, consumers must never affect the money flow.
   try {

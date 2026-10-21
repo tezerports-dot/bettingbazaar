@@ -339,14 +339,25 @@ export async function listAccounts(merchantId, { includeRemoved = false } = {}) 
  * takes it with `takeDepositAccountWithin`, which asks again under the
  * account's lock. Null when there is none.
  */
-export async function leastUsedDepositAccount(merchantId, sizeTokens) {
+export async function leastUsedDepositAccount(merchantId, sizeTokens, payMethod) {
   const { rows } = await pgQuery(
     `SELECT * FROM merchant_payment_accounts
       WHERE merchant_id = $1 AND status = 'ACTIVE' AND accepts_deposits AND $2::int = ANY (buy_sizes)
+        AND kind = $3
       ORDER BY last_used_at ASC NULLS FIRST, created_at, account_id
       LIMIT 1`,
-    [String(merchantId), Number(sizeTokens)], 'merchant_payment_account_least_used');
+    [String(merchantId), Number(sizeTokens), accountKindFor(payMethod)], 'merchant_payment_account_least_used');
   return toAccount(rows[0]);
+}
+
+/**
+ * The kind of account a buy is paid into, by how the player chose to pay it
+ * (owner, 2026-10-21): UPI into a UPI QR account, BANK into a bank account.
+ */
+export function accountKindFor(payMethod) {
+  if (payMethod === 'UPI') return 'UPI_QR';
+  if (payMethod === 'BANK') return 'BANK';
+  throw new TypeError(`accountKindFor: a merchant-account buy needs UPI or BANK, got ${payMethod}`);
 }
 
 /**
@@ -356,13 +367,13 @@ export async function leastUsedDepositAccount(merchantId, sizeTokens) {
  * so the next buy goes to the next account. Null when it no longer qualifies;
  * the caller refuses the candidate and the move unwinds.
  */
-export async function takeDepositAccountWithin(client, merchantId, accountId, sizeTokens) {
+export async function takeDepositAccountWithin(client, merchantId, accountId, sizeTokens, payMethod) {
   const { rows } = await client.query(
     `UPDATE merchant_payment_accounts SET last_used_at = clock_timestamp()
       WHERE account_id = $1 AND merchant_id = $2 AND status = 'ACTIVE' AND accepts_deposits
-        AND $3::int = ANY (buy_sizes)
+        AND $3::int = ANY (buy_sizes) AND kind = $4
       RETURNING *`,
-    [String(accountId), String(merchantId), Number(sizeTokens)]);
+    [String(accountId), String(merchantId), Number(sizeTokens), accountKindFor(payMethod)]);
   return toAccount(rows[0]);
 }
 

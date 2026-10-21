@@ -9,8 +9,11 @@
  */
 import apiClient from '../apiClient';
 
-export const createBuy = (tokenAmount: number): Promise<any> =>
-  apiClient.post('/api/payment/deposit/create', { tokenAmount });
+/** How a player pays a UPI/bank buy (backend orderRails.js BUY_PAY_METHODS; owner, 2026-10-21). */
+export type BuyPayMethod = 'UPI' | 'BANK';
+
+export const createBuy = (tokenAmount: number, payMethod: BuyPayMethod | null = null): Promise<any> =>
+  apiClient.post('/api/payment/deposit/create', payMethod ? { tokenAmount, payMethod } : { tokenAmount });
 
 export const createUsdtBuy = (usdtAmount: number, usdtChain: string): Promise<any> =>
   apiClient.post('/api/payment/usdt/deposit/create', { usdtAmount, usdtChain });

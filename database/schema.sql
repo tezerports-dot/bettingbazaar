@@ -2684,6 +2684,13 @@ BEGIN
     RAISE EXCEPTION 'order % was created on the % rail (% routing) and cannot be moved to % (%)',
       OLD.order_id, OLD.payment_mode, OLD.inr_routing, NEW.payment_mode, NEW.inr_routing;
   END IF;
+  -- How the player pays a UPI/bank buy moves only with its rail (the re-rail
+  -- above): the player chose it, and the member was chosen for it.
+  IF OLD.buy_pay_method IS NOT NULL AND NEW.buy_pay_method IS DISTINCT FROM OLD.buy_pay_method
+     AND NEW.payment_mode IS NOT DISTINCT FROM OLD.payment_mode THEN
+    RAISE EXCEPTION 'order % is paid by % and cannot be moved to %',
+      OLD.order_id, OLD.buy_pay_method, NEW.buy_pay_method;
+  END IF;
   IF OLD.usdt_chain IS NOT NULL AND NEW.usdt_chain IS DISTINCT FROM OLD.usdt_chain THEN
     RAISE EXCEPTION 'order % is being paid on % and cannot be moved to another chain',
       OLD.order_id, OLD.usdt_chain;
@@ -4210,6 +4217,15 @@ ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_supervisor_no_mobile
 ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_name_not_a_mobile;
 ALTER TABLE merchants ADD CONSTRAINT merchants_name_not_a_mobile
   CHECK (NOT bb_text_has_a_mobile(name) AND NOT bb_text_has_a_mobile(username));
+-- An agent's UPI ID (owner, 2026-10-21): a player paying a UPI buy is given a
+-- link built from it for that order's amount, so its name part may not be a
+-- mobile (§24), the same rule as a player's (`users_upi_id_shape`).
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS upi_id TEXT;
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_upi_id_shape;
+ALTER TABLE merchants ADD CONSTRAINT merchants_upi_id_shape
+  CHECK (upi_id IS NULL
+      OR (upi_id ~ '^[A-Za-z0-9._-]{2,255}@[A-Za-z][A-Za-z0-9.-]{1,64}$'
+          AND NOT bb_text_has_a_mobile(split_part(upi_id, '@', 1))));
 ALTER TABLE teams DROP CONSTRAINT IF EXISTS teams_name_not_a_mobile;
 ALTER TABLE teams ADD CONSTRAINT teams_name_not_a_mobile CHECK (NOT bb_text_has_a_mobile(name));
 
@@ -4804,6 +4820,36 @@ ALTER TABLE order_states ADD COLUMN IF NOT EXISTS inr_routing TEXT;
 ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_inr_routing_known;
 ALTER TABLE order_states ADD CONSTRAINT order_states_inr_routing_known CHECK (
   inr_routing IS NULL OR inr_routing IN ('AGENTS', 'MERCHANTS'));
+-- `buy_pay_method` (owner, 2026-10-21): how the player pays an INR buy on the
+-- UPI/bank rail, chosen by them when they create it: UPI (a link built for the
+-- order's amount from the member's UPI ID, or a merchant account's UPI QR
+-- account) or BANK (a bank transfer to the member's or the account's bank
+-- account). Each has its own window (`SystemConfig.buyPayWindowSeconds`).
+-- Present exactly on those buys; frozen once set, except that a waiting cash
+-- buy re-railed to merchant accounts becomes UPI and back to agents none
+-- (`bb_forbid_order_mode_change`). Converged first (§32 S31).
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS buy_pay_method TEXT;
+UPDATE order_states SET buy_pay_method = 'BANK'
+ WHERE buy_pay_method IS NULL AND order_type = 'DEPOSIT' AND payment_mode = 'P2P_UPI' AND currency = 'INR';
+UPDATE order_states SET buy_pay_method = NULL
+ WHERE buy_pay_method IS NOT NULL AND NOT (order_type = 'DEPOSIT' AND payment_mode = 'P2P_UPI' AND currency = 'INR');
+-- Its default, in this one place: BANK, the rail's way before the choice,
+-- for a writer that names none (the player's route always names one).
+CREATE OR REPLACE FUNCTION bb_order_pay_method_default() RETURNS trigger AS $$
+BEGIN
+  IF NEW.buy_pay_method IS NULL AND NEW.order_type = 'DEPOSIT'
+     AND NEW.payment_mode = 'P2P_UPI' AND NEW.currency = 'INR' THEN
+    NEW.buy_pay_method := 'BANK';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER order_states_pay_method_default
+  BEFORE INSERT ON order_states FOR EACH ROW EXECUTE FUNCTION bb_order_pay_method_default();
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_buy_pay_method_shape;
+ALTER TABLE order_states ADD CONSTRAINT order_states_buy_pay_method_shape CHECK (
+  (buy_pay_method IS NULL OR buy_pay_method IN ('UPI', 'BANK'))
+  AND ((order_type = 'DEPOSIT' AND payment_mode = 'P2P_UPI' AND currency = 'INR') = (buy_pay_method IS NOT NULL)));
 -- `pay_account_id`: the account a merchant-account buy is paid INTO, chosen
 -- at assignment (least recently used). `paid_from_account_id`: the account a
 -- merchant-account sell was paid FROM, named by whoever marked it paid.

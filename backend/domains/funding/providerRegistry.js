@@ -29,7 +29,8 @@ const manualP2PInr = {
   kind: 'P2P',
   active: true,
   capabilities: { deposit: true, withdrawal: true },
-  createDeposit:    ({ userId, tokenAmount }) => createDepositOrder(userId, tokenAmount),
+  createDeposit:    ({ userId, tokenAmount, payMethod }) =>
+    createDepositOrder(userId, tokenAmount, { payMethod, playerChoosesPayMethod: true }),
   createWithdrawal: ({ userId, tokenAmount }) => createWithdrawalOrder(userId, tokenAmount),
 };
 
