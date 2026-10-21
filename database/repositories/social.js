@@ -8,9 +8,6 @@
  * that evidence is the whole content of the report that prompted the removal.
  */
 import { pgQuery } from '../client.js';
-import { randomBytes } from 'node:crypto';
-
-const newId = () => randomBytes(12).toString('hex');
 
 // ── Public chat ─────────────────────────────────────────────────────────────
 
