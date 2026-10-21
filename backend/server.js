@@ -94,7 +94,7 @@ import { startPgBouncerStats } from '#db/pgbouncerStats.js';
 import { CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';
 import { refreshProviderFrameSources, startProviderFrameSourceRefresh } from './domains/casino/providerFrameSources.js';
 import { securityHeaders } from './middleware/cspMiddleware.js';
-import { network, canonicalRedirect, adminHostGate } from './config/network.config.js';
+import { network, canonicalRedirect, adminHostGate, adminPreflightGate } from './config/network.config.js';
 import {
   attachProxyProtocolRequestMetadata,
   listenWithOptionalProxyProtocol,
@@ -251,6 +251,11 @@ const corsOptions = { origin: corsOriginCheck, ...CORS_SHAPE };
 // pattern — a catch-all wildcard must be named. '/{*splat}' matches every path
 // including the root. (app.use(cors) already answers preflights; this is the
 // explicit belt-and-suspenders preflight handler, kept for parity.)
+// The admin API answers OPTIONS only to a real preflight from a trusted origin
+// (owner, 2026-10-21); anything else there is a plain 404 with no method list.
+app.use(adminPreflightGate((origin) => new Promise((resolve) => {
+  corsOriginCheck(origin, (err, ok) => resolve(!err && ok === true));
+})));
 app.options('/{*splat}', cors(corsOptions));
 app.use(cors(corsOptions));
 // AQ-10: tighten the request-body limit. It was 10mb on EVERY route — a large

@@ -124,3 +124,27 @@ export function adminHostGate(req, res, next) {
   if (isAdminPath(req.path)) return res.status(404).type('text/plain').send('Not Found');
   next();
 }
+
+const ADMIN_API_PREFIXES = ADMIN_PATH_PREFIXES.filter((p) => p.startsWith('/api/'));
+
+/**
+ * adminPreflightGate — an OPTIONS request to the admin API (owner, 2026-10-21:
+ * "no list of allowed methods" for anyone not signed in). Only a real CORS
+ * preflight (an `Origin` and an `Access-Control-Request-Method`) from an origin
+ * `originAllowed` admits goes on to the CORS middleware, which answers it as
+ * before; every other OPTIONS gets the same plain 404 as a path that does not
+ * exist, with no Allow or Access-Control-Allow-* header. Every other method,
+ * and OPTIONS on any non-admin path, is untouched.
+ *
+ * @param {(origin: string) => Promise<boolean>} originAllowed
+ */
+export function adminPreflightGate(originAllowed) {
+  return (req, res, next) => {
+    if (req.method !== 'OPTIONS') return next();
+    if (!ADMIN_API_PREFIXES.some((p) => req.path === p || req.path.startsWith(`${p}/`))) return next();
+    const origin = req.headers.origin;
+    const notFound = () => res.status(404).type('text/plain').send('Not Found');
+    if (!origin || !req.headers['access-control-request-method']) return notFound();
+    Promise.resolve(originAllowed(origin)).then((ok) => (ok ? next() : notFound()), notFound);
+  };
+}
