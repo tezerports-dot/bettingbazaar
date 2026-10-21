@@ -76,6 +76,7 @@ import teamMerchantRoutes from './domains/team/team.merchant.routes.js';
 import merchantAccountRoutes from './domains/merchant/merchantAccount.routes.js';
 import paymentRoutes      from './domains/payment/payment.routes.js';
 import supportRoutes      from './domains/support/support.routes.js'; // CAP-71: RAG support assistant
+import merchantSupportRoutes from './domains/support/merchantSupport.routes.js';
 import uploadRoutes       from './routes/upload.routes.js';
 import retentionRoutes, { rebuildLeaderboard } from './routes/retention.routes.js';
 import gameProviderRoutes from './domains/casino/gameProvider.routes.js';
@@ -634,11 +635,12 @@ app.use('/api',           userRoutes);
 
 // Merchants have no signup form: a merchant applies by Continue with Telegram,
 // whose Mini App approve makes the application (owner, 2026-10-14).
+app.use('/api/merchant/support', merchantSupportRoutes); // the merchants' own support desk
 app.use('/api/merchant',  merchantRoutes);
 app.use('/api/merchant',  teamMerchantRoutes);
 app.use('/api/merchant',  merchantAccountRoutes);
 app.use('/api/payment', paymentRoutes);
-app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)
+app.use('/api/support',   supportRoutes); // the player's support desk, and the RAG assistant (dormant until keys set)
 app.use('/api',           uploadRoutes);
 app.use('/api',           retentionRoutes);
 // Referral and VIP were removed from the platform on 2026-07-30 (owner

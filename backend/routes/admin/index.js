@@ -33,7 +33,8 @@ import communicationRoutes from '../../domains/communication/communication.admin
 import operationsRoutes from '../../domains/operations/operations.admin.routes.js';
 import reportingRoutes from '../../domains/reporting/reporting.admin.routes.js';
 import supportAdminRoutes from '../../domains/support/support.admin.routes.js'; // CAP-71: RAG support assistant
-import chatRoutes        from './chat.admin.routes.js'; // Public chat moderation + support-ticket desk
+import chatRoutes        from './chat.admin.routes.js'; // Public chat moderation
+import supportDeskRoutes from '../../domains/support/supportDesk.admin.routes.js'; // Player and merchant support desks
 import androidReleaseRoutes from '../../domains/distribution/androidRelease.admin.routes.js';
 import ipBlocksRoutes from './ipBlocks.admin.routes.js';
 import teamAdminRoutes from '../../domains/team/team.admin.routes.js';
@@ -79,6 +80,7 @@ router.use('/', operationsRoutes);
 router.use('/', reportingRoutes);
 router.use('/', supportAdminRoutes);
 router.use('/', chatRoutes);
+router.use('/', supportDeskRoutes);
 router.use('/', androidReleaseRoutes);
 
 export default router;

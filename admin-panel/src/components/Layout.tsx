@@ -13,7 +13,7 @@ import {
   MessageCircle, Shield, History, Scale, Search, Sun, Moon, Bell,
   SlidersHorizontal, Trophy, Star, Gamepad2, Bot, Share2,
   type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, Hourglass, Fingerprint,
-  Ghost, Smartphone, ShieldBan, KeyRound, Wallet, ScrollText, Coins } from 'lucide-react';
+  Ghost, Smartphone, ShieldBan, KeyRound, Wallet, ScrollText, Coins, LifeBuoy } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -92,7 +92,8 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/game-providers', icon: Star,     label: 'Game Providers', title: 'Game Providers', sub: 'Casino / crash / sports API providers', permission: 'canManageGames' },
   ] },
   { key: 'support', label: 'Support', items: [
-    { path: '/chat-management',          icon: MessageCircle, label: 'Chat & Support',  title: 'Chat & Support',  sub: 'Public chat moderation & support console', permission: ['canModerateChat', 'canManageSupportTickets'] },
+    { path: '/support-desk',             icon: LifeBuoy,      label: 'Support Desk',    title: 'Support Desk',    sub: 'Player and merchant tickets, and the Telegram accounts they chat with', permission: ['canManageSupportTickets', 'canManageMerchantSupport', 'canManageTelegram'] },
+    { path: '/chat-management',          icon: MessageCircle, label: 'Public Chat',     title: 'Public Chat',     sub: 'Public chat moderation', permission: 'canModerateChat' },
     { path: '/support-assistant',        icon: BookOpenCheck, label: 'Support Assistant', title: 'Support Assistant', sub: 'Knowledge base the assistant answers players from', permission: 'canManageSupportAssistant' },
     { path: '/content/faq',              icon: HelpCircle,    label: 'FAQ Manager',     title: 'FAQ Manager',     sub: 'Help centre questions & categories', permission: 'canManageContent' },
     { path: '/content/support',          icon: MessageCircle, label: 'Support Links',   title: 'Support Links',   sub: 'Contact & social channels', permission: 'canManageContent' },
