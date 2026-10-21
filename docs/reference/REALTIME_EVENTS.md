@@ -148,7 +148,7 @@ client and round this is ~260 B less per transport, before compression.
 | `new_chat_message` | socket.io | server→participants | `merchant.routes.js` |
 | `chat_message_deleted` | socket.io | server→participants | `chat.admin.routes.js` |
 | `chat_banned` | SSE, player stream | server→user | `chat.admin.routes.js` |
-| `support_reply` | SSE, player stream | server→user | `chat.admin.routes.js`, `disputeResolution.admin.routes.js` |
+| `support_reply` | SSE, player stream | server→user | `supportDesk.admin.routes.js` (a note or status on a player ticket), `disputeResolution.admin.routes.js` |
 
 ### Admin telemetry & plumbing
 

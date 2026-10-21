@@ -5,38 +5,19 @@
  *
  *   GET  /api/support/status              feature readiness (no secrets)
  *   POST /api/support/ask                 authenticated Q&A over the help centre
- *   POST /api/support/tickets             open a ticket
- *   GET  /api/support/tickets             the player's own tickets
- *   GET  /api/support/tickets/:ticketId   one ticket and its messages
- *   POST /api/support/tickets/:ticketId/reply
+ *   /api/support/desk, /tickets, /dispute-contact  the player's support desk
+ *                                         (accountSupport.routes.js)
  *
- * ── Why the ticket routes exist ─────────────────────────────────────────────
- * They did not, and the admin side did. `db.social.openTicket`, `listTickets`,
- * `listTicketMessages` and `replyToTicket` were all written; the admin desk at
- * /api/admin/support/tickets could list, read and reply. There was simply no
- * way for a player to put anything INTO that queue, so agents worked a desk
- * nothing could reach.
- *
- * The user panel filled the hole with a fake. Its "Live Support" panel appended
- * a canned "an agent is looking into this and will reply here shortly", made no
- * network call at all, and displayed a hardcoded "Agent online · avg reply
- * 2 min". A player with a money problem was told help was coming and nothing
- * was sent anywhere.
- *
- * ── Ownership is the whole security surface here ────────────────────────────
- * A ticket is a private conversation about somebody's money. Every route below
- * loads the ticket and compares its user_id to the caller's before returning or
- * writing anything, and answers 404 rather than 403 on someone else's ticket —
- * a 403 confirms the id exists, which is itself a disclosure when ids are
- * guessable.
+ * Tickets are a form plus a Telegram chat with the support account the ticket
+ * was given (owner, 2026-10-21); the old in-app reply thread is gone.
  */
 import express from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { authenticatePlayer } from '../identity/auth.middleware.js';
-import { db } from '#db';
 import { createRateLimitStore } from '../../middleware/redisRateLimitStore.js';
 import { answer, ragStatus } from './ragService.js';
 import { serverError, respondError } from '../../shared/httpError.js';
+import { accountSupportRouter } from './accountSupport.routes.js';
 
 const router = express.Router();
 
@@ -84,108 +65,14 @@ router.post('/ask', authenticatePlayer, askLimiter, async (req, res) => {
   }
 });
 
-// Opening a ticket writes a row per call, so it is limited like /ask.
-const ticketLimiter = rateLimit({
-  windowMs: 60_000,
-  store: createRateLimitStore('rl:supportticket:'),
-  max: Number(process.env.SUPPORT_TICKET_RATE || 5),
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => (req.user?.userId ? `t:${req.user.userId}` : ipKeyGenerator(req.ip)),
-  message: { success: false, message: 'Too many support requests. Please wait a minute.' },
-});
-
-/**
- * Load a ticket the caller owns, or nothing.
- *
- * 404 for someone else's ticket, never 403: a 403 confirms the id is real, and
- * ticket ids appear in URLs. The caller cannot tell "not yours" from "no such
- * ticket", which is the only safe answer to give.
- */
-async function ownedTicket(ticketId, userId) {
-  const ticket = await db.social.getTicket(String(ticketId));
-  if (!ticket || String(ticket.userId) !== String(userId)) return null;
-  return ticket;
-}
-
-router.post('/tickets', authenticatePlayer, ticketLimiter, async (req, res) => {
-  try {
-    const { subject, message, category } = req.body || {};
-    if (!subject || !String(subject).trim()) {
-      return res.status(400).json({ success: false, message: 'A subject is required.' });
-    }
-    const ticket = await db.social.openTicket({
-      userId: req.user.userId,
-      subject: String(subject).slice(0, 200).trim(),
-      category: category ? String(category).slice(0, 32) : 'GENERAL',
-    });
-
-    // The opening message is part of the ticket, not a separate step: a ticket
-    // with a subject and no body is one an agent has to ask about before they
-    // can start, which is the delay the player came here to avoid.
-    if (message && String(message).trim()) {
-      await db.social.replyToTicket({
-        ticketId: ticket.ticketId,
-        senderId: req.user.userId,
-        senderType: 'USER',
-        content: String(message).slice(0, 4000).trim(),
-      });
-    }
-    res.json({ success: true, ticket });
-  } catch (e) {
-    console.error('POST /support/tickets error:', e);
-    res.status(500).json({ success: false, message: 'Could not open your support ticket.' });
-  }
-});
-
-router.get('/tickets', authenticatePlayer, async (req, res) => {
-  try {
-    // Scoped by userId in the query, not filtered afterwards.
-    const tickets = await db.social.listTickets({ userId: req.user.userId, limit: 50 });
-    res.json({ success: true, tickets });
-  } catch (e) {
-    console.error('GET /support/tickets error:', e);
-    res.status(500).json({ success: false, message: 'Could not load your tickets.' });
-  }
-});
-
-router.get('/tickets/:ticketId', authenticatePlayer, async (req, res) => {
-  try {
-    const ticket = await ownedTicket(req.params.ticketId, req.user.userId);
-    if (!ticket) return res.status(404).json({ success: false, message: 'Ticket not found' });
-    const messages = await db.social.listTicketMessages(ticket.ticketId);
-    res.json({ success: true, ticket, messages });
-  } catch (e) {
-    console.error('GET /support/tickets/:ticketId error:', e);
-    res.status(500).json({ success: false, message: 'Could not load that ticket.' });
-  }
-});
-
-router.post('/tickets/:ticketId/reply', authenticatePlayer, async (req, res) => {
-  try {
-    const { content } = req.body || {};
-    if (!content || !String(content).trim()) {
-      return res.status(400).json({ success: false, message: 'A message is required.' });
-    }
-    const ticket = await ownedTicket(req.params.ticketId, req.user.userId);
-    if (!ticket) return res.status(404).json({ success: false, message: 'Ticket not found' });
-    if (ticket.status === 'CLOSED') {
-      return res.status(400).json({ success: false, message: 'This ticket is closed. Open a new one.' });
-    }
-
-    const saved = await db.social.replyToTicket({
-      ticketId: ticket.ticketId,
-      senderId: req.user.userId,
-      // Stamped from the session, never from the body — a client that could
-      // name itself AGENT could forge a reply from support.
-      senderType: 'USER',
-      content: String(content).slice(0, 4000).trim(),
-    });
-    res.json({ success: true, message: saved });
-  } catch (e) {
-    console.error('POST /support/tickets/:ticketId/reply error:', e);
-    res.status(500).json({ success: false, message: 'Could not send your message.' });
-  }
-});
+// The player's support desk (CLAUDE.md §2, "Support desks"): the form, the
+// day's one ticket, the Telegram chat it opens, and the Dispute Manager's
+// Telegram on a disputed order.
+router.use('/', accountSupportRouter({
+  desk: 'PLAYER',
+  authenticate: authenticatePlayer,
+  accountOf: (req) => req.user?.userId,
+  orderOwner: (req) => ({ userId: req.user.userId }),
+}));
 
 export default router;

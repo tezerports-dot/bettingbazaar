@@ -36,6 +36,7 @@ export const PERMISSION_KEYS = [
   'canManageContent',
   'canModerateChat',
   'canManageSupportTickets',
+  'canManageMerchantSupport',
   'canManageSupportAssistant',
   'canManageTelegram',
   'canManageSystemSettings',
