@@ -2,7 +2,7 @@
 /** users.admin.routes.js — User management, balance adjust, block/unblock, phantom */
 import { seesContact } from '../../domains/identity/staffContactShield.js';
 import {
-  authenticate, express, hasPermission, isAdmin,
+  authenticate, express, hasPermission,
 } from './_adminShared.js';
 import { db } from '#db';
 // Cycle-type vocabulary — phantom access is scoped to one type, or BOTH.

@@ -3540,10 +3540,10 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 366 |
+| Route declarations in `backend/**` | 365 |
 | Reachable with **no auth middleware** | 44 |
 | Staff routes carrying an **area** (permission key) | 183 |
-| Staff routes a sub-admin can **never** be given (full admin only) | 10 |
+| Staff routes a sub-admin can **never** be given (full admin only) | 9 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.
@@ -3606,7 +3606,6 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /staff/:userId  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /staff/:userId/reset-authenticator  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
-- `POST /users/:userId/queue-manager  (backend/routes/admin/users.admin.routes.js)`
 - `PUT /sub-admins/:subAdminId/permissions  (backend/routes/admin/subadmins.admin.routes.js)`
 - `PUT /usdt-deposits/final-wallet  (backend/domains/payment/usdtDeposit.admin.routes.js)`
 

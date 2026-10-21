@@ -4,7 +4,7 @@
  * the session lifecycle.
  *
  * ── Staff (owner, 2026-10-13) ──────────────────────────────────────────────
- * A STAFF account (admin, sub-admin, queue manager, mediator) has no Telegram
+ * A STAFF account (admin, sub-admin, mediator) has no Telegram
  * at all. It signs in with its mobile, its password and a code from an
  * authenticator app (`/login/totp`), and enrols that app at its first sign-in
  * (`/login/totp/setup`, `/login/totp/activate`). The staff door has only those
@@ -74,7 +74,7 @@ function extractToken(req) {
     || null;
 }
 
-/** Admin, sub-admin, queue manager or mediator: `hasStaffRole`, the one rule. */
+/** Admin, sub-admin or mediator: `hasStaffRole`, the one rule. */
 const isStaffAccount = hasStaffRole;
 
 /**

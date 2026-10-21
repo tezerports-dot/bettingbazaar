@@ -870,7 +870,7 @@ hidden from default navigation until Payments Operations approves the rollout.
 | Bulk KYC — audited Aadhaar export, YES/NO import | `/admin/#/kyc/bulk` |
 | Telegram setup — replace the sign-in bot or channel without a deploy | `/admin/#/telegram` |
 | Referral programme — fund the payout queue in joining order | `/admin/#/referrals` |
-| Queue manager — assignment queue, available merchants, manual assign/reassign | `/admin/#/queue-manager` |
+| Payment queue (merchants area) — routed orders, offer to teams now, reassign | `/admin/#/payment-queue` |
 | Disputes — list, chat/evidence, resolve/escalate | `/admin/#/disputes` |
 | Sub-admins — invite/create, permission matrix, revoke | `/admin/#/sub-admins` |
 

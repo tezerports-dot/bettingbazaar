@@ -68,7 +68,7 @@ router.get('/staff-permissions', authenticate, isAdmin, (req, res) => {
 
 /**
  * The staff table (owner, 2026-10-14): every STAFF account — admins,
- * sub-admins, queue managers, mediators — one row each, sorted by a key the
+ * sub-admins, mediators — one row each, sorted by a key the
  * server offers (`sorts`) and narrowed to a role it names (`roles`). The panel
  * renders both lists and keeps neither (§32 S25). A row carries whether the
  * account has an authenticator, never its secret, and never a password hash.

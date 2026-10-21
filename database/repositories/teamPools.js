@@ -538,7 +538,7 @@ export async function releaseBuyHoldWithin(client, orderId, { actor = 'system', 
 
 /**
  * Take an order off its team, INSIDE the caller's transaction — the requeue
- * that puts it back for routing (a member declined it, or a queue manager
+ * that puts it back for routing (a member declined it, or an admin
  * moved it). A buy's hold comes off first, while the order still names the
  * pool it is in; then the team is cleared, so the next one is decided by
  * routing. One commit: the order is never found queued while still holding a

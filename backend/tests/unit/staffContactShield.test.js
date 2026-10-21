@@ -46,7 +46,7 @@ describe('the staff contact shield', () => {
 
   it('only a full admin sees contact', () => {
     expect(seesContact({ isAdmin: true })).toBe(true);
-    for (const v of [{ isSubAdmin: true }, { isQueueManager: true }, { isAdmin: 'true' }, null]) expect(seesContact(v)).toBe(false);
+    for (const v of [{ isSubAdmin: true }, { isMediator: true }, { isAdmin: 'true' }, null]) expect(seesContact(v)).toBe(false);
   });
 
   it('the staff router shields a sub-admin\'s answer and not a full admin\'s', () => {

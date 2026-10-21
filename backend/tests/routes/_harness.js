@@ -90,7 +90,7 @@ export function mountRouter(router, { prefix = '' } = {}) {
  */
 export async function actor({
   userId, roles = [], isAdmin = false, isSubAdmin = false,
-  isQueueManager = false, permissions = null, boardRules = true,
+  permissions = null, boardRules = true,
 } = {}) {
   const id = userId || `rt-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -109,8 +109,8 @@ export async function actor({
   // a row exists, looks correct in every listing, and cannot sign in. Derived
   // from the roles rather than passed, so a test that adds a role gets the
   // right row without knowing this rule exists.
-  const accountType = (isAdmin || isSubAdmin || isQueueManager
-    || roles.some((r) => ['admin', 'subadmin', 'queue_manager', 'mediator'].includes(r)))
+  const accountType = (isAdmin || isSubAdmin
+    || roles.some((r) => ['admin', 'subadmin', 'mediator'].includes(r)))
     ? 'STAFF' : 'PLAYER';
 
   let mobile = null;
@@ -125,7 +125,7 @@ export async function actor({
     throw new Error(`actor(): could not claim a free mobile for ${id} in 5 attempts — the number space is colliding, not the test`);
   }
 
-  const patch = { isAdmin, isSubAdmin, isQueueManager };
+  const patch = { isAdmin, isSubAdmin };
   if (permissions) patch.subAdminPermissions = permissions;
   await updateUser(id, patch);
   if (roles.length) await setRoles(id, roles);
@@ -136,7 +136,7 @@ export async function actor({
   // What the sign-in would have proved: a staff sign-in ends with an
   // authenticator code (owner, 2026-10-13), so a staff actor's token says so;
   // a player's is the password.
-  const staff = isAdmin || isSubAdmin || isQueueManager || roles.length > 0;
+  const staff = isAdmin || isSubAdmin || roles.length > 0;
   const token = signToken({ userId: id, amr: staff ? ['pwd', 'otp'] : ['tg'] });
   return { userId: id, mobile, token, auth: `Bearer ${token}` };
 }

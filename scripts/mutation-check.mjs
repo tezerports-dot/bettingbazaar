@@ -423,9 +423,9 @@ const MUTATIONS = [
     id: 'M90', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
     test: 'backend/tests/routes/merchantOrderPrivacyRoutes.test.js',
     why: 'the allowlist admits the player phone number, which the panel then made searchable',
-    from: `  'canDecline',
+    from: `  'payoutUpiLink',
 ]);`,
-    to: `  'canDecline', 'userPhone',
+    to: `  'payoutUpiLink', 'userPhone',
 ]);`,
   },
   {
@@ -623,8 +623,8 @@ const MUTATIONS = [
     id: 'M130', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/retryAndMatchPg.test.js',
     why: 'a retry is created at ordinary rank, so the whole point of retrying — going before the first-time orders — silently does not happen',
-    from: `  const attempt = { priority: 1, retryOf: original.orderId };`,
-    to: `  const attempt = { priority: 0, retryOf: original.orderId };`,
+    from: `  const attempt = { priority: 1, retryOf: original.orderId, payMethod: original.buyPayMethod ?? undefined };`,
+    to: `  const attempt = { priority: 0, retryOf: original.orderId, payMethod: original.buyPayMethod ?? undefined };`,
   },
   {
     id: 'M136', file: 'database/repositories/orders.record.js', config: PG,
@@ -752,9 +752,9 @@ const MUTATIONS = [
     id: 'M156', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
     why: 'the one order insert stops writing the tamper tag, so every live order is untagged and the guard mounted on every order route checks nothing',
-    from: `    paymentMode, inrRouting, usdtChain, usdtPayAddress ? String(usdtPayAddress).toLowerCase() : null,
+    from: `    paymentMode, inrRouting, payMethod, usdtChain, usdtPayAddress ? String(usdtPayAddress).toLowerCase() : null,
     deriveOrderHmac(orderId)];`,
-    to: `    paymentMode, inrRouting, usdtChain, usdtPayAddress ? String(usdtPayAddress).toLowerCase() : null,
+    to: `    paymentMode, inrRouting, payMethod, usdtChain, usdtPayAddress ? String(usdtPayAddress).toLowerCase() : null,
     null];`,
   },
   {
@@ -1114,13 +1114,8 @@ const MUTATIONS = [
     to: `WHERE programme_key = $1`,
   },  // ── Commission recorded is commission delivered; one pass at a time (R6) ─
   // ── Queue writes are gated on a permission, not a tier (R6) ──────────────
-  {
-    id: 'M207', file: 'backend/routes/admin/_adminShared.js', config: PG,
-    test: 'backend/tests/routes/queueWritePermissionPg.test.js',
-    why: 'any sub-admin, whatever they hold, can reassign a player\'s order to any merchant or edit the merchant pool',
-    from: `    return byPermission(req, res, next);`,
-    to: `    return next();`,
-  },
+  // M207 (the queue-manager gate's permission fallback) deleted with the role
+  // (owner, 2026-10-21): every queue route is `hasPermission` alone.
   {
     id: 'M208', file: 'database/repositories/casino.core.js', config: PG,
     test: 'database/tests/casinoWinNeedsBetPg.test.js',
@@ -1664,8 +1659,8 @@ const MUTATIONS = [
     id: 'M290', file: 'database/repositories/teamPools.js', config: PG,
     test: 'database/tests/teamPoolsPg.test.js',
     why: "a supervisor can ask for tokens into another supervisor's team",
-    from: `'SELECT team_id FROM teams WHERE team_id = $1 AND (supervisor_id = $2 OR owner_merchant_id = $2)',`,
-    to: `'SELECT team_id FROM teams WHERE team_id = $1 OR (supervisor_id = $2 OR owner_merchant_id = $2)',`,
+    from: `FROM teams WHERE team_id = $1 AND (supervisor_id = $2 OR owner_merchant_id = $2) FOR UPDATE\``,
+    to: `FROM teams WHERE team_id = $1 OR (supervisor_id = $2 OR owner_merchant_id = $2) FOR UPDATE\``,
   },
   {
     id: 'M291', file: 'database/repositories/teams.js', config: PG,
@@ -1682,13 +1677,9 @@ const MUTATIONS = [
     from: `const POOL_AREA = 'canFundMerchants';`,
     to: `const POOL_AREA = 'canManageTeams';`,
   },
+  // M293 (a pool SALE booked as money paid) deleted: a pool only buys (owner,
+  // 2026-10-21), so every fulfilment is RECEIVED and there is no branch left.
   {
-    id: 'M293', file: 'database/repositories/teamPools.js', config: PG,
-    test: 'database/tests/teamPoolsPg.test.js',
-    why: 'a sale is recorded as money the platform PAID, so every pool sale reads as an outflow in the books',
-    from: `  const direction = preview.direction === POOL_DIRECTIONS.BUY ? DIRECTIONS.RECEIVED : DIRECTIONS.PAID;`,
-    to: `  const direction = DIRECTIONS.PAID;`,
-  },  {
     id: 'M294', file: 'database/repositories/teamRouting.js', config: PG,
     test: 'database/tests/teamRoutingPg.test.js',
     why: "the open orders are not counted again under the member's lock, so two racing orders both take a member's last place",
@@ -1700,8 +1691,8 @@ const MUTATIONS = [
     id: 'M459', file: 'database/repositories/teamRouting.js', config: PG,
     test: 'database/tests/teamRoutingPg.test.js',
     why: "the admin's routing priority is ignored, so a member set to 5 waits behind a faster member at 3",
-    from: "      ORDER BY m.routing_priority DESC,\n",
-    to: "      ORDER BY\n",
+    from: "               m.routing_priority DESC,\n",
+    to: "",
   },
   {
     id: 'M460', file: 'database/repositories/teamRouting.js', config: PG,
@@ -2118,8 +2109,8 @@ const MUTATIONS = [
     id: 'M354', file: 'database/repositories/teamRouting.js', config: PG,
     test: 'database/tests/teamRoutingPg.test.js',
     why: 'a bank-transfer buy goes to a member with no bank account, and the player is shown nowhere to pay',
-    from: "        AND (NOT ($3 AND $1 = 'UPI_BANK') OR (\n",
-    to: "        AND (true OR (\n",
+    from: "        AND (NOT ($3 AND $1 = 'UPI_BANK') OR ${MEMBER_CAN_BE_PAID_SQL('m', '$8')})\n",
+    to: "        AND (true OR ${MEMBER_CAN_BE_PAID_SQL('m', '$8')})\n",
   },
   {
     id: 'M355', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
@@ -2289,7 +2280,7 @@ const MUTATIONS = [
     id: 'M368', file: 'backend/domains/user/user.routes.js', config: PG,
     test: 'backend/tests/routes/payoutAccountNotAMobilePg.test.js',
     why: 'a player whose account is refused is told only that saving failed, with nothing to change',
-    from: "    if (isAccountMobileRefusal(error)) {\n",
+    from: "    if (refused) {\n",
     to: "    if (false) {\n",
   },
   // ── Order commission (owner, 2026-10-21) ─────────────────────────────────────
@@ -3685,8 +3676,8 @@ const MUTATIONS = [
     id: 'MRT2', file: 'database/repositories/merchantReports.js', config: PG,
     test: 'backend/tests/routes/merchantOrderReportPg.test.js',
     why: 'the report reads every merchant\'s orders, so a member sees another member\'s players and references',
-    from: "        WHERE o.merchant_id = $1 AND ${RANGE_SQL.replaceAll('created_at', 'o.created_at')}\n          AND ${filters.join(' AND ')}",
-    to: "        WHERE ${RANGE_SQL.replaceAll('created_at', 'o.created_at')} AND $1::text IS NOT NULL\n          AND ${filters.join(' AND ')}",
+    from: "        WHERE (o.merchant_id = $1 OR EXISTS (",
+    to: "        WHERE (TRUE OR EXISTS (",
   },
   {
     id: 'MRT3', file: 'database/repositories/merchantReports.js', config: PG,
