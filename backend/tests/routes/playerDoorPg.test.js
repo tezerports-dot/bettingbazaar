@@ -80,8 +80,8 @@ const PLAYER_ROUTES = {
   ],
   bets: [['post', '/place'], ['post', '/phantom']],
   support: [
-    ['post', '/ask'], ['post', '/tickets'], ['get', '/tickets'], ['get', '/tickets/x'],
-    ['post', '/tickets/x/reply'],
+    ['post', '/ask'], ['get', '/desk'], ['post', '/tickets'], ['get', '/tickets'], ['get', '/tickets/x'],
+    ['post', '/tickets/x/rate'], ['get', '/dispute-contact/x'],
   ],
   game: [['post', '/launch']],
   uploads: [['post', '/user/profile/picture/upload-url'], ['post', '/user/profile/picture/confirm-upload']],

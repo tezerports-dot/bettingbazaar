@@ -3540,10 +3540,10 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 367 |
-| Reachable with **no auth middleware** | 44 |
-| Staff routes carrying an **area** (permission key) | 186 |
-| Staff routes a sub-admin can **never** be given (full admin only) | 12 |
+| Route declarations in `backend/**` | 375 |
+| Reachable with **no auth middleware** | 49 |
+| Staff routes carrying an **area** (permission key) | 188 |
+| Staff routes a sub-admin can **never** be given (full admin only) | 10 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.
@@ -3566,11 +3566,14 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /matches  (backend/domains/cricket/cricket.routes.js)`
 - `GET /matches/:matchId  (backend/domains/cricket/cricket.routes.js)`
 - `GET /me  (backend/routes.js)`
+- `GET /merchant-support/tickets  (backend/domains/support/supportDesk.admin.routes.js)`
+- `GET /merchant-support/tickets/:id  (backend/domains/support/supportDesk.admin.routes.js)`
 - `GET /merchant/events  (backend/routes/sse.routes.js)`
 - `GET /mini-app  (backend/domains/telegram/miniApp.routes.js)`
 - `GET /providers  (backend/domains/casino/gameProvider.routes.js)`
 - `GET /r/:code  (backend/routes/referralRedirect.routes.js)`
 - `GET /status  (backend/domains/support/support.routes.js)`
+- `GET /support/tickets  (backend/domains/support/supportDesk.admin.routes.js)`
 - `GET /v1/board-rules  (backend/domains/user/user.routes.js)`
 - `GET /v1/boards  (backend/domains/user/user.routes.js)`
 - `GET /v1/client/endpoint  (backend/routes/clientEndpoint.routes.js)`
@@ -3589,6 +3592,8 @@ new route and decide. Each of the three questions is defined in §2.
 - `POST /login/telegram/complete  (backend/domains/identity/playerAuth.routes.js)`
 - `POST /login/telegram/ticket  (backend/domains/identity/playerAuth.routes.js)`
 - `POST /logout  (backend/routes.js)`
+- `POST /merchant-support/tickets/:id/notes  (backend/domains/support/supportDesk.admin.routes.js)`
+- `POST /merchant-support/tickets/:id/reveal-number  (backend/domains/support/supportDesk.admin.routes.js)`
 - `POST /mini-app/approve  (backend/domains/telegram/miniApp.routes.js)`
 - `POST /mini-app/context  (backend/domains/telegram/miniApp.routes.js)`
 - `POST /mini-app/continue  (backend/domains/telegram/miniApp.routes.js)`
@@ -3618,9 +3623,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 540 |
-| Parameters only (safe by construction) | 358 |
-| Interpolating into statement text (each needs a reading) | 173 |
+| `pgQuery` call sites | 539 |
+| Parameters only (safe by construction) | 353 |
+| Interpolating into statement text (each needs a reading) | 177 |
 | Statement text built elsewhere and passed in (each needs a reading) | 9 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
@@ -3641,8 +3646,8 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 165 | 0 | 0 |
-| `admin-panel` | 150 | 0 | 0 |
-| `merchant-panel` | 67 | 0 | 0 |
+| `admin-panel` | 146 | 0 | 0 |
+| `merchant-panel` | 66 | 0 | 0 |
 
 <!-- END GENERATED -->
 

@@ -53,6 +53,7 @@ import { BoardsManager }           from './Pages/Games/BoardsManager';
 import { CricketManager }          from './Pages/Games/CricketManager';
 import { FakeWinnersManager }  from './Pages/Winners/FakeWinnersManager';
 import { ChatSupport }         from './Pages/Chat/ChatSupport';
+import { SupportDesk }         from './Pages/Support/SupportDesk';
 // ── ENTERPRISE PLATFORM CONSOLES (Phase C, 2026-07-10) ─────────────────────
 import { RevenueLedger }      from './Pages/Enterprise/RevenueLedger';
 import { OperationsOverview } from './Pages/Enterprise/OperationsOverview';
@@ -429,8 +430,13 @@ const App: React.FC = () => {
 
         {}
         <Route path="/chat-management" element={
-          <PermRoute permission={['canModerateChat', 'canManageSupportTickets']}>
+          <PermRoute permission="canModerateChat">
             <Layout><ChatSupport /></Layout>
+          </PermRoute>
+        } />
+        <Route path="/support-desk" element={
+          <PermRoute permission={['canManageSupportTickets', 'canManageMerchantSupport', 'canManageTelegram']}>
+            <Layout><SupportDesk /></Layout>
           </PermRoute>
         } />
 

@@ -4,8 +4,9 @@
 // handoff "BB Merchant Panel.dc.html"). Everything on the one-line row, plus
 // the full payment rows, the account holder, and the same actions (and Flag)
 // pinned to the footer so they stay reachable while reading.
-import React from 'react';
-import { ArrowDownLeft, ArrowUpRight, Check, QrCode, ShieldCheck, X } from 'lucide-react';
+import React, { useState } from 'react';
+import { ArrowDownLeft, ArrowUpRight, Check, QrCode, Send, ShieldCheck, X } from 'lucide-react';
+import { getDisputeContact } from '../services/api';
 import { OrderStatus, type MerchantProfile, type PaymentAccount, type PaymentOrder } from '../types';
 import { mayWorkOrder } from '../utils/actor';
 import { counterpartyOf, formatMoney, tokenColumn, PAYMENT_COPY } from '../utils/rail';
@@ -285,9 +286,12 @@ export const OrderDetail: React.FC<{
       )}
 
       {order.status === OrderStatus.DISPUTED && (
-        <Banner tone="dispute" title="Under admin review">
-          {order.disputeReason || 'An admin is reviewing this order.'}
-        </Banner>
+        <>
+          <Banner tone="dispute" title="Under admin review">
+            {order.disputeReason || 'An admin is reviewing this order.'}
+          </Banner>
+          <DisputeManagerButton orderId={order.orderId || order._id} />
+        </>
       )}
       {order.status === OrderStatus.REJECTED && (
         <Banner tone="danger" title="Rejected">
@@ -302,3 +306,29 @@ export const OrderDetail: React.FC<{
 };
 
 export default OrderDetail;
+
+/**
+ * "Message the Dispute Manager on Telegram", on a DISPUTED order of this
+ * merchant's (owner, 2026-10-21). Asked for on tap: the server answers only for
+ * the merchant's own disputed order, with the same Dispute Manager every time.
+ */
+const DisputeManagerButton: React.FC<{ orderId: string }> = ({ orderId }) => {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const open = async () => {
+    setBusy(true); setNote('');
+    try {
+      const contact = await getDisputeContact(orderId);
+      if (contact?.telegramLink) window.open(contact.telegramLink, '_blank', 'noopener,noreferrer');
+      else setNote('No Dispute Manager is on Telegram yet. The decision will show here.');
+    } catch {
+      setNote('No Dispute Manager is on Telegram yet. The decision will show here.');
+    } finally { setBusy(false); }
+  };
+  return (
+    <div style={{ display: 'grid', gap: 6 }}>
+      <Button tone="dispute" variant="outline" full busy={busy} onClick={open}><Send size={15} /> Message the Dispute Manager on Telegram</Button>
+      {note && <div style={{ fontSize: 11.5, color: 'var(--muted)', textAlign: 'center' }}>{note}</div>}
+    </div>
+  );
+};

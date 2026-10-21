@@ -1321,16 +1321,48 @@ export const chat = {
     const res = await api.delete(`/api/admin/chat/ban/${userId}`);
     return res.data;
   },
-  getTickets: async (status?: string) => {
-    const res = await api.get<any>('/api/admin/support/tickets', { params: { status } });
+};
+
+// ─── SUPPORT DESKS ─────────────────────────────────────────────────────────
+// Player and merchant support desks (CLAUDE.md §2, "Support desks";
+// backend/domains/support/supportDesk.admin.routes.js). Each desk is its own
+// base path behind its own permission.
+export type SupportDeskKey = 'PLAYER' | 'MERCHANT';
+const DESK_BASE: Record<SupportDeskKey, string> = {
+  PLAYER: '/api/admin/support/tickets',
+  MERCHANT: '/api/admin/merchant-support/tickets',
+};
+export const supportDesk = {
+  list: async (desk: SupportDeskKey, params: { status?: string; older?: boolean; q?: string }) => {
+    const res = await api.get<any>(DESK_BASE[desk], { params: { status: params.status || undefined, older: params.older ? '1' : undefined, q: params.q || undefined } });
     return res.data;
   },
-  getTicket: async (id: string) => {
-    const res = await api.get<any>(`/api/admin/support/tickets/${id}`);
+  get: async (desk: SupportDeskKey, id: string) => {
+    const res = await api.get<any>(`${DESK_BASE[desk]}/${id}`);
     return res.data;
   },
-  reply: async (ticketId: string, content: string) => {
-    const res = await api.post(`/api/admin/support/tickets/${ticketId}/reply`, { content });
+  revealNumber: async (desk: SupportDeskKey, id: string) => {
+    const res = await api.post<any>(`${DESK_BASE[desk]}/${id}/reveal-number`);
+    return res.data;
+  },
+  addNote: async (desk: SupportDeskKey, id: string, content: string) => {
+    const res = await api.post<any>(`${DESK_BASE[desk]}/${id}/notes`, { content });
+    return res.data;
+  },
+  setStatus: async (desk: SupportDeskKey, id: string, status: string) => {
+    const res = await api.post<any>(`${DESK_BASE[desk]}/${id}/status`, { status });
+    return res.data;
+  },
+  contacts: async () => {
+    const res = await api.get<any>('/api/admin/support/contacts');
+    return res.data;
+  },
+  addContact: async (body: { desk: string; telegramUsername: string; label: string }) => {
+    const res = await api.post<any>('/api/admin/support/contacts', { ...body, active: true });
+    return res.data;
+  },
+  updateContact: async (id: string, body: { telegramUsername: string; label: string; active: boolean }) => {
+    const res = await api.put<any>(`/api/admin/support/contacts/${id}`, body);
     return res.data;
   },
 };
@@ -1414,6 +1446,7 @@ export default {
   appAssets,
   orderActions,
   chat,
+  supportDesk,
   get: <T = any>(url: string, config?: any) => api.get<T>(url, config),
   post: <T = any>(url: string, data?: any, config?: any) => api.post<T>(url, data, config),
   put: <T = any>(url: string, data?: any, config?: any) => api.put<T>(url, data, config),

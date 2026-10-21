@@ -9,7 +9,7 @@
 // (on desktop) the profile chip and sign-out.
 import React, { useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router';
-import { Home, Package, History, User, LogOut, Power, Bell, Sun, Moon, Users, Landmark } from 'lucide-react';
+import { Home, Package, History, User, LogOut, Power, Bell, Sun, Moon, Users, Landmark, LifeBuoy } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
 import { availabilityOf } from '../utils/availability';
@@ -32,6 +32,7 @@ const NAV_ALL = [
   // sub-members, pool, reports and flags, one tab each.
   { path: ROUTES.ACCOUNT,   icon: Landmark, label: 'Account',   title: 'Merchant account', sub: 'Payment accounts, sub-members, pool, reports' },
   { path: ROUTES.PROFILE,   icon: User,     label: 'Profile',   title: 'Profile',          sub: 'Identity & payment details' },
+  { path: ROUTES.SUPPORT,   icon: LifeBuoy, label: 'Support',   title: 'Support',          sub: 'Open a ticket · chat with us on Telegram' },
 ];
 
 /**

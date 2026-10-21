@@ -844,3 +844,32 @@ export const api = {
 };
 
 export default api;
+
+// =======================================================================
+// SUPPORT DESK (CLAUDE.md §2, "Support desks"; owner, 2026-10-21)
+// =======================================================================
+
+export interface SupportTopic { key: string; label: string }
+export interface SupportDeskInfo {
+  topics: SupportTopic[]; historyDays: number; descriptionMin: number; descriptionMax: number;
+  referenceMax: number; openedToday: boolean; nextTicketAt: string;
+}
+export interface SupportTicket {
+  ticketId: string; code: string; topic: string; subject: string; reference: string;
+  status: string; createdAt: string; rating: number | null;
+  telegramUsername: string | null; telegramLink: string;
+}
+export interface SupportNote { id: number; senderType: 'USER' | 'AGENT' | 'SYSTEM'; content: string; createdAt: string }
+
+export const getSupportDesk = (): Promise<SupportDeskInfo> => request('/api/merchant/support/desk');
+export const getSupportTickets = async (): Promise<SupportTicket[]> =>
+  (await request<{ tickets: SupportTicket[] }>('/api/merchant/support/tickets')).tickets;
+export const getSupportTicket = (ticketId: string): Promise<{ ticket: SupportTicket; messages: SupportNote[] }> =>
+  request(`/api/merchant/support/tickets/${encodeURIComponent(ticketId)}`);
+export const openSupportTicket = async (body: { topic: string; reference: string; description: string }): Promise<SupportTicket> =>
+  (await request<{ ticket: SupportTicket }>('/api/merchant/support/tickets', { method: 'POST', body: JSON.stringify(body) })).ticket;
+export const rateSupportTicket = (ticketId: string, rating: number): Promise<unknown> =>
+  request(`/api/merchant/support/tickets/${encodeURIComponent(ticketId)}/rate`, { method: 'POST', body: JSON.stringify({ rating }) });
+/** The Dispute Manager's Telegram, on an order of this merchant's that is DISPUTED. */
+export const getDisputeContact = async (orderId: string): Promise<{ telegramLink: string } | null> =>
+  (await request<{ contact: { telegramLink: string } | null }>(`/api/merchant/support/dispute-contact/${encodeURIComponent(orderId)}`)).contact;

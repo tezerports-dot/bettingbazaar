@@ -102,12 +102,14 @@ export const STAFF_PERMISSIONS = Object.freeze([
     description: 'FAQ, page slides and promos, support links, CDN library, branding, app assets, announcements and the winners manager.' },
   { key: 'canModerateChat', group: 'content', label: 'Moderate public chat',
     description: 'Read and delete chat messages, ban and unban players from chat.' },
-  { key: 'canManageSupportTickets', group: 'content', label: 'Support tickets',
-    description: 'Read player support tickets and reply to them.' },
+  { key: 'canManageSupportTickets', group: 'content', label: 'Player support desk',
+    description: 'Work player support tickets: read them, see a player\'s verified number (each look is logged), add notes and close them.' },
+  { key: 'canManageMerchantSupport', group: 'content', label: 'Merchant support desk',
+    description: 'Work merchant support tickets: read them, see a merchant\'s verified number (each look is logged), add notes and close them.' },
   { key: 'canManageSupportAssistant', group: 'content', label: 'Support assistant',
     description: 'The knowledge base the support assistant answers players from.' },
   { key: 'canManageTelegram', group: 'content', label: 'Telegram setup',
-    description: 'The one Telegram bot and its Mini App, which verify every player and merchant account and approve merchant sign-ins.' },
+    description: 'The one Telegram bot and its Mini App, which verify every player and merchant account and approve merchant sign-ins, and the support and Dispute Manager Telegram accounts players and merchants chat with.' },
 
   // ── Platform ─────────────────────────────────────────────────────────────
   { key: 'canManageSystemSettings', group: 'platform', label: 'System settings',

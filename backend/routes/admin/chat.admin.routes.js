@@ -1,20 +1,13 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * routes/admin/chat.admin.routes.js
- * Admin console for the public chat + support ticket system (models live in
- * models/social.model.js: PublicChatMsg, ChatBan, SupportTicket, SupportMsg).
- *
- * These collections were already modelled but had no admin surface — this file
- * adds the moderation + support-desk endpoints the "Chat & Support" console
- * needs. Two areas: chat moderation (`canModerateChat`) and support tickets
- * (`canManageSupportTickets`). Every route here asked for `canManageSupport`
- * while the screen was offered on `canModerateChatPublic`, so a sub-admin given
- * the screen was refused by everything on it (2026-10-01).
+ * Admin console for public chat moderation (`canModerateChat`). The support
+ * desks moved to domains/support/supportDesk.admin.routes.js (2026-10-21).
  *
  * Scope note (GOVERNANCE §1): chat *rules/config* (cooldown, length, banned
  * words) are a single-owner authority — the ChatRoomConfig document — and are
  * intentionally NOT writable here. This file only performs moderation actions
- * (delete message, ban/unban) and support-ticket replies, none of which own
+ * (delete message, ban/unban), none of which own
  * configurable business values.
  */
 import { express, hasPermission } from './_adminShared.js';
@@ -150,75 +143,6 @@ router.delete('/chat/ban/:userId', hasPermission('canModerateChat'), async (req,
   } catch (error) {
     console.error('[chat] unban error:', error.message);
     res.status(500).json({ success: false, message: 'Failed to lift ban' });
-  }
-});
-
-// ─── SUPPORT TICKETS ────────────────────────────────────────────────────────
-
-/**
- * The support desk.
- *
- * The ticket list and the open count come from ONE query, so the badge and the
- * list describe the same instant — they were two reads, and a ticket arriving
- * between them made them disagree.
- *
- * Statuses are OPEN / ASSIGNED / WAITING_USER / RESOLVED / CLOSED. The filter
- * here passed lowercase, which the table's CHECK constraint refuses outright.
- */
-router.get('/support/tickets', hasPermission('canManageSupportTickets'), async (req, res) => {
-  try {
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
-    const status = req.query.status ? String(req.query.status).toUpperCase() : null;
-    const { tickets, openCount } = await db.social.supportDesk({ status, limit });
-    res.json({ success: true, tickets, openCount });
-  } catch (error) {
-    console.error('[support] tickets error:', error.message);
-    res.status(500).json({ success: false, message: 'Failed to load tickets' });
-  }
-});
-
-// One ticket with its full message thread.
-router.get('/support/tickets/:id', hasPermission('canManageSupportTickets'), async (req, res) => {
-  try {
-    const ticket = await db.social.getTicketWithUser(req.params.id);
-    if (!ticket) return res.status(404).json({ success: false, message: 'Ticket not found' });
-    const messages = await db.social.listTicketMessages(ticket.ticketId);
-    // Opening the thread marks the player's messages read — an unread badge
-    // that survives an agent reading the ticket is one agents learn to ignore.
-    await db.social.markTicketMessagesRead(ticket.ticketId, { forType: 'AGENT' });
-    res.json({ success: true, ticket, messages });
-  } catch (error) {
-    console.error('[support] ticket error:', error.message);
-    res.status(500).json({ success: false, message: 'Failed to load ticket' });
-  }
-});
-
-/**
- * Agent reply.
- *
- * The message, the ticket's last-activity time, the claim and the status move
- * TOGETHER. They were four writes: two agents replying at once both read
- * "unassigned" and both claimed the ticket, and a crash between the insert and
- * the save left a reply the player could see on a ticket that still looked
- * untouched.
- */
-router.post('/support/tickets/:id/reply', hasPermission('canManageSupportTickets'), async (req, res) => {
-  try {
-    const { content } = req.body || {};
-    if (!String(content ?? '').trim()) {
-      return res.status(400).json({ success: false, message: 'Reply content is required' });
-    }
-
-    const result = await db.social.agentReply({
-      ticketId: req.params.id, agentId: req.user.userId, content,
-    });
-    if (!result.ok) return res.status(404).json({ success: false, message: 'Ticket not found' });
-
-    emitToPlayer(result.ticket.userId, 'support_reply', { ticketId: result.ticket.ticketId });
-    res.json({ success: true, message: result.message, ticket: result.ticket });
-  } catch (error) {
-    console.error('[support] reply error:', error.message);
-    res.status(500).json({ success: false, message: 'Failed to send reply' });
   }
 });
 
