@@ -318,9 +318,11 @@ export const SYSTEM_CONFIG_SPEC = group({
   // (seed × options), per poll kind, in whole tokens.
   cricket: group({
     enabled: b(false),
-    // While the game is off, players still see its tab, opening a full-screen
+    // While the game is off, players may still see its tab, opening a full-screen
     // "coming soon" image (Branding.cricketComingSoonImageUrl; owner, 2026-10-18).
-    comingSoon: b(true),
+    // Off by default: no Cricket tab until an admin switches it on, as with
+    // Casino and Crash (owner, 2026-10-20).
+    comingSoon: b(false),
     spreadPercent: n(10, 0, 50),
     rtpBoostPoints: n(5, 0, 50),
     inPlayDelaySec: int(5, 0, 30),

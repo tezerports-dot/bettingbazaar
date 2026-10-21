@@ -202,7 +202,7 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
   },
   'cricket.comingSoon': {
     what: 'While cricket is switched off, show players the Cricket tab anyway, opening a full-screen "coming soon" image (set it on Admin › Images). Off hides the tab until the game is switched on.',
-    example: 'On: players see Cricket beside Delhi Bazaar and get the coming-soon picture when they tap it.',
+    example: 'Off (default): no Cricket tab at all until the game is switched on. On: players see Cricket beside Delhi Bazaar and get the coming-soon picture when they tap it.',
   },
   'cricket.claimHoldSec': {
     what: 'Seconds a new cricket bet must stand before it can be claimed, counted from when it was placed. Stops a bot from placing and claiming in the same instant.',

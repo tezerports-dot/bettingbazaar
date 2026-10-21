@@ -77,8 +77,8 @@ const DEFAULT_SYS_CONFIG: SysConfig = {
   footerPages: ['home', 'results', 'wallet', 'promo'], // schema default (config.spec.js footerPages)
   // schema defaults: true / 10 / true / true / true
   boardExtras: { urgencyChips: true, closingWarnSeconds: 10, resultCelebration: true, bonusProgress: true, promoCards: true },
-  // schema defaults (config.spec.js `cricket`): off, coming soon, 10 to 50,000, 5 s, 2 s
-  cricket: { enabled: false, comingSoon: true, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimHoldSec: 2 },
+  // schema defaults (config.spec.js `cricket`): off, no coming soon, 10 to 50,000, 5 s, 2 s
+  cricket: { enabled: false, comingSoon: false, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimHoldSec: 2 },
   winningsFeePercent: 1, // schema default: 1
   payoutMultiplier: 2, // schema default: 2
   generalPayoutMultiplier: 1.8, // schema default: 1.8

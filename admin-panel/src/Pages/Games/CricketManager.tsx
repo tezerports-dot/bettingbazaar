@@ -114,7 +114,7 @@ const SettingsCard: React.FC = () => {
           <input id="cricket-enabled" type="checkbox" className="mt-1" checked={form.enabled}
             onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
           <div>
-            <label htmlFor="cricket-enabled" className="label mb-0 cursor-pointer">Cricket is on (players see the Cricket tab)</label>
+            <label htmlFor="cricket-enabled" className="label mb-0 cursor-pointer">Show Cricket to players (off: no Cricket tab or card anywhere in the app)</label>
             <SettingHelp path="cricket.enabled" />
           </div>
         </div>
@@ -123,7 +123,7 @@ const SettingsCard: React.FC = () => {
             <input id="cricket-coming-soon" type="checkbox" className="mt-1" checked={form.comingSoon}
               onChange={(e) => setForm({ ...form, comingSoon: e.target.checked })} />
             <div>
-              <label htmlFor="cricket-coming-soon" className="label mb-0 cursor-pointer">While off, show the tab as coming soon (image on Admin › Images)</label>
+              <label htmlFor="cricket-coming-soon" className="label mb-0 cursor-pointer">While off, still show the tab as "coming soon" (image on Admin › Images)</label>
               <SettingHelp path="cricket.comingSoon" />
             </div>
           </div>

@@ -41,7 +41,8 @@ export function cricketPublicSettings(cfg) {
   const s = cricketSettingsOf(cfg);
   return {
     enabled: s.enabled,
-    // The tab stays on screen while the game is off, as a coming-soon page.
+    // While the game is off the tab shows only if the admin asked for a
+    // coming-soon page; otherwise players see no Cricket tab (owner, 2026-10-20).
     comingSoon: !s.enabled && s.comingSoon,
     minStake: s.minStakePaise / 100,
     maxStake: s.maxStakePaise / 100,
