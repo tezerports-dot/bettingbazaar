@@ -7,7 +7,6 @@ import {
   Stats,
   MyTeam,
   Team,
-  PoolDirection,
   TeamPool,
   TeamPoolEntry,
   TeamPoolRequest,
@@ -607,12 +606,12 @@ export const removeTeamMember = async (teamId: string, merchantId: string): Prom
 export const getTeamPool = async (teamId: string): Promise<{ pool: TeamPool; entries: TeamPoolEntry[] }> =>
   request<{ pool: TeamPool; entries: TeamPoolEntry[] }>(ENDPOINTS.TEAM.POOL(teamId));
 
-/** BUY asks the platform for tokens; SELL asks it to buy pool tokens back. Whole tokens. */
+/** Asks the platform for tokens; nothing is sold back to it (owner, 2026-10-21). Whole tokens. */
 export const requestTeamPool = async (
-  teamId: string, direction: PoolDirection, tokenAmount: number, note: string,
+  teamId: string, tokenAmount: number, note: string,
 ): Promise<string> =>
   (await request<{ message: string }>(ENDPOINTS.TEAM.POOL_REQUEST(teamId), {
-    method: 'POST', body: JSON.stringify({ direction, tokenAmount, note: note || null }),
+    method: 'POST', body: JSON.stringify({ tokenAmount, note: note || null }),
   })).message;
 
 /** Buy pool tokens from the platform in USDT: the request, with where to pay (owner, 2026-10-21). */
@@ -715,10 +714,10 @@ export const unassignSubMemberAccount = async (staffId: string, accountId: strin
   (await accountRequest<{ staff: SubMember }, [string, string, string]>(
     ENDPOINTS.ACCOUNT.UNASSIGN_ACCOUNT, [staffId, accountId, duty])).staff;
 
-/** BUY asks the platform to sell tokens into the pool; SELL asks it to buy them back. Whole tokens. */
-export const requestMerchantPool = async (direction: PoolDirection, tokens: number, note: string): Promise<string> =>
+/** Asks the platform to sell tokens into the pool; nothing is sold back. Whole tokens. */
+export const requestMerchantPool = async (tokens: number, note: string): Promise<string> =>
   (await accountRequest<{ requestId: string }, []>(ENDPOINTS.ACCOUNT.REQUEST_POOL, [], {
-    direction, tokens, note: note || null,
+    tokens, note: note || null,
   })).requestId;
 
 /** A merchant account buys pool tokens in USDT: the request, with where to pay (owner, 2026-10-21). */

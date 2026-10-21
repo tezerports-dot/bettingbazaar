@@ -84,19 +84,20 @@ describe('Payments, agents\' teams side', () => {
 
   it('fulfils the request on the row pressed, with the payment typed on THAT row', async () => {
     renderAt();
-    fireEvent.change(await screen.findByLabelText('Platform paid'), { target: { value: '390' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Buy 400 tokens back from Bravo' }));
-    await waitFor(() => expect(teams.fulfilPoolRequest).toHaveBeenCalledWith('pr-2', { settlementCurrency: 'INR', settlementAmount: 390 }));
+    fireEvent.change((await screen.findAllByLabelText('Platform received'))[0], { target: { value: '1500' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sell 1,500 tokens to Alpha' }));
+    await waitFor(() => expect(teams.fulfilPoolRequest).toHaveBeenCalledWith('pr-1', { settlementCurrency: 'INR', settlementAmount: 1500 }));
     expect(teams.fulfilPoolRequest).toHaveBeenCalledTimes(1);
     // The pools re-read after the request moved one.
     await waitFor(() => expect(teams.list).toHaveBeenCalledTimes(2));
   });
 
-  it('cannot fulfil with no payment typed, and a buyback offers rupees only', async () => {
+  it('cannot fulfil with no payment typed, and an old buyback can only be rejected', async () => {
     renderAt();
     expect(await screen.findByRole('button', { name: /Sell 1,500 tokens to Alpha/ })).toBeDisabled();
-    const sellCurrency = screen.getAllByLabelText('Currency')[1] as HTMLSelectElement;
-    expect([...sellCurrency.options].map((o) => o.value)).toEqual(['INR']);
+    expect(screen.queryByRole('button', { name: /tokens back from Bravo/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/Sell back \(no longer allowed/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reject request from Bravo' })).toBeEnabled();
   });
 
   it('shows the server\'s refusal verbatim', async () => {

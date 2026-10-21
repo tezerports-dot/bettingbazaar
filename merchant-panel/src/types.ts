@@ -429,7 +429,8 @@ export interface TeamCommission {
 }
 // Team token pools (Step 2b). Mirrors `toPool`, `toEntry`, `toRequest` and
 // POOL_DIRECTIONS in database/repositories/teamPools.js — §5.
-export type PoolDirection = 'BUY' | 'SELL';
+/** Pools only buy from the platform (owner, 2026-10-21; `POOL_DIRECTIONS`, teamPools.js). */
+export type PoolDirection = 'BUY';
 export interface TeamPool { teamId: string; availablePaise: number; heldPaise: number; totalPaise: number }
 export interface TeamPoolEntry {
   id: number;
@@ -448,8 +449,8 @@ export interface TeamPoolRequest {
 export interface PoolUsdtPayment {
   chain: 'BEP20'; address: string; amount: number; received: number; rate: number; expiresAt: string;
 }
-/** Tokens a pool bought from the platform and returned to it (`poolTradeTotals`, teamPools.js). */
-export interface PoolTradeTotals { boughtPaise: number; returnedPaise: number; buys: number; returns: number }
+/** Tokens a pool bought from the platform (`poolTradeTotals`, teamPools.js). */
+export interface PoolTradeTotals { boughtPaise: number; buys: number }
 export interface TeamMember {
   merchantId: string; teamId: string; name: string; publicRef: string;
   status: 'PENDING' | 'APPROVED'; isOnline: boolean;
@@ -636,11 +637,11 @@ export interface BusinessLedger {
   buys: LedgerOrderRow[];
   sells: LedgerOrderRow[];
   commission: Array<{ commissionId: string; at: string; role: string; team: string; sharePaise: number }>;
-  pool: Array<{ requestId: string; at: string; direction: 'BUY' | 'SELL'; team: string; tokensPaise: number; currency: string | null; amountMinor: number | null; inrPaise: number }>;
+  pool: Array<{ requestId: string; at: string; direction: PoolDirection; team: string; tokensPaise: number; currency: string | null; amountMinor: number | null; inrPaise: number }>;
   disputes: Array<{ orderId: string; at: string; type: 'BUY' | 'SELL'; tokensPaise: number; state: string; decision: string | null; lostBy: string | null; compensationPaise: number }>;
   truncated: boolean;
   totals: {
-    boughtPaise: number; paidToAdminPaise: number; returnedPaise: number; receivedFromAdminPaise: number; netWithAdminPaise: number;
+    boughtPaise: number; paidToAdminPaise: number;
     userBuys: number; userBuysPaise: number; userSells: number; userSellsPaise: number; netUserPaise: number;
     commissionPaise: number; compensationPaise: number; netCommissionPaise: number; netProfitPaise: number;
     pools: number; poolAvailablePaise: number; poolHeldPaise: number;

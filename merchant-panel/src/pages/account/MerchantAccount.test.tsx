@@ -287,13 +287,13 @@ describe('pool and reports', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Pay an admin another way' }));
     fireEvent.change(screen.getByLabelText('Tokens (whole number)'), { target: { value: '2000' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send request' }));
-    await waitFor(() => expect(api.requestMerchantPool).toHaveBeenCalledWith('BUY', 2000, ''));
+    await waitFor(() => expect(api.requestMerchantPool).toHaveBeenCalledWith(2000, ''));
   });
 
-  it('a USDT pool buy shows where to pay, the amount and the network, and what bought and returned add up to', async () => {
+  it('a USDT pool buy shows where to pay, the amount and the network, and what the pool bought', async () => {
     api.getMerchantAccount.mockResolvedValue({
       ...OVERVIEW,
-      poolTrades: { boughtPaise: 1_200_000, returnedPaise: 300_000, buys: 2, returns: 1 },
+      poolTrades: { boughtPaise: 1_200_000, buys: 2 },
       poolRequests: [{
         requestId: 'req-u', teamId: 'team-1', direction: 'BUY', tokenAmountPaise: 900_000, status: 'PENDING',
         note: null, decisionNote: null, decidedAt: null, createdAt: '2026-10-21T10:00:00Z',
@@ -306,7 +306,7 @@ describe('pool and reports', () => {
     expect(card.textContent).toMatch(/BNB Smart Chain \(BEP-20\)/);
     expect(card.textContent).toContain('0x' + 'ab'.repeat(20));
     expect(screen.getByText('12,000 BB')).toBeInTheDocument();
-    expect(screen.getByText('3,000 BB')).toBeInTheDocument();
+    expect(screen.queryByText(/Returned to the platform/)).not.toBeInTheDocument();
   });
 
   it('the report shows the server\'s figures and the orders table and its download follow the same range', async () => {
@@ -327,7 +327,7 @@ describe('pool and reports', () => {
       pagination: { total: 1, limit: 50, skip: 0 },
     });
     api.downloadOrderReport.mockResolvedValue(undefined);
-    const ledgerTotals = { boughtPaise: 0, paidToAdminPaise: 0, returnedPaise: 0, receivedFromAdminPaise: 0, netWithAdminPaise: 0,
+    const ledgerTotals = { boughtPaise: 0, paidToAdminPaise: 0,
       userBuys: 0, userBuysPaise: 0, userSells: 0, userSellsPaise: 0, netUserPaise: 0, commissionPaise: 0, compensationPaise: 0,
       netCommissionPaise: 0, netProfitPaise: 0, pools: 1, poolAvailablePaise: 0, poolHeldPaise: 0 };
     api.getBusinessLedger.mockResolvedValue({ success: true, range: { from: null, to: null }, truncated: false,

@@ -147,22 +147,22 @@ describe('merchant Team screen', () => {
   it('asks to buy for the team whose form was used, in whole tokens', async () => {
     supervisorWith();
     render(<TeamPage />);
-    const box = await screen.findByLabelText('Tokens for Bravo');
+    const box = await screen.findByLabelText('Tokens to buy for Bravo');
     fireEvent.change(box, { target: { value: '5,000' } });
     expect((box as HTMLInputElement).value).toBe('5000');
     fireEvent.click(screen.getByRole('button', { name: 'Send Bravo request' }));
-    await waitFor(() => expect(api.requestTeamPool).toHaveBeenCalledWith('t-2', 'BUY', 5000, ''));
+    await waitFor(() => expect(api.requestTeamPool).toHaveBeenCalledWith('t-2', 5000, ''));
   });
 
-  it('asks to sell back when that is chosen, and shows the server refusal verbatim', async () => {
+  it('offers no way to sell tokens back, and shows the server refusal verbatim', async () => {
     supervisorWith();
-    api.requestTeamPool.mockRejectedValueOnce(new Error('The pool holds 2,500 tokens. Ask for that or less.'));
+    api.requestTeamPool.mockRejectedValueOnce(new Error('The platform has no tokens to sell right now.'));
     render(<TeamPage />);
-    fireEvent.change(await screen.findByLabelText('Request for Alpha'), { target: { value: 'SELL' } });
-    fireEvent.change(screen.getByLabelText('Tokens for Alpha'), { target: { value: '9000' } });
+    fireEvent.change(await screen.findByLabelText('Tokens to buy for Alpha'), { target: { value: '9000' } });
+    expect(screen.queryByText(/sell tokens back/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Send Alpha request' }));
-    await waitFor(() => expect(api.requestTeamPool).toHaveBeenCalledWith('t-1', 'SELL', 9000, ''));
-    expect(toast.error).toHaveBeenCalledWith('The pool holds 2,500 tokens. Ask for that or less.');
+    await waitFor(() => expect(api.requestTeamPool).toHaveBeenCalledWith('t-1', 9000, ''));
+    expect(toast.error).toHaveBeenCalledWith('The platform has no tokens to sell right now.');
   });
 
   it('cancels the pending request shown, and shows a rejection with its reason', async () => {

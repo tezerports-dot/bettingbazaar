@@ -9,7 +9,7 @@
  *   sells         sells they paid players: completed, or PAID and still in
  *                 the hold window (`withdrawalHoldMinutes`), each row saying which
  *   commission    their commission shares (`team_commission_shares`)
- *   pool          tokens bought from the platform and returned to it, with
+ *   pool          tokens bought from the platform (nothing is sold back), with
  *                 what was paid (`team_pool_requests` FULFILLED, priced by
  *                 `admin_token_considerations`)
  *   disputes      disputes raised on their orders: the decision, who lost,
@@ -21,8 +21,7 @@
  * the platform is `inr_equivalent_paise`, never `fiat_amount_minor`.
  *
  * Net profit is what the business kept: the tokens bought from the platform
- * less what was paid for them, the same for returns, plus commission, less
- * compensation paid. Player buys and sells move cash and pool tokens by the
+ * less what was paid for them, plus commission, less compensation paid. Player buys and sells move cash and pool tokens by the
  * same amount the other way, so they change the books but not the profit.
  *
  * Scoped in every WHERE to the merchant (trap 16): their orders by
@@ -65,7 +64,7 @@ export async function businessLedger(merchantId, range = {}) {
          FROM team_pool_requests r
          JOIN teams t ON t.team_id = r.team_id
          LEFT JOIN admin_token_considerations c ON c.movement_id = 'team_pool_' || r.request_id
-        WHERE r.supervisor_id = $1 AND r.status = 'FULFILLED' AND ${rangeSqlOn('r.decided_at')}
+        WHERE r.supervisor_id = $1 AND r.status = 'FULFILLED' AND r.direction = 'BUY' AND ${rangeSqlOn('r.decided_at')}
         ORDER BY r.decided_at, r.request_id`, p, 'merchant_ledger_pool'),
     pgQuery(
       `SELECT o.order_id, o.order_type, o.token_amount_paise, o.dispute_raised_at, o.state,
@@ -106,10 +105,8 @@ export async function businessLedger(merchantId, range = {}) {
   }));
 
   const sum = (rows, key) => rows.reduce((s, r) => s + r[key], 0);
-  const boughtPaise = sum(poolRows.filter((r) => r.direction === 'BUY'), 'tokensPaise');
-  const paidToAdminPaise = sum(poolRows.filter((r) => r.direction === 'BUY'), 'inrPaise');
-  const returnedPaise = sum(poolRows.filter((r) => r.direction === 'SELL'), 'tokensPaise');
-  const receivedFromAdminPaise = sum(poolRows.filter((r) => r.direction === 'SELL'), 'inrPaise');
+  const boughtPaise = sum(poolRows, 'tokensPaise');
+  const paidToAdminPaise = sum(poolRows, 'inrPaise');
   const userBuysPaise = sum(buys, 'tokensPaise');
   const userSellsPaise = sum(sells, 'tokensPaise');
   const commissionPaise = sum(commissionRows, 'sharePaise');
@@ -122,16 +119,15 @@ export async function businessLedger(merchantId, range = {}) {
     buys: cap(buys), sells: cap(sells), commission: cap(commissionRows), pool: cap(poolRows), disputes: cap(disputeRows),
     truncated: [buys, sells, commissionRows, poolRows, disputeRows].some((r) => r.length > lim),
     totals: {
-      // With the platform: tokens and the rupees they were bought or returned for.
-      boughtPaise, paidToAdminPaise, returnedPaise, receivedFromAdminPaise,
-      netWithAdminPaise: boughtPaise - returnedPaise,
+      // With the platform: tokens and the rupees they were bought for. Nothing
+      // is sold back to it (owner, 2026-10-21).
+      boughtPaise, paidToAdminPaise,
       // With players.
       userBuys: buys.length, userBuysPaise, userSells: sells.length, userSellsPaise,
       netUserPaise: userBuysPaise - userSellsPaise,
       // Earned, less paid out on disputes.
       commissionPaise, compensationPaise, netCommissionPaise: commissionPaise - compensationPaise,
-      netProfitPaise: (boughtPaise - paidToAdminPaise) - (returnedPaise - receivedFromAdminPaise)
-        + commissionPaise - compensationPaise,
+      netProfitPaise: (boughtPaise - paidToAdminPaise) + commissionPaise - compensationPaise,
       // Now, not over the range: what the merchant's pools hold.
       pools: h.pools, poolAvailablePaise: n(h.available), poolHeldPaise: n(h.held),
     },

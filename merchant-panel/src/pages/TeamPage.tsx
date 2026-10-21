@@ -29,7 +29,7 @@ import {
   getMemberLog, getTeamDisputes, getDisputeThread, postDisputeMessage,
 } from '../services/api';
 import type {
-  DisputeThreadMessage, LowActivityFlag, MemberActivity, MemberLog, MyTeam, PoolDirection, SupervisorOrder,
+  DisputeThreadMessage, LowActivityFlag, MemberActivity, MemberLog, MyTeam, SupervisorOrder,
   Team, TeamCommission, TeamMember, TeamPerformance, TeamPoolEntry, TeamPoolRequest,
 } from '../types';
 import { Banner, Button, Card, CardTitle, CopyRow, ErrorState, Skeleton, inputStyle } from '../components/ui';
@@ -318,7 +318,6 @@ const TeamPoolSection: React.FC<{
   team: Team; requests: TeamPoolRequest[]; busy: string;
   run: (key: string, fn: () => Promise<unknown>, ok: string) => Promise<void>;
 }> = ({ team, requests, busy, run }) => {
-  const [direction, setDirection] = useState<PoolDirection>('BUY');
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [history, setHistory] = useState<TeamPoolEntry[] | null>(null);
@@ -350,8 +349,7 @@ const TeamPoolSection: React.FC<{
       {team.poolTrades && (
         <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '0 0 12px' }}>
           Bought from the platform: <strong className="bb-mono">{tokens(team.poolTrades.boughtPaise)}</strong> tokens
-          ({team.poolTrades.buys}) · Returned: <strong className="bb-mono">{tokens(team.poolTrades.returnedPaise)}</strong> tokens
-          ({team.poolTrades.returns})
+          ({team.poolTrades.buys}). Tokens are never sold back to the platform.
         </p>
       )}
 
@@ -367,7 +365,7 @@ const TeamPoolSection: React.FC<{
         </div>
       ) : (
         <Banner key={r.requestId} tone="warn" style={{ marginBottom: 8 }}>
-          {r.direction === 'BUY' ? 'Buying' : 'Selling back'} {tokens(r.tokenAmountPaise)} tokens — waiting for an admin.{' '}
+          Buying {tokens(r.tokenAmountPaise)} tokens — waiting for an admin.{' '}
           <Button variant="ghost" tone="danger" disabled={!!busy}
             onClick={() => void run(`pc-${r.requestId}`, () => cancelTeamPoolRequest(r.requestId), 'Request cancelled')}>
             Cancel this request
@@ -376,7 +374,7 @@ const TeamPoolSection: React.FC<{
       )))}
       {decided.map((r) => (
         <Banner key={r.requestId} tone="danger" style={{ marginBottom: 8 }}>
-          An admin turned down {r.direction === 'BUY' ? 'buying' : 'selling back'} {tokens(r.tokenAmountPaise)} tokens
+          An admin turned down buying {tokens(r.tokenAmountPaise)} tokens
           {r.decisionNote ? `: ${r.decisionNote}` : '.'}
         </Banner>
       ))}
@@ -387,21 +385,14 @@ const TeamPoolSection: React.FC<{
           e.preventDefault();
           if (!valid) return;
           void run(`pr-${team.teamId}`, async () => {
-            const message = await requestTeamPool(team.teamId, direction, whole, note.trim());
+            const message = await requestTeamPool(team.teamId, whole, note.trim());
             setAmount(''); setNote('');
             return message;
-          }, direction === 'BUY' ? 'Requested. Pay the platform; an admin adds the tokens.' : 'Requested. An admin will pay you and take the tokens.');
+          }, 'Requested. Pay the platform; an admin adds the tokens.');
         }}
       >
         <div>
-          <label htmlFor={`pd-${team.teamId}`} style={labelStyle}>Request for {team.name}</label>
-          <select id={`pd-${team.teamId}`} value={direction} onChange={(e) => setDirection(e.target.value as PoolDirection)} style={inputStyle}>
-            <option value="BUY">Buy tokens</option>
-            <option value="SELL">Sell tokens back</option>
-          </select>
-        </div>
-        <div>
-          <label htmlFor={`pa-${team.teamId}`} style={labelStyle}>Tokens for {team.name}</label>
+          <label htmlFor={`pa-${team.teamId}`} style={labelStyle}>Tokens to buy for {team.name}</label>
           <input id={`pa-${team.teamId}`} inputMode="numeric" value={amount}
             onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ''))} style={{ ...inputStyle, width: 130 }} />
         </div>
@@ -410,15 +401,13 @@ const TeamPoolSection: React.FC<{
           <input id={`pn-${team.teamId}`} value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} maxLength={200} />
         </div>
         <Button type="submit" disabled={!valid || !!busy}>Send {team.name} request</Button>
-        {direction === 'BUY' && (
-          <Button type="button" variant="outline" disabled={!valid || !!busy}
-            onClick={() => void run(`pu-${team.teamId}`, async () => {
-              await buyTeamPoolUsdt(team.teamId, whole);
-              setAmount(''); setNote('');
-            }, 'Pay the USDT shown above. The tokens arrive by themselves.')}>
-            Buy in USDT now (automatic)
-          </Button>
-        )}
+        <Button type="button" variant="outline" disabled={!valid || !!busy}
+          onClick={() => void run(`pu-${team.teamId}`, async () => {
+            await buyTeamPoolUsdt(team.teamId, whole);
+            setAmount(''); setNote('');
+          }, 'Pay the USDT shown above. The tokens arrive by themselves.')}>
+          Buy in USDT now (automatic)
+        </Button>
       </form>
 
       <div style={{ marginTop: 10 }}>

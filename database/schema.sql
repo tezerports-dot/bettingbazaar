@@ -3634,9 +3634,10 @@ CREATE INDEX IF NOT EXISTS team_pool_entries_team_idx ON team_pool_entries (team
 CREATE OR REPLACE TRIGGER team_pool_entries_append_only
   BEFORE UPDATE OR DELETE ON team_pool_entries FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
--- A supervisor asks the platform to sell tokens into a team's pool (BUY) or to
--- buy pool tokens back (SELL). An admin fulfils it, recording what was paid, or
--- rejects it. At most one PENDING request per team and direction.
+-- A supervisor asks the platform to sell tokens into a team's pool (BUY). An
+-- admin fulfils it, recording what was paid, or rejects it. At most one
+-- PENDING request per team. Tokens never go back to the platform (owner,
+-- 2026-10-21): there is no SELL.
 CREATE TABLE IF NOT EXISTS team_pool_requests (
   request_id         TEXT PRIMARY KEY,
   team_id            TEXT NOT NULL REFERENCES teams (team_id),
@@ -3649,7 +3650,6 @@ CREATE TABLE IF NOT EXISTS team_pool_requests (
   decided_at         TIMESTAMPTZ,
   decision_note      TEXT,
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT team_pool_requests_direction_known CHECK (direction IN ('BUY', 'SELL')),
   CONSTRAINT team_pool_requests_status_known CHECK (status IN ('PENDING', 'FULFILLED', 'REJECTED', 'CANCELLED')),
   CONSTRAINT team_pool_requests_tokens_positive CHECK (token_amount_paise > 0),
   CONSTRAINT team_pool_requests_decision_recorded CHECK (
@@ -3657,6 +3657,11 @@ CREATE TABLE IF NOT EXISTS team_pool_requests (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS team_pool_requests_one_pending
   ON team_pool_requests (team_id, direction) WHERE status = 'PENDING';
+-- Converges an older database (S31): BUY only from 2026-10-21. NOT VALID, so a
+-- test server's earlier buyback rows stay as the record they are.
+ALTER TABLE team_pool_requests DROP CONSTRAINT IF EXISTS team_pool_requests_direction_known;
+ALTER TABLE team_pool_requests ADD CONSTRAINT team_pool_requests_direction_known
+  CHECK (direction = 'BUY') NOT VALID;
 CREATE INDEX IF NOT EXISTS team_pool_requests_status_idx ON team_pool_requests (status, created_at);
 
 -- What the platform got, or paid, for a pool trade lives in the same table as

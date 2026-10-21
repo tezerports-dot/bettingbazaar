@@ -1655,9 +1655,9 @@ const MUTATIONS = [
   {
     id: 'M288', file: 'database/repositories/teamPools.js', config: PG,
     test: 'database/tests/teamPoolsPg.test.js',
-    why: 'a buyback larger than the pool is attempted anyway, and the platform pays for tokens the team does not hold',
-    from: `      WHERE team_id = $1 AND available_paise + $2 >= 0`,
-    to: `      WHERE team_id = $1`,
+    why: 'a merchant asks the platform to buy pool tokens back, which the owner removed (2026-10-21)',
+    from: `export const POOL_DIRECTIONS = Object.freeze({ BUY: 'BUY' });`,
+    to: `export const POOL_DIRECTIONS = Object.freeze({ BUY: 'BUY', SELL: 'SELL' });`,
   },
   {
     id: 'M289', file: 'database/repositories/teamPools.js', config: PG,

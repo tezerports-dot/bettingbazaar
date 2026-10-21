@@ -13,7 +13,6 @@ const rupees = (paise) => Math.round(Number(paise ?? 0)) / 100;
 const rangeText = (range) => (range.from || range.to
   ? `IST days ${range.from ?? 'from the start'} to ${range.to ?? 'today'}`
   : 'The last seven IST days');
-const DIRECTION = { BUY: 'Bought from the platform', SELL: 'Returned to the platform' };
 const LOST_BY = { MERCHANT: 'Merchant', PLAYER: 'Player' };
 const sumOf = (rows, key) => Math.round(rows.reduce((s, r) => s + (Number(r[key]) || 0), 0) * 100) / 100;
 
@@ -36,7 +35,7 @@ export function ledgerWorkbook(ledger) {
     at: r.at, team: r.team, role: r.role.charAt(0) + r.role.slice(1).toLowerCase(), share: rupees(r.sharePaise), id: r.commissionId,
   }));
   const pool = ledger.pool.map((r) => ({
-    at: r.at, direction: DIRECTION[r.direction] ?? r.direction, team: r.team, tokens: rupees(r.tokensPaise),
+    at: r.at, team: r.team, tokens: rupees(r.tokensPaise),
     paid: r.amountMinor === null ? '' : `${(r.amountMinor / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 })} ${r.currency}`,
     inr: rupees(r.inrPaise), id: r.requestId,
   }));
@@ -49,9 +48,6 @@ export function ledgerWorkbook(ledger) {
   const summary = [
     { item: 'Tokens bought from the platform', value: rupees(t.boughtPaise) },
     { item: 'Paid to the platform for them (₹)', value: rupees(t.paidToAdminPaise) },
-    { item: 'Tokens returned to the platform', value: rupees(t.returnedPaise) },
-    { item: 'Received from the platform for them (₹)', value: rupees(t.receivedFromAdminPaise) },
-    { item: 'Net tokens with the platform (bought − returned)', value: rupees(t.netWithAdminPaise) },
     { item: `Player buys served (${t.userBuys})`, value: rupees(t.userBuysPaise) },
     { item: `Player sells paid (${t.userSells})`, value: rupees(t.userSellsPaise) },
     { item: 'Net with players (buys − sells)', value: rupees(t.netUserPaise) },
@@ -75,9 +71,9 @@ export function ledgerWorkbook(ledger) {
       { key: 'at', label: 'Time (IST)', type: 'time' }, { key: 'team', label: 'Team' }, { key: 'role', label: 'Share as' },
       { key: 'share', label: 'Commission (tokens)', type: 'money' }, { key: 'id', label: 'Transaction ID' },
     ], commission, ['share']),
-    table(['Pool trades', `Pool tokens bought from and returned to the platform (${pool.length})`], 'purple', [
-      { key: 'at', label: 'Time (IST)', type: 'time' }, { key: 'direction', label: 'What' }, { key: 'team', label: 'Pool' },
-      { key: 'tokens', label: 'Tokens', type: 'money' }, { key: 'paid', label: 'Paid or received' },
+    table(['Pool trades', `Pool tokens bought from the platform (${pool.length})`], 'purple', [
+      { key: 'at', label: 'Time (IST)', type: 'time' }, { key: 'team', label: 'Pool' },
+      { key: 'tokens', label: 'Tokens', type: 'money' }, { key: 'paid', label: 'Paid' },
       { key: 'inr', label: 'In rupees', type: 'money' }, { key: 'id', label: 'Transaction ID' },
     ], pool),
     table(['Disputes', `Disputes (${disputes.length})`], 'orange', [

@@ -41,7 +41,7 @@ router.get('/team', merchantAuth, async (req, res) => {
       const teams = await db.teams.listTeams({ supervisorId: me.merchantId });
       const members = (await Promise.all(teams.map((t) => db.teams.listMembers({ teamId: t.teamId })))).flat();
       const poolRequests = await db.teamPools.listRequests({ supervisorId: me.merchantId, limit: 50 });
-      // Per team: tokens bought from the platform and returned to it.
+      // Per team: tokens bought from the platform.
       for (const t of teams) t.poolTrades = await db.teamPools.poolTradeTotals(t.teamId);
       // Team commission (Step 2e): each team's recent payments with this
       // supervisor's 16% of each, and their total across every team.
@@ -163,14 +163,14 @@ router.get('/supervisor/teams/:teamId/pool', merchantAuth, requireSupervisor, as
 });
 
 /**
- * POST /api/merchant/supervisor/teams/:teamId/pool-requests
- *   { direction: 'BUY'|'SELL', tokenAmount, note }
- * BUY asks the platform to sell tokens into the pool; SELL asks it to buy pool
- * tokens back. An admin fulfils it after the money has changed hands.
+ * POST /api/merchant/supervisor/teams/:teamId/pool-requests { tokenAmount, note }
+ * Asks the platform to sell tokens into the pool; an admin fulfils it after
+ * the money has changed hands. Nothing is sold back (owner, 2026-10-21): a
+ * `direction` other than BUY is 400 POOL_BUY_ONLY.
  */
 router.post('/supervisor/teams/:teamId/pool-requests', merchantAuth, requireSupervisor, async (req, res) => {
   try {
-    const direction = String(req.body?.direction ?? '').toUpperCase();
+    const direction = String(req.body?.direction ?? 'BUY').toUpperCase();
     const tokens = Number(req.body?.tokenAmount);
     if (!Number.isInteger(tokens) || tokens <= 0) {
       return res.status(400).json({ success: false, code: 'bad_amount', message: 'Enter a whole number of tokens greater than zero.' });
@@ -182,14 +182,12 @@ router.post('/supervisor/teams/:teamId/pool-requests', merchantAuth, requireSupe
     if (!out.ok) return refuse(res, out.reason);
     await db.audit.recordDetailed({
       performedBy: req.merchantId, category: 'TREASURY', targetType: 'TEAM',
-      action: direction === 'BUY' ? 'TEAM_POOL_BUY_REQUESTED' : 'TEAM_POOL_SELL_REQUESTED',
+      action: 'TEAM_POOL_BUY_REQUESTED',
       targetId: req.params.teamId, ip: req.ip, details: { requestId: out.requestId, tokenAmount: tokens },
     });
     res.status(201).json({
       success: true, request: await db.teamPools.getRequest(out.requestId),
-      message: direction === 'BUY'
-        ? 'Requested. Pay the platform, and an admin will add the tokens once the payment is confirmed.'
-        : 'Requested. An admin will pay you and take the tokens out of the pool.',
+      message: 'Requested. Pay the platform, and an admin will add the tokens once the payment is confirmed.',
     });
   } catch (err) { respondError(res, err, 'POST /merchant/supervisor/teams/:id/pool-requests'); }
 });
