@@ -8,7 +8,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { RefreshCw, ShieldCheck, ShieldAlert, PiggyBank } from 'lucide-react';
 import toast from 'react-hot-toast';
-import api, { downloadCsv } from '../../services/api';
+import api, { downloadFile } from '../../services/api';
 import { usePermissions } from '../../hooks/usePermission';
 import { Kpis, Toolbar } from '../../components/design';
 
@@ -173,9 +173,9 @@ export const RevenueLedger: React.FC = () => {
           {canExportLedger && (
             <button type="button" className="btn-primary px-3 py-1 text-sm ml-auto mr-2"
               title="The whole journal, one row per posting (the same export as Reports)"
-              onClick={() => downloadCsv('/api/admin/reports/ledger-export', { format: 'csv' }, 'ledger-export.csv')
+              onClick={() => downloadFile('/api/admin/reports/ledger-export', { format: 'xlsx' }, 'ledger-export.xlsx')
                 .catch(() => toast.error('Could not download the ledger.'))}>
-              Download CSV
+              Download Excel
             </button>
           )}
           <select aria-label="Filter the journal by accounting event type" className="input max-w-xs" value={eventType}

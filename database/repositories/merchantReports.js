@@ -46,6 +46,9 @@ const RANGE_SQL = `
   created_at >= ((COALESCE($2::date, COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date) - 6))::timestamp AT TIME ZONE 'Asia/Kolkata')
   AND created_at < ((COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date) + 1)::timestamp AT TIME ZONE 'Asia/Kolkata')`;
 
+/** The range clause on another column (`$2` from, `$3` to): the business ledger's (`merchantLedger.js`). */
+export const rangeSqlOn = (column) => RANGE_SQL.replaceAll('created_at', column);
+
 /** Per account and direction, over the range. */
 export async function accountTotals(merchantId, range) {
   const { from, to } = reportRange(range);

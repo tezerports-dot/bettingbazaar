@@ -12,7 +12,7 @@
  *     anything is sent; the server's refusal is announced (S44);
  *   • sub-members: the add form sends name, mobile (no password) and the ticked
  *     roles; ticking an account assigns it for that duty;
- *   • pool and reports: the request and the CSV download reach their calls.
+ *   • pool and reports: the request and the Excel downloads reach their calls.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
@@ -41,7 +41,9 @@ const api = vi.hoisted(() => ({
   cancelMerchantPoolRequest: vi.fn(),
   getMerchantReport: vi.fn(),
   getOrderReport: vi.fn(),
-  downloadOrderReportCsv: vi.fn(),
+  downloadOrderReport: vi.fn(),
+  getBusinessLedger: vi.fn(),
+  downloadBusinessLedger: vi.fn(),
   toggleOnlineStatus: vi.fn(),
 }));
 vi.mock('../../services/api', () => ({ api }));
@@ -307,7 +309,7 @@ describe('pool and reports', () => {
     expect(screen.getByText('3,000 BB')).toBeInTheDocument();
   });
 
-  it('the report shows the server\'s figures and the orders table and its CSV follow the same range', async () => {
+  it('the report shows the server\'s figures and the orders table and its download follow the same range', async () => {
     const zero = { orders: 0, completed: 0, completedPaise: 0, disputed: 0, disputesLost: 0 };
     api.getMerchantReport.mockResolvedValue({
       success: true, range: { from: null, to: null },
@@ -324,7 +326,12 @@ describe('pool and reports', () => {
       totals: { orders: 1, confirmed: 1, rejected: 0, confirmedBuyPaise: 100000, confirmedSellPaise: 0 },
       pagination: { total: 1, limit: 50, skip: 0 },
     });
-    api.downloadOrderReportCsv.mockResolvedValue(undefined);
+    api.downloadOrderReport.mockResolvedValue(undefined);
+    const ledgerTotals = { boughtPaise: 0, paidToAdminPaise: 0, returnedPaise: 0, receivedFromAdminPaise: 0, netWithAdminPaise: 0,
+      userBuys: 0, userBuysPaise: 0, userSells: 0, userSellsPaise: 0, netUserPaise: 0, commissionPaise: 0, compensationPaise: 0,
+      netCommissionPaise: 0, netProfitPaise: 0, pools: 1, poolAvailablePaise: 0, poolHeldPaise: 0 };
+    api.getBusinessLedger.mockResolvedValue({ success: true, range: { from: null, to: null }, truncated: false,
+      buys: [], sells: [], commission: [], pool: [], disputes: [], totals: ledgerTotals });
     at(ROUTES.ACCOUNT_REPORTS, AUDITOR, <ReportsPage />);
     expect(await screen.findByText('The last seven days')).toBeInTheDocument();
     expect(screen.getByRole('table', { name: 'Totals' })).toHaveTextContent('7');
@@ -337,11 +344,14 @@ describe('pool and reports', () => {
     fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-10-07' } });
     fireEvent.click(screen.getByRole('button', { name: 'Show report' }));
     await waitFor(() => expect(api.getMerchantReport).toHaveBeenLastCalledWith('2026-10-01', '2026-10-07'));
-    // The table follows the range the figures were built for, and so does the CSV.
+    // The table follows the range the figures were built for, and so does the download.
     await waitFor(() => expect(api.getOrderReport).toHaveBeenLastCalledWith(
       { from: '2026-10-01', to: '2026-10-07', type: '' }, { limit: 50, skip: 0 }));
-    fireEvent.click(screen.getByRole('button', { name: /Download CSV/ }));
-    await waitFor(() => expect(api.downloadOrderReportCsv).toHaveBeenCalledWith({ from: '2026-10-01', to: '2026-10-07', type: '' }));
+    fireEvent.click(screen.getByRole('button', { name: /Download orders/ }));
+    await waitFor(() => expect(api.downloadOrderReport).toHaveBeenCalledWith({ from: '2026-10-01', to: '2026-10-07', type: '' }));
+    // The business ledger follows the same range.
+    await waitFor(() => expect(api.getBusinessLedger).toHaveBeenLastCalledWith('2026-10-01', '2026-10-07'));
+    expect(screen.getByRole('region', { name: 'Totals' })).toHaveTextContent('Net profit');
   });
 });
 

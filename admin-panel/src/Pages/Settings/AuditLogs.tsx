@@ -19,7 +19,7 @@ import { DateRangePicker } from '../../components/DateRangePicker';
 import { Kpis, Toolbar } from '../../components/design';
 import { usePagination } from '../../hooks/usePagination';
 import { formatters } from '../../utils/formatters';
-import api, { downloadCsv } from '../../services/api';
+import api, { downloadFile } from '../../services/api';
 import { Download } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -148,8 +148,8 @@ export const AuditLogs: React.FC = () => {
       <Toolbar
         search={{ value: search, onChange: setSearch, placeholder: 'Search actor, action…' }}
         actions={[{
-          label: 'Download CSV', icon: Download,
-          onClick: () => void downloadCsv('/api/admin/audit-logs.csv', { startDate: startDate || undefined, endDate: endDate || undefined }, 'audit-logs.csv')
+          label: 'Download Excel', icon: Download,
+          onClick: () => void downloadFile('/api/admin/audit-logs.xlsx', { startDate: startDate || undefined, endDate: endDate || undefined }, 'audit-logs.xlsx')
             .catch(() => toast.error('Could not download the audit log.')),
         }]}
       />

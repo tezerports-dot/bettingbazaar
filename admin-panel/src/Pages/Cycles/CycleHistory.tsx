@@ -207,9 +207,9 @@ export const CycleHistory: React.FC = () => {
   const totalPaidOut    = totals.reduce((sum, t) => sum + t.paidOut, 0);
   const cyclesOfBoard   = (key: string) => totals.filter((t) => t.type === key).reduce((n, t) => n + t.cycles, 0);
 
-  const downloadCsv = async () => {
+  const downloadExcel = async () => {
     try {
-      await api.cycles.downloadHistoryCsv(filters);
+      await api.cycles.downloadHistory(filters);
     } catch {
       toast.error('Export failed');
     }
@@ -288,7 +288,7 @@ export const CycleHistory: React.FC = () => {
           })),
         ]}
         search={{ value: search, onChange: setSearch, placeholder: 'Search cycle id…' }}
-        actions={[{ label: 'Download CSV', icon: Download, onClick: downloadCsv }]}
+        actions={[{ label: 'Download Excel', icon: Download, onClick: downloadExcel }]}
       />
       <div className="flex flex-wrap items-center gap-3">
         <Toolbar

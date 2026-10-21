@@ -15,6 +15,7 @@ import cookieParser from 'cookie-parser';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { ensureCycle, declareWinner, markSettled } from '#db/repositories/markets.js';
 import { actor, as } from './_harness.js';
+import { getXlsx, onlyTable } from '../_xlsx.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 const RUN = `ach${Math.random().toString(36).slice(2, 8)}`;
@@ -103,19 +104,19 @@ describePg('Admin › Cycle History filters and totals', () => {
     expect(res.body.pagination.total).toBe(4);
   });
 
-  it('downloads the same filtered rows as CSV', async () => {
-    const res = await as(app, admin).get('/admin/cycles/history.csv').query({ search: RUN, audience: 'GENERAL' });
+  it('downloads the same filtered rows as a workbook', async () => {
+    const { res, book } = await getXlsx(as(app, admin).get('/admin/cycles/history.xlsx').query({ search: RUN, audience: 'GENERAL' }));
     expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toMatch(/text\/csv/);
-    const lines = res.text.split('\n');
-    expect(lines[0]).toMatch(/^cycle_id,board,profile,status/);
-    expect(lines.slice(1)).toHaveLength(2);
-    expect(lines.slice(1).every((l) => l.includes(',GENERAL,'))).toBe(true);
+    expect(res.headers['content-type']).toMatch(/spreadsheetml/);
+    const t = onlyTable(book);
+    expect(t.header.slice(0, 4)).toEqual(['Cycle id', 'Board', 'Profile', 'Status']);
+    expect(t.rows).toHaveLength(2);
+    expect(t.rows.every((r) => t.cell(r, 'Profile') === 'GENERAL')).toBe(true);
   });
 
   it('is refused to a staff account without analytics', async () => {
     const staff = await actor({ isAdmin: false, isSubAdmin: true, permissions: {} });
-    const res = await as(app, staff).get('/admin/cycles/history.csv');
+    const res = await as(app, staff).get('/admin/cycles/history.xlsx');
     expect([401, 403]).toContain(res.status);
   });
 });

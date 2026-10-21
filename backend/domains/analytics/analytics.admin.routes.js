@@ -15,7 +15,7 @@ import { db } from '#db';
 import { growthTrend, businessTrend, revenueTrend, riskTrend } from './analyticsPlatform.service.js';
 import { serverError, respondError } from '../../shared/httpError.js';
 import { istDay } from '../../shared/istDay.js';
-import { toCsv } from '../reporting/csv.util.js';
+import { sendXlsx, oneTable, columnsOf, istText } from '../reporting/xlsx.util.js';
 import { paiseToRupees } from '../../shared/money.js';
 
 const router = express.Router();
@@ -144,13 +144,13 @@ router.get('/analytics/financials', authenticate, hasPermission('canViewAnalytic
   }
 });
 
-/** The same P&L as CSV, one line per item. */
-router.get('/analytics/financials.csv', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
+/** The same P&L as a workbook: one labelled table per section, a line per item. */
+router.get('/analytics/financials.xlsx', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const window = pnlWindow(req.query);
     const [p, t] = await Promise.all([db.stats.profitAndLoss(window), db.tokenLedger.tokenProfit(window)]);
     const line = (section, item, amount, count = '') => ({ section, item, amount, count });
-    const csv = toCsv([
+    const lines = [
       line('Revenue', 'Board games: settled stakes', p.revenue.boardGames.settledStakes, p.revenue.boardGames.bets),
       line('Revenue', 'Board games: paid to winners', -p.revenue.boardGames.payouts, p.revenue.boardGames.wins),
       line('Revenue', 'Board games: kept', p.revenue.boardGames.amount),
@@ -175,13 +175,28 @@ router.get('/analytics/financials.csv', authenticate, hasPermission('canViewAnal
       line('Token ledger cash check', 'Paid by players in USDT (at ₹1 a token)', t.cash.receivedFromPlayersUsdt),
       line('Token ledger cash check', 'Paid back to teams', -t.cash.paidToTeams),
       line('Token ledger cash check', 'Tokens now in wallets and pools (owed back)', -t.outstandingNow.total),
-    ]);
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition',
-      `attachment; filename="profit-loss-${window.from || 'start'}-${window.to || 'now'}.csv"`);
-    res.send(csv);
+    ];
+    // One table per section, in the order the lines are written.
+    const sections = [...new Set(lines.map((l) => l.section))];
+    const accents = ['green', 'red', 'blue', 'slate', 'orange', 'teal', 'purple', 'gold'];
+    const columns = [
+      { key: 'item', label: 'Item', width: 56 },
+      { key: 'amount', label: 'Amount (₹ = tokens)', type: 'money' },
+      { key: 'count', label: 'Count', type: 'int' },
+    ];
+    sendXlsx(res, `profit-loss-${window.from || 'start'}-${window.to || 'now'}.xlsx`, {
+      sheets: [{
+        name: 'Profit and loss',
+        title: 'Profit and loss',
+        subtitle: `IST days ${window.from || 'from the start'} to ${window.to || 'now'}. Downloaded ${istText(new Date())}.`,
+        tables: sections.map((section, i) => ({
+          heading: section, accent: accents[i % accents.length], columns,
+          rows: lines.filter((l) => l.section === section).map((l) => ({ item: l.item, amount: l.amount, count: l.count === '' ? null : l.count })),
+        })),
+      }],
+    });
   } catch (error) {
-    respondError(res, error, 'GET /admin/analytics/financials.csv', { message: 'Could not build the export.' });
+    respondError(res, error, 'GET /admin/analytics/financials.xlsx', { message: 'Could not build the export.' });
   }
 });
 
@@ -217,11 +232,11 @@ router.get('/analytics/token-holders', authenticate, hasPermission('canManageUse
   }
 });
 
-router.get('/analytics/token-holders.csv', authenticate, hasPermission('canManageUsers'), async (req, res) => {
+router.get('/analytics/token-holders.xlsx', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { kind, search } = req.query;
     const t = await db.tokenHolders.tokenHolders({ kind, search, exportAll: true });
-    const csv = toCsv(t.holders.map((h) => ({
+    const table = t.holders.map((h) => ({
       kind: h.kind,
       holder_id: h.holderId,
       name: h.name,
@@ -230,12 +245,13 @@ router.get('/analytics/token-holders.csv', authenticate, hasPermission('canManag
       tokens: h.tokens,
       held_or_riding: h.held,
       share_of_supply_percent: h.sharePercent,
-    })));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="token-holders-${kind || 'all'}.csv"`);
-    res.send(csv);
+    }));
+    sendXlsx(res, `token-holders-${kind || 'all'}.xlsx`, oneTable({
+      name: 'Token holders', title: 'Token holders', subtitle: `Downloaded ${istText(new Date())}`, accent: 'purple',
+      rows: table, columns: columnsOf(table, { money: ['tokens', 'held_or_riding', 'share_of_supply_percent'] }),
+    }));
   } catch (error) {
-    respondError(res, error, 'GET /admin/analytics/token-holders.csv', { message: 'Could not build the export.' });
+    respondError(res, error, 'GET /admin/analytics/token-holders.xlsx', { message: 'Could not build the export.' });
   }
 });
 
@@ -259,11 +275,11 @@ const movementsQuery = (q) => ({
 });
 
 /** Every token movement in the window, one row each with its legs (`tokenLedger.tokenMovements`), as CSV, up to `MOVEMENTS_EXPORT_MAX` rows. */
-router.get('/analytics/token-movements.csv', authenticate, hasPermission('canExportLedger'), async (req, res) => {
+router.get('/analytics/token-movements.xlsx', authenticate, hasPermission('canExportLedger'), async (req, res) => {
   try {
     const q = movementsQuery(req.query);
     const m = await db.tokenLedger.tokenMovements({ ...q, limit: db.tokenLedger.MOVEMENTS_EXPORT_MAX });
-    const csv = toCsv(m.rows.map((r) => ({
+    const table = m.rows.map((r) => ({
       at: r.at,
       movement_id: r.movementId,
       kind: r.kind,
@@ -278,13 +294,13 @@ router.get('/analytics/token-movements.csv', authenticate, hasPermission('canExp
       player_wallets: r.wallets,
       team_pools: r.teamPools,
       platform_net: r.platformNet,
-    })));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition',
-      `attachment; filename="token-movements-${q.from || 'start'}-${q.to || 'now'}.csv"`);
-    res.send(csv);
+    }));
+    sendXlsx(res, `token-movements-${q.from || 'start'}-${q.to || 'now'}.xlsx`, oneTable({
+      name: 'Token movements', title: 'Token movements', subtitle: `Downloaded ${istText(new Date())}`, accent: 'teal',
+      rows: table, columns: columnsOf(table, { money: ['token_supply', 'house_reserve', 'platform_pools', 'player_wallets', 'team_pools', 'platform_net'] }),
+    }));
   } catch (error) {
-    respondError(res, error, 'GET /admin/analytics/token-movements.csv', { message: 'Could not build the export.' });
+    respondError(res, error, 'GET /admin/analytics/token-movements.xlsx', { message: 'Could not build the export.' });
   }
 });
 

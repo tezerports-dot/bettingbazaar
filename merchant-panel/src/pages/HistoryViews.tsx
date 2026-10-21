@@ -2,7 +2,8 @@
 //
 // History — design handoff "BB Merchant Panel.dc.html": three totals, then one
 // of three tabs (Volume, Earnings, Report). Report is the server's order table
-// with ✓/✗ and who pressed it, and its CSV (`OrderReportTable`, owner 2026-10-16).
+// with ✓/✗ and who pressed it, and its download (`OrderReportTable`, owner 2026-10-16), under the business
+// ledger (`BusinessLedger`, owner 2026-10-21).
 //
 // The totals and series are the server's, over every completed order
 // (GET /merchant/earnings and /merchant/earnings/weekly) — nothing here is a
@@ -15,6 +16,7 @@ import { formatMoney, formatMoneyCompact, formatTokens } from '../utils/rail';
 import type { Earnings } from '../types';
 import { Card, CardTitle, SegmentedControl, Skeleton, cardStyle } from '../components/ui';
 import OrderReportTable from '../components/OrderReportTable';
+import BusinessLedger from '../components/BusinessLedger';
 
 type Tab = 'volume' | 'earnings' | 'ledger';
 
@@ -185,7 +187,12 @@ const HistoryViews: React.FC = () => {
         </Card>
       )}
 
-      {tab === 'ledger' && <OrderReportTable />}
+      {tab === 'ledger' && (
+        <>
+          <BusinessLedger />
+          <OrderReportTable />
+        </>
+      )}
     </div>
   );
 };

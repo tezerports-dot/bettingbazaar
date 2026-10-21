@@ -332,8 +332,8 @@ const ReportCard: React.FC = () => {
         <div><label className="label" htmlFor="crk-from">From</label><input id="crk-from" type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
         <div><label className="label" htmlFor="crk-to">To</label><input id="crk-to" type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} /></div>
         <button type="button" className="btn-primary" onClick={load}>Show</button>
-        <button type="button" className="btn-secondary inline-flex items-center gap-1" onClick={() => api.reportCsv(from, to).catch(() => toast.error('Could not export'))}>
-          <Download size={14} /> CSV
+        <button type="button" className="btn-secondary inline-flex items-center gap-1" onClick={() => api.reportExcel(from, to).catch(() => toast.error('Could not export'))}>
+          <Download size={14} /> Excel
         </button>
       </div>
       {totals && (

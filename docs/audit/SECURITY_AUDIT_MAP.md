@@ -3540,7 +3540,7 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 360 |
+| Route declarations in `backend/**` | 362 |
 | Reachable with **no auth middleware** | 44 |
 | Staff routes carrying an **area** (permission key) | 183 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 10 |
@@ -3602,7 +3602,7 @@ new route and decide. Each of the three questions is defined in §2.
 - `DELETE /sub-admins/:subAdminId  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff-permissions  (backend/routes/admin/subadmins.admin.routes.js)`
-- `GET /staff.csv  (backend/routes/admin/subadmins.admin.routes.js)`
+- `GET /staff.xlsx  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff/:userId  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /staff/:userId/reset-authenticator  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
@@ -3616,9 +3616,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 541 |
-| Parameters only (safe by construction) | 361 |
-| Interpolating into statement text (each needs a reading) | 170 |
+| `pgQuery` call sites | 546 |
+| Parameters only (safe by construction) | 362 |
+| Interpolating into statement text (each needs a reading) | 174 |
 | Statement text built elsewhere and passed in (each needs a reading) | 10 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
@@ -3641,7 +3641,7 @@ new route and decide. Each of the three questions is defined in §2.
 |---|---|---|---|
 | `user-panel` | 164 | 0 | 0 |
 | `admin-panel` | 145 | 0 | 0 |
-| `merchant-panel` | 67 | 0 | 0 |
+| `merchant-panel` | 69 | 0 | 0 |
 
 <!-- END GENERATED -->
 

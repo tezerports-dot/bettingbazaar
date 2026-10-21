@@ -626,6 +626,27 @@ export interface OrderReport {
   pagination: { total: number; limit: number; skip: number };
 }
 
+/** One order in the business ledger (`merchantLedger.businessLedger`). */
+export interface LedgerOrderRow { orderId: string; at: string; tokensPaise: number; state: 'COMPLETED' | 'PAID'; rail: string; account: string | null }
+
+/** GET /api/merchant/reports/ledger: every figure the server's, in paise of a token. */
+export interface BusinessLedger {
+  success: boolean;
+  range: { from: string | null; to: string | null };
+  buys: LedgerOrderRow[];
+  sells: LedgerOrderRow[];
+  commission: Array<{ commissionId: string; at: string; role: string; team: string; sharePaise: number }>;
+  pool: Array<{ requestId: string; at: string; direction: 'BUY' | 'SELL'; team: string; tokensPaise: number; currency: string | null; amountMinor: number | null; inrPaise: number }>;
+  disputes: Array<{ orderId: string; at: string; type: 'BUY' | 'SELL'; tokensPaise: number; state: string; decision: string | null; lostBy: string | null; compensationPaise: number }>;
+  truncated: boolean;
+  totals: {
+    boughtPaise: number; paidToAdminPaise: number; returnedPaise: number; receivedFromAdminPaise: number; netWithAdminPaise: number;
+    userBuys: number; userBuysPaise: number; userSells: number; userSellsPaise: number; netUserPaise: number;
+    commissionPaise: number; compensationPaise: number; netCommissionPaise: number; netProfitPaise: number;
+    pools: number; poolAvailablePaise: number; poolHeldPaise: number;
+  };
+}
+
 /** GET /api/merchant/account/reports. */
 export interface MerchantReport {
   success: boolean;

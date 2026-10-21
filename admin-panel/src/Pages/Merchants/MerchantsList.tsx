@@ -19,7 +19,7 @@ import { Modal } from '../../components/Modal';
 import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
-import api, { downloadCsv, cleanParams } from '../../services/api';
+import api, { downloadFile, cleanParams } from '../../services/api';
 import type { MerchantRow } from '../../types';
 import { ROLE_LABEL } from './merchantLabels';
 import toast from 'react-hot-toast';
@@ -66,13 +66,13 @@ export const MerchantsList: React.FC = () => {
     return () => { sseService.off('merchant_status_changed', handleStatusChange); };
   }, []);
 
-  // Every merchant the filters match, not the page (`GET /api/admin/merchants.csv`).
-  const exportCsv = async () => {
+  // Every merchant the filters match, not the page (`GET /api/admin/merchants.xlsx`).
+  const exportExcel = async () => {
     try {
-      await downloadCsv('/api/admin/merchants.csv', cleanParams({
+      await downloadFile('/api/admin/merchants.xlsx', cleanParams({
         search: debouncedSearch, role: roleFilter === 'ALL' ? undefined : roleFilter,
         status: pendingOnly ? 'PENDING' : undefined, sort: sort.key, dir: sort.dir,
-      }), 'merchants.csv');
+      }), 'merchants.xlsx');
     } catch { toast.error('Export failed'); }
   };
 
@@ -169,7 +169,7 @@ export const MerchantsList: React.FC = () => {
         search={{ value: search, onChange: (v) => { setSearch(v); setPage(1); }, placeholder: 'Search name, mobile, ID…' }}
         actions={[
           { label: 'Refresh', icon: RefreshCw, onClick: () => void loadMerchants() },
-          { label: 'Download CSV', icon: Download, onClick: () => void exportCsv() },
+          { label: 'Download Excel', icon: Download, onClick: () => void exportExcel() },
           { label: 'Create Merchant', icon: Plus, primary: true, onClick: () => setShowCreateModal(true) },
         ]}
       />

@@ -99,11 +99,16 @@ export const ENDPOINTS = {
     REPORTS:           { method: 'GET',    path: () => '/api/merchant/account/reports' },
   },
   // The order report, every merchant's (owner, 2026-10-16): a row per order
-  // with ✓/✗ and who pressed it; the CSV is the same rows. Backend:
-  // GET /reports/orders(.csv) in backend/domains/merchant/merchant.routes.js.
+  // with ✓/✗ and who pressed it; the workbook is the same rows. Backend:
+  // GET /reports/orders(.xlsx) in backend/domains/merchant/merchant.routes.js.
   ORDER_REPORT: {
     PAGE: '/api/merchant/reports/orders',
-    CSV:  '/api/merchant/reports/orders.csv',
+    XLSX: '/api/merchant/reports/orders.xlsx',
+  },
+  // The business ledger (owner, 2026-10-21): GET /reports/ledger(.xlsx), same file.
+  LEDGER: {
+    PAGE: '/api/merchant/reports/ledger',
+    XLSX: '/api/merchant/reports/ledger.xlsx',
   },
 };
 

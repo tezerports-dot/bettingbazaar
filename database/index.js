@@ -92,6 +92,7 @@ import * as merchantStaff from './repositories/merchantStaff.js';
 import * as merchantPaymentAccounts from './repositories/merchantPaymentAccounts.js';
 import * as merchantProblems from './repositories/merchantProblems.js';
 import * as merchantReports from './repositories/merchantReports.js';
+import * as merchantLedger from './repositories/merchantLedger.js';
 import * as adminDirectory from './repositories/adminDirectory.js';
 import * as tokenHolders from './repositories/tokenHolders.js';
 import * as tokenLedger from './repositories/tokenLedger.js';
@@ -183,6 +184,7 @@ export const db = Object.freeze({
   merchantPaymentAccounts,
   merchantProblems,
   merchantReports,
+  merchantLedger,
   // The admin's sortable player and merchant tables (owner, 2026-10-14)
   adminDirectory,
   // Who holds the token supply, holder by holder (owner, 2026-10-17)

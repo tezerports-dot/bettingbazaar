@@ -2,13 +2,13 @@
 /**
  * Reports.tsx — Reporting Platform console (Phase 012 APIs, UI shipped
  * Phase C 2026-07-10). Financial / settlement / merchant reports with a
- * date range, plus the regulatory ledger CSV export (one row per posting).
+ * date range, plus the regulatory ledger export as a workbook (one row per posting).
  * All read-only and derived — reports never re-compute business math.
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { Download, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
-import api, { downloadCsv } from '../../services/api';
+import api, { downloadFile } from '../../services/api';
 import { usePermissions } from '../../hooks/usePermission';
 import { Toolbar } from '../../components/design';
 
@@ -54,7 +54,7 @@ export const Reports: React.FC = () => {
   useEffect(() => { load(); }, [load]);
 
   const downloadLedger = () =>
-    downloadCsv('/api/admin/reports/ledger-export', { ...params(), format: 'csv' }, `ledger-export-${from || 'start'}-${to || 'now'}.csv`)
+    downloadFile('/api/admin/reports/ledger-export', { ...params(), format: 'xlsx' }, `ledger-export-${from || 'start'}-${to || 'now'}.xlsx`)
       .catch(() => toast.error('Export failed'));
 
   return (
@@ -73,8 +73,8 @@ export const Reports: React.FC = () => {
           <RefreshCw size={16} className={`mr-2 ${loading ? 'animate-spin' : ''}`} /> Run
         </button>
         {canExport && (
-          <button onClick={downloadLedger} className="btn-primary flex items-center h-10" title="Regulatory export — one CSV row per journal posting">
-            <Download size={16} className="mr-2" /> Ledger CSV
+          <button onClick={downloadLedger} className="btn-primary flex items-center h-10" title="Regulatory export — one row per journal posting, as Excel">
+            <Download size={16} className="mr-2" /> Ledger (Excel)
           </button>
         )}
       </div>

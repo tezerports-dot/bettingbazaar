@@ -16,7 +16,7 @@
  *                      (teamPools.js) — the OWNER's;
  *   reports            per account and sub-member — the owner's and AUDIT's.
  *                      The orders behind them, with who pressed ✓ or ✗, are
- *                      GET /merchant/reports/orders(.csv), every merchant's.
+ *                      GET /merchant/reports/orders(.xlsx), every merchant's.
  *
  * Every write is scoped to the session's own merchant in the repository's
  * WHERE (trap 16): an account or sub-member id of another merchant matches no

@@ -9,7 +9,7 @@ import { normalisePhone, isValidMobile } from '../identity/signupFields.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
 import { NAME_IS_A_MOBILE_MESSAGE } from '../identity/mobileInText.js';
 import { respondError } from '../../shared/httpError.js';
-import { toCsv } from '../reporting/csv.util.js';
+import { sendXlsx, oneTable, columnsOf, istText } from '../reporting/xlsx.util.js';
 import { paiseToRupees } from '../../shared/money.js';
 import { panelOrigin } from '../../config/network.config.js';
 
@@ -68,8 +68,8 @@ router.get('/merchants', authenticate, hasPermission('canManageMerchants'), asyn
   }
 });
 
-/** GET /api/admin/merchants.csv — every merchant the table's filters match, as CSV (rupees). */
-router.get('/merchants.csv', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
+/** GET /api/admin/merchants.xlsx — every merchant the table's filters match, as a workbook (rupees). */
+router.get('/merchants.xlsx', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { status, accountStatus, role, sort, dir, search } = req.query;
     const { rows } = await db.adminDirectory.listMerchants({
@@ -81,7 +81,7 @@ router.get('/merchants.csv', authenticate, hasPermission('canManageMerchants'), 
       dir: dir ? String(dir) : undefined,
       exportAll: true,
     });
-    const csv = toCsv(rows.map((m) => ({
+    const table = rows.map((m) => ({
       merchant_id: m.merchantId,
       name: m.name,
       mobile: m.mobile,
@@ -103,12 +103,13 @@ router.get('/merchants.csv', authenticate, hasPermission('canManageMerchants'), 
       commission_total: paiseToRupees(m.commission.totalPaise),
       lost_disputes: m.lostDisputes,
       created_at: m.createdAt ? new Date(m.createdAt).toISOString() : '',
-    })));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="merchants.csv"');
-    res.send(csv);
+    }));
+    sendXlsx(res, 'merchants.xlsx', oneTable({
+      name: 'Merchants', title: 'Merchants', subtitle: `Downloaded ${istText(new Date())}`, accent: 'purple',
+      rows: table, columns: columnsOf(table, { money: ['processed', 'pool_available', 'pool_held', 'commission_today', 'commission_month', 'commission_total'] }),
+    }));
   } catch (error) {
-    return respondError(res, error, 'GET /admin/merchants.csv', { message: 'Could not build the export.' });
+    return respondError(res, error, 'GET /admin/merchants.xlsx', { message: 'Could not build the export.' });
   }
 });
 

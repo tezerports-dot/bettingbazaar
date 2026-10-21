@@ -8,7 +8,7 @@
 import React, { useEffect, useState } from 'react';
 import { Download } from 'lucide-react';
 import toast from 'react-hot-toast';
-import api, { downloadCsv, cleanParams } from '../../services/api';
+import api, { downloadFile, cleanParams } from '../../services/api';
 import { usePermissions } from '../../hooks/usePermission';
 import { formatters } from '../../utils/formatters';
 
@@ -57,8 +57,8 @@ export const TokenLedgerPanel: React.FC<{ start: string; end: string }> = ({ sta
 
   const exportMovements = async () => {
     try {
-      await downloadCsv('/api/admin/analytics/token-movements.csv',
-        cleanParams({ startDate: start, endDate: end }), 'token-movements.csv');
+      await downloadFile('/api/admin/analytics/token-movements.xlsx',
+        cleanParams({ startDate: start, endDate: end }), 'token-movements.xlsx');
     } catch { toast.error('Export failed'); }
   };
 
@@ -71,7 +71,7 @@ export const TokenLedgerPanel: React.FC<{ start: string; end: string }> = ({ sta
         <h3 className="text-base font-semibold">Token ledger: every token in and out</h3>
         {can('canExportLedger') && (
           <button onClick={exportMovements} className="btn-secondary text-xs flex items-center gap-1">
-            <Download className="w-3.5 h-3.5" /> Download every movement (CSV)
+            <Download className="w-3.5 h-3.5" /> Download every movement (Excel)
           </button>
         )}
       </div>

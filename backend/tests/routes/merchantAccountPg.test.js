@@ -48,6 +48,7 @@ import { systemConfigPayload } from '../../domains/configuration/systemConfigPay
 import { signToken } from '../../domains/identity/paseto.util.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
+import { binary, readXlsx } from '../_xlsx.js';
 import { ORDER_SIZES } from '../../domains/merchant/denominations.js';
 
 // Every size of both directions to merchant accounts, or every size to agents.
@@ -645,9 +646,10 @@ describePg('merchant accounts', () => {
         expect(row.tokenAmount).toBe(1_000);
         expect(Object.keys(row).every((k) => ['orderId', 'type', 'userId', 'utr', 'tokenAmount', 'state', 'result', 'actedBy', 'at'].includes(k))).toBe(true);
       }
-      const csvLine = (await as(panel, m).get('/reports/orders.csv')).text.split('\n').find((l) => l.startsWith(orderId));
-      expect(csvLine).toContain('✓');
-      expect(csvLine).toContain(desk.name);
+      const { Orders } = readXlsx((await as(panel, m).get('/reports/orders.xlsx').buffer(true).parse(binary)).body);
+      const line = Orders.find((r) => r[r.length - 1] === orderId);
+      expect(line).toContain('✓ Confirmed');
+      expect(line).toContain(desk.name);
       // Their list shows the buys paid into their account.
       const list = await as(panel, s).get('/orders');
       expect(list.status).toBe(200);
@@ -673,9 +675,11 @@ describePg('merchant accounts', () => {
       const report = await as(accountApp, fresh).get('/account/reports');
       expect(report.status, JSON.stringify(report.body)).toBe(200);
       expect(report.body.totals).toBeTruthy();
-      const csv = await as(panel, fresh).get('/reports/orders.csv');
-      expect(csv.status).toBe(200);
-      expect(csv.headers['content-type']).toMatch(/text\/csv/);
+      const book = await as(panel, fresh).get('/reports/orders.xlsx');
+      expect(book.status).toBe(200);
+      expect(book.headers['content-type']).toMatch(/spreadsheetml/);
+      expect((await as(panel, fresh).get('/reports/ledger')).status).toBe(200);
+      expect((await as(panel, staffSession(m, await addStaff(m, ['DEPOSITS']))).get('/reports/ledger')).body.code).toBe('ROLE_REQUIRED');
       const { order, orderId } = await queuedBuy(1_000);
       await onlyDirectOnline(m.merchantId);
       expect(await tryAssignMerchant(order)).toBe(true);

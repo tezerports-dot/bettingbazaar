@@ -45,11 +45,13 @@ import {
 } from '../payment/orderCurrency.js';
 // The merchant's own view of their account, which sign-in answers with too.
 import { formatMerchant } from './merchantSelfView.js';
-import { toMerchantOrderView, toMerchantOrderViews, toMerchantReportRows, merchantReportCsv } from './merchantOrderView.js';
+import { toMerchantOrderView, toMerchantOrderViews, toMerchantReportRows } from './merchantOrderView.js';
+import { ledgerWorkbook, orderReportWorkbook } from './merchantLedgerWorkbook.js';
+import { sendXlsx } from '../reporting/xlsx.util.js';
 import {
   routedToMerchants, PAYMENT_MODES,
 } from '#db/repositories/teamRouting.js';
-import { listScopeFor, refuseWork, ownerOnly, merchantActorTag } from './merchantActor.js';
+import { listScopeFor, refuseWork, ownerOnly, ownerOrAudit, merchantActorTag } from './merchantActor.js';
 // What a cash buy's ATM link may be (Step 2d).
 import { checkCashLink } from '../payment/cashLink.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
@@ -362,8 +364,8 @@ router.get('/orders', merchantAuth, async (req, res) => {
 // The order report (owner, 2026-10-16): every order this merchant was given
 // over a range of IST days, with the ✓ or ✗ pressed and who pressed it, and
 // totals over every matching row. For agents and merchant accounts alike; a
-// sub-member sees their own slice (`listScopeFor`, in the WHERE). The CSV is
-// the same rows, up to ORDER_REPORT_MAX_ROWS.
+// sub-member sees their own slice (`listScopeFor`, in the WHERE). The
+// workbook is the same rows, up to ORDER_REPORT_MAX_ROWS.
 async function loadOrderReport(req, { limit, offset }) {
     const type = req.query.type || null;
     if (type !== null && type !== 'DEPOSIT' && type !== 'WITHDRAWAL') {
@@ -392,15 +394,35 @@ router.get('/reports/orders', merchantAuth, async (req, res) => {
     }
 });
 
-router.get('/reports/orders.csv', merchantAuth, async (req, res) => {
+router.get('/reports/orders.xlsx', merchantAuth, async (req, res) => {
     try {
         const report = await loadOrderReport(req, { limit: db.merchantReports.ORDER_REPORT_MAX_ROWS, offset: 0 });
-        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-        res.setHeader('Content-Disposition',
-            `attachment; filename="merchant-orders-${report.range.from || 'last7'}-${report.range.to || 'today'}.csv"`);
-        res.send(merchantReportCsv(report.rows));
+        sendXlsx(res, `merchant-orders-${report.range.from || 'last7'}-${report.range.to || 'today'}.xlsx`, orderReportWorkbook(report));
     } catch (err) {
-        return respondError(res, err, 'GET /merchant/reports/orders.csv', { message: 'Could not build the export.' });
+        return respondError(res, err, 'GET /merchant/reports/orders.xlsx', { message: 'Could not build the export.' });
+    }
+});
+
+// The business ledger (owner, 2026-10-21): buys, sells, commission, pool
+// trades with the platform and disputes over a range of IST days, with the
+// totals (`merchantLedger.businessLedger`, read only). The business's own
+// figures: the owner's and an AUDIT sub-member's (`ownerOrAudit`).
+const ledgerRange = (req) => ({ from: req.query.from || null, to: req.query.to || null });
+
+router.get('/reports/ledger', merchantAuth, ownerOrAudit, async (req, res) => {
+    try {
+        res.json({ success: true, ...(await db.merchantLedger.businessLedger(req.merchantId, ledgerRange(req))) });
+    } catch (err) {
+        return respondError(res, err, 'GET /merchant/reports/ledger', { message: 'Could not build the ledger.' });
+    }
+});
+
+router.get('/reports/ledger.xlsx', merchantAuth, ownerOrAudit, async (req, res) => {
+    try {
+        const ledger = await db.merchantLedger.businessLedger(req.merchantId, ledgerRange(req));
+        sendXlsx(res, `business-ledger-${ledger.range.from || 'last7'}-${ledger.range.to || 'today'}.xlsx`, ledgerWorkbook(ledger));
+    } catch (err) {
+        return respondError(res, err, 'GET /merchant/reports/ledger.xlsx', { message: 'Could not build the ledger.' });
     }
 });
 
