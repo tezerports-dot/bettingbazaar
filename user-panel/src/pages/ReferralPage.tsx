@@ -4,14 +4,14 @@
  *
  * ── Why none of this lives on the wallet screen ─────────────────────────────
  * Only the DISBURSED portion ever reaches the General balance. Everything else
- * is a promise whose value depends on when the operator next funds the queue. Folding an unrealised promise into a balance
+ * is owed and paid within a minute (the `referral-autopay` cron), or blocked. Folding an unpaid promise into a balance
  * is how a player comes to believe they hold money they cannot withdraw — the
  * same class of mistake as counting the reserve as spendable.
  *
  * ── Three numbers, deliberately separated ───────────────────────────────────
  *   Paid to General    — in the General balance; withdrawable once its 10×
  *                        turnover is played (owner, 2026-10-08).
- *   Next disbursal     — confirmed and owed, waiting only on the operator.
+ *   Being paid         — confirmed and owed, paid within a minute.
  *   Not payable        — voided or otherwise blocked.
  *
  * There was a fourth, "Awaiting KYC". KYC was removed (owner, 2026-10-02), and
@@ -66,7 +66,7 @@ const inr = (n: number) => `₹${(Number(n) || 0).toLocaleString('en-IN', { maxi
 function rowState(r: Row): { label: string; tone: string } {
   if (r.status === 'DISBURSED') return { label: 'Paid', tone: 'var(--green)' };
   if (r.status === 'BLOCKED') return { label: 'Not payable', tone: 'var(--red)' };
-  return { label: 'Ready to pay', tone: 'var(--gold-ink)' };
+  return { label: 'Being paid', tone: 'var(--gold-ink)' };
 }
 
 const ReferralPage: React.FC = () => {
@@ -213,7 +213,7 @@ const ReferralPage: React.FC = () => {
           { k: 'Opened your link', v: (t.clicks ?? 0).toLocaleString('en-IN'), ic: '👀', tone: 'var(--text)', sub: 'people, once a day each' },
           { k: 'Signed up', v: (t.referrals ?? 0).toLocaleString('en-IN'), ic: '🙌', tone: 'var(--gold-ink)', sub: conversion === null ? 'from your link' : `${conversion}% of those who opened it` },
           { k: 'Paid to General', v: inr(t.disbursed), ic: '✅', tone: 'var(--green)', sub: 'unlocks once its turnover is played' },
-          { k: 'Next disbursal', v: inr(t.nextDisbursal), ic: '⏳', tone: 'var(--gold-ink)', sub: 'confirmed, awaiting payout' },
+          { k: 'Being paid', v: inr(t.nextDisbursal), ic: '⏳', tone: 'var(--gold-ink)', sub: 'paid to General within a minute' },
         ].map((c) => (
           <div key={c.k} style={{ ...card, padding: 14, display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span aria-hidden style={{ width: 32, height: 32, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, background: 'color-mix(in srgb,var(--gold) 12%,var(--surface2))', border: '1px solid var(--line2)' }}>{c.ic}</span>
@@ -356,7 +356,7 @@ const IncomeByLevel: React.FC<{ levels: LevelTotals[]; whoAt: (n: number) => str
               <th scope="col" style={th}>People</th>
               <th scope="col" style={th}>Earned</th>
               <th scope="col" style={th}>Paid</th>
-              <th scope="col" style={th}>Waiting</th>
+              <th scope="col" style={th}>Being paid</th>
               <th scope="col" style={th}>Not payable</th>
             </tr>
           </thead>

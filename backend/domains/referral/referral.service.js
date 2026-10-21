@@ -5,12 +5,18 @@
  * Two responsibilities, deliberately kept apart:
  *
  *   RECORDING an earning happens when a user finishes onboarding. It is cheap,
- *   synchronous, and must be exactly-once — the same ₹25 may never be booked
+ *   synchronous, and must be exactly-once — the same reward may never be booked
  *   twice for one joiner.
  *
- *   PAYING an earning happens later, when an admin funds a pool. It walks the
- *   queue in joining order and moves real money, so it re-checks eligibility at
- *   that moment rather than trusting what was true when the earning was made.
+ *   PAYING an earning happens a moment later, by itself: the
+ *   `referral-autopay` cron pays the whole queue every minute (owner,
+ *   2026-10-20: "auto deducted from that total token"), and an admin may run
+ *   it at once with an amount. It walks the queue in joining order and moves
+ *   real money, so it re-checks eligibility at that moment rather than
+ *   trusting what was true when the earning was made. There is no programme
+ *   budget: a bonus comes out of the platform's own token holding, bounded
+ *   only by the supply (`treasury_supply_ceiling`); the ₹400 crore ceiling and
+ *   the paused/active switch were removed (owner, 2026-10-20).
  *
  * Money movement itself is delegated to `db.promo.creditReferralBonus`, which
  * pays the GENERAL balance and opens the bonus's turnover requirement in one
@@ -68,7 +74,7 @@ export function generateReferralCode() {
  * Every condition here is something that can change between earning and payout,
  * which is why none of them are baked in at attribution time. The returned
  * reason is shown to the player verbatim on their referral report — "why is
- * this ₹25 still pending" should never require a support ticket.
+ * this reward still pending" should never require a support ticket.
  */
 export async function eligibilityFor(earning) {
   const earner = await db.users.getUser(earning.earnerId);
@@ -90,66 +96,30 @@ export async function eligibilityFor(earning) {
 // ── Disbursal ───────────────────────────────────────────────────────────────
 
 /**
- * Pay down the queue from an admin-funded pool.
+ * Pay down the queue from a pool: the whole queue (the `referral-autopay`
+ * cron, `payReferralQueue`) or an amount an admin entered.
  *
- * The admin supplies only an amount. Who gets paid is never chosen by hand —
- * the queue decides, strictly in joining order, which is what makes the
- * programme defensible to the people waiting in it.
+ * Who gets paid is never chosen by hand — the queue decides, strictly in
+ * joining order, which is what makes the programme defensible to the people
+ * waiting in it.
  *
  * Ineligible rows are marked BLOCKED with a reason and SKIPPED WITHOUT
  * consuming pool: an ineligible row upstream must not deprive the next
  * eligible person of their turn.
  *
  * @param {object} args
- * @param {number} args.poolPaise  what the admin authorised
- * @param {string} args.actorId    the admin
+ * @param {number} args.poolPaise  how much this run may pay
+ * @param {string|null} args.actorId  the admin, or null for the cron
  * @param {number} [args.maxRows]  safety bound per run
  */
 export async function disburse({ poolPaise, actorId, maxRows = 50_000 }) {
   if (!(poolPaise > 0)) {
     throw Object.assign(new Error('Disbursal amount must be positive'), { status: 400 });
   }
-
-  const programme = await getProgramme();
-  if (!programme.active) {
-    throw Object.assign(new Error('The referral programme is paused'), { status: 409 });
-  }
-
-  // The ₹400 crore ceiling is a hard stop, not a warning.
-  const remainingBudget = programme.budgetPaise - programme.disbursedPaise;
-  if (remainingBudget <= 0) {
-    throw Object.assign(new Error('The referral programme budget is exhausted'), { status: 409 });
-  }
-  const pool = Math.min(poolPaise, remainingBudget);
-
-  // ── The budget is RESERVED before a rupee moves ─────────────────────────
-  // The read above is a snapshot, used only to size the pool. The ceiling is
-  // this UPDATE's WHERE. It used to be drawn AFTER every credit had committed,
-  // and its refusal was never read: two overlapping disbursals, or a pause
-  // mid-run, paid the players, had the draw refused, and left the programme
-  // recording less than it had paid — so the next run saw budget that was
-  // already gone, and the ceiling could be crossed silently (R6, F-040).
-  const reservation = await db.referrals.drawFromProgramme('main', paiseToRupees(pool));
-  if (!reservation.ok) {
-    throw Object.assign(
-      new Error('The referral programme budget was just used by another disbursal, or the programme was paused. Refresh and try again.'),
-      { status: 409 },
-    );
-  }
-  // What was reserved and not spent goes back. If that write fails, the
-  // programme shows MORE drawn than paid — the ceiling errs conservative, and
-  // the batch row still records the true spend.
-  const giveBack = async (spentPaise) => {
-    const unspent = pool - spentPaise;
-    if (unspent <= 0) return;
-    const r = await db.referrals.returnToProgramme('main', paiseToRupees(unspent)).catch((e) => ({ ok: false, reason: e.message }));
-    if (!r.ok) console.error(`[referral] could not return ₹${paiseToRupees(unspent)} of unspent budget:`, r.reason);
-  };
+  const pool = poolPaise;
 
   const batchId = `refdisb_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-  await db.referrals.openBatch({
-    batchId, poolRupees: paiseToRupees(pool), actorId,
-  }).catch(async (err) => { await giveBack(0); throw err; });
+  await db.referrals.openBatch({ batchId, poolRupees: paiseToRupees(pool), actorId });
 
   let spent = 0;
   let paid = 0;
@@ -213,9 +183,6 @@ export async function disburse({ poolPaise, actorId, maxRows = 50_000 }) {
       lastPosition = earning.queuePosition;
     }
 
-    // The budget was reserved up front; return the part not spent.
-    await giveBack(spent);
-
     // The counts and the spend are already on the batch — `spendFromBatch`
     // moved them as each earning settled, so a crash mid-run leaves a batch
     // that reports what it actually did rather than nothing.
@@ -228,7 +195,6 @@ export async function disburse({ poolPaise, actorId, maxRows = 50_000 }) {
       lastQueuePosition: lastPosition,
     };
   } catch (err) {
-    await giveBack(spent);
     // Recorded as FAILED with what it managed to pay, so a half-run batch is
     // legible rather than looking like it never happened.
     await db.referrals.closeBatch(batchId, {
@@ -236,6 +202,18 @@ export async function disburse({ poolPaise, actorId, maxRows = 50_000 }) {
     }).catch(() => { /* the throw below is the real signal */ });
     throw err;
   }
+}
+
+/**
+ * Pay every queued earning now, in joining order: the `referral-autopay`
+ * cron. The pool is exactly what the queue holds at this moment, so a run
+ * never pays more than was owed when it started; an earning booked during the
+ * run waits for the next minute. Null when nothing is queued.
+ */
+export async function payReferralQueue() {
+  const { queuedPaise } = await db.referrals.queueSummary();
+  if (!(queuedPaise > 0)) return null;
+  return disburse({ poolPaise: queuedPaise, actorId: null });
 }
 
 // ── Reporting ───────────────────────────────────────────────────────────────
@@ -255,12 +233,10 @@ export async function programmeStats() {
   const queue = await db.referrals.queueSummary();
 
   return {
-    budgetPaise:     programme.budgetPaise,
-    disbursedPaise:  programme.disbursedPaise,
-    remainingPaise:  programme.budgetPaise - programme.disbursedPaise,
+    paidPaise:       queue.paidPaise,
+    paidCount:       queue.paidCount,
     memberCap:       programme.memberCap,
     verifiedMembers: programme.verifiedMembers,
-    active:          programme.active,
     pendingCount:    queue.queuedCount,
     pendingPaise:    queue.queuedPaise,
     blockedCount:    queue.blockedCount,

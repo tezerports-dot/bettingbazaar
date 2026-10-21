@@ -358,6 +358,20 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[retention] payment proof scrub error:', e.message); }
   });
 
+  // ── Referral bonuses — every minute ────────────────────────────────────────
+  // Every queued referral earning is paid into its referrer's General balance
+  // out of the platform's token holding, in joining order, a minute or less
+  // after the joiner verified (owner, 2026-10-20: "auto deducted from that
+  // total token"). Overlapping runs pay nobody twice: each credit is keyed by
+  // its earning and `markPaid` refuses a row that is no longer QUEUED.
+  registerRecurring('referral-autopay', 60 * 1000, async () => {
+    try {
+      const { payReferralQueue } = await import('../domains/referral/referral.service.js');
+      const r = await payReferralQueue();
+      if (r && (r.paid || r.blocked)) console.log(`[referral-autopay] paid ${r.paid}, blocked ${r.blocked}`);
+    } catch (e) { console.error('[referral-autopay] cron error:', e.message); }
+  });
+
   // ── Spent and expired credentials — runs hourly ────────────────────────────
   // Telegram challenges, single-use Mini App proofs and revoked session tokens
   // each carry `expires_at`, and every read filters on it, so this reclaims
