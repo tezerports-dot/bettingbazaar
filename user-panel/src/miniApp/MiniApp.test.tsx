@@ -31,9 +31,17 @@ beforeEach(() => {
 });
 
 describe('the Mini App', () => {
-  it('refuses to work outside Telegram', () => {
+  it('without Telegram\'s launch data, says what to do rather than "open this page from Telegram"', () => {
     render(<MiniApp app={null} />);
-    expect(screen.getByRole('alert').textContent).toMatch(/inside the telegram app/i);
+    expect(screen.getByRole('alert').textContent).toMatch(/telegram did not pass your sign-in/i);
+    expect(screen.getByText(/press login with telegram again/i)).toBeTruthy();
+  });
+
+  it('opened inside Telegram with no launch data, offers to close the window', () => {
+    const empty = { ...app(), initData: '' };
+    render(<MiniApp app={empty} />);
+    fireEvent.click(screen.getByRole('button', { name: /close/i }));
+    expect(empty.close).toHaveBeenCalled();
   });
 
   // Verify is the only thing the page does (owner, 2026-10-14): no separate

@@ -190,9 +190,9 @@ router.get('/referral/stats', authenticate, hasPermission('canManageReferrals'),
     const s = await programmeStats();
     res.json({
       success: true,
-      budget:     paiseToRupees(s.budgetPaise),
-      disbursed:  paiseToRupees(s.disbursedPaise),
-      remaining:  paiseToRupees(s.remainingPaise),
+      // Paid automatically every minute (`referral-autopay`); no budget.
+      paid:       paiseToRupees(s.paidPaise),
+      paidCount:  s.paidCount,
       pendingCount: s.pendingCount,
       pendingValue: paiseToRupees(s.pendingPaise),
       blockedCount: s.blockedCount,
@@ -200,7 +200,6 @@ router.get('/referral/stats', authenticate, hasPermission('canManageReferrals'),
       memberCap: s.memberCap,
       verifiedMembers: s.verifiedMembers,
       nextQueuePosition: s.nextQueuePosition,
-      active: s.active,
     });
   } catch (err) {
     return serverError(res, err, 'GET /referral/stats');
@@ -208,9 +207,10 @@ router.get('/referral/stats', authenticate, hasPermission('canManageReferrals'),
 });
 
 /**
- * POST /api/admin/referral/disburse — fund the queue.
+ * POST /api/admin/referral/disburse — pay the queue now, up to an amount.
  *
- * The admin supplies ONLY an amount. Who gets paid is never chosen by hand: the
+ * The queue is paid every minute by itself (`referral-autopay`); this runs it
+ * at once. The admin supplies ONLY an amount. Who gets paid is never chosen by hand: the
  * queue pays strictly in joining order, which is what makes the programme
  * defensible to everyone waiting in it, and what stops a disbursal from being a
  * discretionary favour.

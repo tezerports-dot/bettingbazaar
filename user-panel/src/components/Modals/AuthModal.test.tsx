@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The player's way in: one "Continue with Telegram" button (owner, 2026-10-14).
+ * The player's way in: one "Login with Telegram" button behind the captcha (owner, 2026-10-14, 2026-10-20).
  *
  * ── What this replaced ─────────────────────────────────────────────────────
  * Twenty-five tests of a signup form and a login form (mobile, password,
@@ -18,7 +18,6 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 
 const signInWithTelegram = vi.fn();
 const pollTelegramStep = vi.fn();
@@ -57,7 +56,7 @@ beforeEach(() => {
 describe('the sign-in screen', () => {
   it('offers one button, and nothing to type', async () => {
     open();
-    expect(await screen.findByRole('button', { name: /continue with telegram/i })).toBeTruthy();
+    expect(await screen.findByRole('link', { name: /login with telegram/i })).toBeTruthy();
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(document.querySelector('input')).toBeNull();
     expect(screen.queryByRole('tab')).toBeNull();
@@ -70,22 +69,21 @@ describe('the sign-in screen', () => {
 
   it('asks for no Aadhaar — KYC was removed (owner, 2026-10-02)', async () => {
     open();
-    await screen.findByRole('button', { name: /continue with telegram/i });
+    await screen.findByRole('link', { name: /login with telegram/i });
     expect(screen.queryByText(/aadhaar/i)).toBeNull();
   });
 
-  it('opens the sign-in when pressed (ContinueWithTelegram.test.tsx proves the rest)', async () => {
+  it('asks for the sign-in once the check passes (ContinueWithTelegram.test.tsx proves the rest)', async () => {
     open();
-    await userEvent.click(await screen.findByRole('button', { name: /continue with telegram/i }));
-    expect(signInWithTelegram).toHaveBeenCalled();
-    expect(await screen.findByRole('link', { name: /open telegram/i })).toBeTruthy();
+    expect(await screen.findByRole('link', { name: /login with telegram/i })).toBeTruthy();
+    expect(signInWithTelegram).toHaveBeenCalledTimes(1);
   });
 
   it('says plainly that nobody can sign in when no bot is configured', async () => {
     getTelegramSetup.mockResolvedValue({ available: false, botUsername: '' });
     open();
     expect((await screen.findByRole('alert')).textContent).toMatch(/telegram is not set up on this site yet/i);
-    expect(screen.queryByRole('button', { name: /continue with telegram/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /login with telegram/i })).toBeNull();
   });
 
   it('says the site could not be reached, rather than that Telegram is off, when the setup read fails', async () => {
@@ -115,7 +113,7 @@ describe('the invite code, when the player arrived by a referral link', () => {
 
   it('checks no code for somebody who arrived on their own', async () => {
     open();
-    await screen.findByRole('button', { name: /continue with telegram/i });
+    await screen.findByRole('link', { name: /login with telegram/i });
     expect(checkInvite).not.toHaveBeenCalled();
   });
 });

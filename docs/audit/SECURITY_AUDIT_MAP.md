@@ -3623,8 +3623,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 559 |
-| Parameters only (safe by construction) | 365 |
+| `pgQuery` call sites | 557 |
+| Parameters only (safe by construction) | 363 |
 | Interpolating into statement text (each needs a reading) | 184 |
 | Statement text built elsewhere and passed in (each needs a reading) | 10 |
 
@@ -3646,7 +3646,7 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 166 | 0 | 0 |
+| `user-panel` | 169 | 0 | 0 |
 | `admin-panel` | 151 | 0 | 0 |
 | `merchant-panel` | 72 | 0 | 0 |
 

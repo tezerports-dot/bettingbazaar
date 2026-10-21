@@ -770,11 +770,11 @@ export const referrals = {
     const res = await api.get<any>('/api/admin/referral/stats');
     return res.data as {
       success: boolean;
-      budget?: number; disbursed?: number; remaining?: number;
+      paid?: number; paidCount?: number;
       pendingCount?: number; pendingValue?: number;
       blockedCount?: number; blockedValue?: number;
       memberCap?: number; verifiedMembers?: number;
-      nextQueuePosition?: number; active?: boolean;
+      nextQueuePosition?: number;
       message?: string;
     };
   },

@@ -2209,19 +2209,19 @@ CREATE TABLE IF NOT EXISTS referral_disbursals (
 
 CREATE TABLE IF NOT EXISTS referral_programmes (
   programme_key   TEXT PRIMARY KEY,
-  budget_paise    BIGINT NOT NULL DEFAULT 0,
-  disbursed_paise BIGINT NOT NULL DEFAULT 0,
   member_cap      INTEGER NOT NULL DEFAULT 0,
   verified_members INTEGER NOT NULL DEFAULT 0,
-  active          BOOLEAN NOT NULL DEFAULT FALSE,
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  -- The budget is a ceiling, enforced by the row. An application-side check
-  -- lets two concurrent disbursals both read the same total and both pass.
-  CONSTRAINT referral_programmes_within_budget CHECK (
-    disbursed_paise >= 0 AND disbursed_paise <= budget_paise),
   CONSTRAINT referral_programmes_members_non_negative CHECK (
     verified_members >= 0 AND member_cap >= 0)
 );
+-- No budget and no on/off switch (owner, 2026-10-20: "no cap for those
+-- referral bonuses"): a bonus is paid by the `referral-autopay` cron out of
+-- the platform's token holding, bounded only by the supply.
+ALTER TABLE referral_programmes DROP CONSTRAINT IF EXISTS referral_programmes_within_budget;
+ALTER TABLE referral_programmes DROP COLUMN IF EXISTS budget_paise;
+ALTER TABLE referral_programmes DROP COLUMN IF EXISTS disbursed_paise;
+ALTER TABLE referral_programmes DROP COLUMN IF EXISTS active;
 
 -- Click attribution. Short-lived and high-volume: expiry is enforced by the
 -- READ, and the sweep only reclaims space.
@@ -4313,7 +4313,7 @@ $$;
 
 -- ── The supply ceiling ─────────────────────────────────────────────────────
 -- `SystemConfig.adminTokenSupply.total` tokens exist (owner, 2026-09-23: 20
--- billion). The platform cannot release more than that: past it, it would be
+-- billion; 2026-10-20: 100 billion). The platform cannot release more than that: past it, it would be
 -- holding fewer than none. The fallback is the spec's default
 -- (`database/spec/config.spec.js`); `conservationPg.test.js` holds them equal.
 CREATE OR REPLACE FUNCTION bb_token_supply_paise() RETURNS BIGINT
@@ -4321,7 +4321,7 @@ LANGUAGE sql STABLE AS $$
   SELECT (COALESCE(
     (SELECT (settings #>> '{adminTokenSupply,total}')::numeric
        FROM config_documents WHERE scope = 'system' AND doc_key = 'main'),
-    20000000000) * 100)::bigint
+    100000000000) * 100)::bigint
 $$;
 
 -- Asked only when a write RELEASES tokens (TOKEN_SUPPLY going down), so a

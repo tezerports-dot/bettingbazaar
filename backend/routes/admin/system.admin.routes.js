@@ -115,9 +115,9 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         // matched, so none of them was wrong — but a rebuild is a SHRINK: the
         // field list that goes stale the next time a field is declared.
         ...config,
-        // `total` is how many tokens EXIST — 20,000,000,000, all of them
+        // `total` is how many tokens EXIST — 100,000,000,000, all of them
         // already created and held by the platform until they are transferred.
-        adminTokenSupply: { total: config.adminTokenSupply?.total ?? 20000000000 }, // schema default: 20,000,000,000
+        adminTokenSupply: { total: config.adminTokenSupply?.total ?? 100000000000 }, // schema default: 100,000,000,000
         // The hosts `apiHost` may be set to (API_ALLOWED_HOSTS), for the API Host
         // picker. Read-only: it is the deployment's list, not a setting, and the
         // PUT ignores it (undeclared). The saved choice is checked against the

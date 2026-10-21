@@ -32,6 +32,27 @@ export function webApp(): WebApp | null {
 }
 
 /**
+ * Tell the admin's error log that this page opened without Telegram's launch
+ * data, and why as far as the page can see: whether Telegram's script ran,
+ * whether the bundled copy was needed, whether the address carried the data.
+ * Never the launch data itself. Fire and forget.
+ */
+export function reportNoLaunchData(seen: { hasScript: boolean; bundled: boolean }): void {
+  const carried = /(?:^#|&)tgWebAppData=/.test(window.location.hash || '');
+  const why = !seen.hasScript ? 'Telegram script did not load'
+    : carried ? 'launch data in the address but not read' : 'no launch data from Telegram';
+  void secureFetch(apiUrl('/api/internal/error-report'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'omit',
+    body: JSON.stringify({
+      panel: 'user',
+      message: `Mini App opened without sign-in data: ${why}`,
+      component: `script=${seen.hasScript} bundledScript=${seen.bundled} hashData=${carried} ua=${navigator.userAgent}`,
+      url: `${window.location.origin}${window.location.pathname}`,
+    }),
+  }).catch(() => { /* the screen says what to do either way */ });
+}
+
+/**
  * Ask Telegram for the person's own contact. Resolves the signed string, or
  * null when they declined. Telegram shows its own confirmation; nothing here
  * can fill it in for them.

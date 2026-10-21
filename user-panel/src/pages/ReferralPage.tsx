@@ -4,14 +4,14 @@
  *
  * ── Why none of this lives on the wallet screen ─────────────────────────────
  * Only the DISBURSED portion ever reaches the General balance. Everything else
- * is a promise whose value depends on when the operator next funds the queue. Folding an unrealised promise into a balance
+ * is owed and paid within a minute (the `referral-autopay` cron), or blocked. Folding an unpaid promise into a balance
  * is how a player comes to believe they hold money they cannot withdraw — the
  * same class of mistake as counting the reserve as spendable.
  *
  * ── Three numbers, deliberately separated ───────────────────────────────────
  *   Paid to General    — in the General balance; withdrawable once its 10×
  *                        turnover is played (owner, 2026-10-08).
- *   Next disbursal     — confirmed and owed, waiting only on the operator.
+ *   Being paid         — confirmed and owed, paid within a minute.
  *   Not payable        — voided or otherwise blocked.
  *
  * There was a fourth, "Awaiting KYC". KYC was removed (owner, 2026-10-02), and
@@ -20,8 +20,10 @@
  * ── Layout (owner, 2026-10-15: "redesign it beautifully") ───────────────────
  * A hero banner with the reward and the link to share (its picture is
  * Admin › Images › Page banners › `referPageBannerUrl`; with none it draws its
- * own gold banner), the link's reach, how it works in three steps, earnings
- * and the per-level split, then every referral. Every figure is the server's.
+ * own gold banner), the link's reach, the invite tree (each level, its bonus
+ * per joiner and its people; owner, 2026-10-20), income by level with a total
+ * line, how it works, then every referral. Every figure is the server's: the
+ * bonus per level is Admin › System Settings › Referral Rewards as it is now.
  *
  * ── What a referrer sees about the people they invited ──────────────────────
  * Nothing that identifies them: no name, no phone and no joining number
@@ -64,7 +66,7 @@ const inr = (n: number) => `₹${(Number(n) || 0).toLocaleString('en-IN', { maxi
 function rowState(r: Row): { label: string; tone: string } {
   if (r.status === 'DISBURSED') return { label: 'Paid', tone: 'var(--green)' };
   if (r.status === 'BLOCKED') return { label: 'Not payable', tone: 'var(--red)' };
-  return { label: 'Ready to pay', tone: 'var(--gold-ink)' };
+  return { label: 'Being paid', tone: 'var(--gold-ink)' };
 }
 
 const ReferralPage: React.FC = () => {
@@ -149,8 +151,7 @@ const ReferralPage: React.FC = () => {
     try { await navigator.share({ title: 'Refer & Earn', text: shareText, url: link }); } catch { /* dismissed */ }
   };
   const conversion = t.clicks > 0 ? Math.round((t.referrals / t.clicks) * 100) : null;
-  const levelMax = Math.max(1, ...data.levels.map((l) => l.confirmed));
-  const paying = data.levels.filter((l) => l.reward > 0);
+    const paying = data.levels.filter((l) => l.reward > 0);
   const level1Reward = data.levels[0]?.reward ?? 0;
   // The levels after the first that pay, for the hero line ("₹10 at level 2 · ₹5 at level 3").
   const deeper = paying.filter((l) => l.level > 1);
@@ -212,7 +213,7 @@ const ReferralPage: React.FC = () => {
           { k: 'Opened your link', v: (t.clicks ?? 0).toLocaleString('en-IN'), ic: '👀', tone: 'var(--text)', sub: 'people, once a day each' },
           { k: 'Signed up', v: (t.referrals ?? 0).toLocaleString('en-IN'), ic: '🙌', tone: 'var(--gold-ink)', sub: conversion === null ? 'from your link' : `${conversion}% of those who opened it` },
           { k: 'Paid to General', v: inr(t.disbursed), ic: '✅', tone: 'var(--green)', sub: 'unlocks once its turnover is played' },
-          { k: 'Next disbursal', v: inr(t.nextDisbursal), ic: '⏳', tone: 'var(--gold-ink)', sub: 'confirmed, awaiting payout' },
+          { k: 'Being paid', v: inr(t.nextDisbursal), ic: '⏳', tone: 'var(--gold-ink)', sub: 'paid to General within a minute' },
         ].map((c) => (
           <div key={c.k} style={{ ...card, padding: 14, display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span aria-hidden style={{ width: 32, height: 32, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, background: 'color-mix(in srgb,var(--gold) 12%,var(--surface2))', border: '1px solid var(--line2)' }}>{c.ic}</span>
@@ -229,7 +230,13 @@ const ReferralPage: React.FC = () => {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14, marginBottom: 16 }}>
+      {/* ── The invite tree: every level, its bonus, its people ──────── */}
+      <ReferralTree levels={data.levels} whoAt={whoAt} />
+
+      {/* ── Income by level ──────────────────────────────────────────── */}
+      <IncomeByLevel levels={data.levels} whoAt={whoAt} />
+
+      <div style={{ marginBottom: 16 }}>
         {/* ── How it works ────────────────────────────────────────────── */}
         <section aria-label="How it works" style={card}>
           <span style={capLabel}>How it works</span>
@@ -252,27 +259,8 @@ const ReferralPage: React.FC = () => {
             Your link is permanent{bot ? <> and opens <strong style={{ color: 'var(--text2)' }}>@{bot}</strong> today</> : ''}. If we ever switch to a different sign-up bot it keeps working and sends people to the new one, so anything you have already shared stays good.
           </p>
         </section>
-
-        {/* ── Level split ─────────────────────────────────────────────── */}
-        <section aria-label="Earnings by level" style={card}>
-          <span style={capLabel}>Earnings by level</span>
-          {data.levels.map((lv) => [`Level ${lv.level}`, whoAt(lv.level), lv] as const).map(([label, who, lv]) => (
-            <div key={label} style={{ marginTop: 14 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
-                <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>{label} <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)' }}>· {who}</span></span>
-                <span className="font-grotesk" style={{ fontSize: 16, fontWeight: 800, color: 'var(--gold-ink)' }}>{inr(lv.confirmed)}</span>
-              </div>
-              <div style={{ height: 8, borderRadius: 999, background: 'var(--surface3)', overflow: 'hidden', marginTop: 8, border: '1px solid var(--line)' }}>
-                <div style={{ height: '100%', width: `${Math.round((lv.confirmed / levelMax) * 100)}%`, background: 'linear-gradient(90deg,var(--gold),var(--gold2))', borderRadius: 999 }} />
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 6 }}>
-                {lv.count} referral{lv.count === 1 ? '' : 's'} · {inr(lv.disbursed)} paid
-                {lv.blocked > 0 && <> · {inr(lv.blocked)} not payable</>}
-              </div>
-            </div>
-          ))}
-        </section>
       </div>
+
 
       {/* ── Every referral, newest first ──────────────────────────────── */}
       <section aria-label="Your referrals" style={card}>
@@ -305,6 +293,103 @@ const ReferralPage: React.FC = () => {
         )}
       </section>
     </ScreenShell>
+  );
+};
+
+/** The invite chain as a tree: you at the root, each level a branch below the one before. */
+const ReferralTree: React.FC<{ levels: LevelTotals[]; whoAt: (n: number) => string }> = ({ levels, whoAt }) => (
+  <section aria-label="Your referral tree" style={{ ...card, marginBottom: 16 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+      <span style={capLabel}>Your referral tree</span>
+      <span style={{ fontSize: 11, color: 'var(--text3)' }}>{levels.length} level{levels.length === 1 ? '' : 's'} · bonus per person who joins</span>
+    </div>
+    <ol style={{ listStyle: 'none', margin: '14px 0 0', padding: 0 }}>
+      <li style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span aria-hidden className="font-grotesk" style={{ width: 40, height: 40, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 12, color: 'var(--on-gold)', background: 'var(--gold-metal)', boxShadow: '0 6px 18px -8px var(--glow)' }}>YOU</span>
+        <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>You</span>
+      </li>
+      {levels.map((lv, i) => {
+        const on = lv.reward > 0;
+        const tone = on ? 'var(--gold-ink)' : 'var(--text3)';
+        return (
+          <li key={lv.level} data-testid={`tree-level-${lv.level}`}
+            style={{ position: 'relative', marginLeft: 19 + i * 18, paddingLeft: 26, paddingTop: 12 }}>
+            {/* The branch: down from the node above, then across to this one. */}
+            <span aria-hidden style={{ position: 'absolute', left: 0, top: 0, height: 36, width: 20, borderLeft: '2px solid var(--line2)', borderBottom: '2px solid var(--line2)', borderBottomLeftRadius: 10 }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', padding: '10px 12px', borderRadius: 14, background: on ? 'color-mix(in srgb,var(--gold) 8%,var(--surface2))' : 'var(--surface2)', border: `1px solid ${on ? 'color-mix(in srgb,var(--gold) 35%,var(--line2))' : 'var(--line2)'}` }}>
+              <span className="font-grotesk" style={{ flex: 'none', width: 34, height: 34, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 800, color: tone, background: 'var(--surface)', border: '1px solid var(--line2)' }}>L{lv.level}</span>
+              <span style={{ flex: '1 1 140px', minWidth: 0 }}>
+                <span style={{ display: 'block', fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>Level {lv.level}</span>
+                <span style={{ display: 'block', fontSize: 11, color: 'var(--text3)', marginTop: 1 }}>{whoAt(lv.level)}</span>
+              </span>
+              <span style={{ textAlign: 'right' }}>
+                <span className="font-grotesk" style={{ display: 'block', fontSize: 16, fontWeight: 800, color: tone }}>{on ? `${inr(lv.reward)} each` : 'Off'}</span>
+                <span style={{ display: 'block', fontSize: 11, color: 'var(--text3)', marginTop: 1 }}>
+                  {lv.count} {lv.count === 1 ? 'person' : 'people'} · {inr(lv.confirmed)} earned
+                </span>
+              </span>
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  </section>
+);
+
+/** What each level has paid: people, earned, paid, waiting, not payable, with a total line. */
+const IncomeByLevel: React.FC<{ levels: LevelTotals[]; whoAt: (n: number) => string }> = ({ levels, whoAt }) => {
+  const total = levels.reduce((t, l) => ({
+    count: t.count + l.count, confirmed: t.confirmed + l.confirmed, disbursed: t.disbursed + l.disbursed, blocked: t.blocked + l.blocked,
+  }), { count: 0, confirmed: 0, disbursed: 0, blocked: 0 });
+  const th: React.CSSProperties = { padding: '10px 12px', fontSize: 10.5, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text3)', textAlign: 'right', whiteSpace: 'nowrap', borderBottom: '1px solid var(--line2)' };
+  const td: React.CSSProperties = { padding: '11px 12px', fontSize: 13, textAlign: 'right', whiteSpace: 'nowrap', borderBottom: '1px solid var(--line)' };
+  const money = (n: number, tone: string) => <span className="font-grotesk" style={{ fontWeight: 800, color: n > 0 ? tone : 'var(--text3)' }}>{inr(n)}</span>;
+  return (
+    <section aria-label="Referral income by level" style={{ ...card, marginBottom: 16 }}>
+      <span style={capLabel}>Referral income by level</span>
+      <div style={{ overflowX: 'auto', margin: '10px -4px 0' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
+          <thead>
+            <tr>
+              <th scope="col" style={{ ...th, textAlign: 'left' }}>Level</th>
+              <th scope="col" style={th}>Bonus each</th>
+              <th scope="col" style={th}>People</th>
+              <th scope="col" style={th}>Earned</th>
+              <th scope="col" style={th}>Paid</th>
+              <th scope="col" style={th}>Being paid</th>
+              <th scope="col" style={th}>Not payable</th>
+            </tr>
+          </thead>
+          <tbody>
+            {levels.map((l) => (
+              <tr key={l.level}>
+                <th scope="row" style={{ ...td, textAlign: 'left', fontWeight: 800, color: 'var(--text)' }}>
+                  Level {l.level}
+                  <span style={{ display: 'block', fontSize: 10.5, fontWeight: 600, color: 'var(--text3)' }}>{whoAt(l.level)}</span>
+                </th>
+                <td style={td}>{l.reward > 0 ? money(l.reward, 'var(--gold-ink)') : <span style={{ color: 'var(--text3)' }}>Off</span>}</td>
+                <td style={{ ...td, fontWeight: 700, color: 'var(--text)' }}>{l.count.toLocaleString('en-IN')}</td>
+                <td style={td}>{money(l.confirmed, 'var(--gold-ink)')}</td>
+                <td style={td}>{money(l.disbursed, 'var(--green)')}</td>
+                <td style={td}>{money(Math.max(0, l.confirmed - l.disbursed), 'var(--gold-ink)')}</td>
+                <td style={td}>{money(l.blocked, 'var(--red)')}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr style={{ background: 'color-mix(in srgb,var(--gold) 8%,transparent)' }}>
+              <th scope="row" style={{ ...td, textAlign: 'left', fontWeight: 900, color: 'var(--text)', borderBottom: 'none' }}>Total</th>
+              <td style={{ ...td, borderBottom: 'none' }} />
+              <td style={{ ...td, fontWeight: 800, color: 'var(--text)', borderBottom: 'none' }}>{total.count.toLocaleString('en-IN')}</td>
+              <td style={{ ...td, borderBottom: 'none' }}>{money(total.confirmed, 'var(--gold-ink)')}</td>
+              <td style={{ ...td, borderBottom: 'none' }}>{money(total.disbursed, 'var(--green)')}</td>
+              <td style={{ ...td, borderBottom: 'none' }}>{money(Math.max(0, total.confirmed - total.disbursed), 'var(--gold-ink)')}</td>
+              <td style={{ ...td, borderBottom: 'none' }}>{money(total.blocked, 'var(--red)')}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </section>
   );
 };
 

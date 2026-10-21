@@ -55,7 +55,7 @@ export interface Backend {
   pollSignIn(challengeToken: string): Promise<PollResult>;
 
   /** "Continue with Telegram": opens a sign-in whose link the player opens. */
-  loginWithTelegram(opts?: { delivery?: TelegramDelivery; referralCode?: string }): Promise<SignInStep>;
+  loginWithTelegram(opts?: { delivery?: TelegramDelivery; referralCode?: string; captchaToken?: string | null }): Promise<SignInStep>;
 
   /** The one-time ticket the Mini App opened this site with, exchanged for the session. */
   redeemTelegramTicket(ticket: string): Promise<User>;

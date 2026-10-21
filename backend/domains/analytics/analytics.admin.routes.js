@@ -201,7 +201,7 @@ router.get('/analytics/financials.xlsx', authenticate, hasPermission('canViewAna
 });
 
 /**
- * The token supply (20 billion) and how much of it each kind of holder has
+ * The token supply (100 billion) and how much of it each kind of holder has
  * (`tokenHolders`): totals only, no individual account, so analytics is
  * enough to read it.
  */

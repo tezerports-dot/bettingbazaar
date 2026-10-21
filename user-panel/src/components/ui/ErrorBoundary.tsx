@@ -1,7 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { logger } from '../../services/logging.service';
-import { reportError, isStaleBuildError, reloadForNewBuild } from '../../services/errorReporter';
+import { reportError } from '../../services/errorReporter';
+import { isStaleChunkError, reloadForNewBuild } from '../../services/chunkRecovery';
 
 interface Props {
   children?: ReactNode;
@@ -41,7 +42,7 @@ class ErrorBoundary extends Component<Props, State> {
     logger.error(error, { componentStack: errorInfo.componentStack });
     // A page older than the deploy asked for a chunk that is gone: reload
     // into the new build instead of showing this screen.
-    if (isStaleBuildError(error) && reloadForNewBuild()) return;
+    if (isStaleChunkError(error) && reloadForNewBuild()) return;
     // Into the admin's error log (Admin › Error Logs), as a crashed screen.
     reportError('crash', error, errorInfo.componentStack ?? null);
     console.error('[ErrorBoundary]', error, errorInfo);

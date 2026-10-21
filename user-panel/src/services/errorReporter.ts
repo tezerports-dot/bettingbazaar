@@ -8,10 +8,14 @@
  *   error    an uncaught script error
  *   promise  a promise nobody handled
  *
+ * A chunk that failed to load after a deploy is not reported: the page reloads
+ * for the new build (services/chunkRecovery.ts).
+ *
  * A page load sends each distinct error once and at most `MAX_REPORTS` in all,
  * so a loop that throws every frame costs one report, not thousands.
  */
 import { platform } from './api';
+import { isStaleChunkError, reloadForNewBuild } from './chunkRecovery';
 
 export type ErrorKind = 'crash' | 'error' | 'promise';
 
@@ -26,10 +30,6 @@ const messageOf = (err: unknown): string => {
   if (typeof err === 'string') return err;
   try { return JSON.stringify(err) ?? String(err); } catch { return String(err); }
 };
-
-/** A chunk of the app that failed to load: the page is older than the deploy. */
-export const isStaleBuildError = (err: unknown): boolean =>
-  /dynamically imported module|Loading chunk|Importing a module script failed|error loading dynamically/i.test(messageOf(err));
 
 export function reportError(kind: ErrorKind, err: unknown, component?: string | null): void {
   try {
@@ -49,22 +49,6 @@ export function reportError(kind: ErrorKind, err: unknown, component?: string | 
   } catch { /* reporting never breaks the app */ }
 }
 
-/**
- * After a deploy an open page asks for chunks that no longer exist. Reload
- * once (not in a loop: once per minute at most) so the player gets the new
- * build instead of an error screen.
- */
-export function reloadForNewBuild(): boolean {
-  try {
-    const KEY = 'bb_stale_reload_at';
-    const last = Number(sessionStorage.getItem(KEY) || 0);
-    if (Date.now() - last < 60_000) return false;
-    sessionStorage.setItem(KEY, String(Date.now()));
-    window.location.reload();
-    return true;
-  } catch { return false; }
-}
-
 let installed = false;
 /** Listen for uncaught errors and unhandled promises. Once, at boot. */
 export function installErrorReporter(): void {
@@ -72,11 +56,11 @@ export function installErrorReporter(): void {
   installed = true;
   window.addEventListener('error', (e) => {
     const err = e.error ?? e.message;
-    if (isStaleBuildError(err) && reloadForNewBuild()) return;
+    if (isStaleChunkError(err) && reloadForNewBuild()) return;
     reportError('error', err);
   });
   window.addEventListener('unhandledrejection', (e) => {
-    if (isStaleBuildError(e.reason) && reloadForNewBuild()) return;
+    if (isStaleChunkError(e.reason) && reloadForNewBuild()) return;
     reportError('promise', e.reason);
   });
 }

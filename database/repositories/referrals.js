@@ -196,6 +196,8 @@ export async function queueSummary() {
     `SELECT
        COUNT(*) FILTER (WHERE status = 'QUEUED')::int  AS queued_count,
        COUNT(*) FILTER (WHERE status = 'BLOCKED')::int AS blocked_count,
+       COUNT(*) FILTER (WHERE status = 'PAID')::int    AS paid_count,
+       COALESCE(SUM(amount_paise) FILTER (WHERE status = 'PAID'), 0)    AS paid_paise,
        COALESCE(SUM(amount_paise) FILTER (WHERE status = 'QUEUED'), 0)  AS queued_paise,
        COALESCE(SUM(amount_paise) FILTER (WHERE status = 'BLOCKED'), 0) AS blocked_paise,
        MIN(queue_position) FILTER (WHERE status = 'QUEUED')             AS next_position
@@ -208,6 +210,8 @@ export async function queueSummary() {
     queuedPaise: Number(r.queued_paise),
     blockedCount: r.blocked_count,
     blockedPaise: Number(r.blocked_paise),
+    paidCount: r.paid_count,
+    paidPaise: Number(r.paid_paise),
     nextQueuePosition: r.next_position === null ? null : Number(r.next_position),
   };
 }
@@ -314,13 +318,12 @@ export async function listBatches({ limit = 50 } = {}) {
 
 // ── Programme ───────────────────────────────────────────────────────────────
 
+// No budget and no on/off switch (owner, 2026-10-20): a bonus is paid out of
+// the platform's token holding, bounded only by the supply.
 const toProgramme = (r) => (r ? {
   key: r.programme_key,
-  budget: paiseToRupees(Number(r.budget_paise)), budgetPaise: Number(r.budget_paise),
-  disbursed: paiseToRupees(Number(r.disbursed_paise)), disbursedPaise: Number(r.disbursed_paise),
-  remaining: paiseToRupees(Number(r.budget_paise) - Number(r.disbursed_paise)),
   memberCap: r.member_cap, verifiedMembers: r.verified_members,
-  active: r.active, updatedAt: r.updated_at,
+  updatedAt: r.updated_at,
 } : null);
 
 export async function getProgramme(key = 'main') {
@@ -330,7 +333,7 @@ export async function getProgramme(key = 'main') {
   return toProgramme(rows[0]);
 }
 
-export async function upsertProgramme({ key = 'main', budgetRupees, memberCap, active }) {
+export async function upsertProgramme({ key = 'main', memberCap }) {
   // ── Only the columns actually supplied are NAMED ─────────────────────────
   // Every other column then takes its `DEFAULT` from `schema.sql`, which is
   // where this table's defaults live and the only place they may (§6). Writing
@@ -343,22 +346,20 @@ export async function upsertProgramme({ key = 'main', budgetRupees, memberCap, a
   //
   // `getProgramme()` calls this with the key ALONE to create the row lazily, so
   // the very first call on a fresh database threw `null value in column
-  // "budget_paise" ... violates not-null constraint`. That is the whole admin
+  // "budget_paise" (since removed) ... violates not-null constraint`. That is the whole admin
   // Referrals screen 500ing on a platform that has simply never had a referral
   // programme yet — the state every new deployment starts in. §21's relative:
   // a NOT NULL column refuses an explicit null, so check the column before
   // writing one.
   // ── The reading `check:coherence` asks for on an interpolated statement ──
-  // `cols` is built HERE, from string literals in the three lines below, and a
+  // `cols` is built HERE, from string literals in the line below, and a
   // caller can only decide WHETHER a column is named — never what it is called.
   // Nothing from `req.body` reaches the statement text; every value still
   // travels as a bound parameter. The interpolation is the column LIST, which
   // cannot be parameterised in SQL, and its contents are closed.
   const cols = ['programme_key'];
   const vals = [String(key)];
-  if (budgetRupees !== undefined) { cols.push('budget_paise'); vals.push(rupeesToPaise(budgetRupees)); }
-  if (memberCap    !== undefined) { cols.push('member_cap');   vals.push(Number(memberCap)); }
-  if (active       !== undefined) { cols.push('active');       vals.push(Boolean(active)); }
+  if (memberCap !== undefined) { cols.push('member_cap'); vals.push(Number(memberCap)); }
 
   // With a column omitted there is no `EXCLUDED` value to fall back FROM, so
   // the SET list is built from the same supplied set: an absent field leaves
@@ -373,41 +374,6 @@ export async function upsertProgramme({ key = 'main', budgetRupees, memberCap, a
     'programme_upsert',
   );
   return toProgramme(rows[0]);
-}
-
-/**
- * Draw from the programme budget.
- *
- * Same shape as the batch pool, and the same reason: the budget is a ceiling
- * enforced by the row. An application-side check lets two concurrent
- * disbursals both read the same total and both pass it.
- */
-export async function drawFromProgramme(key, amountRupees) {
-  const { rows } = await pgQuery(
-    `UPDATE referral_programmes SET disbursed_paise = disbursed_paise + $2, updated_at = now()
-      WHERE programme_key = $1 AND active AND disbursed_paise + $2 <= budget_paise
-      RETURNING *`,
-    [String(key), rupeesToPaise(amountRupees)], 'programme_draw',
-  );
-  return rows[0] ? { ok: true, programme: toProgramme(rows[0]) } : { ok: false, reason: 'BUDGET_EXHAUSTED_OR_INACTIVE' };
-}
-
-/**
- * Give back budget a disbursal reserved and did not spend.
- *
- * `disburse` reserves its WHOLE pool from the programme before it pays anyone
- * (`drawFromProgramme`, guarded in the WHERE), and returns what it did not
- * spend at the end. The floor is in the statement, so this cannot drive the
- * drawn total below zero whatever it is asked to return.
- */
-export async function returnToProgramme(key, amountRupees) {
-  const { rows } = await pgQuery(
-    `UPDATE referral_programmes SET disbursed_paise = disbursed_paise - $2, updated_at = now()
-      WHERE programme_key = $1 AND disbursed_paise - $2 >= 0
-      RETURNING *`,
-    [String(key), rupeesToPaise(amountRupees)], 'programme_return',
-  );
-  return rows[0] ? { ok: true, programme: toProgramme(rows[0]) } : { ok: false, reason: 'NOTHING_TO_RETURN' };
 }
 
 // `countVerifiedMember` was removed 2026-10-02: the count now advances inside
