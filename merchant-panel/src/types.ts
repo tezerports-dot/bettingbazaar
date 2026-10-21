@@ -108,6 +108,9 @@ export interface PaymentOrder {
   // backend/domains/merchant/merchantOrderView.js, which is the authority for
   // this shape and will not send them.
   userBankDetails?: BankDetails;
+  // On a sell: the UPI link that pays the player this order's exact amount,
+  // built by the server from their UPI ID (owner, 2026-10-21); drawn as a QR.
+  payoutUpiLink?: string;
   
   // Merchant information
   merchantId?: string;

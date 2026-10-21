@@ -37,6 +37,7 @@
  * them, whatever `toOrder` maps or `order_states` grows.
  */
 import { mayChangeHands } from '#db/repositories/orders.record.js';
+import { buildUpiPayLink } from '../payment/cashLink.js';
 
 export const MERCHANT_ORDER_FIELDS = Object.freeze([
   // Identity and routing.
@@ -96,15 +97,21 @@ export const MERCHANT_ORDER_FIELDS = Object.freeze([
   // Whether the member may still decline it (`mayChangeHands`): derived below,
   // so the panel keeps no copy of the rule.
   'canDecline',
+
+  // On a sell, the UPI link that pays the player this order's exact amount
+  // (owner, 2026-10-21), built below from the player's UPI ID; the panel draws
+  // it as a QR. The handle travels only inside it.
+  'payoutUpiLink',
 ]);
 
 /**
  * The only parts of a player's bank details a merchant may see, and only on a
  * WITHDRAWAL — the order where the merchant has to send money somewhere.
  *
- * `upiId` is deliberately NOT here. It is a contact handle: it resolves to a
- * name and, on most UPI apps, to a phone number, so sending it to a merchant
- * defeats the rule that the merchant never learns the player's number.
+ * `upiId` is deliberately NOT here as a field. The member pays a sell by the
+ * link built for that order (`payoutUpiLink`, owner 2026-10-21), and the row
+ * refuses a UPI ID whose name is a mobile (`users_upi_id_shape`), so the link
+ * never carries the player's number.
  */
 export const MERCHANT_BANK_FIELDS = Object.freeze([
   'accountNumber', 'ifscCode', 'bankName', 'accountHolderName',
@@ -155,6 +162,15 @@ export function toMerchantOrderView(order) {
   if (type === 'WITHDRAWAL') {
     const bank = bankDetailsFor(plain);
     if (bank) view.userBankDetails = bank;
+    const upiId = plain.userBankDetails?.upiId;
+    if (upiId && Number(plain.fiatAmount) > 0) {
+      view.payoutUpiLink = buildUpiPayLink({
+        pa: upiId,
+        pn: plain.userBankDetails.accountHolderName || 'Player',
+        amountRupees: plain.fiatAmount,
+        orderId: plain.orderId,
+      });
+    }
   }
 
   // Orders start with no accept (owner, 2026-10-17); a started one may go back

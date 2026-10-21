@@ -624,14 +624,16 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
     // A merchant verifies a payout against these. `userKycSnapshot` was removed
     // 2026-08-25: it was stripped from every response before it reached anyone,
     // and its `aadhaar` field was never a real path on the model.
-    // The bank account a sell is paid into, and nothing else: no UPI handle is
-    // a destination (§2 "How each rail is paid", §24), and the player's row
-    // holds none (`users_bank_details_bank_account_only`).
+    // Where a sell is paid (owner, 2026-10-21): the player's bank account and
+    // their UPI ID, which the member is shown only inside the link built for
+    // this order's amount (merchantOrderView.js `payoutUpiLink`; §24). The
+    // row refuses a UPI ID that is a mobile (`users_upi_id_shape`).
     userBankDetails: {
       accountNumber:     user.bankDetails?.accountNumber || '',
       ifscCode:          user.bankDetails?.ifscCode      || '',
       bankName:          user.bankDetails?.bankName      || '',
       accountHolderName: user.bankDetails?.accountHolderName || user.username || '',
+      ...(user.bankDetails?.upiId ? { upiId: user.bankDetails.upiId } : {}),
     },
     userPhone: user.mobile,
   });

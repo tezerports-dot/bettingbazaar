@@ -35,17 +35,16 @@
  * created queued with its split and routed the same way. The phone number this
  * suite looks for is the one production itself writes.
  *
- * ── The UPI id is PLANTED now (2026-10-07) ──────────────────────────────────
- * Production wrote one here until a player could no longer keep one: the
- * payout account is a bank account and nothing else
- * (`users_bank_details_bank_account_only`), and the sell copies those four
- * fields. So the handle is put on the ROW's copy after creation, as if a future
- * copy carried one again: the projection is an allowlist, and an unknown key
- * in the bank object must still be dropped (M89).
+ * ── The UPI ID travels only inside the order's link (owner, 2026-10-21) ─────
+ * A player saves a UPI ID beside their bank account (the row refuses one that
+ * is a mobile, `users_upi_id_shape`) and the sell copies it. The member is
+ * sent it only inside `payoutUpiLink`, the link for this order's exact amount
+ * that their panel draws as a QR; the bank object still carries the four bank
+ * fields and no fifth (M89).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, withTransaction } from '#db/client.js';
-import { createOrderRecord, getOrderRecord, setOrderFields } from '#db/repositories/orders.record.js';
+import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
 import { updateUser } from '#db/repositories/users.js';
 import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js';
 import { tryAssignMerchant, createWithdrawalOrder } from '../../domains/payment/paymentProcessing.service.js';
@@ -71,8 +70,8 @@ describePg('what a merchant is told about a player', () => {
     bankName: 'HDFC Bank',
     accountHolderName: 'Asha Rao',
   };
-  // Planted on the order's copy (see the header): a merchant must never see it.
-  const PLAYER_UPI = 'asha@examplebank';
+  // Saved beside it; the member sees it only inside the order's link.
+  const PLAYER_UPI = 'asha.rao@examplebank';
 
   beforeAll(async () => {
     await applySchema();
@@ -95,7 +94,7 @@ describePg('what a merchant is told about a player', () => {
   const player = async () => {
     const who = await actor({});
     players.push(who.userId);
-    await updateUser(who.userId, { bankDetails: BANK });
+    await updateUser(who.userId, { bankDetails: { ...BANK, upiId: PLAYER_UPI } });
     return who;
   };
 
@@ -129,11 +128,10 @@ describePg('what a merchant is told about a player', () => {
     const row = await getOrderRecord(orderId);
     expect(row.merchantId, 'the sell was not routed to the member').toBe(String(merchant.merchantId));
     // What production put on the row: the player's mobile, which the merchant
-    // must not see, and the bank account they pay, which carries no handle.
+    // must not see, and the bank account and UPI ID they pay.
     expect(row.userPhone).toBe(who.mobile);
-    expect(Object.keys(row.userBankDetails).sort(), 'the sell copied more than the bank account')
-      .toEqual([...MERCHANT_BANK_FIELDS].sort());
-    await setOrderFields(orderId, { userBankDetails: { ...row.userBankDetails, upiId: PLAYER_UPI } });
+    expect(Object.keys(row.userBankDetails).sort(), 'the sell copied more than the payout details')
+      .toEqual([...MERCHANT_BANK_FIELDS, 'upiId'].sort());
     await accept(merchant, orderId);
     return orderId;
   };
@@ -171,6 +169,14 @@ describePg('what a merchant is told about a player', () => {
     // the assertion the old projection failed: `upiId` rode along inside it.
     expect(Object.keys(order.userBankDetails).sort())
       .toEqual([...MERCHANT_BANK_FIELDS].sort());
+
+    // The UPI link for this order's exact amount (owner, 2026-10-21).
+    const link = new URL(order.payoutUpiLink.replace('upi://', 'https://upi.invalid/'));
+    expect(order.payoutUpiLink.startsWith('upi://pay?')).toBe(true);
+    expect(link.searchParams.get('pa')).toBe(PLAYER_UPI);
+    expect(link.searchParams.get('pn')).toBe('Asha Rao');
+    expect(Number(link.searchParams.get('am'))).toBe(order.fiatAmount);
+    expect(link.searchParams.get('cu')).toBe('INR');
 
     // And the whole payload is a subset of what was declared — closed, so a
     // column added to order_states cannot arrive here unnoticed.
@@ -218,10 +224,13 @@ describePg('what a merchant is told about a player', () => {
       for (const field of MERCHANT_FORBIDDEN_ORDER_FIELDS) {
         expect(order[field]).toBeUndefined();
       }
-      // Serialised anywhere in the payload, under any key, nested or not.
+      // Serialised anywhere in the payload, under any key, nested or not; the
+      // UPI ID only inside the sell's link.
       const body = JSON.stringify(order);
       expect(body).not.toContain(who.mobile);
-      expect(body).not.toContain(PLAYER_UPI);
+      expect(JSON.stringify({ ...order, payoutUpiLink: undefined })).not.toContain(PLAYER_UPI);
+      expect(JSON.stringify({ ...order, payoutUpiLink: undefined })).not.toContain(encodeURIComponent(PLAYER_UPI));
+      if (order.type === 'DEPOSIT') expect(order.payoutUpiLink).toBeUndefined();
     }
   });
 
@@ -253,5 +262,6 @@ describePg('what a merchant is told about a player', () => {
     const view = toMerchantOrderView({ ...row, userBankDetails: { ...BANK, upiId: PLAYER_UPI } });
     expect(view.type).toBe('DEPOSIT');
     expect(view.userBankDetails, 'a buy carried the player payout account to the merchant').toBeUndefined();
+    expect(view.payoutUpiLink, 'a buy carried the player UPI link to the merchant').toBeUndefined();
   });
 });
