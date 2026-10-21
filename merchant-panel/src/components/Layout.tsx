@@ -18,6 +18,7 @@ import { ROUTES, SUCCESS_MESSAGES } from '../constants';
 import { useViewport } from '../hooks/useViewport';
 import { PAYMENT_COPY } from '../utils/rail';
 import { Avatar, Logo } from './ui';
+import InstallAppButton from './InstallAppButton';
 import { useTheme } from '../services/ThemeContext';
 import { actorOf, isMerchantAccountSession } from '../utils/actor';
 import { firstAccountTab } from '../pages/account/accountTabs';
@@ -247,6 +248,9 @@ const Layout: React.FC<LayoutProps> = ({ children, actionable = 0 }) => {
               {availability.badge}
             </span>
           )}
+
+          {/* In the browser only; nothing once installed (owner, 2026-10-21). */}
+          <InstallAppButton />
 
           <button onClick={toggleTheme} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`} style={iconButtonStyle}>
             {theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}

@@ -28,6 +28,7 @@ import type { AuthResponse, MiniAppSetup } from '../types';
 import { Button, Logo, Spinner } from '../components/ui';
 import { TelegramStep } from '../components/TelegramStep';
 import { PlatformUnreachable } from '../components/PlatformUnreachable';
+import InstallAppButton from '../components/InstallAppButton';
 
 /** HANDOFF where Telegram runs on this same device and can open the panel on it; MATCH elsewhere. */
 export function deliveryHere(): TelegramDelivery {
@@ -172,6 +173,8 @@ const LoginPage: React.FC = () => {
             <ShieldCheck size={13} style={{ color: 'var(--dep)' }} />
             <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--dep)' }}>Secure operator sign-in</span>
           </div>
+          {/* In the browser only; nothing once installed (owner, 2026-10-21). */}
+          <InstallAppButton style={{ marginTop: 14 }} />
         </div>
 
         {signedOutReason && (

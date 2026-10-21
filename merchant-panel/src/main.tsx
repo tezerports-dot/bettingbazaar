@@ -6,6 +6,7 @@ import { Toaster } from 'react-hot-toast';
 import App from './App';
 import { applyTheme, readStoredTheme } from './theme';
 import { captureTelegramTicket } from './services/telegramTicket';
+import { listenForInstallPrompt } from './services/installPrompt';
 import './index.css';
 
 // Set the theme attribute before the first paint so the panel never flashes the
@@ -14,6 +15,9 @@ applyTheme(readStoredTheme());
 
 // A ticket Verify opened the panel with leaves the address bar before anything renders.
 captureTelegramTicket();
+
+// The browser offers "Install app" once, early: kept before any screen mounts.
+listenForInstallPrompt();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <BrowserRouter basename="/merchant">

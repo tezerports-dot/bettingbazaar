@@ -1,0 +1,20 @@
+{
+  "name": "Merchant Panel",
+  "short_name": "Merchant",
+  "id": "/merchant/",
+  "description": "Work your buy and sell orders, your pool and your reports.",
+  "start_url": "/merchant/",
+  "scope": "/merchant/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#0B0E14",
+  "background_color": "#0B0E14",
+  "icons": [
+    { "src": "/app-assets/icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
+    { "src": "/app-assets/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" },
+    { "src": "/app-assets/icon-maskable-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
+  ],
+  "lang": "en-IN",
+  "dir": "ltr",
+  "prefer_related_applications": false
+}
