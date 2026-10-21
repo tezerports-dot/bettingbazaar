@@ -7,10 +7,12 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 
-const { getBot, saveBot, removeBot, resumeBot } = vi.hoisted(() => ({
+// getChannels feeds the signup channels card on the same page (SignupChannels.test.tsx covers it).
+const { getBot, saveBot, removeBot, resumeBot, getChannels } = vi.hoisted(() => ({
   getBot: vi.fn(), saveBot: vi.fn(), removeBot: vi.fn(), resumeBot: vi.fn(),
+  getChannels: vi.fn(async () => ({ success: true, channels: [], approvePerPress: 1000 })),
 }));
-vi.mock('../../services/api', () => ({ default: { telegram: { getBot, saveBot, removeBot, resumeBot } } }));
+vi.mock('../../services/api', () => ({ default: { telegram: { getBot, saveBot, removeBot, resumeBot, getChannels } } }));
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
 import { TelegramBot } from './TelegramBot';

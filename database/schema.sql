@@ -3380,6 +3380,70 @@ ALTER TABLE telegram_bot DROP CONSTRAINT IF EXISTS telegram_bot_short_name_shape
 ALTER TABLE telegram_bot ADD CONSTRAINT telegram_bot_short_name_shape
   CHECK (mini_app_short_name ~ '^[A-Za-z0-9_]{0,64}$');
 
+-- ── Signup channels and their join requests (owner, 2026-10-21) ──────────
+-- Telegram channels a new player is asked to join at Verify. None saved: the
+-- sign-in is what it was. Several may be on at once; rotating is adding the new
+-- one and switching the old one off. A channel is switched off, never deleted,
+-- so the requests it collected stay readable.
+--
+-- `chat_id` and `title` are Telegram's answer to `getChat`, never typed. The
+-- invite link asks Telegram for a JOIN REQUEST (`creates_join_request`), has
+-- no expiry date, and is checked by the `telegram-channel-links` job, which
+-- makes a new one when Telegram revoked it or another bot is now in use
+-- (`link_bot_id`: a bot can only edit the links it made).
+CREATE TABLE IF NOT EXISTS telegram_channels (
+  chat_id          TEXT PRIMARY KEY,
+  title            TEXT NOT NULL,
+  username         TEXT NOT NULL DEFAULT '',
+  invite_link      TEXT NOT NULL DEFAULT '',
+  link_bot_id      TEXT NOT NULL DEFAULT '',
+  link_checked_at  TIMESTAMPTZ,
+  link_error       TEXT NOT NULL DEFAULT '',
+  active           BOOLEAN NOT NULL DEFAULT true,
+  added_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  added_by         TEXT,
+  switched_at      TIMESTAMPTZ,
+  switched_by      TEXT
+);
+ALTER TABLE telegram_channels DROP CONSTRAINT IF EXISTS telegram_channels_chat_id_shape;
+ALTER TABLE telegram_channels ADD CONSTRAINT telegram_channels_chat_id_shape
+  CHECK (chat_id ~ '^-100[0-9]{5,20}$');
+ALTER TABLE telegram_channels DROP CONSTRAINT IF EXISTS telegram_channels_link_shape;
+ALTER TABLE telegram_channels ADD CONSTRAINT telegram_channels_link_shape
+  CHECK (invite_link = '' OR invite_link ~ '^https://t\.me/\+[A-Za-z0-9_-]+$');
+
+-- One row per channel and Telegram account: the request Telegram reported
+-- (`chat_join_request`, read by polling `getUpdates`; there is no webhook).
+-- Never approved by the server on its own: an admin approves the waiting ones
+-- (`approveWaiting`). GONE is a request Telegram no longer holds (it lapsed or
+-- was withdrawn), so the next Verify asks again; a new request reopens the row.
+CREATE TABLE IF NOT EXISTS telegram_join_requests (
+  chat_id           TEXT NOT NULL REFERENCES telegram_channels (chat_id),
+  telegram_user_id  TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'PENDING',
+  requested_at      TIMESTAMPTZ NOT NULL,
+  seen_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_at        TIMESTAMPTZ,
+  decided_by        TEXT,
+  error             TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (chat_id, telegram_user_id)
+);
+ALTER TABLE telegram_join_requests DROP CONSTRAINT IF EXISTS telegram_join_requests_status_known;
+ALTER TABLE telegram_join_requests ADD CONSTRAINT telegram_join_requests_status_known
+  CHECK (status IN ('PENDING', 'APPROVED', 'GONE'));
+CREATE INDEX IF NOT EXISTS telegram_join_requests_waiting
+  ON telegram_join_requests (chat_id, requested_at) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS telegram_join_requests_by_person
+  ON telegram_join_requests (telegram_user_id);
+
+-- Where each bot's `getUpdates` reading has got to: the next update id to ask
+-- for. Moves forward only (the WHERE), so two runs never re-read or skip.
+CREATE TABLE IF NOT EXISTS telegram_update_offsets (
+  bot_id       TEXT PRIMARY KEY,
+  next_offset  BIGINT NOT NULL DEFAULT 0,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ── The link: an account verified by its own Telegram ─────────────────────
 -- One per account (the key) and, per panel, one account per Telegram account
 -- (`telegram_links_one_per_panel`): a person holds a player and a merchant

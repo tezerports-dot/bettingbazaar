@@ -19,6 +19,12 @@
  * Verify — once, at signup; the server finds the account of that number or
  * makes one.
  *
+ * A player's Verify also asks to join the signup channels the server lists
+ * (`start.channels`, owner 2026-10-21): Telegram lets no page send a join
+ * request, so after Verify this page opens the first channel's "Request to
+ * join" screen in Telegram and lists every channel as a button. The sign-in
+ * never waits on it; an admin approves the requests later.
+ *
  * Every sentence a refusal shows is the server's (§32 S14).
  */
 import React, { useState } from 'react';
@@ -49,6 +55,7 @@ const VerifyScreen: React.FC<Props> = ({ app, start, onDone }) => {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [opened, setOpened] = useState<string | null>(null);
+  const [finished, setFinished] = useState<string | null>(null);
 
   const panel = start.panel ?? 'PLAYER';
   const word = PANEL_WORD[panel];
@@ -56,12 +63,20 @@ const VerifyScreen: React.FC<Props> = ({ app, start, onDone }) => {
   const choices = match ? start.choices ?? [] : [];
   const account = start.account;
   const needsContact = Boolean(account?.isNew ?? start.needsContact);
+  const channels = start.channels ?? [];
+
+  /** Open a channel's "Request to join" screen inside Telegram. */
+  const join = (link: string) => {
+    if (app.openTelegramLink) app.openTelegramLink(link);
+    else if (app.openLink) app.openLink(link);
+    else window.location.assign(link);
+  };
 
   /** Send the person to the site the server named, on this device. */
   const go = (url: string) => {
     setOpened(url);
     if (app.openLink) app.openLink(url);
-    else window.location.href = url;
+    else window.location.assign(url);
   };
 
   const verify = async () => {
@@ -76,7 +91,9 @@ const VerifyScreen: React.FC<Props> = ({ app, start, onDone }) => {
         ? await miniApi.continueToSite(app.initData, contact)
         : await miniApi.approve(app.initData, 'approve', contact, match ? pick : null);
       if (r.redirectUrl) go(r.redirectUrl);
+      else if (channels.length) setFinished(r.message);
       else onDone(r.message);
+      if (channels.length) join(channels[0].inviteLink);
     } catch (e) {
       setError(e instanceof MiniAppRefusal || e instanceof Error ? e.message : 'Something went wrong. Please try again.');
     } finally { setBusy(false); }
@@ -90,11 +107,27 @@ const VerifyScreen: React.FC<Props> = ({ app, start, onDone }) => {
     } finally { setBusy(false); }
   };
 
-  if (opened) {
+  const joinList = channels.length > 0 && (
+    <div data-testid="join-channels" style={{ margin: '12px 0' }}>
+      <p style={HINT}>Tap Request to join in Telegram. An admin approves requests later.</p>
+      {channels.map((c) => (
+        <button key={c.inviteLink} type="button" style={SECONDARY} onClick={() => join(c.inviteLink)}>
+          Request to join {c.title}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (opened || finished) {
     return (
       <section role="status">
-        <p>Opening {start.destination}… You are signed in there.</p>
-        <p style={HINT}>Nothing opened? <a href={opened} onClick={(e) => { e.preventDefault(); go(opened); }}>Open {start.destination}</a></p>
+        {opened ? (
+          <>
+            <p>Opening {start.destination}… You are signed in there.</p>
+            <p style={HINT}>Nothing opened? <a href={opened} onClick={(e) => { e.preventDefault(); go(opened); }}>Open {start.destination}</a></p>
+          </>
+        ) : <p>{finished}</p>}
+        {joinList}
         <button type="button" style={SECONDARY} onClick={() => app.close()}>Close</button>
       </section>
     );
@@ -150,6 +183,12 @@ const VerifyScreen: React.FC<Props> = ({ app, start, onDone }) => {
 
       {error && <p role="alert" style={{ color: 'var(--tg-theme-destructive-text-color, MarkText)', fontWeight: 600 }}>{error}</p>}
 
+      {channels.length > 0 && (
+        <p data-testid="verify-channels" style={HINT}>
+          Verify also asks to join our Telegram {channels.length === 1 ? 'channel' : 'channels'}{' '}
+          <strong>{channels.map((c) => c.title).join(', ')}</strong>. An admin approves the request later.
+        </p>
+      )}
       <p style={{ ...HINT, marginTop: 14 }}>Press Verify only if you started this sign-in yourself.</p>
       <button type="button" style={PRIMARY} disabled={busy || (match && pick === null)} onClick={verify}>
         {needsContact ? 'Share contact and verify' : 'Verify'}

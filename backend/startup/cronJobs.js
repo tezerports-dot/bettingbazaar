@@ -170,6 +170,28 @@ export function registerCronJobs(rebuildLeaderboard) {
     }
   });
 
+  // ── Signup channels (owner, 2026-10-21) ──────────────────────────────────
+  // Join requests are read by polling (no webhook) and recorded; nothing is
+  // approved here. Telegram keeps updates for 24 hours, so a slow read loses
+  // none. The invite links are checked hourly and remade when revoked or when
+  // another bot is in use. With no channel on, both return at once.
+  registerRecurring('telegram-join-requests', 10 * 1000, async () => {
+    try {
+      const { readJoinRequests } = await import('../domains/telegram/signupChannels.service.js');
+      await readJoinRequests();
+    } catch (e) {
+      console.error('[telegram-join-requests] cron error:', e.message);
+    }
+  });
+  registerRecurring('telegram-channel-links', 60 * 60 * 1000, async () => {
+    try {
+      const { refreshInviteLinks } = await import('../domains/telegram/signupChannels.service.js');
+      await refreshInviteLinks();
+    } catch (e) {
+      console.error('[telegram-channel-links] cron error:', e.message);
+    }
+  });
+
   registerRecurring('withdrawal-hold-settle', 60 * 1000, async () => {
     try {
       const { settleDueHolds } = await import('../domains/payment/withdrawalHold.service.js');

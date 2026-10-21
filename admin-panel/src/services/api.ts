@@ -700,7 +700,49 @@ export const telegram = {
     const res = await api.post<TelegramBotSlot & { success: boolean }>(`/api/admin/telegram/bot/${slot}/resume`);
     return res.data;
   },
+
+  /** Signup channels (owner, 2026-10-21): every channel, the ones on first. */
+  getChannels: async () => {
+    const res = await api.get<{ success: boolean; channels: TelegramChannel[]; approvePerPress: number }>('/api/admin/telegram/channels');
+    return res.data;
+  },
+
+  /** Add a channel by @name, t.me link or -100… id; the bot must be its admin. */
+  addChannel: async (channel: string) => {
+    const res = await api.post<{ success: boolean; channels: TelegramChannel[] }>('/api/admin/telegram/channels', { channel });
+    return res.data;
+  },
+
+  /** Switch a channel on or off; on also checks its invite link. */
+  setChannelActive: async (chatId: string, active: boolean) => {
+    const res = await api.put<{ success: boolean; channels: TelegramChannel[] }>(`/api/admin/telegram/channels/${encodeURIComponent(chatId)}`, { active });
+    return res.data;
+  },
+
+  /** Approve a channel's waiting join requests, oldest first, up to `approvePerPress`. */
+  approveChannelRequests: async (chatId: string) => {
+    const res = await api.post<{
+      success: boolean; approved: number; gone: number; waiting: number; stopped: string | null; channels: TelegramChannel[];
+    }>(`/api/admin/telegram/channels/${encodeURIComponent(chatId)}/approve`);
+    return res.data;
+  },
 };
+
+/** `channelView` in backend/routes/admin/telegram.admin.routes.js. */
+export interface TelegramChannel {
+  chatId: string;
+  title: string;
+  username: string;
+  inviteLink: string;
+  linkCheckedAt: string | null;
+  linkError: string;
+  active: boolean;
+  addedAt: string;
+  switchedAt: string | null;
+  waiting: number;
+  approved: number;
+  gone: number;
+}
 
 // --- MY ACCOUNT: the signed-in staff account's own authenticator --------------
 // Server: backend/routes/admin/account.admin.routes.js (SELF_ROUTES).

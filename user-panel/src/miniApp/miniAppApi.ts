@@ -24,6 +24,8 @@ export interface WebApp {
   requestContact(cb: (shared: boolean, res?: { response?: string }) => void): void;
   /** Opens a link outside Telegram: how Verify sends the person to the site. */
   openLink?(url: string): void;
+  /** Opens a t.me link inside Telegram (a channel's join screen). */
+  openTelegramLink?(url: string): void;
 }
 
 export function webApp(): WebApp | null {
@@ -88,6 +90,8 @@ export interface MiniAppContext {
     strikesLeft?: number | null;
     destination?: string;
     account?: VerifyAccount;
+    /** A player's Verify also asks to join these channels (owner, 2026-10-21); empty or absent with none on. */
+    channels?: Array<{ title: string; inviteLink: string }>;
   };
   accounts: Array<{ panel: Panel; mobileHint: string }>;
 }
