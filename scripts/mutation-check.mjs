@@ -3780,6 +3780,21 @@ const MUTATIONS = [
     from: "export const paymentReferenceOf = (t) => `${String(t.tx_hash ?? t.txHash).toLowerCase()}:${Number(t.log_index ?? t.logIndex)}`;",
     to: "export const paymentReferenceOf = (t) => `${String(t.tx_hash ?? t.txHash).toLowerCase()}`;",
   },
+  // ── Routing by the pool (owner, 2026-10-21) ──────────────────────────────
+  {
+    id: 'M489', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'the pool no longer orders the candidates: a faster member with a drained pool takes every buy',
+    from: "      ORDER BY m.routing_priority DESC,\n               ${poolOrderSql('$3', '$4')},",
+    to: "      ORDER BY m.routing_priority DESC,",
+  },
+  {
+    id: 'M490', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'the sells a pool owes are not taken off its sell room, so one pool is handed more sells than its cash',
+    from: "    sellRoomPaise: Math.max(0, consumedPaise - sellsOwedPaise),",
+    to: "    sellRoomPaise: Math.max(0, consumedPaise),",
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

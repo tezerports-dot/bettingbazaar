@@ -8,11 +8,16 @@
  * one to ten (owner, Phase A): there is no team-level gate, because a team
  * with no approved member has nobody this query can return.
  *
- * Inside the eligible members, best first (owner, Phase A):
+ * Inside the eligible members, best first (owner, Phase A; pool, 2026-10-21):
  *   1. the highest `routing_priority` (1–5, the admin's, default 3);
- *   2. then the fastest average response (`avg_response_minutes`);
- *   3. then the fewest open orders;
- *   4. then whoever has waited longest since their last assignment.
+ *   2. by the pool (`poolStandingSql`): a BUY to the team with the most of its
+ *      pool left, in tenths of its size (`poolOrderSql`); a SELL first to a
+ *      team whose sell room (cash taken in from buys, not yet paid out on
+ *      sells) covers it;
+ *   3. then the fastest average response (`avg_response_minutes`);
+ *   4. a SELL then to the most sell room;
+ *   5. then the fewest open orders;
+ *   6. then whoever has waited longest since their last assignment.
  *
  *   CASH buy  — the member must have pressed Ready (they are at the machine);
  *               the assignment switches Ready off.
@@ -30,13 +35,30 @@
  */
 import { pgQuery } from '../client.js';
 import { RAILS, railOf } from './orderRails.js';
-import { holdForBuyWithin, PoolRefused } from './teamPools.js';
+import { holdForBuyWithin, PoolRefused, poolStandingSql } from './teamPools.js';
 import { leastUsedDepositAccount, takeDepositAccountWithin } from './merchantPaymentAccounts.js';
 import { transitionOrder } from './orders.js';
 
 export { RAILS, railOf, PAYMENT_MODES, paymentModeFor, routedToMerchants } from './orderRails.js';
 
 const OPEN_STATES = ['PROCESSING', 'PAID'];
+
+/**
+ * The pool's part of "best first" (owner, 2026-10-21), over a team's pool row
+ * `pool` and its standing `st` (`poolStandingSql`), `$isBuy` naming the
+ * statement's direction parameter and `$amount` the order's tokens. Tenths of
+ * the pool left, so that between teams equally full the faster one wins; a
+ * sell to a pool whose sell room covers it before one that cannot.
+ */
+const poolOrderSql = (isBuy, amount) => `
+  CASE WHEN ${isBuy}
+       THEN floor(10 * COALESCE(pool.available_paise, 0)::numeric / NULLIF(st.size_paise, 0))
+       ELSE (GREATEST(st.size_paise - COALESCE(pool.available_paise, 0) - COALESCE(pool.held_paise, 0)
+                      - st.sells_owed_paise, 0) >= ${amount})::int END DESC NULLS LAST`;
+const sellRoomOrderSql = (isBuy) => `
+  CASE WHEN ${isBuy} THEN 0
+       ELSE GREATEST(st.size_paise - COALESCE(pool.available_paise, 0) - COALESCE(pool.held_paise, 0)
+                     - st.sells_owed_paise, 0) END DESC`;
 
 /**
  * The routing settings, with the schema defaults (config.spec.js teamRouting)
@@ -98,7 +120,8 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
        JOIN teams t     ON t.team_id = tm.team_id
        JOIN merchants s ON s.merchant_id = t.supervisor_id
        JOIN merchants m ON m.merchant_id = tm.merchant_id
-       LEFT JOIN team_pools p ON p.team_id = t.team_id
+       LEFT JOIN team_pools pool ON pool.team_id = t.team_id
+       CROSS JOIN LATERAL (${poolStandingSql('t.team_id')}) st
        LEFT JOIN open o ON o.merchant_id = m.merchant_id
       WHERE tm.status = 'APPROVED'
         AND s.supervisor_rail = $1
@@ -108,7 +131,7 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
         AND m.assignment_paused_at IS NULL
         AND (CASE WHEN $3 THEN m.accepts_deposits ELSE m.accepts_withdrawals END)
         AND COALESCE(o.total, 0) < $2
-        AND (NOT $3 OR COALESCE(p.available_paise, 0) >= $4)
+        AND (NOT $3 OR COALESCE(pool.available_paise, 0) >= $4)
         AND (NOT ($3 AND $1 = 'CASH') OR m.cash_ready)
         AND (NOT (NOT $3 AND $1 = 'CASH') OR COALESCE(o.buys, 0) = 0)
         AND NOT (m.merchant_id = ANY($5))
@@ -119,7 +142,9 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
               COALESCE(m.bank_account_no, '') <> '' AND COALESCE(m.bank_ifsc, '') <> ''
           AND COALESCE(m.bank_account_holder_name, '') <> ''))
       ORDER BY m.routing_priority DESC,
+               ${poolOrderSql('$3', '$4')},
                m.avg_response_minutes ASC NULLS LAST,
+               ${sellRoomOrderSql('$3')},
                COALESCE(o.total, 0) ASC,
                m.last_assigned_at ASC NULLS FIRST,
                m.merchant_id
@@ -224,8 +249,9 @@ export async function setCashReady(merchantId, ready) {
  * (`accepts_deposits` for a buy, `pays_withdrawals` for a sell). On a buy the
  * pool hold is the check, taken in the assigning transaction as for a team.
  *
- * Best first, as for agents: `routing_priority` DESC, the average response
- * ASC, the open orders in this direction ASC, then whoever has waited longest.
+ * Best first, as for agents: `routing_priority` DESC, the pool (as above),
+ * the average response ASC, the sell room, the open orders in this direction
+ * ASC, then whoever has waited longest.
  */
 
 /** The merchant-account routing settings, with the schema defaults (config.spec.js merchantRouting). */
@@ -267,6 +293,7 @@ export async function directCandidates(order, { cap, barredMerchantIds = [], lim
        FROM teams t
        JOIN merchants owner ON owner.merchant_id = t.owner_merchant_id
        LEFT JOIN team_pools pool ON pool.team_id = t.team_id
+       CROSS JOIN LATERAL (${poolStandingSql('t.team_id')}) st
        LEFT JOIN open_by_direction ob ON ob.merchant_id = owner.merchant_id
       WHERE t.kind = 'DIRECT'
         AND owner.status = 'ACTIVE'
@@ -282,7 +309,9 @@ export async function directCandidates(order, { cap, barredMerchantIds = [], lim
                        AND (CASE WHEN $2 THEN acct.accepts_deposits ELSE acct.pays_withdrawals END)
                        AND ($3 / 100)::int = ANY (CASE WHEN $2 THEN acct.buy_sizes ELSE acct.sell_sizes END))
       ORDER BY owner.routing_priority DESC,
+               ${poolOrderSql('$2', '$3')},
                owner.avg_response_minutes ASC NULLS LAST,
+               ${sellRoomOrderSql('$2')},
                open_this_way ASC,
                owner.last_assigned_at ASC NULLS FIRST,
                owner.merchant_id

@@ -19,7 +19,7 @@ import {
 import { setSupervisorRole, createTeam, addMember, approveMember, removeMember } from '../repositories/teams.js';
 import {
   createRequest, fulfilRequest, getPool, releaseBuyHold, spendForBuy, detachFromTeamWithin,
-  creditSellToPool, reverseSellFromPool, findStrandedBuyHolds, findCompletedUnspentBuys,
+  creditSellToPool, reverseSellFromPool, findStrandedBuyHolds, findCompletedUnspentBuys, poolStanding,
 } from '../repositories/teamPools.js';
 import { assignToTeam, routingCandidates, railOf, setCashReady, routingSettings } from '../repositories/teamRouting.js';
 import { createOrderRecord, getOrderRecord } from '../repositories/orders.record.js';
@@ -317,6 +317,48 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     // A faster response beats an open order (the key above it).
     await recordCompletedOrder(first.merchantId, { direction: 'WITHDRAWAL', responseMinutes: 0 });
     expect(await rankedIn(t.teamId)).toEqual([first.merchantId, other]);
+  });
+
+  // ── By the pool (owner, 2026-10-21) ──────────────────────────────────────
+  // A buy to the team with the most of its pool left; a sell to the team whose
+  // cash from buys covers it; speed only between pools equally placed.
+  it('a buy goes to the fuller pool and a sell to the pool whose buys left cash to pay it, over a faster member', async () => {
+    const drained = await workingTeam('UPI_BANK', 200000);
+    const full = await workingTeam('UPI_BANK', 200000);
+    // One member of each online; the drained team's is the faster.
+    const [d] = drained.members;
+    const [f] = full.members;
+    await pgQuery('UPDATE merchants SET is_online = (merchant_id = ANY($2)) WHERE merchant_id = ANY($1)', [made, [d, f]]);
+    await recordCompletedOrder(d, { direction: 'DEPOSIT', responseMinutes: 1 });
+    await recordCompletedOrder(f, { direction: 'DEPOSIT', responseMinutes: 9 });
+
+    // The drained team sells 150,000 tokens to a player: a quarter of its pool is left.
+    const sold = await order('DEPOSIT', 150000);
+    expect((await assignToTeam(sold, { cap: 3, barredMerchantIds: [f], buildSet: async () => ({ assignedAt: new Date() }) })).merchantId).toBe(d);
+    expect(await spendForBuy(sold.orderId)).toMatchObject({ ok: true });
+    expect(await poolStanding(drained.teamId)).toEqual({
+      sizePaise: T(200000), leftPaise: T(50000), heldPaise: 0, consumedPaise: T(150000),
+      sellsOwedPaise: 0, sellRoomPaise: T(150000), leftPercent: 25,
+    });
+    expect(await poolStanding(full.teamId)).toMatchObject({ sizePaise: T(200000), leftPercent: 100, sellRoomPaise: 0 });
+
+    const buyFirst = (await routingCandidates(await order('DEPOSIT', 40000), { cap: 3, limit: 500 })).map((c) => c.merchantId);
+    expect(buyFirst.slice(0, 2)).toEqual([f, d]);
+    const sell = await order('WITHDRAWAL', 60000);
+    const sellFirst = (await routingCandidates(sell, { cap: 3, limit: 500 })).map((c) => c.merchantId);
+    expect(sellFirst.slice(0, 2)).toEqual([d, f]);
+
+    // The sell it takes is owed from that cash, so the room shrinks by it.
+    expect((await assign(sell)).merchantId).toBe(d);
+    expect(await poolStanding(drained.teamId)).toMatchObject({ sellsOwedPaise: T(60000), sellRoomPaise: T(90000) });
+    // A sell larger than what is left of the room no longer prefers that pool:
+    // neither covers it, so the faster member is first again by speed alone.
+    const big = (await routingCandidates(await order('WITHDRAWAL', 100000), { cap: 3, limit: 500 })).map((c) => c.merchantId);
+    expect(big.slice(0, 2)).toEqual([d, f]);
+    // Now the full team's member is the faster (an average the writer could reach).
+    await pgQuery('UPDATE merchants SET avg_response_minutes = 0.5 WHERE merchant_id = $1', [f]);
+    const faster = (await routingCandidates(await order('WITHDRAWAL', 100000), { cap: 3, limit: 500 })).map((c) => c.merchantId);
+    expect(faster.slice(0, 2)).toEqual([f, d]);
   });
 
   it('priority is a whole number from 1 to 5, a member\'s only, and the row holds the range for every writer', async () => {

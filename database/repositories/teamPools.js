@@ -176,6 +176,61 @@ export function toPoolExposure(row) {
   };
 }
 
+// ── How full a pool is, and what its holder can pay out ──────────────────────
+//
+// The owner's words (2026-10-21): a pool's SIZE is the security deposit plus
+// the bonus, and orders go by how much of it is consumed and how much is left.
+// Size = every token the pool was given, less every token taken from it for
+// good: the platform sales (and any old buyback), the commission, less the
+// dispute compensation paid out of it. What a buy spends and a sell brings
+// back moves tokens between the pool and the players, not the size. So:
+//   left      = available (the tokens a new buy can be held from);
+//   consumed  = size − available − held (sold to players for cash);
+//   sell room = consumed − the sells it is paying or has just paid
+//               (PROCESSING, PAID): the cash from buys not yet spent on sells.
+// A READ for ordering and display; a buy is still admitted only by its hold.
+
+/** The pool entries that change a pool's size. */
+export const POOL_SIZE_KINDS = Object.freeze(['ADMIN_SALE', 'ADMIN_BUYBACK', 'COMMISSION', 'DISPUTE_COMPENSATION']);
+/** A sell its holder is paying, or has paid inside its hold window. */
+export const SELL_OWED_STATES = Object.freeze(['PROCESSING', 'PAID']);
+
+/**
+ * `size_paise` and `sells_owed_paise` for the team named by `teamExpr` (a
+ * column or parameter the caller writes, e.g. `t.team_id`), for a LATERAL join.
+ */
+export function poolStandingSql(teamExpr) {
+  return `
+    SELECT COALESCE((SELECT sum(e.available_delta_paise) FROM team_pool_entries e
+                      WHERE e.team_id = ${teamExpr} AND e.kind IN (${sqlList(POOL_SIZE_KINDS)})), 0) AS size_paise,
+           COALESCE((SELECT sum(o.token_amount_paise) FROM order_states o
+                      WHERE o.team_id = ${teamExpr} AND o.order_type = 'WITHDRAWAL'
+                        AND o.state IN (${sqlList(SELL_OWED_STATES)})), 0) AS sells_owed_paise`;
+}
+
+/** Size, left, held, consumed and sell room, from `poolStandingSql` and the pool row (trap 5). */
+export function toPoolStanding({ size_paise, sells_owed_paise } = {}, { available_paise, held_paise } = {}) {
+  const sizePaise = toNum(size_paise);
+  const leftPaise = toNum(available_paise);
+  const heldPaise = toNum(held_paise);
+  const consumedPaise = Math.max(0, sizePaise - leftPaise - heldPaise);
+  const sellsOwedPaise = toNum(sells_owed_paise);
+  return {
+    sizePaise, leftPaise, heldPaise, consumedPaise, sellsOwedPaise,
+    sellRoomPaise: Math.max(0, consumedPaise - sellsOwedPaise),
+    leftPercent: sizePaise > 0 ? Math.round((leftPaise / sizePaise) * 1000) / 10 : 0,
+  };
+}
+
+/** One team's standing. */
+export async function poolStanding(teamId) {
+  const { rows } = await pgQuery(
+    `SELECT s.*, p.available_paise, p.held_paise
+       FROM (${poolStandingSql('$1')}) s LEFT JOIN team_pools p ON p.team_id = $1`,
+    [String(teamId)], 'team_pool_standing');
+  return toPoolStanding(rows[0], rows[0]);
+}
+
 /** One member's own orders, split the same way. */
 export async function memberExposure(merchantId) {
   const { rows } = await pgQuery(poolExposureSql('merchant_id = $1'), [String(merchantId)], 'team_pool_member_exposure');
