@@ -170,6 +170,8 @@ export const ROUTES = {
   // Every merchant: a supervisor manages teams here, a member sees theirs.
   TEAM: '/team',
   PROFILE: '/profile',
+  // The merchants' own support desk (owner, 2026-10-21).
+  SUPPORT: '/support',
   // A merchant account's screens (owner, 2026-10-11), one nav entry (ACCOUNT)
   // with a tab per screen. Shown only to a merchant account's sessions, by role.
   ACCOUNT: '/account',

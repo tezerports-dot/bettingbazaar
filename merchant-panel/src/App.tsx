@@ -10,6 +10,7 @@ import OrderManagement from './pages/OrderManagement';
 import TeamPage from './pages/TeamPage';
 import HistoryViews from './pages/HistoryViews';
 import ProfileSettings from './pages/ProfileSettings';
+import SupportPage from './pages/SupportPage';
 import PaymentAccountsPage from './pages/account/PaymentAccountsPage';
 import SubMembersPage from './pages/account/SubMembersPage';
 import PoolPage from './pages/account/PoolPage';
@@ -125,6 +126,7 @@ function AppRoutes() {
       <Route path={ROUTES.TEAM} element={<ProtectedRoute><Shell><TeamPage /></Shell></ProtectedRoute>} />
       <Route path={ROUTES.HISTORY} element={<ProtectedRoute><Shell><HistoryViews /></Shell></ProtectedRoute>} />
       <Route path={ROUTES.PROFILE} element={<ProtectedRoute><Shell><ProfileSettings /></Shell></ProtectedRoute>} />
+      <Route path={ROUTES.SUPPORT} element={<ProtectedRoute><Shell><SupportPage /></Shell></ProtectedRoute>} />
       {/* A merchant account's screens (owner, 2026-10-11); each says so to a session it is not for. */}
       <Route path={ROUTES.ACCOUNT} element={<ProtectedRoute><AccountHome /></ProtectedRoute>} />
       <Route path={ROUTES.ACCOUNT_PAYMENT_ACCOUNTS} element={<ProtectedRoute><Shell><PaymentAccountsPage /></Shell></ProtectedRoute>} />

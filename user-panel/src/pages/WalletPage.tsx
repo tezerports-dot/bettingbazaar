@@ -13,6 +13,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { payments, wallet, platform } from '../services/api';
 import { DisputeWindowPanel } from '../components/DisputeWindow';
+import { DisputeManagerLink } from '../components/DisputeManagerLink';
 import { PAYMENT_STATE_LABELS, PAYMENT_STATE_COLOR, type PaymentOrderState } from '../services/paymentStateMachine';
 // M-05: WalletTransactionDTO normalizer — GOVERNANCE §4: this module must have consumers.
 import { normalizeTransaction } from '../services/walletTransactionDTO';
@@ -1068,6 +1069,11 @@ const WalletPage: React.FC = () => {
                 {order.disputeUntil && (
                   <div style={{ marginBottom: 8 }}>
                     <DisputeWindowPanel order={{ ...order, orderId: order.orderId || order._id }} onDisputed={() => { void loadOrders(); }} />
+                  </div>
+                )}
+                {order.status === 'DISPUTED' && (
+                  <div style={{ marginBottom: 8 }}>
+                    <DisputeManagerLink orderId={order.orderId || order._id} />
                   </div>
                 )}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid var(--line)', paddingTop: 9 }}>

@@ -71,6 +71,7 @@ import * as content from './repositories/content.js';
 import * as androidReleases from './repositories/androidReleases.js';
 import * as engagement from './repositories/engagement.js';
 import * as social from './repositories/social.js';
+import * as supportDesk from './repositories/supportDesk.js';
 import * as referrals from './repositories/referrals.js';
 import * as promo from './repositories/promo.js';
 import * as boardRules from './repositories/boardRules.js';
@@ -159,6 +160,7 @@ export const db = Object.freeze({
   // Player-facing everything else
   engagement,
   social,
+  supportDesk,
   referrals,
   promo,
   boardRules,

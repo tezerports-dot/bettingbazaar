@@ -12,8 +12,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 const { chat } = vi.hoisted(() => ({
   chat: {
-    getTickets: vi.fn(), getMessages: vi.fn(), getBans: vi.fn(), getTicket: vi.fn(),
-    deleteMessage: vi.fn(), banUser: vi.fn(), unbanUser: vi.fn(), reply: vi.fn(),
+    getMessages: vi.fn(), getBans: vi.fn(),
+    deleteMessage: vi.fn(), banUser: vi.fn(), unbanUser: vi.fn(),
   },
 }));
 vi.mock('../../services/api', () => ({ default: { chat } }));
@@ -24,7 +24,6 @@ import { ChatSupport } from './ChatSupport';
 describe('chat bans on the moderation screen', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    chat.getTickets.mockResolvedValue({ success: true, tickets: [], openCount: 0 });
     chat.getMessages.mockResolvedValue({ success: true, messages: [] });
   });
 

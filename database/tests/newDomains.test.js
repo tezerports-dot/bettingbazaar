@@ -15,6 +15,7 @@ import * as games from '../repositories/games.js';
 import * as content from '../repositories/content.js';
 import * as engagement from '../repositories/engagement.js';
 import * as social from '../repositories/social.js';
+import * as supportDesk from '../repositories/supportDesk.js';
 import * as referrals from '../repositories/referrals.js';
 import * as audit from '../repositories/audit.js';
 import * as operations from '../repositories/operations.js';
@@ -810,24 +811,27 @@ describePg('the domains written from scratch', () => {
       expect(feed.map((m) => m.id)).not.toContain(posted.message.id);
     });
 
-    it('gives a ticket ONE owner when two agents open it together', async () => {
-      const ticket = await social.openTicket({ userId: `u-${ID}`, subject: 'Help' });
-      const claims = await Promise.all(
-        Array.from({ length: 5 }, (_, i) => social.assignTicket(ticket.ticketId, `agent-${i}`)),
-      );
-      expect(claims.filter((c) => c.ok)).toHaveLength(1);
-      expect(claims.filter((c) => c.reason === 'ALREADY_ASSIGNED')).toHaveLength(4);
+    it('opens one support ticket per account per day, however many arrive together', async () => {
+      const userId = `u-${ID}-desk`;
+      const tries = await Promise.all(Array.from({ length: 5 }, () => supportDesk.openTicket({
+        userId, desk: 'PLAYER', topic: 'OTHER', description: 'Five taps on the same button at once.',
+      })));
+      expect(tries.filter((t) => t.ok)).toHaveLength(1);
+      expect(tries.filter((t) => t.reason === 'ONE_PER_DAY')).toHaveLength(4);
     });
 
-    it('moves a reply and the ticket it is on together', async () => {
-      const ticket = await social.openTicket({ userId: `u-${ID}`, subject: 'Thread' });
-      await social.replyToTicket({
-        ticketId: ticket.ticketId, senderId: `u-${ID}`, senderType: 'USER', content: 'first',
+    it('gives a ticket ONE owner when two agents write on it together', async () => {
+      const opened = await supportDesk.openTicket({
+        userId: `u-${ID}-claim`, desk: 'PLAYER', topic: 'OTHER', description: 'Two agents, one ticket, same moment.',
       });
-      const messages = await social.listTicketMessages(ticket.ticketId);
-      expect(messages).toHaveLength(1);
-      // A queue ordered by last reply must not show this as untouched.
-      expect((await social.getTicket(ticket.ticketId)).lastReplyAt).not.toBeNull();
+      const notes = await Promise.all(Array.from({ length: 5 }, (_, i) => supportDesk.addNote({
+        ticketId: opened.ticket.ticketId, desk: 'PLAYER', agentId: `agent-${i}`, content: `note ${i}`,
+      })));
+      expect(new Set(notes.map((n) => n.ticket.assignedTo)).size).toBe(1);
+      // The other desk cannot write on it.
+      expect(await supportDesk.addNote({
+        ticketId: opened.ticket.ticketId, desk: 'MERCHANT', agentId: 'agent-x', content: 'not mine',
+      })).toBeNull();
     });
   });
 

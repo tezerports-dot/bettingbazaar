@@ -1,199 +1,187 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The player's side of support, over HTTP against a real database.
+ * The support desks over HTTP against a real database (CLAUDE.md §2,
+ * "Support desks"; owner, 2026-10-21).
  *
- * ── Why this file exists ────────────────────────────────────────────────────
- * These routes did not exist and the admin side did. openTicket, listTickets,
- * listTicketMessages and replyToTicket were all written, and the admin desk
- * could list, read and reply — but nothing could put a ticket INTO that queue,
- * so agents worked a desk no player could reach.
- *
- * The panel filled the hole with a fake: a canned "an agent is looking into
- * this and will reply here shortly", no network call at all, and a hardcoded
- * "Agent online · avg reply 2 min".
- *
- * ── What is actually being protected ────────────────────────────────────────
- * A ticket is a private conversation about somebody's money. The ownership
- * cases below are the point of this file; the happy path is the easy part.
- * Reading another player's ticket must be indistinguishable from a ticket that
- * does not exist, because ticket ids travel in URLs and a 403 would confirm
- * which ids are real.
+ * What is protected here, and why each case exists:
+ *   - one ticket per account per India day, held by the database;
+ *   - a ticket is given a support Telegram account and a code, and its link
+ *     opens that account with the code typed in;
+ *   - someone else's ticket, another desk's, and a guessed id all answer 404;
+ *   - an agent sees the mobile masked, and the full number only by a reveal
+ *     that leaves a row;
+ *   - a player-desk agent cannot reach a merchant ticket, and the other way;
+ *   - the Dispute Manager's Telegram is offered only on the caller's own
+ *     DISPUTED order.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
-import { listTicketMessages, listTickets } from '#db/repositories/social.js';
-import { mountRouter, actor, as, request } from './_harness.js';
+import express from 'express';
+import cookieParser from 'cookie-parser';
+import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
+import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
-describePg('player support tickets', () => {
-  let app;
+const DESCRIPTION = 'My bet on the 1 minute board shows no result after the round ended.';
+
+describePg('support desks', () => {
+  let playerApp; let merchantApp; let adminApp;
+  let playerAgent; let merchantAgent;
+  const tag = Math.random().toString(36).slice(2, 7);
 
   beforeAll(async () => {
     await applySchema();
-    const mod = await import('../../domains/support/support.routes.js');
-    app = mountRouter(mod.default);
+    playerApp = mountRouter((await import('../../domains/support/support.routes.js')).default);
+    merchantApp = mountRouter((await import('../../domains/support/merchantSupport.routes.js')).default);
+    adminApp = express();
+    adminApp.use(express.json());
+    adminApp.use(cookieParser());
+    adminApp.use('/admin', (await import('../../domains/support/supportDesk.admin.routes.js')).default);
+    playerAgent = await actor({ isSubAdmin: true, permissions: { canManageSupportTickets: true } });
+    merchantAgent = await actor({ isSubAdmin: true, permissions: { canManageMerchantSupport: true } });
+    // One support account per desk, so every ticket below gets one.
+    await pgQuery(`UPDATE support_contacts SET active = FALSE WHERE desk IN ('PLAYER', 'MERCHANT', 'DISPUTE')`);
+    const admin = await actor({ isAdmin: true });
+    for (const [desk, name] of [['PLAYER', `bbhelp_${tag}`], ['MERCHANT', `bbmerch_${tag}`], ['DISPUTE', `bbdispute_${tag}`]]) {
+      const res = await as(adminApp, admin).post('/admin/support/contacts').send({ desk, telegramUsername: `@${name}` });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+    }
   }, 60_000);
 
   afterAll(async () => { await closePg(); });
 
-  /**
-   * A fresh player per test.
-   *
-   * Opening a ticket is rate-limited per user (SUPPORT_TICKET_RATE, 5/min), and
-   * sharing one actor across the file exhausted it partway through — the later
-   * cases failed on a 429 that had nothing to do with what they were asserting.
-   * A new actor also means no test can see another's tickets by accident, which
-   * is the property half of them are about.
-   */
-  const player = () => actor({});
-  const open = (who, body) => as(app, who).post('/tickets').send(body);
+  const open = (app, who, body = {}) => as(app, who).post('/tickets')
+    .send({ topic: 'BETS', description: DESCRIPTION, ...body });
 
-  it('refuses every ticket route without a token', async () => {
-    expect((await request(app).post('/tickets').send({ subject: 'x' })).status).toBe(401);
-    expect((await request(app).get('/tickets')).status).toBe(401);
-    expect((await request(app).get('/tickets/anything')).status).toBe(401);
-    expect((await request(app).post('/tickets/anything/reply').send({ content: 'x' })).status).toBe(401);
+  it('refuses every account route without a token', async () => {
+    expect((await request(playerApp).post('/tickets').send({})).status).toBe(401);
+    expect((await request(playerApp).get('/tickets')).status).toBe(401);
+    expect((await request(playerApp).get('/desk')).status).toBe(401);
+    expect((await request(merchantApp).get('/tickets')).status).toBe(401);
   });
 
-  it('opens a ticket and stores the opening message with it', async () => {
-    const alice = await player();
-    // A ticket with a subject and no body is one an agent must ask about before
-    // they can start — the delay the player came here to avoid.
-    const res = await open(alice, { subject: 'Deposit not credited', message: 'UTR 123456789012, paid 20 minutes ago.' });
+  it('opens a ticket with a code and a Telegram link to its support account', async () => {
+    const alice = await actor({});
+    const res = await open(playerApp, alice, { reference: 'BET-123' });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body.ticket.subject).toBe('Deposit not credited');
-
-    const messages = await listTicketMessages(res.body.ticket.ticketId);
-    expect(messages).toHaveLength(1);
-    expect(messages[0].content).toMatch(/UTR 123456789012/);
-    expect(messages[0].senderType).toBe('USER');
+    const { ticket } = res.body;
+    expect(ticket.code).toMatch(/^S-[0-9A-HJKMNP-TV-Z]{6}$/);
+    expect(ticket.telegramUsername).toBe(`bbhelp_${tag}`);
+    expect(ticket.telegramLink).toBe(`https://t.me/bbhelp_${tag}?text=${encodeURIComponent(`Ticket ${ticket.code}`)}`);
+    expect(ticket.reference).toBe('BET-123');
   });
 
-  it('refuses a ticket with no subject', async () => {
-    const alice = await player();
-    expect((await open(alice, { message: 'help' })).status).toBe(400);
-    expect((await open(alice, { subject: '   ' })).status).toBe(400);
+  it('opens one ticket a day, and says so', async () => {
+    const bob = await actor({});
+    expect((await open(playerApp, bob)).status).toBe(200);
+    const second = await open(playerApp, bob);
+    expect(second.status).toBe(429);
+    expect(second.body.code).toBe('ONE_TICKET_A_DAY');
+    expect(second.body.nextTicketAt).toBeTruthy();
+    const desk = await as(playerApp, bob).get('/desk');
+    expect(desk.body.openedToday).toBe(true);
   });
 
-  it('lists only the caller’s own tickets', async () => {
-    const alice = await player(); const mallory = await player();
-    const mine = await open(alice, { subject: 'Mine only' });
-    await open(mallory, { subject: 'Not yours' });
-
-    const res = await as(app, alice).get('/tickets');
-    expect(res.status).toBe(200);
-    const ids = res.body.tickets.map((t) => t.ticketId);
-    expect(ids).toContain(mine.body.ticket.ticketId);
-    // Scoped in the query, not filtered after the fact.
-    const subjects = res.body.tickets.map((t) => t.subject);
-    expect(subjects).not.toContain('Not yours');
+  it('refuses an unknown topic, a short description and a long reference', async () => {
+    const carol = await actor({});
+    expect((await open(playerApp, carol, { topic: 'POOL' })).status).toBe(400); // a merchant topic
+    expect((await open(playerApp, carol, { description: 'too short' })).status).toBe(400);
+    expect((await open(playerApp, carol, { reference: 'x'.repeat(65) })).status).toBe(400);
+    // None of those used up the day's ticket.
+    expect((await open(playerApp, carol)).status).toBe(200);
   });
 
-  it('answers 404 — never 403 — for another player’s ticket', async () => {
-    const alice = await player(); const mallory = await player();
-    // A 403 confirms the id is real. Ticket ids travel in URLs, so "not yours"
-    // and "no such ticket" must be the same answer.
-    const theirs = await open(mallory, { subject: 'Private' });
-    const id = theirs.body.ticket.ticketId;
-
-    const read = await as(app, alice).get(`/tickets/${id}`);
-    expect(read.status).toBe(404);
-
-    const reply = await as(app, alice).post(`/tickets/${id}/reply`).send({ content: 'let me in' });
-    expect(reply.status).toBe(404);
-
-    // …and nothing was written to it.
-    expect(await listTicketMessages(id)).toHaveLength(0);
+  it('answers 404, never 403, for another account’s ticket', async () => {
+    const owner = await actor({}); const other = await actor({});
+    const id = (await open(playerApp, owner)).body.ticket.ticketId;
+    expect((await as(playerApp, other).get(`/tickets/${id}`)).status).toBe(404);
+    expect((await as(playerApp, owner).get(`/tickets/${id}`)).status).toBe(200);
+    const mine = await as(playerApp, other).get('/tickets');
+    expect(mine.body.tickets.map((t) => t.ticketId)).not.toContain(id);
   });
 
-  it('returns a ticket with its messages to its owner', async () => {
-    const alice = await player();
-    const t = await open(alice, { subject: 'Withdrawal stuck', message: 'first' });
-    const id = t.body.ticket.ticketId;
-    await as(app, alice).post(`/tickets/${id}/reply`).send({ content: 'second' });
-
-    const res = await as(app, alice).get(`/tickets/${id}`);
-    expect(res.status).toBe(200);
-    expect(res.body.messages.map((m) => m.content)).toEqual(['first', 'second']);
+  it('shows an account only its last 7 days', async () => {
+    const dave = await actor({});
+    const id = (await open(playerApp, dave)).body.ticket.ticketId;
+    await pgQuery(`UPDATE support_tickets SET created_at = now() - interval '8 days', opened_day = opened_day - 8 WHERE ticket_id = $1`, [id]);
+    expect((await as(playerApp, dave).get('/tickets')).body.tickets).toHaveLength(0);
+    expect((await as(playerApp, dave).get(`/tickets/${id}`)).status).toBe(404);
   });
 
-  it('stamps senderType from the session, so a client cannot forge an agent', async () => {
-    const alice = await player();
-    // A player who could name themselves AGENT could write a reply that reads
-    // as coming from support — inside a conversation about their own money.
-    const t = await open(alice, { subject: 'Forge attempt' });
-    const id = t.body.ticket.ticketId;
-    await as(app, alice).post(`/tickets/${id}/reply`).send({ content: 'trust me', senderType: 'AGENT' });
+  it('gives the agent a masked number, and the full one only by a logged reveal', async () => {
+    const erin = await actor({});
+    const id = (await open(playerApp, erin)).body.ticket.ticketId;
 
-    const messages = await listTicketMessages(id);
-    expect(messages.every((m) => m.senderType === 'USER')).toBe(true);
+    const queue = await as(adminApp, playerAgent).get('/admin/support/tickets');
+    expect(queue.status).toBe(200);
+    const row = queue.body.tickets.find((t) => t.ticketId === id);
+    expect(row.account.mobileMasked).toContain('•');
+    expect(JSON.stringify(queue.body)).not.toContain(erin.mobile);
+
+    const reveal = await as(adminApp, playerAgent).post(`/admin/support/tickets/${id}/reveal-number`);
+    expect(reveal.status).toBe(200);
+    expect(reveal.body.mobile).toBe(erin.mobile);
+    const detail = await as(adminApp, playerAgent).get(`/admin/support/tickets/${id}`);
+    expect(detail.body.reveals).toHaveLength(1);
+    expect(detail.body.reveals[0].staffId).toBe(playerAgent.userId);
   });
 
-  it('refuses an empty reply', async () => {
-    const alice = await player();
-    const t = await open(alice, { subject: 'Empty' });
-    const id = t.body.ticket.ticketId;
-    for (const body of [{}, { content: '' }, { content: '   ' }]) {
-      expect((await as(app, alice).post(`/tickets/${id}/reply`).send(body)).status).toBe(400);
-    }
+  it('keeps each desk to its own agents', async () => {
+    const frank = await actor({});
+    const id = (await open(playerApp, frank)).body.ticket.ticketId;
+    // The merchant-desk agent holds no player-desk permission…
+    expect((await as(adminApp, merchantAgent).get('/admin/support/tickets')).status).toBe(403);
+    // …and the merchant desk's routes do not find a player ticket by its id.
+    expect((await as(adminApp, merchantAgent).get(`/admin/merchant-support/tickets/${id}`)).status).toBe(404);
+    expect((await as(adminApp, merchantAgent).post(`/admin/merchant-support/tickets/${id}/reveal-number`)).status).toBe(404);
   });
 
-  it('does not let a player reply to a closed ticket', async () => {
-    const alice = await player();
-    const t = await open(alice, { subject: 'To be closed' });
-    const id = t.body.ticket.ticketId;
-    const { setTicketStatus } = await import('#db/repositories/social.js');
-    await setTicketStatus(id, 'CLOSED');
-
-    const res = await as(app, alice).post(`/tickets/${id}/reply`).send({ content: 'reopen please' });
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/closed/i);
+  it('lets an agent note and resolve, and the player rate once', async () => {
+    const gina = await actor({});
+    const id = (await open(playerApp, gina)).body.ticket.ticketId;
+    const note = await as(adminApp, playerAgent).post(`/admin/support/tickets/${id}/notes`).send({ content: 'Refunded the round, see your wallet.' });
+    expect(note.status).toBe(200);
+    expect(note.body.ticket.status).toBe('ASSIGNED');
+    expect((await as(playerApp, gina).post(`/tickets/${id}/rate`).send({ rating: 5 })).status).toBe(409);
+    const done = await as(adminApp, playerAgent).post(`/admin/support/tickets/${id}/status`).send({ status: 'RESOLVED' });
+    expect(done.body.ticket.status).toBe('RESOLVED');
+    const seen = await as(playerApp, gina).get(`/tickets/${id}`);
+    expect(seen.body.messages.map((m) => m.senderType)).toEqual(['USER', 'AGENT']);
+    expect((await as(playerApp, gina).post(`/tickets/${id}/rate`).send({ rating: 5 })).status).toBe(200);
+    expect((await as(playerApp, gina).post(`/tickets/${id}/rate`).send({ rating: 4 })).status).toBe(409);
   });
 
-  it('rate-limits ticket opening per player', async () => {
-    // Each call writes a row, so this is the guard against one account filling
-    // the agents' queue. Asserted rather than worked around: sharing an actor
-    // across this file tripped it, and a limit nobody tests is one that can be
-    // removed without anything noticing.
-    const spammer = await player();
-    const codes = [];
-    for (let i = 0; i < 8; i += 1) {
-      codes.push((await open(spammer, { subject: `spam ${i}` })).status);
-    }
-    expect(codes).toContain(429);
-    // …and a different player is unaffected, so the key really is the user.
-    const bystander = await player();
-    expect((await open(bystander, { subject: 'unaffected' })).status).toBe(200);
+  it('runs a separate merchant desk', async () => {
+    const m = await merchantActor();
+    const res = await open(merchantApp, m, { topic: 'POOL' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.ticket.telegramUsername).toBe(`bbmerch_${tag}`);
+    const id = res.body.ticket.ticketId;
+    expect((await as(adminApp, merchantAgent).get(`/admin/merchant-support/tickets/${id}`)).status).toBe(200);
+    expect((await as(adminApp, playerAgent).get(`/admin/support/tickets/${id}`)).status).toBe(404);
   });
 
-  it('rate-limits the assistant per player, not per address', async () => {
-    // The limiter keyed on `req.user?._id` — a field the users table has never
-    // produced, so the guard was always false and every authenticated ask fell
-    // through to the IP key. Behind a proxy or a carrier NAT that is ONE shared
-    // budget: the first player to ask ten questions silences the assistant for
-    // everybody on that egress address. supertest gives every request the same
-    // ::ffff:127.0.0.1, so a per-address key cannot pass the second half here.
-    const curious = await player();
-    const codes = [];
-    for (let i = 0; i < 12; i += 1) {
-      codes.push((await as(app, curious).post('/ask').send({ query: `q${i}` })).status);
-    }
-    expect(codes).toContain(429);
-
-    // A different player still has their own budget. The assertion is that this
-    // is NOT 429 — the status itself depends on whether RAG is configured
-    // (503 unconfigured, 200 configured), and neither is what is under test.
-    const bystander = await player();
-    const other = await as(app, bystander).post('/ask').send({ query: 'unaffected' });
-    expect(other.status).not.toBe(429);
+  it('refuses a support account with a bad username, and a duplicate', async () => {
+    const admin = await actor({ isAdmin: true });
+    const bad = await as(adminApp, admin).post('/admin/support/contacts').send({ desk: 'PLAYER', telegramUsername: 'ab' });
+    expect(bad.status).toBe(400);
+    const dup = await as(adminApp, admin).post('/admin/support/contacts').send({ desk: 'PLAYER', telegramUsername: `BBHELP_${tag}` });
+    expect(dup.status).toBe(409);
+    // The player-desk agent cannot change who players chat with.
+    expect((await as(adminApp, playerAgent).post('/admin/support/contacts').send({ desk: 'PLAYER', telegramUsername: 'someone_else' })).status).toBe(403);
   });
 
-  it('puts the ticket where the admin desk will find it', async () => {
-    const alice = await player();
-    // The whole point: the queue agents work must now have an input.
-    const t = await open(alice, { subject: 'Reaches the desk' });
-    const all = await listTickets({ limit: 500 });
-    expect(all.some((x) => x.ticketId === t.body.ticket.ticketId)).toBe(true);
+  it('offers the Dispute Manager’s Telegram only on the caller’s own disputed order', async () => {
+    const hank = await actor({}); const ivy = await actor({});
+    const orderId = `ord-sup-${tag}`;
+    await pgQuery(
+      `INSERT INTO order_states (order_id, user_id, state, order_type, currency, token_amount_paise, payment_mode, order_hmac)
+       VALUES ($1, $2, 'DISPUTED', 'DEPOSIT', 'INR', 50000, 'CASH_ATM', 'x')`,
+      [orderId, hank.userId],
+    ).catch((e) => { throw new Error(`fixture order: ${e.message}`); });
+    const mine = await as(playerApp, hank).get(`/dispute-contact/${orderId}`);
+    expect(mine.status, JSON.stringify(mine.body)).toBe(200);
+    expect(mine.body.contact.telegramLink).toBe(`https://t.me/bbdispute_${tag}?text=${encodeURIComponent(`Dispute ${orderId}`)}`);
+    expect((await as(playerApp, ivy).get(`/dispute-contact/${orderId}`)).status).toBe(404);
   });
 });

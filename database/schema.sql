@@ -1952,6 +1952,71 @@ CREATE TABLE IF NOT EXISTS support_messages (
 );
 CREATE INDEX IF NOT EXISTS support_messages_thread_idx ON support_messages (ticket_id, created_at, id);
 
+-- ── Support desks (owner, 2026-10-21) ───────────────────────────────────────
+-- Two desks: PLAYER and MERCHANT, each its own queue and staff permission. A
+-- ticket is the form the account filled in; the conversation happens on
+-- Telegram, from the account's own Telegram to the support account the ticket
+-- was given (`t.me/<username>?text=<code>`). No bot, no webhook: the server
+-- carries the form, the status and the agent's notes, never the chat.
+--
+-- `support_contacts` are those support accounts: public Telegram usernames the
+-- business runs, per desk, plus the DISPUTE desk's (Dispute Managers, shown only
+-- on a disputed order). Not a staff sign-in: staff still have no Telegram login
+-- (§33). Never deleted, switched off, so an old ticket still names its account.
+CREATE TABLE IF NOT EXISTS support_contacts (
+  contact_id        TEXT PRIMARY KEY,
+  desk              TEXT NOT NULL,
+  telegram_username TEXT NOT NULL,
+  label             TEXT NOT NULL DEFAULT '',
+  active            BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT support_contacts_desk_known CHECK (desk IN ('PLAYER', 'MERCHANT', 'DISPUTE')),
+  -- Telegram's own rule for a public username: 5-32 letters, digits, underscores.
+  CONSTRAINT support_contacts_username_shape CHECK (telegram_username ~ '^[A-Za-z][A-Za-z0-9_]{4,31}$'),
+  CONSTRAINT support_contacts_label_length CHECK (char_length(label) <= 60)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS support_contacts_desk_username
+  ON support_contacts (desk, lower(telegram_username));
+
+ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS desk TEXT NOT NULL DEFAULT 'PLAYER';
+ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS code TEXT;
+ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS reference TEXT NOT NULL DEFAULT '';
+ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS contact_id TEXT REFERENCES support_contacts (contact_id);
+-- The India day the ticket was opened. Added with no default first, so a row
+-- from before keeps NULL (NULLs never collide in the index below) instead of
+-- every old row taking today's date.
+ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS opened_day DATE;
+ALTER TABLE support_tickets ALTER COLUMN opened_day SET DEFAULT (now() AT TIME ZONE 'Asia/Kolkata')::date;
+ALTER TABLE support_tickets DROP CONSTRAINT IF EXISTS support_tickets_desk_known;
+ALTER TABLE support_tickets ADD CONSTRAINT support_tickets_desk_known CHECK (desk IN ('PLAYER', 'MERCHANT'));
+ALTER TABLE support_tickets DROP CONSTRAINT IF EXISTS support_tickets_reference_length;
+ALTER TABLE support_tickets ADD CONSTRAINT support_tickets_reference_length CHECK (char_length(reference) <= 64);
+CREATE UNIQUE INDEX IF NOT EXISTS support_tickets_code_unique ON support_tickets (code);
+-- One ticket per account per India day (owner, 2026-10-21: "only raise chat
+-- support ticket once a day so they can't bombard our chat system"). Held by
+-- the database, so a double tap or a second phone gets the same answer.
+CREATE UNIQUE INDEX IF NOT EXISTS support_tickets_one_per_day ON support_tickets (user_id, opened_day);
+CREATE INDEX IF NOT EXISTS support_tickets_desk_idx ON support_tickets (desk, created_at DESC);
+
+-- Every time an agent looks at an account's verified mobile. The desk shows it
+-- masked; the full number costs one click and leaves this row (least
+-- privilege: who looked, at which ticket, when). Append-only.
+CREATE TABLE IF NOT EXISTS support_number_reveals (
+  id          BIGSERIAL PRIMARY KEY,
+  ticket_id   TEXT NOT NULL REFERENCES support_tickets (ticket_id) ON DELETE CASCADE,
+  staff_id    TEXT NOT NULL,
+  revealed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS support_number_reveals_ticket_idx ON support_number_reveals (ticket_id, revealed_at DESC);
+CREATE OR REPLACE FUNCTION bb_support_reveal_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'support_number_reveals is append-only' USING ERRCODE = 'check_violation';
+END $$;
+DROP TRIGGER IF EXISTS support_number_reveals_append_only ON support_number_reveals;
+CREATE TRIGGER support_number_reveals_append_only BEFORE UPDATE ON support_number_reveals
+  FOR EACH ROW EXECUTE FUNCTION bb_support_reveal_append_only();
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- REFERRALS
 -- ═══════════════════════════════════════════════════════════════════════════
