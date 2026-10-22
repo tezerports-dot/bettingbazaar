@@ -212,9 +212,8 @@ describe('the ATM cash rail', () => {
    * server from the order's size. It is paid through the cash machine's QR the
    * member scans (Step 2d), sent as `payTo.paymentLink` and used verbatim.
    *
-   * The ORDER of the steps differs too: the member is at a machine whose
-   * session times out, so the player taps "I've paid" first and the reference
-   * follows; the member cannot confirm until it does.
+   * The steps are the same as every rail (owner, 2026-10-22): the reference
+   * first, then one Paid tap that carries it.
    */
   const ATM_LINK = 'upi://pay?pa=atm.cash@icici&pn=ICICI%20ATM&am=5000.00&cu=INR&tr=ATM88123';
   const CASH_ORDER: any = {
@@ -253,42 +252,23 @@ describe('the ATM cash rail', () => {
     expect(document.body.innerHTML).not.toContain('merchant@bank');
   });
 
-  it('asks for the TAP first, with no reference field yet', async () => {
+  it('takes the reference FIRST, then one Paid tap that carries it', async () => {
     const onPaid = vi.fn();
-    post.mockResolvedValue({ success: true, order: { orderId: 'ORD-CASH-1', status: 'PAID', utrNumber: null } });
+    post.mockResolvedValue({ success: true, order: { orderId: 'ORD-CASH-1', status: 'PAID', utrNumber: 'UTR123456789012' } });
     render(<BuyPaymentUI order={CASH_ORDER} onPaid={onPaid} onExpire={vi.fn()} />);
 
-    expect(screen.queryByPlaceholderText(/Enter after paying/)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /I've Paid — tell the merchant/ }));
-
-    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/payment/order/ORD-CASH-1/mark-paid', {}));
-    // The server's word on the order: PAID, and no reference — the state that
-    // asks for one next.
-    expect(onPaid).toHaveBeenCalledWith(expect.objectContaining({ status: 'PAID', utrNumber: null }));
-  });
-
-  it('then asks for the REFERENCE — PAID with no UTR is not "payment submitted"', async () => {
-    // This branch was unreachable: the PAID screen returned first, so a tapped
-    // cash buy showed "Payment submitted" with an empty UTR and never offered
-    // the field the merchant's Confirm is waiting on.
-    const onPaid = vi.fn();
-    const paid = { ...CASH_ORDER, status: 'PAID', paidAt: new Date().toISOString(), utrNumber: null };
-    render(<BuyPaymentUI order={paid} onPaid={onPaid} onExpire={vi.fn()} />);
-
-    expect(screen.queryByText('Payment submitted')).toBeNull();
-    // Already paid, so the link is not offered a second time.
-    expect(screen.queryByRole('link', { name: /UPI app/i })).toBeNull();
-    expect(screen.getByText(/cannot release your tokens until this reference arrives/)).toBeInTheDocument();
-
+    // No reference, no tap: the button waits for twelve characters.
+    const button = screen.getByRole('button', { name: /I've Paid/ });
+    expect(button).toBeDisabled();
     fireEvent.change(screen.getByPlaceholderText(/Enter after paying/), { target: { value: 'UTR123456789012' } });
-    fireEvent.click(screen.getByRole('button', { name: /Submit reference/ }));
+    expect(button).not.toBeDisabled();
+    fireEvent.click(button);
 
     await waitFor(() => expect(post).toHaveBeenCalledWith(
-      '/api/payment/order/ORD-CASH-1/payment-reference', { utrNumber: 'UTR123456789012' },
+      '/api/payment/order/ORD-CASH-1/mark-paid', { utrNumber: 'UTR123456789012' },
     ));
-    expect(post).not.toHaveBeenCalledWith('/api/payment/order/ORD-CASH-1/mark-paid', expect.anything());
-    // The reference is on the order now, so the screen above moves on without
-    // waiting for the next poll.
+    // One submission: nothing else is posted for the reference.
+    expect(post).toHaveBeenCalledTimes(1);
     expect(onPaid).toHaveBeenCalledWith(expect.objectContaining({ status: 'PAID', utrNumber: 'UTR123456789012' }));
   });
 

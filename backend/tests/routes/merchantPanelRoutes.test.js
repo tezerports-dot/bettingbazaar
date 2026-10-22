@@ -376,23 +376,21 @@ describePg('merchant panel routes', () => {
     expect((await getOrderRecord(orderId)).state).toBe('PAID');
   });
 
-  it('will not confirm a deposit the player has not referenced', async () => {
-    // The reference is read off the ROW. On the CASH rail the player's Paid
-    // tap reaches PAID before the reference does (the ATM's clock), so a PAID
-    // buy with no reference is a real state — and the one a confirm must not
-    // complete.
+  it('a cash buy cannot reach PAID without its reference, so there is nothing unreferenced to confirm', async () => {
+    // The cash rail used to reach PAID on a bare tap with the reference to
+    // follow. Since 2026-10-22 (owner: "UTR first, then Paid") the tap carries
+    // it on every rail, and a bare one leaves the order where it was.
     const m = await member('CASH');
     expect((await as(app, m).put('/cash-ready').send({ ready: true })).status).toBe(200);
     const { orderId, who } = await buy({ to: m, tokens: CASH_TOKENS });
     await readyToPay(orderId);
-    expect((await markOrderPaid(who.userId, orderId)).status).toBe('PAID');
-    expect((await getOrderRecord(orderId)).utrNumber ?? null).toBeNull();
+    await expect(markOrderPaid(who.userId, orderId)).rejects.toMatchObject({ status: 400, code: 'UTR_REQUIRED' });
+    expect((await getOrderRecord(orderId)).state).toBe('PROCESSING');
     const before = await getBalancesPaise(who.userId);
 
     const res = await as(app, m).post(`/confirm/${orderId}`);
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/no payment reference/i);
-    expect((await getOrderRecord(orderId)).state).toBe('PAID');
+    expect((await getOrderRecord(orderId)).state).toBe('PROCESSING');
     expect(await getBalancesPaise(who.userId)).toEqual(before);
   });
 

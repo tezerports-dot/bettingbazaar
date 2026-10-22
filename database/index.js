@@ -101,6 +101,8 @@ import * as merchantLedger from './repositories/merchantLedger.js';
 import * as adminDirectory from './repositories/adminDirectory.js';
 import * as tokenHolders from './repositories/tokenHolders.js';
 import * as tokenLedger from './repositories/tokenLedger.js';
+import * as ownerLedger from './repositories/ownerLedger.js';
+import * as presence from './repositories/presence.js';
 import * as disputeFaults from './repositories/disputeFaults.js';
 import * as stats from './repositories/stats.js';
 import * as utr from './repositories/utr.js';
@@ -199,6 +201,9 @@ export const db = Object.freeze({
   // Who holds the token supply, holder by holder (owner, 2026-10-17)
   tokenHolders,
   tokenLedger,
+  // The owner's dashboard: supply tree, ledgers, weekly settlement (owner, 2026-10-22)
+  ownerLedger,
+  presence,
   disputeFaults,
   operations,
   // Every failure, server and panels, one row per distinct error (owner, 2026-10-20)

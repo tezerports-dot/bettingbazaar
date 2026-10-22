@@ -121,7 +121,7 @@ export function useOrders() {
     sseService.on('new_order', upsert);
     sseService.on(SOCKET_EVENTS.ORDER_UPDATE, upsert);
     // The player's Paid tap: the payload is the order's own fields (id, status
-    // PAID, the reference or `awaitingReference`), so it merges like any update.
+    // PAID and the reference), so it merges like any update.
     sseService.on('order_paid', upsert);
     return () => {
       sseService.off('merchant_orders_snapshot', onSnapshot);

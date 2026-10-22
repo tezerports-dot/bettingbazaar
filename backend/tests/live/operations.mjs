@@ -195,38 +195,6 @@ async function cron() {
       },
     },
     {
-      id: 'utr-after-paid-timeout',
-      what: 'sweepUtrAfterPaid catches a CASH_ATM buy PAID with no reference',
-      async go() {
-        const userId = await player();
-        const merchantId = await merchant();
-        const id = await order({
-          user_id: userId, merchant_id: merchantId, state: 'PAID',
-          payment_mode: 'CASH_ATM', paid_at: new Date(Date.now() - 120 * 60000),
-        });
-        // And a UPI order in the same state, which this sweep must NOT touch:
-        // the split between the two sweeps is the §2 rule being checked here.
-        // 20,000 tokens, because above ₹10,000 is what makes an order UPI.
-        const bystander = await order({
-          user_id: userId, merchant_id: merchantId, state: 'PAID',
-          token_amount_paise: 2000000, fiat_amount_paise: 2000000,
-          payment_mode: 'P2P_UPI', paid_at: new Date(Date.now() - 120 * 60000),
-        });
-        const { sweepUtrAfterPaid } =
-          await import('../../domains/payment/paymentProcessing.service.js');
-        const n = await sweepUtrAfterPaid();
-        const after = await orderState(id);
-        const other = await orderState(bystander);
-        if (after.state !== 'DISPUTED') {
-          return ['FAIL', `the cash order is ${after.state} after the sweep handled ${n}`];
-        }
-        if (other.state !== 'PAID') {
-          return ['FAIL', `the UPI order moved to ${other.state} — this sweep is CASH_ATM only (§2)`];
-        }
-        return ['PASS', `the cash order went to DISPUTED and the UPI one stayed PAID (handled ${n})`];
-      },
-    },
-    {
       id: 'payment-proof-retention',
       what: 'scrubExpiredProofs clears an expired proof and keeps the order',
       async go() {

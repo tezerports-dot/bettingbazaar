@@ -27,13 +27,9 @@ export const listOrders = (limit = 20): Promise<any> =>
 export const orderStatus = (orderId: string): Promise<any> =>
   apiClient.get(`/api/payment/order/${orderId}/status`);
 
-/** The Paid tap. A cash buy sends no reference here; the rest send theirs. */
-export const markPaid = (orderId: string, utrNumber?: string): Promise<any> =>
-  apiClient.post(`/api/payment/order/${orderId}/mark-paid`, utrNumber === undefined ? {} : { utrNumber });
-
-/** A reference given after the Paid tap (a cash buy's UTR). */
-export const submitPaymentReference = (orderId: string, utrNumber: string): Promise<any> =>
-  apiClient.post(`/api/payment/order/${orderId}/payment-reference`, { utrNumber });
+/** The Paid tap, carrying the reference on every rail (owner, 2026-10-22). */
+export const markPaid = (orderId: string, utrNumber: string): Promise<any> =>
+  apiClient.post(`/api/payment/order/${orderId}/mark-paid`, { utrNumber });
 
 export const requestUtrGrace = (orderId: string): Promise<any> =>
   apiClient.post(`/api/payment/order/${orderId}/utr-grace`, {});

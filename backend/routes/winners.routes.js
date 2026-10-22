@@ -20,6 +20,7 @@ import {
   authenticate, hasPermission,
 } from '../domains/identity/auth.middleware.js';
 import { respondError } from '../shared/httpError.js';
+import { winnersDemoLabelOf } from '../domains/cms/winnersDemoLabel.js';
 
 const router = express.Router();
 
@@ -36,16 +37,17 @@ router.get('/v1/winners', async (req, res) => {
     const sinceHours = period === 'week' ? 168 : 24;
     const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
 
-    const [curated, real] = await Promise.all([
+    const [curated, real, config] = await Promise.all([
       db.engagement.curatedWinners({ sinceHours, limit: size }),
       db.engagement.realWinners({ sinceHours, limit: 20 }),
+      db.config.getSystemConfig(),
     ]);
 
     const merged = [...curated, ...real]
       .sort((a, b) => new Date(b.displayTime).getTime() - new Date(a.displayTime).getTime())
       .slice(0, size);
 
-    res.json({ success: true, winners: merged, total: merged.length });
+    res.json({ success: true, winners: merged, total: merged.length, demoLabel: winnersDemoLabelOf(config) });
   } catch (err) {
     console.error('GET /v1/winners error:', err);
     res.status(500).json({ success: false, message: 'Could not load winners.' });
@@ -95,6 +97,31 @@ router.post('/admin/fake-winners', authenticate, hasPermission('canManageContent
   } catch (err) {
     console.error('POST /admin/fake-winners error:', err);
     res.status(500).json({ success: false, message: 'Could not create that entry.' });
+  }
+});
+
+/**
+ * POST /api/admin/fake-winners/import — many curated entries from one CSV file
+ * (owner, 2026-10-22). Every row is checked before any is added
+ * (`engagement.importFakeWinners`); the refusal names the line.
+ */
+router.post('/admin/fake-winners/import', authenticate, hasPermission('canManageContent'), async (req, res) => {
+  try {
+    const text = req.body?.text;
+    if (typeof text !== 'string' || !text.trim()) {
+      return res.status(400).json({ success: false, code: 'EMPTY_WINNERS_FILE', message: 'Choose a CSV file to upload.' });
+    }
+    if (text.length > 200_000) {
+      return res.status(400).json({ success: false, code: 'WINNERS_FILE_TOO_BIG', message: 'That file is too big. Split it into smaller files.' });
+    }
+    const added = await db.engagement.importFakeWinners(text, { createdBy: req.user.userId });
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'CURATED_WINNERS_IMPORTED', category: 'CONTENT',
+      targetType: 'FakeWinner', targetId: 'import', details: { added },
+    });
+    res.json({ success: true, added });
+  } catch (err) {
+    return respondError(res, err, 'POST /admin/fake-winners/import', { message: 'Could not read that file.' });
   }
 });
 

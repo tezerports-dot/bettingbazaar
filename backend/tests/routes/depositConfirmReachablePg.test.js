@@ -84,13 +84,12 @@ describePg('a member can release tokens on a paid deposit', () => {
    * reference THEY submitted, its tokens held in the team's pool, and no proof
    * screenshot — because nothing on this platform can produce one.
    *
-   * `utr: null` is the CASH rail's tap: at a machine the player says Paid so the
-   * member can carry on, and the reference follows. That is the only way a
-   * PAID buy without a reference comes to exist, so it is the way this builds
-   * one — on the cash rail, through a member who pressed Ready.
+   * `cash: true` builds it on the CASH rail, through a member who pressed
+   * Ready; `pay: false` stops before the Paid tap. Since the owner's "UTR
+   * first, then Paid" (2026-10-22) no PAID buy without a reference can exist
+   * on any rail.
    */
-  const paidDeposit = async ({ utr = nextUtr() } = {}) => {
-    const cash = utr === null;
+  const paidDeposit = async ({ utr = nextUtr(), cash = false, pay = true } = {}) => {
     const tokens = cash ? 5_000 : 20_000;   // a cash denomination, or above the cash ceiling
     const member = await merchantActor();
     const team = await teams.workingTeam({
@@ -107,8 +106,7 @@ describePg('a member can release tokens on a paid deposit', () => {
     expect(await tryAssignMerchant(order), 'the router did not assign the buy').toBe(true);
     expect((await getOrderRecord(orderId)).merchantId).toBe(member.merchantId);
     await readyToPay(orderId);
-    const paid = await markOrderPaid(player.userId, orderId, cash ? '' : utr);
-    expect(paid.status).toBe('PAID');
+    if (pay) expect((await markOrderPaid(player.userId, orderId, utr)).status).toBe('PAID');
     return { member, player, orderId, tokens, utr, team };
   };
 
@@ -144,15 +142,15 @@ describePg('a member can release tokens on a paid deposit', () => {
     expect(credited).toBe(tokens);
   });
 
-  it('still refuses a deposit the player has not referenced, and spends nothing', async () => {
-    const { member, player, orderId, team } = await paidDeposit({ utr: null });
-    expect((await getOrderRecord(orderId)).utrNumber ?? null).toBeNull();
+  it('a cash Paid tap with no reference is refused, and the member cannot release that buy', async () => {
+    const { member, player, orderId, team } = await paidDeposit({ cash: true, pay: false });
+    await expect(markOrderPaid(player.userId, orderId, '')).rejects.toMatchObject({ status: 400, code: 'UTR_REQUIRED' });
+    expect((await getOrderRecord(orderId)).status).toBe('PROCESSING');
     const poolBefore = await getPool(team.teamId);
 
     const res = await as(app, member).post(`/confirm/${orderId}`);
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/no payment reference/i);
-    expect((await getOrderRecord(orderId)).status).toBe('PAID');
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect((await getOrderRecord(orderId)).status).toBe('PROCESSING');
     // Refused BEFORE the money: the hold stands and the player has nothing yet.
     expect(await getPool(team.teamId)).toEqual(poolBefore);
     const wallet = await getBalances(player.userId);

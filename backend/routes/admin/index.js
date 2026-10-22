@@ -26,6 +26,7 @@ import systemRoutes     from './system.admin.routes.js';
 import auditRoutes      from './audit.admin.routes.js';
 import depositPolicyRoutes from '../../domains/configuration/depositPolicy.admin.routes.js';
 import revenueRoutes    from '../../domains/revenue/revenue.admin.routes.js';
+import ownerLedgerRoutes from '../../domains/revenue/ownerLedger.admin.routes.js';
 import merchantPlatformRoutes from '../../domains/merchant/merchantPlatform.admin.routes.js';
 // Telegram config (replaceable bot/channel), bulk KYC, referral disbursal.
 import telegramAdminRoutes    from './telegram.admin.routes.js';
@@ -73,6 +74,7 @@ router.use('/', systemRoutes);
 router.use('/', auditRoutes);
 router.use('/', depositPolicyRoutes);
 router.use('/', revenueRoutes);
+router.use('/', ownerLedgerRoutes);
 router.use('/', merchantPlatformRoutes);
 router.use('/', ipBlocksRoutes);
 router.use('/', teamAdminRoutes);

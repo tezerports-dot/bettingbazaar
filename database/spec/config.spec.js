@@ -32,6 +32,7 @@ import { ORDER_SIZES, USDT_BUY_STEP } from '../../backend/domains/merchant/denom
 import { approvedApiHosts } from '../../backend/config/apiHosts.js';
 import { BRAND_PALETTES } from '../../backend/domains/branding/palettes.js';
 import { DEFAULT_PHANTOM_BETS_LABEL, PHANTOM_BETS_LABEL_LIMITS } from '../../backend/domains/markets/phantomBets.js';
+import { DEFAULT_WINNERS_DEMO_LABEL, WINNERS_DEMO_LABEL_LIMITS } from '../../backend/domains/cms/winnersDemoLabel.js';
 import { DEFAULT_DEMO_RESULTS_ON } from '../../backend/domains/markets/demoResults.js';
 
 /** A number setting: `n(default, min, max)`. Bounds are inclusive. */
@@ -77,6 +78,10 @@ export const SYSTEM_CONFIG_SPEC = group({
   // (owner, 2026-10-15). Admin-editable wording, never blank
   // (PHANTOM_BETS_LABEL_LIMITS, backend/domains/markets/phantomBets.js).
   phantomBetsLabel: { type: 'string', default: DEFAULT_PHANTOM_BETS_LABEL, trimmed: true, ...PHANTOM_BETS_LABEL_LIMITS },
+  // The tag on a curated entry of the Winners page (owner, 2026-10-22).
+  // Admin-editable wording, never blank (WINNERS_DEMO_LABEL_LIMITS,
+  // backend/domains/cms/winnersDemoLabel.js).
+  winnersDemoLabel: { type: 'string', default: DEFAULT_WINNERS_DEMO_LABEL, trimmed: true, ...WINNERS_DEMO_LABEL_LIMITS },
 
   // ── Demo results filling the analytics window ──────────────────────────────
   // (owner, 2026-10-15; backend/domains/markets/demoResults.js).
@@ -166,22 +171,6 @@ export const SYSTEM_CONFIG_SPEC = group({
     // longer than a page refresh; a ceiling of a day, because a player who has
     // paid should never be waiting longer than that for a person to look.
     paidResponseMinutes:           n(30, 5, 1440),
-    // ── The player has tapped "I have paid" and owes a reference ───────────
-    // On the CASH rail the player pays at a machine, and the merchant is
-    // STANDING AT IT with a session that times out. Making them wait for a
-    // twelve-character bank reference before the platform will even register
-    // the payment loses the machine. So a cash buy reaches PAID on the tap,
-    // which unblocks the merchant, and the reference follows.
-    //
-    // This is the window for it to follow IN. Missing it sends the order to
-    // the admin queue, not to CANCELLED: the cash may genuinely have been
-    // dispensed, and only a person can tell. The merchant still cannot confirm
-    // until the reference lands, so nothing moves on a promise.
-    //
-    // Short — a floor of 2 minutes because a bank app takes a moment, a
-    // ceiling of 60 because a merchant's tokens are held for the whole of it
-    // and an order nobody can evidence should not hold them for an afternoon.
-    utrAfterPaidMinutes:           n(15, 2, 60),
     // ── Three unpaid buy orders in a row, from either side ─────────────────
     // An expired buy is NOBODY's fault: the player did not pay and the merchant
     // did nothing wrong. Neither of these is a punishment for it. They are two

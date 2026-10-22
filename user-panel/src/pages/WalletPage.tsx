@@ -229,46 +229,15 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
     }
   }, [order.status, order.paidAt]);
 
-  /**
-   * On the CASH rail the payment and the reference are TWO steps.
-   *
-   * The merchant is standing at an ATM whose session times out. Making them
-   * wait while the player reads a twelve-character reference off a banking app
-   * loses the machine, so the tap is what reaches PAID and unblocks them, and
-   * the reference follows. `awaitingReference` is that in-between state: paid,
-   * not yet evidenced, and the merchant's Confirm refuses until it is.
-   *
-   * On every other rail there is no machine and no clock, so the reference is
-   * still submitted with the payment — one step, as before.
-   */
-  const awaitingReference = onCashRail && order.status === 'PAID' && !order.utrNumber;
-  const tapToPay = onCashRail && order.status !== 'PAID';
-
-  /** "I have paid" — the CASH tap. No reference yet, deliberately. */
-  const handleTapPaid = async () => {
-    setSubmitting(true); setError('');
-    try {
-      const res: any = await payments.markPaid(order.orderId);
-      // The server's order when it sent one; it says PAID with no reference.
-      onPaid({ status: 'PAID', ...(res?.order ?? {}) });
-    } catch (err: any) { setError(err?.message || 'Failed to submit. Try again.'); }
-    finally { setSubmitting(false); }
-  };
-
   const handleSubmitPayment = async () => {
     if (utr.trim().length < 12) { setError('UTR must be at least 12 characters'); return; }
     setSubmitting(true); setError('');
     try {
-      // The UTR alone. A screenshot proved nothing — trivially forged, read by
-      // no approval, and the merchant matches this reference against their own
-      // bank statement.
-      //
-      // Two routes, because they are two different things: `mark-paid` reports
-      // the payment, `payment-reference` evidences one already reported. On the
-      // cash rail the order is already PAID by the time this runs.
-      const res: any = awaitingReference
-        ? await payments.submitPaymentReference(order.orderId, utr.trim())
-        : await payments.markPaid(order.orderId, utr.trim());
+      // The UTR alone, with the Paid tap, on every rail (owner, 2026-10-22:
+      // "the user fills the UTR, then clicks Paid, no double submission"). A
+      // screenshot proved nothing; the merchant matches this reference against
+      // their own bank statement.
+      const res: any = await payments.markPaid(order.orderId, utr.trim());
       // The reference is on the order now. Without it the cash rail would read
       // as still awaiting one until the next status poll.
       onPaid({ status: 'PAID', utrNumber: utr.trim(), ...(res?.order ?? {}) });
@@ -343,13 +312,7 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
     );
   }
 
-  // `awaitingReference` is a PAID order too, so this must not answer for it.
-  // It did: this branch sat above the reference step and returned first, so a
-  // cash buy tapped as paid showed "Payment submitted" with an empty UTR, the
-  // reference field was never reachable, and the merchant's Confirm refused
-  // until the sweep sent the order to an admin (§32 S34 — an early return above
-  // the question it must not pre-empt).
-  if (order.status === 'PAID' && !awaitingReference) {
+  if (order.status === 'PAID') {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ textAlign: 'center', padding: '12px 8px' }}>
@@ -373,29 +336,13 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ background: 'color-mix(in srgb,var(--gold) 10%,var(--surface2))', border: '1px solid var(--line2)', borderRadius: 12, padding: 12, textAlign: 'center' }}>
-        {awaitingReference ? (
-          // Already paid — the cash tap was made. Asking them to "pay exactly"
-          // again, with the link, is an invitation to pay twice. And no
-          // countdown: a PAID order is not expired by its window, so a timer
-          // reaching zero here would close a screen that is still owed a UTR.
-          <>
-            <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700 }}>You reported paying</div>
-            <div className="font-grotesk bb-gold-text" style={{ fontWeight: 700, fontSize: 26, color: 'var(--gold-ink)' }}>{fmtINR(order.fiatAmount)}</div>
-            <div style={{ fontSize: 10, color: 'var(--text3)' }}>add the UTR below to receive {fmtT(order.tokenAmount)}</div>
-          </>
-        ) : (
-          <>
-            <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700 }}>Pay exactly</div>
-            <div className="font-grotesk bb-gold-text" style={{ fontWeight: 700, fontSize: 26, color: 'var(--gold-ink)' }}>{fmtINR(order.fiatAmount)}</div>
-            <div style={{ fontSize: 10, color: 'var(--text3)' }}>to receive {fmtT(order.tokenAmount)} · <CountdownTimer expiresAt={order.expiresAt} onExpire={onExpire} /></div>
-          </>
-        )}
+        <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700 }}>Pay exactly</div>
+        <div className="font-grotesk bb-gold-text" style={{ fontWeight: 700, fontSize: 26, color: 'var(--gold-ink)' }}>{fmtINR(order.fiatAmount)}</div>
+        <div style={{ fontSize: 10, color: 'var(--text3)' }}>to receive {fmtT(order.tokenAmount)} · <CountdownTimer expiresAt={order.expiresAt} onExpire={onExpire} /></div>
       </div>
 
-      {/* Past the early returns above there is somewhere to pay, unless the
-          reference is what is owed, and then the payment has been made and is
-          not offered again. */}
-      {!awaitingReference && onCashRail && (
+      {/* Past the early returns above there is somewhere to pay. */}
+      {onCashRail && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <a href={cashLink} style={{ width: '100%', background: 'var(--gold-metal)', color: 'var(--on-gold)', fontWeight: 800, padding: '15px 12px', borderRadius: 13, fontSize: 15, textAlign: 'center', display: 'block', textDecoration: 'none' }}>
             Pay {fmtINR(order.fiatAmount)} in your UPI app
@@ -408,7 +355,7 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
           <PayLinkQr link={cashLink} amountLabel={fmtINR(order.fiatAmount)} />
         </div>
       )}
-      {!awaitingReference && !onCashRail && upiLink && (
+      {!onCashRail && upiLink && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <a href={upiLink} style={{ width: '100%', background: 'var(--gold-metal)', color: 'var(--on-gold)', fontWeight: 800, padding: '15px 12px', borderRadius: 13, fontSize: 15, textAlign: 'center', display: 'block', textDecoration: 'none' }}>
             PAY NOW · {fmtINR(order.fiatAmount)}
@@ -420,7 +367,7 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
           <PayLinkQr link={upiLink} amountLabel={fmtINR(order.fiatAmount)} />
         </div>
       )}
-      {!awaitingReference && !onCashRail && bank && (
+      {!onCashRail && bank && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ fontSize: 11.5, color: 'var(--text2)', lineHeight: 1.5 }}>
             Transfer exactly <b style={{ color: 'var(--text)' }}>{fmtINR(order.fiatAmount)}</b> by IMPS, NEFT or RTGS from
@@ -435,18 +382,9 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
         </div>
       )}
 
-      {/* While the cash tap is all that is being asked for, the reference field
-          is not on screen: showing an input the player cannot fill yet — they
-          are at the machine — is what makes them hunt for a number instead of
-          pressing the button that frees the merchant. It appears once the
-          order is PAID and the reference is what is actually owed. */}
-      {tapToPay ? (
-        <div style={{ background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 12, padding: 12, fontSize: 11.5, color: 'var(--text2)' }}>
-          This is a cash purchase: the merchant is at a cash machine. Press
-          this as soon as you have paid — they need to know now so they can
-          finish at the ATM. We will ask for the reference next.
-        </div>
-      ) : (
+      {/* The reference first, then one Paid tap, on every rail (owner,
+          2026-10-22). On the cash rail the player reads it off the slip or
+          their UPI app before tapping. */}
       <div>
         <label style={{ display: 'block', fontSize: 10, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text3)', marginBottom: 6 }}>UTR / UPI Ref No. <span style={{ color: 'var(--text3)', fontWeight: 600, textTransform: 'none', letterSpacing: 0 }}>(min 12 chars)</span></label>
         <input
@@ -469,24 +407,14 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
         />
         {utr.length > 0 && utr.length < 12 && <span style={{ fontSize: 10, color: 'var(--red)', fontWeight: 700 }}>{12 - utr.length} more characters needed</span>}
         {graceNote && <span style={{ fontSize: 10.5, color: 'var(--green)', fontWeight: 700 }}>{graceNote}</span>}
-        {awaitingReference && (
-          <span style={{ display: 'block', fontSize: 10.5, color: 'var(--text3)', marginTop: 4 }}>
-            The merchant has been told you paid. They cannot release your tokens
-            until this reference arrives.
-          </span>
-        )}
       </div>
-      )}
 
       {error && <p style={{ color: 'var(--red)', fontSize: 11, textAlign: 'center' }}>{error}</p>}
 
-      <button onClick={tapToPay ? handleTapPaid : handleSubmitPayment}
-        disabled={submitting || (!tapToPay && utr.trim().length < 12)}
-        style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: (tapToPay || utr.trim().length >= 12) ? 'var(--on-gold)' : 'var(--text3)', background: (tapToPay || utr.trim().length >= 12) ? 'var(--gold-metal)' : 'var(--surface3)' }}>
-        {submitting ? '⏳ Submitting…'
-          : tapToPay ? "✅ I've Paid — tell the merchant"
-          : awaitingReference ? '✅ Submit reference'
-          : "✅ I've Paid"}
+      <button onClick={handleSubmitPayment}
+        disabled={submitting || utr.trim().length < 12}
+        style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: utr.trim().length >= 12 ? 'var(--on-gold)' : 'var(--text3)', background: utr.trim().length >= 12 ? 'var(--gold-metal)' : 'var(--surface3)' }}>
+        {submitting ? '⏳ Submitting…' : "✅ I've Paid"}
       </button>
     </div>
   );

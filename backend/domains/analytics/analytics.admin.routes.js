@@ -243,12 +243,11 @@ router.get('/analytics/token-holders.xlsx', authenticate, hasPermission('canMana
       supervisor_or_owner: h.owner || '',
       approved_members: h.members ?? '',
       tokens: h.tokens,
-      held_or_riding: h.held,
       share_of_supply_percent: h.sharePercent,
     }));
     sendXlsx(res, `token-holders-${kind || 'all'}.xlsx`, oneTable({
       name: 'Token holders', title: 'Token holders', subtitle: `Downloaded ${istText(new Date())}`, accent: 'purple',
-      rows: table, columns: columnsOf(table, { money: ['tokens', 'held_or_riding', 'share_of_supply_percent'] }),
+      rows: table, columns: columnsOf(table, { money: ['tokens', 'share_of_supply_percent'] }),
     }));
   } catch (error) {
     respondError(res, error, 'GET /admin/analytics/token-holders.xlsx', { message: 'Could not build the export.' });
