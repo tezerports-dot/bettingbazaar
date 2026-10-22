@@ -32,6 +32,7 @@ import AnalyticsView from './AnalyticsView';
 import { BetCardFigure, BetCardFill, BlindBand, shareModeFor, sharesOf } from './BetCardShare';
 import { getAssetUrl } from '../services/backend.service';
 import { canPlaceBet } from '../GAME_CORE';
+import { serverNow } from '../services/serverClock';
 import { BoardRulesModal } from './BoardRules';
 import { ClosingChip, ResultCelebration, TONE_COLOR, timerTone, useHomeCards } from './BoardExtras';
 import { CitiesArt, HowToPlayArt, PromoCard } from './BoardArt';
@@ -88,7 +89,7 @@ function useFitHeight(stage: React.RefObject<HTMLElement | null>, below: React.R
 const GameScreen: React.FC = () => {
   const {
     currentCycle, gameState, cycleType, setCycleType, placeBet, placePhantomBet, boards, currentBoard,
-    userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, pastCycles, loadCycleHistory, subscribeToVolume, getCurrentVolume, serverTimeOffset,
+    userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, pastCycles, loadCycleHistory, subscribeToVolume, getCurrentVolume,
     sysConfig, audience,
   } = useGame();
   // Admin › Player Screen (SystemConfig.boardExtras).
@@ -119,7 +120,7 @@ const GameScreen: React.FC = () => {
   const controlsRef = useRef<HTMLDivElement>(null);
   const fitH = useFitHeight(stageRef, controlsRef, !desktop);
 
-  // Re-render the countdown every second (endTime is authoritative).
+  // Re-render the countdown every second: the round's endTime on the server's clock.
   const [, tick] = useState(0);
   useEffect(() => { const id = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(id); }, []);
 
@@ -146,7 +147,7 @@ const GameScreen: React.FC = () => {
   // MERGED/CLOSED labels stay truthful while the bet buttons close early.
   const betOpen = !!currentCycle?.endTime
     && !!currentBoard
-    && canPlaceBet(currentBoard.phases.closeBeforeEndSec, Date.now() + serverTimeOffset, currentCycle.endTime);
+    && canPlaceBet(currentBoard.phases.closeBeforeEndSec, serverNow(), currentCycle.endTime);
   const isOpen = gameState === GameState.OPEN;
   const isMerged = gameState === GameState.MERGED;
   const isClosed = gameState === GameState.CLOSED;
@@ -154,7 +155,7 @@ const GameScreen: React.FC = () => {
   const winner = currentCycle?.winner;
   const showMerged = isMerged || (poolsHidden && !isResult);
 
-  const secondsLeft = currentCycle?.endTime ? Math.max(0, Math.floor((currentCycle.endTime - Date.now()) / 1000)) : 0;
+  const secondsLeft = currentCycle?.endTime ? Math.max(0, Math.floor((currentCycle.endTime - serverNow()) / 1000)) : 0;
   // Seconds until bets CLOSE (the board's own close offset), for the timer's
   // tone and the closing chip. Display only: the server's cutoff decides.
   const secondsToClose = Math.max(0, secondsLeft - (currentBoard?.phases.closeBeforeEndSec ?? 0));
