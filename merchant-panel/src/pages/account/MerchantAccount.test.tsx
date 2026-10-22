@@ -36,7 +36,6 @@ const api = vi.hoisted(() => ({
   removeSubMember: vi.fn(),
   assignSubMemberAccount: vi.fn(),
   unassignSubMemberAccount: vi.fn(),
-  requestMerchantPool: vi.fn(),
   buyMerchantPoolUsdt: vi.fn(),
   cancelMerchantPoolRequest: vi.fn(),
   getMerchantReport: vi.fn(),
@@ -268,8 +267,7 @@ describe('sub-members', () => {
 });
 
 describe('pool and reports', () => {
-  it('the owner asks for tokens, in whole tokens', async () => {
-    api.requestMerchantPool.mockResolvedValue('req-1');
+  it('the owner buys tokens in USDT, in whole tokens', async () => {
     at(ROUTES.ACCOUNT_POOL, OWNER, <PoolPage />);
     expect(await screen.findByText('5,000 BB')).toBeInTheDocument();
     // Where the held tokens are, and what is on its way in (owner, 2026-10-14).
@@ -279,17 +277,13 @@ describe('pool and reports', () => {
     expect(screen.getByText('400 BB')).toBeInTheDocument();
     expect(screen.getByText('Incoming from sells')).toBeInTheDocument();
     expect(screen.getByText('2,500 BB')).toBeInTheDocument();
-    // Buying in USDT is the default: no admin, an address back (owner, 2026-10-21).
+    // An address back, no admin (owner, 2026-10-21).
     api.buyMerchantPoolUsdt.mockResolvedValue({ requestId: 'req-u' });
     fireEvent.change(screen.getByLabelText('Tokens (whole number)'), { target: { value: '2000' } });
     fireEvent.click(screen.getByRole('button', { name: 'Get the USDT address' }));
     await waitFor(() => expect(api.buyMerchantPoolUsdt).toHaveBeenCalledWith(2000));
-    expect(api.requestMerchantPool).not.toHaveBeenCalled();
-    // Paying an admin another way is still a request an admin fulfils.
-    fireEvent.click(screen.getByRole('button', { name: 'Pay an admin another way' }));
-    fireEvent.change(screen.getByLabelText('Tokens (whole number)'), { target: { value: '2000' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send request' }));
-    await waitFor(() => expect(api.requestMerchantPool).toHaveBeenCalledWith(2000, ''));
+    // USDT only (owner, 2026-10-22): no other way to pay is offered.
+    expect(screen.queryByRole('button', { name: /another way|send request/i })).not.toBeInTheDocument();
   });
 
   it('a USDT pool buy shows where to pay, the amount and the network, and what the pool bought', async () => {

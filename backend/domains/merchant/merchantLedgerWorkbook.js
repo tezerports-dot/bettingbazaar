@@ -136,3 +136,51 @@ export function orderReportWorkbook(report) {
     }],
   };
 }
+
+const STATEMENT_KIND = { BUY: 'Buy', SELL: 'Sell', TOKEN_BUY: 'Tokens bought from admin', TOKEN_SELL_BACK: 'Tokens sold back' };
+const STATEMENT_STATE = {
+  COMPLETED: 'Completed', PAID: 'Paid, in the hold window', DISPUTED: 'Disputed', CANCELLED: 'Cancelled',
+  EXPIRED: 'Expired', FAILED: 'Failed', REJECTED: 'Rejected', PROCESSING: 'In process', PENDING_QUEUE: 'Waiting',
+};
+
+/** The pool statement (owner, 2026-10-22): the summary, then every row between the opening and closing balance. */
+export function statementWorkbook(statement) {
+  const t = statement.totals;
+  const hasBalance = t.openingPaise !== null;
+  const summary = [
+    ...(hasBalance ? [{ item: 'Opening pool balance', value: rupees(t.openingPaise) }] : []),
+    { item: `Buys processed (${t.buysProcessed})`, value: rupees(t.buysProcessedPaise) },
+    { item: `Sells processed (${t.sellsProcessed})`, value: rupees(t.sellsProcessedPaise) },
+    { item: 'Commission earned', value: rupees(t.commissionPaise) },
+    ...(hasBalance ? [
+      { item: 'Tokens bought from admin', value: rupees(t.tokensBoughtPaise) },
+      { item: 'Closing pool balance', value: rupees(t.closingPaise) },
+    ] : []),
+    { item: 'Net profit', value: rupees(t.netProfitPaise) },
+  ];
+  const rows = statement.rows.map((r) => ({
+    at: r.at, kind: STATEMENT_KIND[r.kind] ?? r.kind, user: r.userId ?? '', utr: r.utr ?? '',
+    state: r.state ? (STATEMENT_STATE[r.state] ?? r.state) : '', tokens: rupees(r.tokensPaise),
+    commission: rupees(r.commissionPaise), change: rupees(r.poolChangePaise),
+    ...(hasBalance ? { balance: r.balanceAfterPaise === null ? '' : rupees(r.balanceAfterPaise) } : {}),
+    id: r.ref,
+  }));
+  const columns = [
+    { key: 'at', label: 'Time (IST)', type: 'time' }, { key: 'kind', label: 'Type' }, { key: 'user', label: 'User' },
+    { key: 'utr', label: 'UTR' }, { key: 'state', label: 'Status' }, { key: 'tokens', label: 'Amount (tokens)', type: 'money' },
+    { key: 'commission', label: 'Commission', type: 'money' }, { key: 'change', label: 'Pool change', type: 'money' },
+    ...(hasBalance ? [{ key: 'balance', label: 'Pool balance after', type: 'money' }] : []),
+    { key: 'id', label: 'Transaction ID' },
+  ];
+  const subtitle = `${rangeText(statement.range)}.${statement.truncated ? ' Over 5,000 orders: the first 5,000 are listed; the summary counts them all.' : ''}`;
+  return {
+    sheets: [{
+      name: 'Statement', title: 'Pool statement', subtitle,
+      tables: [
+        { heading: 'Summary', accent: 'slate', columns: [{ key: 'item', label: 'Item', width: 40 }, { key: 'value', label: 'Tokens (= ₹)', type: 'money' }], rows: summary },
+        { heading: `Orders and pool changes (${rows.length})`, accent: 'blue', columns, rows,
+          totals: rows.length ? { commission: sumOf(rows, 'commission'), change: sumOf(rows, 'change') } : undefined },
+      ],
+    }],
+  };
+}

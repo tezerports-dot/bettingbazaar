@@ -31,10 +31,6 @@ export const BOARD_IMAGES: BrandingImageField[] = [
 export const LOGO_IMAGES: BrandingImageField[] = [
   { key: 'logo', label: 'Main logo', where: 'Top of every panel: the player app header, the admin and merchant panels. PNG with a transparent background.',
     ratio: null, upload: { w: 400, h: 120 }, previewWidth: 240 },
-  { key: 'icon', label: 'App icon', where: 'Square mark used in notifications and where the logo does not fit.',
-    ratio: { w: 1, h: 1 }, upload: { w: 512, h: 512 }, previewWidth: 96 },
-  { key: 'favicon', label: 'Browser tab icon', where: 'The small icon in the browser tab.',
-    ratio: { w: 1, h: 1 }, upload: { w: 32, h: 32 }, previewWidth: 96 },
 ];
 
 export const PAGE_IMAGES: BrandingImageField[] = [
@@ -70,6 +66,15 @@ export const BrandingImages: React.FC<{ fields: BrandingImageField[]; title: str
 
   const changed = fields.filter((f) => (draft[f.key] ?? '') !== (saved[f.key] ?? ''));
 
+  // An uploaded image reaches players only once saved (owner, 2026-10-22: board
+  // images uploaded and never shown). Leaving with one staged asks first.
+  useEffect(() => {
+    if (changed.length === 0) return undefined;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [changed.length]);
+
   const save = async () => {
     setSaving(true); setError('');
     try {
@@ -89,6 +94,16 @@ export const BrandingImages: React.FC<{ fields: BrandingImageField[]; title: str
         <h2 className="text-lg font-semibold">{title}</h2>
         <p className="text-sm text-gray-400">{intro}</p>
       </div>
+      {changed.length > 0 && (
+        <div role="status" className="sticky top-2 z-10 card p-3 flex flex-wrap items-center gap-3 border border-gold-500/60">
+          <span className="text-sm font-semibold text-gold-400">
+            {changed.length} image{changed.length > 1 ? 's' : ''} not saved yet. Players see {changed.length > 1 ? 'them' : 'it'} only after you save.
+          </span>
+          <button type="button" className="btn-primary flex items-center gap-1 disabled:opacity-50" disabled={saving} onClick={save}>
+            <Save size={14} />{saving ? 'Saving…' : 'Save now'}
+          </button>
+        </div>
+      )}
       <div className="grid gap-4 xl:grid-cols-2">
         {fields.map((f) => (
           <ImageSlot key={f.key} kind="branding" spec={f} saved={saved[f.key] ?? ''} value={draft[f.key] ?? ''}

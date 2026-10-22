@@ -46,7 +46,7 @@ import {
 // The merchant's own view of their account, which sign-in answers with too.
 import { formatMerchant } from './merchantSelfView.js';
 import { toMerchantOrderView, toMerchantOrderViews, toMerchantReportRows } from './merchantOrderView.js';
-import { ledgerWorkbook, orderReportWorkbook } from './merchantLedgerWorkbook.js';
+import { ledgerWorkbook, orderReportWorkbook, statementWorkbook } from './merchantLedgerWorkbook.js';
 import { sendXlsx } from '../reporting/xlsx.util.js';
 import {
   routedToMerchants, PAYMENT_MODES,
@@ -432,6 +432,27 @@ router.get('/reports/ledger.xlsx', merchantAuth, ownerOrAudit, async (req, res) 
         sendXlsx(res, `business-ledger-${ledger.range.from || 'last7'}-${ledger.range.to || 'today'}.xlsx`, ledgerWorkbook(ledger));
     } catch (err) {
         return respondError(res, err, 'GET /merchant/reports/ledger.xlsx', { message: 'Could not build the ledger.' });
+    }
+});
+
+// The pool statement (owner, 2026-10-22): opening and closing pool balance,
+// and every order with its pool change and commission between them
+// (`merchantLedger.poolStatement`, read only), for the Reports page. The
+// same door as the ledger (`ownerOrAudit`).
+router.get('/reports/statement', merchantAuth, ownerOrAudit, async (req, res) => {
+    try {
+        res.json({ success: true, ...(await db.merchantLedger.poolStatement(req.merchantId, ledgerRange(req))) });
+    } catch (err) {
+        return respondError(res, err, 'GET /merchant/reports/statement', { message: 'Could not build the statement.' });
+    }
+});
+
+router.get('/reports/statement.xlsx', merchantAuth, ownerOrAudit, async (req, res) => {
+    try {
+        const statement = await db.merchantLedger.poolStatement(req.merchantId, ledgerRange(req));
+        sendXlsx(res, `pool-statement-${statement.range.from || 'last7'}-${statement.range.to || 'today'}.xlsx`, statementWorkbook(statement));
+    } catch (err) {
+        return respondError(res, err, 'GET /merchant/reports/statement.xlsx', { message: 'Could not build the statement.' });
     }
 });
 

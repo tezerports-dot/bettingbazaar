@@ -33,8 +33,6 @@ export function brandingPayload(b) {
     accentColor:             b.accentColor,
     palette:                 b.palette,
     logo:                    b.logo,
-    icon:                    b.icon,
-    favicon:                 b.favicon,
     splashScreen:            b.splashScreen,
     userPanelName:           b.userPanelName,
     adminPanelName:          b.adminPanelName,

@@ -68,7 +68,6 @@ export const ENDPOINTS = {
     REMOVE_MEMBER: (teamId: string, merchantId: string) => `/api/merchant/supervisor/teams/${teamId}/members/${merchantId}`,
     // Team token pools (Step 2b).
     POOL:          (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/pool`,
-    POOL_REQUEST:  (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/pool-requests`,
     POOL_USDT_BUY: (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/pool-requests/usdt`,
     // Oversight (Step 2f): a member's log, and the disputes on the teams.
     MEMBER_LOG:    (merchantId: string) => `/api/merchant/supervisor/members/${merchantId}/log`,
@@ -95,7 +94,6 @@ export const ENDPOINTS = {
     ASSIGN_ACCOUNT:    { method: 'POST',   path: (staffId: string) => `/api/merchant/account/staff/${staffId}/accounts` },
     UNASSIGN_ACCOUNT:  { method: 'DELETE', path: (staffId: string, accountId: string, duty: string) =>
       `/api/merchant/account/staff/${staffId}/accounts/${accountId}/${duty}` },
-    REQUEST_POOL:      { method: 'POST',   path: () => '/api/merchant/account/pool-requests' },
     BUY_POOL_USDT:     { method: 'POST',   path: () => '/api/merchant/account/pool-requests/usdt' },
     CANCEL_POOL:       { method: 'DELETE', path: (requestId: string) => `/api/merchant/account/pool-requests/${requestId}` },
     REPORTS:           { method: 'GET',    path: () => '/api/merchant/account/reports' },
@@ -113,6 +111,11 @@ export const ENDPOINTS = {
   LEDGER: {
     PAGE: '/api/merchant/reports/ledger',
     XLSX: '/api/merchant/reports/ledger.xlsx',
+  },
+  // The pool statement (owner, 2026-10-22): GET /reports/statement(.xlsx), same file.
+  STATEMENT: {
+    PAGE: '/api/merchant/reports/statement',
+    XLSX: '/api/merchant/reports/statement.xlsx',
   },
 };
 

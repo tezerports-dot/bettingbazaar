@@ -163,4 +163,20 @@ export function decodeTokenClaims(token) {
   }
 }
 
+/**
+ * Seconds until a token's own `exp`, at least 1; a week when it carries none
+ * it can be read from.
+ *
+ * `exp` is written as an ISO date string (`normalizePayload`). The sign-out
+ * read it as Unix seconds, got NaN, and the revocation INSERT failed on
+ * "NaN seconds" every time, so a signed-out token stayed valid until it
+ * expired (review 2026-10-22). A number is still read as Unix seconds.
+ */
+export function secondsUntilExpiry(claims, now = Date.now()) {
+  const exp = claims?.exp;
+  const at = typeof exp === 'number' ? exp * 1000 : Date.parse(exp);
+  const until = Number.isFinite(at) ? at : now + 7 * 86_400_000;
+  return Math.max(1, Math.ceil((until - now) / 1000));
+}
+
 export const PASETO_PUBLIC_KEY = b64url(keyPair.publicKey);

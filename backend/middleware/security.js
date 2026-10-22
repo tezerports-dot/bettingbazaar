@@ -627,30 +627,78 @@ export const depositCreateLimiter = moneyLimiter(
 // ==================== SECURITY MONITOR MIDDLEWARE ====================
 
 /**
- * Security Monitor Middleware
- * Detects suspicious activity like rapid 401s or unusual payloads
- * Logs all security-related events to audit trail
+ * Security Monitor Middleware: records refused (401/403) requests in the audit
+ * trail.
+ *
+ * How much of a refused request the audit row keeps, and how often.
+ *
+ * `audit_logs` is append-only and never pruned, and the monitor answers to
+ * ANYONE who can be refused: an anonymous 401 used to store the whole path
+ * and whatever `mobile` the body carried (up to the 1 MB body limit) on every
+ * request, so one address could grow the table by gigabytes an hour and fill
+ * the database's disk (review 2026-10-22). So each field is cut to what a
+ * security review needs, and each address writes at most
+ * `SECURITY_ROWS_PER_IP` rows a minute per process; the rest are counted and
+ * the count rides on that address's next row (`suppressedBefore`).
  */
+const SECURITY_PATH_MAX = 256;
+const SECURITY_MOBILE_MAX = 20;
+const SECURITY_ROWS_PER_IP = 5;
+const SECURITY_WINDOW_MS = 60 * 1000;
+const SECURITY_TRACKED_IPS_MAX = 10_000;
+const securityWindows = new Map(); // ip -> { start, rows, suppressed }
+
+const cut = (value, max) => {
+    if (value === null || value === undefined) return null;
+    const text = typeof value === 'string' ? value : String(value);
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+};
+
+/** May this address write another row now? Returns the suppressed count to carry, or null for no. */
+function securityRowAllowed(ip, now = Date.now()) {
+    const key = String(ip ?? 'unknown');
+    let w = securityWindows.get(key);
+    if (!w || now - w.start >= SECURITY_WINDOW_MS) {
+        const carried = w ? w.suppressed : 0;
+        if (!w && securityWindows.size >= SECURITY_TRACKED_IPS_MAX) {
+            // Forget windows that have ended; if every one is live, the map is
+            // full of an attack and the new address is simply not recorded.
+            for (const [k, v] of securityWindows) if (now - v.start >= SECURITY_WINDOW_MS) securityWindows.delete(k);
+            if (securityWindows.size >= SECURITY_TRACKED_IPS_MAX) return null;
+        }
+        w = { start: now, rows: 0, suppressed: carried };
+        securityWindows.set(key, w);
+    }
+    if (w.rows >= SECURITY_ROWS_PER_IP) { w.suppressed += 1; return null; }
+    w.rows += 1;
+    const carried = w.suppressed;
+    w.suppressed = 0;
+    return carried;
+}
+
 export const securityMonitor = async (req, res, next) => {
     const originalJson = res.json;
     
     res.json = function (data) {
-        // Log all failed authentication/authorization attempts
-        if (res.statusCode >= 400) {
-            if (res.statusCode === 401 || res.statusCode === 403) {
+        // Log failed authentication/authorization attempts, bounded (above).
+        if (res.statusCode === 401 || res.statusCode === 403) {
+            const suppressedBefore = securityRowAllowed(req.ip);
+            if (suppressedBefore !== null) {
+                const path = cut(req.originalUrl, SECURITY_PATH_MAX);
                 const details = {
-                    message: `Blocked ${req.method} request to ${req.originalUrl} from IP ${req.ip}`,
+                    message: `Blocked ${req.method} request to ${path} from IP ${req.ip}`,
                     method: req.method,
-                    path: req.originalUrl,
+                    path,
                     statusCode: res.statusCode,
                 };
+                if (suppressedBefore > 0) details.suppressedBefore = suppressedBefore;
 
                 // Extra context for critical endpoints. As a FIELD, not appended
                 // to a string: `details` is JSONB, so a security review can
                 // filter on the mobile a burst of 401s was aimed at instead of
-                // pattern-matching it back out of prose.
+                // pattern-matching it back out of prose. Cut: a mobile is short.
                 if (req.path.includes('/admin') || req.path.includes('/login')) {
-                    details.mobile = req.body?.mobile ?? null;
+                    details.mobile = cut(req.body?.mobile ?? null, SECURITY_MOBILE_MAX);
                 }
 
                 db.audit.record({ adminId: 'SYSTEM_WATCHDOG',

@@ -6,8 +6,8 @@
 // One screen, three readers, decided by the server (GET /api/merchant/team):
 //   SUPERVISOR — up to 4 teams of up to 10 members (a team works from its first
 //                approved member); create, rename, delete an empty team, propose members by their merchant ID, remove members,
-//                and buy tokens into each team's pool or sell them back
-//                (Step 2b) — an admin fulfils once the money has moved.
+//                and buy tokens into each team's pool, in USDT only, credited
+//                once the USDT arrives (owner, 2026-10-22).
 //   MEMBER     — the team they are in, whether an admin has approved them yet,
 //                whether the team is working, and its commission with their
 //                own share of each payment (Step 2e).
@@ -25,7 +25,7 @@ import toast from 'react-hot-toast';
 import { RefreshCw, Users } from 'lucide-react';
 import {
   getMyTeam, createTeam, renameTeam, deleteTeam, addTeamMember, removeTeamMember,
-  getTeamPool, requestTeamPool, buyTeamPoolUsdt, cancelTeamPoolRequest, setTeamCashOut,
+  getTeamPool, buyTeamPoolUsdt, cancelTeamPoolRequest, setTeamCashOut,
   getMemberLog, getTeamDisputes, getDisputeThread, postDisputeMessage,
 } from '../services/api';
 import type {
@@ -324,7 +324,6 @@ const TeamPoolSection: React.FC<{
   reload: () => Promise<void>;
 }> = ({ team, requests, busy, run, reload }) => {
   const [amount, setAmount] = useState('');
-  const [note, setNote] = useState('');
   const [history, setHistory] = useState<TeamPoolEntry[] | null>(null);
   const [historyError, setHistoryError] = useState('');
   const pending = requests.filter((r) => r.status === 'PENDING');
@@ -388,17 +387,17 @@ const TeamPoolSection: React.FC<{
         <CashOutCard cashOut={team.cashOut} canAct change={(start) => setTeamCashOut(team.teamId, start)} onChanged={reload} />
       </div>
 
-      {/* A pool cashing out, or paused after one, buys no tokens (teamCashOut.js). */}
+      {/* A pool cashing out, or paused after one, buys no tokens (teamCashOut.js).
+          Tokens are bought in USDT only (owner, 2026-10-22). */}
       {!team.cashOut.active && !team.cashOut.pausedUntil && <form
         style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}
         onSubmit={(e) => {
           e.preventDefault();
           if (!valid) return;
-          void run(`pr-${team.teamId}`, async () => {
-            const message = await requestTeamPool(team.teamId, whole, note.trim());
-            setAmount(''); setNote('');
-            return message;
-          }, 'Requested. Pay the platform; an admin adds the tokens.');
+          void run(`pu-${team.teamId}`, async () => {
+            await buyTeamPoolUsdt(team.teamId, whole);
+            setAmount('');
+          }, 'Pay the USDT shown above. The tokens arrive by themselves.');
         }}
       >
         <div>
@@ -406,18 +405,7 @@ const TeamPoolSection: React.FC<{
           <input id={`pa-${team.teamId}`} inputMode="numeric" value={amount}
             onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ''))} style={{ ...inputStyle, width: 130 }} />
         </div>
-        <div style={{ flex: 1, minWidth: 140 }}>
-          <label htmlFor={`pn-${team.teamId}`} style={labelStyle}>Note for the admin (optional)</label>
-          <input id={`pn-${team.teamId}`} value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} maxLength={200} />
-        </div>
-        <Button type="submit" disabled={!valid || !!busy}>Send {team.name} request</Button>
-        <Button type="button" variant="outline" disabled={!valid || !!busy}
-          onClick={() => void run(`pu-${team.teamId}`, async () => {
-            await buyTeamPoolUsdt(team.teamId, whole);
-            setAmount(''); setNote('');
-          }, 'Pay the USDT shown above. The tokens arrive by themselves.')}>
-          Buy in USDT now (automatic)
-        </Button>
+        <Button type="submit" disabled={!valid || !!busy}>Buy in USDT</Button>
       </form>}
 
       <div style={{ marginTop: 10 }}>

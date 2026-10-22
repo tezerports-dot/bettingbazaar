@@ -38,6 +38,21 @@ describePg('the bank-reference registry', () => {
     expect(normalizeUtr(null)).toBeNull();
   });
 
+  it('folds look-alike spellings into the same row (review 2026-10-22)', () => {
+    // Invisible characters and full-width digits look identical on a
+    // merchant's screen, so they must be the same reference.
+    expect(normalizeUtr('123456789012\u200B')).toBe('123456789012');
+    expect(normalizeUtr('1234\u2060567890\u00AD12')).toBe('123456789012');
+    expect(normalizeUtr('１２３４５６７８９０１２')).toBe('123456789012');
+    expect(normalizeUtr('0xabc:3')).toBe('0XABC:3');
+  });
+
+  it('refuses a reference with any character outside letters, digits and ":" (review 2026-10-22)', async () => {
+    await expect(pgQuery(
+      `INSERT INTO utr_registry (utr, order_id) VALUES ($1, $2)`, [`BAD-${RUN}`, `ord-bad-${RUN}`],
+    )).rejects.toThrow(/utr_registry_shape/);
+  });
+
   it('claims a reference for an order', async () => {
     const { u, o } = next();
     const claim = await claimUtr({ u: undefined, utr: u, orderId: o, userId: 'u1', amountRupees: 500 });

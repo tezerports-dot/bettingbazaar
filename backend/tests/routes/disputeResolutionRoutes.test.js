@@ -104,7 +104,7 @@ describePg('dispute resolution routes', () => {
     expect((await getOrderRecord(orderId)).merchantId).toBe(merchant.merchantId);
     expect((await transitionOrder(orderId, 'PROCESSING', { set: { processingAt: new Date() } })).ok).toBe(true);
     await readyToPay(orderId);
-    await markOrderPaid(who.userId, orderId, `UTRDR${RUN}${Date.now()}${seq}`);
+    await markOrderPaid(who.userId, orderId, `UTRDR${String(Date.now()).slice(-10)}${seq}`);
     expect((await raiseDispute(orderId)).ok).toBe(true);
     expect((await getOrderRecord(orderId)).poolHeldPaise).toBe(tokens * 100);
     return { orderId, who, merchant, team };

@@ -51,7 +51,8 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   merchant_rejection_reason,
   monthly_processed_paise, daily_processed_paise, total_orders_processed,
   stats_last_reset_at,
-  bb_merchant_track_record(merchant_id) AS track_record, avg_response_minutes, dispute_rate, consecutive_rejections,
+  bb_merchant_track_record(merchant_id) AS track_record, bb_merchant_processed(merchant_id) AS processed,
+  avg_response_minutes, dispute_rate, consecutive_rejections,
   consecutive_expiries, assignment_paused_at, assignment_pause_reason, cash_ready,
   lost_disputes, high_risk_at,
   total_orders_completed, total_orders_all, is_supervisor, supervisor_rail,
@@ -66,6 +67,18 @@ export function trackRecordOf(track) {
     ordersSucceeded: succeeded,
     ordersFailed: failed,
     successRate: decided > 0 ? succeeded / decided : null,
+  };
+}
+
+/** Buys completed and sells paid, count and tokens, from the row's `processed` (`bb_merchant_processed`). */
+export function processedOf(processed) {
+  const [buys, buyPaise, sells, sellPaise] = Array.isArray(processed) ? processed.map(Number) : [0, 0, 0, 0];
+  return {
+    totalDepositsProcessed: buys,
+    totalDepositAmount: paiseToRupees(buyPaise),
+    totalWithdrawalsProcessed: sells,
+    totalWithdrawalAmount: paiseToRupees(sellPaise),
+    totalOrdersCompleted: buys + sells,
   };
 }
 
@@ -127,10 +140,9 @@ function toMerchant(row) {
     },
     totalProcessedVolume: rupees(row.total_processed_volume_paise),
     earnings: rupees(row.earnings_paise),
-    totalDepositAmount: rupees(row.total_deposit_amount_paise),
-    totalWithdrawalAmount: rupees(row.total_withdrawal_amount_paise),
-    totalDepositsProcessed: toInt(row.total_deposits_processed),
-    totalWithdrawalsProcessed: toInt(row.total_withdrawals_processed),
+    // Counted from the order rows on every read (`bb_merchant_processed`,
+    // owner 2026-10-22): the counters drifted from the orders.
+    ...processedOf(row.processed),
 
     rating: Number(row.rating),
     lastOnlineToggle: row.last_online_toggle,
@@ -167,7 +179,8 @@ function toMerchant(row) {
     // the assignment that hands them one.
     cashReady: row.cash_ready === true,
     assignmentPauseReason: row.assignment_pause_reason,
-    totalOrdersCompleted: toInt(row.total_orders_completed),
+    // Buys completed and sells paid, from the same rows as the figures above.
+    totalOrdersCompleted: processedOf(row.processed).totalOrdersCompleted,
     totalOrdersAll: toInt(row.total_orders_all),
     // A supervisor runs teams and serves no orders; its rail is what every
     // team under it settles on (teams.js).

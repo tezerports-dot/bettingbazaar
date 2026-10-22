@@ -44,8 +44,6 @@ Never concatenate `cdnBase + '/' + logo` without normalising both sides (C-07 fi
 | Field | Consumer |
 |---|---|
 | `logo` | Header.tsx, ShareModal.tsx, admin Layout.tsx |
-| `icon` | `public/manifest.json` (PWA, manual or build step) |
-| `favicon` | `<link rel="icon">` in `index.html` (injected at runtime or build) |
 | `primaryColor` | `--brand-primary` CSS variable |
 | `secondaryColor` | `--brand-secondary` CSS variable |
 | `accentColor` | `--brand-accent` CSS variable |

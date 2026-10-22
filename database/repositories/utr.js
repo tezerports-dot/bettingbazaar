@@ -33,15 +33,20 @@ export const UTR_STATUS = Object.freeze({
 });
 
 /**
- * Uppercase, and strip every kind of space.
+ * Fold look-alikes (NFKC), strip every kind of space and every invisible
+ * character, then uppercase.
  *
  * A reference typed with a space in it is the same reference. Normalising at
  * the boundary is what makes the primary key mean "this transfer" rather than
- * "this spelling of this transfer".
+ * "this spelling of this transfer". NFKC turns full-width digits ("１２３")
+ * into ASCII, and \p{Cf} removes zero-width and other format characters, so
+ * a reference that LOOKS the same on a merchant's screen is the same row
+ * (review 2026-10-22). What survives is checked by the spec
+ * (`paymentReference.js`) and by the row (`utr_registry_shape`).
  */
 export function normalizeUtr(utr) {
   if (!utr) return null;
-  return String(utr).toUpperCase().replace(/\s+/g, '');
+  return String(utr).normalize('NFKC').replace(/[\s\p{Cf}\p{Z}]+/gu, '').toUpperCase();
 }
 
 const toEntry = (r) => (r ? {

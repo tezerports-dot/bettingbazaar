@@ -115,6 +115,28 @@ export async function listContacts({ desk = null } = {}) {
 }
 
 /**
+ * The desk's support account to talk to straight away, without a ticket
+ * (owner, 2026-10-22: merchants "directly click and talk on Telegram"): the
+ * active one with the fewest live tickets, as a ticket would be given. Null
+ * when the desk has none.
+ */
+export async function directContact({ desk }) {
+  if (!TICKET_DESKS.includes(desk)) throw new Error(`directContact: unknown desk ${desk}`);
+  const { rows } = await pgQuery(
+    `SELECT c.telegram_username
+       FROM support_contacts c
+       LEFT JOIN support_tickets t ON t.contact_id = c.contact_id AND t.status IN ${LIVE}
+      WHERE c.desk = $1 AND c.active
+      GROUP BY c.contact_id
+      ORDER BY COUNT(t.ticket_id), c.created_at
+      LIMIT 1`,
+    [desk], 'support_direct_contact',
+  );
+  const username = rows[0]?.telegram_username;
+  return username ? { telegramUsername: username, telegramLink: telegramChatLink(username, 'Hello, I need merchant support.') } : null;
+}
+
+/**
  * Add a support account, or change one. The username's shape is the row's CHECK;
  * a duplicate on the same desk is the unique index. Both come back as
  * `{ ok: false, reason }` so the route can say which.

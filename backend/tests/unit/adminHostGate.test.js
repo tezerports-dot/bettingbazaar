@@ -45,6 +45,14 @@ describe('adminHostGate', () => {
     }
   });
 
+  it('hides admin paths in ANY letter case, since Express routes case-insensitively (review 2026-10-22)', async () => {
+    network.adminHost = ADMIN;
+    for (const path of ['/ADMIN/', '/Admin/assets/x.js', '/API/ADMIN/me', '/Api/Admin/staff', '/API/SSE/ADMIN/events']) {
+      const res = await request(app()).get(path).set('Host', PLAYER);
+      expect(res.status, path).toBe(404);
+    }
+  });
+
   it('leaves the player and merchant panels alone on other hosts', async () => {
     network.adminHost = ADMIN;
     for (const path of ['/', '/wallet', '/merchant/', '/api/merchant/stats', '/api/administrator', '/administer']) {

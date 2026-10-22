@@ -10,6 +10,7 @@ export {
   verifyPaseto as verifyJwt,
   tryVerifyPaseto as tryVerifyJwt,
   decodeTokenClaims,
+  secondsUntilExpiry,
   PASETO_EXPIRES_IN as JWT_EXPIRES_IN,
   PASETO_ISSUER as JWT_ISSUER,
   PASETO_AUDIENCE as JWT_AUDIENCE,

@@ -29,18 +29,14 @@ export function poolTiles(exposure: PoolExposure, availablePaise?: number | null
       hint: `${exposure.openBuys} open buy order${exposure.openBuys === 1 ? '' : 's'}; paid out when each completes`,
     },
     {
-      label: 'Locked in disputes', value: tokensOf(exposure.heldDisputedPaise),
-      hint: 'Buys in dispute or rejected as unpaid; released or paid when decided',
-      tone: exposure.heldDisputedPaise > 0 ? 'var(--warn)' : undefined,
+      // One tile for every dispute, buy or sell (owner, 2026-10-22).
+      label: 'Locked in disputes', value: tokensOf(exposure.heldDisputedPaise + exposure.sellsDisputedPaise),
+      hint: 'Buys and sells in dispute or rejected as unpaid; released or paid when an admin decides',
+      tone: exposure.heldDisputedPaise + exposure.sellsDisputedPaise > 0 ? 'var(--warn)' : undefined,
     },
     {
       label: 'Incoming from sells', value: tokensOf(exposure.sellsSettlingPaise),
       hint: 'Sells you marked paid; added to the pool when the hold window ends',
-    },
-    {
-      label: 'Sells in dispute', value: tokensOf(exposure.sellsDisputedPaise),
-      hint: `${exposure.openSells} open sell order${exposure.openSells === 1 ? '' : 's'}; disputed sells wait for an admin`,
-      tone: exposure.sellsDisputedPaise > 0 ? 'var(--warn)' : undefined,
     },
   );
   return tiles;

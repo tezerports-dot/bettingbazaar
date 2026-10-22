@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
+import { pgConfigured, pgQuery, applySchema, closePg, withTransaction } from '../client.js';
 import {
   createMerchant, updateMerchant, newMerchantId, generateMerchantPublicRef, getMerchant,
   setRoutingPriority, recordCompletedOrder, ROUTING_PRIORITY,
@@ -20,6 +20,7 @@ import { setSupervisorRole, createTeam, addMember, approveMember, removeMember }
 import {
   createRequest, fulfilRequest, getPool, releaseBuyHold, spendForBuy, detachFromTeamWithin,
   creditSellToPool, reverseSellFromPool, findStrandedBuyHolds, findCompletedUnspentBuys, poolStanding,
+  creditCommissionWithin,
 } from '../repositories/teamPools.js';
 import { assignToTeam, routingCandidates, railOf, setCashReady, routingSettings } from '../repositories/teamRouting.js';
 import { startCashOut, stopCashOut, finishCashOut, CASH_OUT_PAUSE_HOURS } from '../repositories/teamCashOut.js';
@@ -326,6 +327,18 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
   // ── By the pool (owner, 2026-10-21) ──────────────────────────────────────
   // A buy to the team with the most of its pool left; a sell to the team whose
   // cash from buys covers it; speed only between pools equally placed.
+  // Only tokens bought from the platform make a pool bigger (owner,
+  // 2026-10-22): commission joins the balance, so the pool can stand above
+  // 100% of its size, and that profit goes out through buys.
+  it('commission adds tokens to the pool but not to its size', async () => {
+    const t = await workingTeam('UPI_BANK', 1000);
+    const commissionId = `tcm-size-${randomBytes(4).toString('hex')}`;
+    await withTransaction((client) => creditCommissionWithin(client, { teamId: t.teamId, commissionId, amountPaise: T(500) }));
+    expect(await poolStanding(t.teamId)).toMatchObject({
+      sizePaise: T(1000), leftPaise: T(1500), consumedPaise: 0, sellRoomPaise: 0, leftPercent: 150,
+    });
+  });
+
   it('a buy goes to the fuller pool and a sell to the pool whose buys left cash to pay it, over a faster member', async () => {
     const drained = await workingTeam('UPI_BANK', 200000);
     const full = await workingTeam('UPI_BANK', 200000);

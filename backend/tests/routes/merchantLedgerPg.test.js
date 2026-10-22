@@ -142,4 +142,65 @@ describePg('the merchant business ledger', () => {
     expect(bad.status).toBe(400);
     expect(bad.body.code).toBe('INVALID_REPORT_RANGE');
   });
+
+  it("counts the profile's processed figures from the orders themselves (owner, 2026-10-22)", async () => {
+    const res = await as(app, member).get('/profile');
+    expect(res.status).toBe(200);
+    const m = res.body.merchant ?? res.body.data ?? res.body;
+    // One buy confirmed, one sell paid; the rejected buy is neither.
+    expect(m).toMatchObject({
+      totalDepositsProcessed: 1, totalDepositAmount: 50_000,
+      totalWithdrawalsProcessed: 1, totalWithdrawalAmount: 50_000, totalOrdersCompleted: 2,
+    });
+  });
+
+  // ── The pool statement (owner, 2026-10-22) ──────────────────────────────
+  const statement = (who, q = '') => as(app, who).get(`/reports/statement${q}`);
+
+  it('gives the supervisor opening and closing balance, and closing = opening + every change listed', async () => {
+    const res = await statement(supervisor);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const t = res.body.totals;
+    const changes = res.body.rows.reduce((s, r) => s + r.poolChangePaise + r.commissionPaise, 0);
+    expect(t.closingPaise).toBe(t.openingPaise + changes);
+    // Bought 100,000 tokens, a 50,000 buy paid out; the rejected buy's hold is still in the pool.
+    expect(t.tokensBoughtPaise).toBe(10_000_000);
+    expect(t.closingPaise - t.openingPaise).toBe(10_000_000 - 5_000_000);
+    const byRef = Object.fromEntries(res.body.rows.map((r) => [r.ref, r]));
+    expect(byRef[ids.confirmed]).toMatchObject({ kind: 'BUY', state: 'COMPLETED', poolChangePaise: -5_000_000 });
+    expect(byRef[ids.rejected]).toMatchObject({ kind: 'BUY', state: 'REJECTED', poolChangePaise: 0 });
+    expect(byRef[ids.sell]).toMatchObject({ kind: 'SELL', state: 'PAID', poolChangePaise: 0 });
+    // A supervisor reads members' orders without player detail (SUPERVISOR_ORDER_FIELDS).
+    expect(byRef[ids.confirmed]).toMatchObject({ userId: null, utr: null });
+    expect(t).toMatchObject({ buysProcessed: 1, buysProcessedPaise: 5_000_000, sellsProcessed: 1, sellsProcessedPaise: 5_000_000 });
+    expect(res.body.rows.some((r) => r.kind === 'TOKEN_BUY' && r.poolChangePaise === 10_000_000)).toBe(true);
+  });
+
+  it("gives an agent their own orders and no pool balance (a teammate's rows are not theirs)", async () => {
+    const res = await statement(member);
+    expect(res.status).toBe(200);
+    expect(res.body.totals.openingPaise).toBeNull();
+    expect(res.body.totals.closingPaise).toBeNull();
+    expect(res.body.rows.map((r) => r.ref).sort()).toEqual([ids.confirmed, ids.rejected, ids.sell].sort());
+    expect(res.body.rows.every((r) => r.balanceAfterPaise === null)).toBe(true);
+    // Their own orders carry the player and the UTR.
+    expect(res.body.rows.find((r) => r.ref === ids.confirmed).utr).toMatch(/^\d{12}$/);
+    expect(res.body.rows.find((r) => r.ref === ids.confirmed).userId).toBeTruthy();
+    const theirs = (await statement(other)).body.rows.map((r) => r.ref);
+    for (const id of Object.values(ids)) expect(theirs).not.toContain(id);
+  });
+
+  it('downloads the statement as a workbook, and refuses a bad range by name', async () => {
+    const res = await as(app, supervisor).get('/reports/statement.xlsx').buffer(true).parse(binary);
+    expect(res.status).toBe(200);
+    const book = readXlsx(res.body);
+    expect(Object.keys(book)).toEqual(['Statement']);
+    expect(book.Statement.some((r) => r[0] === 'Opening pool balance')).toBe(true);
+    expect(book.Statement.some((r) => r[0] === 'Closing pool balance')).toBe(true);
+    const header = book.Statement.find((r) => r[0] === 'Time (IST)');
+    expect(header[header.length - 1]).toBe('Transaction ID');
+    const bad = await statement(supervisor, '?from=2026-13-40');
+    expect(bad.status).toBe(400);
+    expect(bad.body.code).toBe('INVALID_REPORT_RANGE');
+  });
 });

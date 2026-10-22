@@ -150,4 +150,26 @@ describePg('the security monitor', () => {
     // And it is nowhere else in the row either.
     expect(JSON.stringify(hit.details)).not.toContain(planted);
   });
+
+  it('keeps a short cut of a huge mobile, never the whole body (review 2026-10-22)', async () => {
+    const huge = `9${'8'.repeat(50_000)}`;
+    app.post(`/admin/login-${RUN}`, (_req, res) => res.status(401).json({ success: false }));
+    await request(app).post(`/admin/login-${RUN}`).send({ mobile: huge }).expect(401);
+    const hit = await eventually(
+      (rows) => rows.find((e) => e.details?.path === `/admin/login-${RUN}`),
+      'the audit row for the huge mobile');
+    expect(hit.details.mobile.length).toBeLessThanOrEqual(21);
+    expect(JSON.stringify(hit.details).length).toBeLessThan(1_000);
+  });
+
+  it('writes at most a few rows a minute per address, however many refusals (review 2026-10-22)', async () => {
+    const path = `/forbidden-burst-${RUN}`;
+    app.get(path, (_req, res) => res.status(403).json({ success: false }));
+    for (let i = 0; i < 12; i += 1) await request(app).get(path).expect(403);
+    await new Promise((r) => setTimeout(r, 500));
+    const rows = (await recorded()).filter((e) => e.details?.path === path);
+    // Earlier tests in this file share the address and the minute, so fewer
+    // than five may be left for this burst; never more.
+    expect(rows.length).toBeLessThanOrEqual(5);
+  });
 });

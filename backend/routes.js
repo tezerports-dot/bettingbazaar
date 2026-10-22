@@ -34,7 +34,7 @@ import express     from 'express';
 import { getBalances } from './domains/wallet/walletAuthority.service.js';
 import { db } from '#db';
 // AQ-2: sign/verify via the single PASETO authority (PASETO/Ed25519, iss/aud stamped).
-import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.util.js';
+import { signToken, verifyJwt, decodeTokenClaims, secondsUntilExpiry } from './domains/identity/jwt.util.js';
 // AQ-8: password hashing authority (argon2id + bcrypt verify-fallback). Staff only.
 import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
 import { isTokenRevoked, revokeToken } from '#db/repositories/identity.js';
@@ -620,9 +620,7 @@ router.post('/logout', async (req, res) => {
       // A failed revocation is reported: the caller must not be told the token
       // is dead when it is not.
       try {
-        const decoded = decodeTokenClaims(token);
-        const exp = decoded?.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 7 * 86400000);
-        await revokeToken(token, { ttlSeconds: Math.max(1, Math.ceil((exp - Date.now()) / 1000)) });
+        await revokeToken(token, { ttlSeconds: secondsUntilExpiry(decodeTokenClaims(token)) });
       } catch (e) {
         console.error('[auth] logout could not revoke the token:', e.message);
         return res.status(500).json({

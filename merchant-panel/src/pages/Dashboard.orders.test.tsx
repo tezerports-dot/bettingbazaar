@@ -2,8 +2,7 @@
 /**
  * Home's orders card (owner, 2026-10-21): open buys, open sells, those in
  * process and the disputed ones, each a tab with its count, approved or
- * rejected in place with the same controls as Orders (`OrderWorkList`); the
- * disputes also have their own card.
+ * rejected in place with the same controls as Orders (`OrderWorkList`).
  */
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
@@ -65,11 +64,5 @@ describe('the orders on Home', () => {
     expect(screen.getByRole('button', { name: /Open deposit BUY-WAITING/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Disputed (1)' }));
     expect(screen.getByRole('button', { name: /Open withdrawal IN-DISPUTE/ })).toBeInTheDocument();
-  });
-
-  it('the disputes card lists the disputed order', async () => {
-    render(<MemoryRouter><Dashboard /></MemoryRouter>);
-    expect(await screen.findByText('1 open')).toBeInTheDocument();
-    expect(screen.getByText('Sell · 5,000 BB')).toBeInTheDocument();
   });
 });

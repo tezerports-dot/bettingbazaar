@@ -17,9 +17,8 @@
  *                    (`paid - stake`; a void is even). Positive: the player is
  *                    up; negative: the player has lost that much.
  * Merchants:
- *   Processed, orders  the merchant row's own counters, moved by
- *                    `recordCompletedOrder` (`total_processed_volume_paise`,
- *                    `total_orders_completed`)
+ *   Processed, orders  buys completed and sells paid, counted from the
+ *                    order rows (`bb_merchant_processed`, owner 2026-10-22)
  *   Pool             the team pool(s) the merchant works from: a merchant
  *                    account's own pool, a supervisor's teams' pools, an
  *                    agent's team's pool (`team_pools`, display only, §9)
@@ -211,8 +210,9 @@ const MERCHANT_SQL = `
          m.merchant_approval_status, m.is_online, m.is_supervisor, m.supervisor_rail,
          ms.supervisor_rail AS team_rail, m.accepts_deposits, m.accepts_withdrawals, m.routing_priority,
          m.lost_disputes, m.high_risk_at, m.assignment_paused_at, m.created_at,
-         m.total_processed_volume_paise AS processed_paise,
-         m.total_orders_completed       AS completed_orders,
+         -- From the order rows (bb_merchant_processed, owner 2026-10-22), as the merchant's Profile reads them.
+         pr.a[2] + pr.a[4] AS processed_paise,
+         pr.a[1] + pr.a[3] AS completed_orders,
          CASE WHEN dt.team_id IS NOT NULL THEN 'MERCHANT'
               WHEN m.is_supervisor        THEN 'SUPERVISOR'
               WHEN tm.team_id IS NOT NULL THEN 'AGENT'
@@ -231,6 +231,7 @@ const MERCHANT_SQL = `
     LEFT JOIN team_members tm ON tm.merchant_id = m.merchant_id
     LEFT JOIN teams mt ON mt.team_id = tm.team_id
     LEFT JOIN merchants ms ON ms.merchant_id = mt.supervisor_id
+    CROSS JOIN LATERAL (SELECT bb_merchant_processed(m.merchant_id) AS a) pr
     LEFT JOIN LATERAL (
       SELECT SUM(tp.available_paise) AS available_paise, SUM(tp.held_paise) AS held_paise,
              COUNT(*) AS teams

@@ -22,8 +22,11 @@ const router = express.Router();
 const ASSET_SLOTS = {
   'logo.png':           { label: 'App Logo (Loading & Share)',   w: 512,  h: 512,  hint: 'Square PNG, transparent bg. Loading screen, update screen and share modal — web and Android app. Empty: the built-in gold mark.' },
   'logo-header.png':    { label: 'Header Banner Logo',           w: 600,  h: 120,  hint: 'Wide PNG, transparent bg. Shown in app header center.' },
-  'icon-192.png':       { label: 'PWA Icon 192x192',             w: 192,  h: 192,  hint: 'Square PNG. Android home screen shortcut.' },
-  'icon-512.png':       { label: 'PWA Icon 512x512 (Maskable)',  w: 512,  h: 512,  hint: 'Square PNG with safe zone. Splash + app store.' },
+  // The home-screen icons are the three files manifest.json names; upload all
+  // three, or Android keeps drawing the built-in one it prefers (owner, 2026-10-22).
+  'icon-192.png':       { label: 'Home screen icon 192x192',     w: 192,  h: 192,  hint: 'Square PNG. Installed web app on Android, and the browser tab on big screens.' },
+  'icon-512.png':       { label: 'Home screen icon 512x512',     w: 512,  h: 512,  hint: 'Square PNG. Installed web app on Android and its opening screen.' },
+  'icon-maskable-512.png': { label: 'Home screen icon 512x512 (Android shape)', w: 512, h: 512, hint: 'Square PNG filling the whole square, with the mark inside the middle 80%: Android cuts it to a circle or rounded square.' },
   'icon-apple-180.png': { label: 'Apple Touch Icon 180x180',     w: 180,  h: 180,  hint: 'Square PNG. iPhone home screen.' },
   'favicon-32.png':     { label: 'Favicon 32x32',                w: 32,   h: 32,   hint: 'Square PNG. Browser tab.' },
   'splash.png':         { label: 'Loading Splash (Web & Android)', w: 1242, h: 2688, hint: 'Portrait image shown full-screen while the app loads — in the browser and in the Android app, right after its launch screen. Empty: the logo is shown instead.' },

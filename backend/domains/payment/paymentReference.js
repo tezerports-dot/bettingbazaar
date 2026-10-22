@@ -27,8 +27,14 @@
 import { ORDER_CURRENCY } from './orderCurrency.js';
 import { markUTRAsUsed, normalizeUTR } from '../../middleware/utrValidation.js';
 
-/** The minimum length of a bank UTR. Twelve is the shortest a bank issues. */
+/**
+ * A bank UTR, once normalised: letters and digits only, 12 (an IMPS or UPI
+ * reference) to 22 (an RTGS reference) long. Anything else (a look-alike
+ * letter from another alphabet, punctuation, a chain hash) is not a UTR.
+ */
 const MIN_UTR_LENGTH = 12;
+const MAX_UTR_LENGTH = 22;
+const UTR_SHAPE = new RegExp(`^[A-Z0-9]{${MIN_UTR_LENGTH},${MAX_UTR_LENGTH}}$`);
 
 /**
  * What this order's payment reference is called and what it must look like.
@@ -48,8 +54,8 @@ export function referenceSpecFor(order) {
   }
   return {
     label: 'UTR',
-    valid: (value) => value.length >= MIN_UTR_LENGTH,
-    hint: `The UTR is at least ${MIN_UTR_LENGTH} characters. It is on your payment receipt.`,
+    valid: (value) => UTR_SHAPE.test(value),
+    hint: `The UTR is ${MIN_UTR_LENGTH} to ${MAX_UTR_LENGTH} letters and digits. It is on your payment receipt.`,
   };
 }
 

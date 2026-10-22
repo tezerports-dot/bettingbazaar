@@ -153,6 +153,14 @@ CREATE TABLE IF NOT EXISTS utr_registry (
   registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS amount_paise BIGINT;
+-- What a reference may look like once normalised (normalizeUtr): letters,
+-- digits and the ':' of a chain reference (<hash>:<log index>), nothing else,
+-- so a zero-width or look-alike spelling can never be a second row for one
+-- transfer (review 2026-10-22). NOT VALID: rows written before it are kept;
+-- every new row is checked.
+ALTER TABLE utr_registry DROP CONSTRAINT IF EXISTS utr_registry_shape;
+ALTER TABLE utr_registry ADD CONSTRAINT utr_registry_shape
+  CHECK (utr ~ '^[A-Z0-9:]+$') NOT VALID;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- ADMIN TREASURY (domain 3)
@@ -4052,6 +4060,22 @@ RETURNS INTEGER[] AS $$
     FROM order_states o
     LEFT JOIN dispute_faults f ON f.order_id = o.order_id
    WHERE o.merchant_id = p_merchant AND o.created_at >= p_since
+$$ LANGUAGE sql STABLE;
+
+-- What a merchant has processed, counted from the order rows on every read
+-- (owner, 2026-10-22: the profile's figures did not match the orders; trap 6):
+-- {buys completed, their tokens in paise, sells paid (COMPLETED, or PAID in the
+-- hold window), their tokens in paise}, the business ledger's own definitions.
+CREATE OR REPLACE FUNCTION bb_merchant_processed(p_merchant TEXT)
+RETURNS BIGINT[] AS $$
+  SELECT ARRAY[
+    count(*) FILTER (WHERE o.order_type = 'DEPOSIT' AND o.state = 'COMPLETED'),
+    COALESCE(sum(o.token_amount_paise) FILTER (WHERE o.order_type = 'DEPOSIT' AND o.state = 'COMPLETED'), 0),
+    count(*) FILTER (WHERE o.order_type = 'WITHDRAWAL' AND o.state IN ('COMPLETED', 'PAID')),
+    COALESCE(sum(o.token_amount_paise) FILTER (WHERE o.order_type = 'WITHDRAWAL' AND o.state IN ('COMPLETED', 'PAID')), 0)
+  ]::bigint[]
+    FROM order_states o
+   WHERE o.merchant_id = p_merchant
 $$ LANGUAGE sql STABLE;
 
 -- The link is the machine the order's member is standing at. When the order

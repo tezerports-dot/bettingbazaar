@@ -27,7 +27,7 @@ import type { MerchantProfile } from '../types';
 const NAV_ALL = [
   { path: ROUTES.DASHBOARD, icon: Home,     label: 'Dashboard', title: 'Dashboard',        sub: 'Settlement operations' },
   { path: ROUTES.ORDERS,    icon: Package,  label: 'Orders',    title: 'Order Management', sub: 'Live queue' },
-  { path: ROUTES.HISTORY,   icon: History,  label: 'History',   title: 'History',          sub: 'Reports & completed orders' },
+  { path: ROUTES.HISTORY,   icon: History,  label: 'Reports',   title: 'Reports',          sub: 'Pool statement, earnings & completed orders' },
   { path: ROUTES.TEAM,      icon: Users,    label: 'Team',      title: 'Team',             sub: 'Your team, or the agent teams you supervise' },
   // A merchant account's own screens (owner, 2026-10-11): accounts,
   // sub-members, pool, reports and flags, one tab each.

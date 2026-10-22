@@ -468,7 +468,7 @@ export const SYSTEM_CONFIG_SPEC = group({
  * Branding — what every panel draws itself with.
  *
  * The names here are the ones the panels and the frontend already read
- * (`logo`, `favicon`, `splashScreen`, `depositPageBannerUrl`…). An earlier
+ * (`logo`, `splashScreen`, `depositPageBannerUrl`…). An earlier
  * draft of this scope invented a parallel set (`logoUrl`, `faviconUrl`,
  * `splashUrl`, `depositBannerUrl`…) with its own defaults, so the same colour
  * had two declared values and a rename at every boundary. The spec is the
@@ -477,7 +477,12 @@ export const SYSTEM_CONFIG_SPEC = group({
 export const BRANDING_SPEC = group({
   // ── Core identity ─────────────────────────────────────────────────────────
   appName: s('Betting Bazaar'),
-  logo: s(''), icon: s(''), favicon: s(''), splashScreen: s(''),
+  // The home-screen icons and the browser-tab icon are App Assets slots
+  // (icon-192.png, icon-512.png, icon-maskable-512.png, icon-apple-180.png,
+  // favicon-32.png: branding.admin.routes.js), the files manifest.json and
+  // index.html name. Branding kept an `icon` and a `favicon` too, which nothing
+  // drew: an admin who uploaded them saw no change (owner, 2026-10-22).
+  logo: s(''), splashScreen: s(''),
   // ── Panel titles ──────────────────────────────────────────────────────────
   userPanelName: s('Betting Bazaar'), adminPanelName: s('Bazaar Admin'),
   merchantPanelName: s('Merchant Panel'),
