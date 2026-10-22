@@ -98,6 +98,31 @@ router.post('/admin/fake-winners', authenticate, hasPermission('canManageContent
   }
 });
 
+/**
+ * POST /api/admin/fake-winners/import — many curated entries from one CSV file
+ * (owner, 2026-10-22). Every row is checked before any is added
+ * (`engagement.importFakeWinners`); the refusal names the line.
+ */
+router.post('/admin/fake-winners/import', authenticate, hasPermission('canManageContent'), async (req, res) => {
+  try {
+    const text = req.body?.text;
+    if (typeof text !== 'string' || !text.trim()) {
+      return res.status(400).json({ success: false, code: 'EMPTY_WINNERS_FILE', message: 'Choose a CSV file to upload.' });
+    }
+    if (text.length > 200_000) {
+      return res.status(400).json({ success: false, code: 'WINNERS_FILE_TOO_BIG', message: 'That file is too big. Split it into smaller files.' });
+    }
+    const added = await db.engagement.importFakeWinners(text, { createdBy: req.user.userId });
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'CURATED_WINNERS_IMPORTED', category: 'CONTENT',
+      targetType: 'FakeWinner', targetId: 'import', details: { added },
+    });
+    res.json({ success: true, added });
+  } catch (err) {
+    return respondError(res, err, 'POST /admin/fake-winners/import', { message: 'Could not read that file.' });
+  }
+});
+
 router.put('/admin/fake-winners/:id', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     // The create's rule, on the edit too (§32 S3). The edit took any amount, so

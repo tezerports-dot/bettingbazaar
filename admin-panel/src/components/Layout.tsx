@@ -13,7 +13,7 @@ import {
   MessageCircle, Shield, History, Scale, Search, Sun, Moon, Bell,
   SlidersHorizontal, Trophy, Star, Gamepad2, Bot, Share2,
   type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, Hourglass, Fingerprint,
-  Ghost, Smartphone, ShieldBan, KeyRound, Wallet, ScrollText, Coins, LifeBuoy, Archive } from 'lucide-react';
+  Ghost, Smartphone, ShieldBan, KeyRound, Wallet, ScrollText, Coins, LifeBuoy, Archive, ListOrdered } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -86,6 +86,7 @@ const NAV_GROUPS: MenuGroup[] = [
   ] },
   { key: 'games', label: 'Games', items: [
     { path: '/boards',         icon: Gamepad2, label: 'Boards',         title: 'Boards',         sub: 'Board games: timers, stakes and home-page order', permission: 'canManageGames' },
+    { path: '/demo-results',   icon: ListOrdered, label: 'Demo Results', title: 'Demo Results',  sub: 'Type or upload the 1,440 demo results of every board, VIP and General', permission: 'canManageGames' },
     { path: '/cricket',        icon: Trophy,   label: 'Cricket',        title: 'Cricket',        sub: 'Opinion polls on live matches: feed, matches, polls and report', permission: 'canManageGames' },
     { path: '/games',          icon: Gamepad2, label: 'Game Registry',  title: 'Game Registry',  sub: 'Game catalogue & categories', permission: 'canManageGames' },
     { path: '/game-providers', icon: Star,     label: 'Game Providers', title: 'Game Providers', sub: 'Casino / crash / sports API providers', permission: 'canManageGames' },

@@ -117,4 +117,51 @@ describePg('curated winners', () => {
     }
     expect(JSON.stringify(res.body)).not.toContain(String(editor.userId));
   });
+
+  // ── CSV upload (owner, 2026-10-22) ──────────────────────────────────────
+  const rowsNamed = async (prefix) => (await pgQuery(
+    `SELECT display_name, amount_paise, city, game, is_public, display_time FROM fake_winners
+      WHERE display_name LIKE $1 ORDER BY display_name`, [`${prefix}%`])).rows;
+
+  it('adds every row of a CSV file, and the public feed marks them as not real', async () => {
+    const p = `${RUN}-csv`;
+    const text = 'name,amount,city,time,public\n'
+      + `${p}-a,"1,500",Pune,2026-10-22 14:30,yes\n`
+      + `"${p}-b, jr",250,,,no\n`;
+    const res = await as(app, editor).post('/admin/fake-winners/import').send({ text });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.added).toBe(2);
+    const rows = await rowsNamed(p);
+    expect(rows.map((r) => [r.display_name, Number(r.amount_paise), r.city, r.is_public, r.game])).toEqual([
+      [`${p}-a`, 150_000, 'Pune', true, 'Delhi/Bombay'],
+      [`${p}-b, jr`, 25_000, null, false, 'Delhi/Bombay'],
+    ]);
+    // 14:30 IST is 09:00 UTC.
+    expect(new Date(rows[0].display_time).toISOString()).toBe('2026-10-22T09:00:00.000Z');
+    const feed = await request(app).get('/v1/winners?period=week&limit=200');
+    expect(feed.body.winners.filter((w) => w.displayName === `${p}-a`)).toEqual([expect.objectContaining({ isReal: false })]);
+  });
+
+  it('a file with one bad row adds nothing and names the line', async () => {
+    const p = `${RUN}-bad`;
+    for (const [text, line] of [
+      [`name,amount\n${p}-1,100\n${p}-2,-5\n`, 'Line 3'],
+      [`name,amount,time\n${p}-1,100,\n${p}-2,100,not a date\n`, 'Line 3'],
+      [`name,amount,public\n${p}-1,100,maybe\n`, 'Line 2'],
+    ]) {
+      const res = await as(app, editor).post('/admin/fake-winners/import').send({ text });
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.message).toContain(line);
+      expect(await rowsNamed(p)).toHaveLength(0);
+    }
+    const noHeader = await as(app, editor).post('/admin/fake-winners/import').send({ text: `${p},100\n${p}x,200\n` });
+    expect(noHeader.status).toBe(400);
+    expect(noHeader.body.code).toBe('WINNERS_FILE_HEADER');
+  });
+
+  it('only a content editor may upload', async () => {
+    const res = await as(app, analyst).post('/admin/fake-winners/import').send({ text: `name,amount\n${RUN}-x,100\n` });
+    expect(res.status).toBe(403);
+    expect(await rowsNamed(`${RUN}-x`)).toHaveLength(0);
+  });
 });

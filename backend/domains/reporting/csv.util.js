@@ -24,3 +24,31 @@ export function toCsv(rows) {
   };
   return [headers.join(','), ...rows.map(r => headers.map(h => esc(r[h])).join(','))].join('\n');
 }
+
+/**
+ * parseCsv — the reverse of `toCsv`: RFC-4180 fields (quotes, doubled quotes,
+ * commas and line breaks inside quotes), `\n` or `\r\n` rows. Returns an array
+ * of rows, each an array of trimmed strings; blank rows are dropped. A leading
+ * `'` that `toCsv` adds against formulas is removed, so a downloaded file
+ * uploads back unchanged.
+ */
+export function parseCsv(text) {
+  const src = String(text ?? '').replace(/^\uFEFF/, '');
+  const rows = [];
+  let row = []; let field = ''; let quoted = false;
+  const endField = () => { const t = field.trim(); row.push(t.startsWith("'") ? t.slice(1) : t); field = ''; };
+  const endRow = () => { endField(); if (row.some((c) => c !== '')) rows.push(row); row = []; };
+  for (let i = 0; i < src.length; i += 1) {
+    const c = src[i];
+    if (quoted) {
+      if (c === '"' && src[i + 1] === '"') { field += '"'; i += 1; }
+      else if (c === '"') quoted = false;
+      else field += c;
+    } else if (c === '"' && field.trim() === '') { field = ''; quoted = true; }
+    else if (c === ',') endField();
+    else if (c === '\n') endRow();
+    else if (c !== '\r') field += c;
+  }
+  if (field !== '' || row.length) endRow();
+  return rows;
+}
