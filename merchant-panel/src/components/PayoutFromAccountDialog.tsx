@@ -39,7 +39,7 @@ export const PayoutFromAccountDialog: React.FC<{
   useEffect(() => { setAccountId(''); setUtr(''); setProblem(''); setBusy(false); }, [order?.orderId]);
   if (!order) return null;
 
-  const choices = payFromChoices(merchant, accounts);
+  const choices = payFromChoices(merchant, accounts, Number(order.tokenAmount ?? order.amount));
 
   const submit = async () => {
     if (!accountId) { setProblem('Choose the account you paid this withdrawal from.'); return; }
@@ -76,7 +76,7 @@ export const PayoutFromAccountDialog: React.FC<{
         </div>
         {choices.length === 0 ? (
           <Banner tone="warn">
-            No account can pay this: none of your accounts is active and paying withdrawals
+            No account can pay this: none of your accounts is active and paying withdrawals of this size
             {merchant?.actor && !merchant.actor.isOwner ? ' and assigned to you' : ''}. Ask the account owner.
           </Banner>
         ) : (

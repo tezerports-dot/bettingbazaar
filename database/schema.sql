@@ -628,7 +628,6 @@ CREATE TABLE IF NOT EXISTS users (
   -- ── Roles ────────────────────────────────────────────────────────────────
   is_admin           BOOLEAN NOT NULL DEFAULT FALSE,
   is_sub_admin       BOOLEAN NOT NULL DEFAULT FALSE,
-  is_queue_manager   BOOLEAN NOT NULL DEFAULT FALSE,
   is_mediator        BOOLEAN NOT NULL DEFAULT FALSE,
   sub_admin_role     TEXT NOT NULL DEFAULT 'CUSTOM',
   -- JSONB rather than 8 boolean columns: the permission set is read as a whole
@@ -679,6 +678,13 @@ ALTER TABLE users DROP COLUMN IF EXISTS two_factor_pending_secret;
 ALTER TABLE users DROP COLUMN IF EXISTS two_factor_last_counter;
 ALTER TABLE users DROP COLUMN IF EXISTS two_factor_enrolled_at;
 ALTER TABLE users DROP COLUMN IF EXISTS backup_codes;
+
+-- ── No queue manager ──────────────────────────────────────────────────────
+-- Orders route themselves (`routingCandidates`), so the queue manager role is
+-- gone (owner, 2026-10-21): a staff account with the merchants area works the
+-- queue. Dropped so a database that had it converges (§32 S31); the staff-flag
+-- CHECK below is re-added without it.
+ALTER TABLE users DROP COLUMN IF EXISTS is_queue_manager;
 
 -- Coarse role tags, distinct from the is_* booleans that gate authorisation.
 -- The booleans decide what an account MAY DO and are what every check reads;
@@ -931,7 +937,6 @@ CREATE TABLE IF NOT EXISTS merchants (
   -- counts passes rather than rows: a crash between the two loses the
   -- decrement permanently and the merchant is throttled forever by a number
   -- nothing can correct. It is derived from `order_states` instead.
-  success_rate         DOUBLE PRECISION NOT NULL DEFAULT 1.0,
   avg_response_minutes DOUBLE PRECISION NOT NULL DEFAULT 2,
   dispute_rate         DOUBLE PRECISION NOT NULL DEFAULT 0,
   total_orders_completed BIGINT NOT NULL DEFAULT 0,
@@ -948,7 +953,6 @@ CREATE TABLE IF NOT EXISTS merchants (
   CONSTRAINT merchants_suspension_has_reason CHECK (
     status <> 'SUSPENDED' OR (suspension_reason IS NOT NULL AND suspension_reason <> '')),
   CONSTRAINT merchants_rating_range CHECK (rating >= 0 AND rating <= 5),
-  CONSTRAINT merchants_success_rate_range CHECK (success_rate >= 0 AND success_rate <= 1),
   CONSTRAINT merchants_dispute_rate_range CHECK (dispute_rate >= 0 AND dispute_rate <= 1),
   CONSTRAINT merchants_limits_ordered CHECK (
     min_deposit_paise  <= max_deposit_paise
@@ -1427,6 +1431,38 @@ CREATE TABLE IF NOT EXISTS cycle_history_rollups (
   CONSTRAINT cycle_history_rollups_money CHECK (
     real_staked_paise >= 0 AND house_staked_paise >= 0 AND paid_out_paise >= 0 AND fees_paise >= 0)
 );
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- COLD STORAGE (owner, 2026-10-20: "only the server readable ... admin can
+-- access that separately ... no one can request those old cold histories")
+-- ════════════════════════════════════════════════════════════════════════════
+-- Old rows leave the live tables and are kept here whole, never deleted:
+--   CYCLE         a round past the 1,440 kept per board and audience, with its
+--                 settlement rows (cycleHistoryRetention.js, in the pruning
+--                 transaction, beside its rollup)
+--   CHAT          an ended order's whole chat, once its last message is past
+--                 COLD_AFTER_DAYS
+--   NOTIFICATION  a player's notifications past COLD_AFTER_DAYS
+-- Written only by `database/repositories/coldArchive.js`; read only by the
+-- full-admin routes `GET /api/admin/cold-storage(/:id)`. Append-only.
+CREATE TABLE IF NOT EXISTS cold_archive (
+  id          BIGSERIAL PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  -- The cycle id, the order id, or the player's user id.
+  ref         TEXT NOT NULL,
+  first_at    TIMESTAMPTZ NOT NULL,
+  last_at     TIMESTAMPTZ NOT NULL,
+  row_count   INTEGER NOT NULL,
+  rows        JSONB NOT NULL,
+  archived_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT cold_archive_kind_known CHECK (kind IN ('CYCLE', 'CHAT', 'NOTIFICATION')),
+  CONSTRAINT cold_archive_rows CHECK (row_count > 0 AND jsonb_typeof(rows) = 'array'
+    AND jsonb_array_length(rows) = row_count AND first_at <= last_at)
+);
+CREATE INDEX IF NOT EXISTS cold_archive_kind_idx ON cold_archive (kind, archived_at DESC);
+CREATE INDEX IF NOT EXISTS cold_archive_ref_idx  ON cold_archive (kind, ref);
+CREATE OR REPLACE TRIGGER cold_archive_append_only
+  BEFORE UPDATE OR DELETE ON cold_archive FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
 CREATE TABLE IF NOT EXISTS game_providers (
   provider_key   TEXT PRIMARY KEY,
@@ -2177,19 +2213,19 @@ CREATE TABLE IF NOT EXISTS referral_disbursals (
 
 CREATE TABLE IF NOT EXISTS referral_programmes (
   programme_key   TEXT PRIMARY KEY,
-  budget_paise    BIGINT NOT NULL DEFAULT 0,
-  disbursed_paise BIGINT NOT NULL DEFAULT 0,
   member_cap      INTEGER NOT NULL DEFAULT 0,
   verified_members INTEGER NOT NULL DEFAULT 0,
-  active          BOOLEAN NOT NULL DEFAULT FALSE,
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  -- The budget is a ceiling, enforced by the row. An application-side check
-  -- lets two concurrent disbursals both read the same total and both pass.
-  CONSTRAINT referral_programmes_within_budget CHECK (
-    disbursed_paise >= 0 AND disbursed_paise <= budget_paise),
   CONSTRAINT referral_programmes_members_non_negative CHECK (
     verified_members >= 0 AND member_cap >= 0)
 );
+-- No budget and no on/off switch (owner, 2026-10-20: "no cap for those
+-- referral bonuses"): a bonus is paid by the `referral-autopay` cron out of
+-- the platform's token holding, bounded only by the supply.
+ALTER TABLE referral_programmes DROP CONSTRAINT IF EXISTS referral_programmes_within_budget;
+ALTER TABLE referral_programmes DROP COLUMN IF EXISTS budget_paise;
+ALTER TABLE referral_programmes DROP COLUMN IF EXISTS disbursed_paise;
+ALTER TABLE referral_programmes DROP COLUMN IF EXISTS active;
 
 -- Click attribution. Short-lived and high-volume: expiry is enforced by the
 -- READ, and the sweep only reclaims space.
@@ -2294,18 +2330,43 @@ CREATE INDEX IF NOT EXISTS enhanced_audit_failures_idx ON enhanced_audit_logs (c
 CREATE OR REPLACE TRIGGER enhanced_audit_logs_append_only
   BEFORE UPDATE OR DELETE ON enhanced_audit_logs FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
--- Client-side crash reports. High volume, low value individually, pruned by
--- retention — deliberately NOT append-only.
-CREATE TABLE IF NOT EXISTS frontend_error_reports (
-  id         BIGSERIAL PRIMARY KEY,
-  message    TEXT NOT NULL,
-  stack      TEXT,
-  component  TEXT,
-  url        TEXT,
-  panel      TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+-- ── The error log (owner, 2026-10-20) ───────────────────────────────────────
+-- Every failure the platform sees, wherever it happened: the server (a request
+-- that failed, a background job, a money alert, anything logged as an error)
+-- and the three panels (a screen that crashed, a script error, an update that
+-- failed to load). One row per DISTINCT error (`fingerprint`): a repeat adds to
+-- `occurrences` and moves `last_seen_at`, so a storm is one row, not a million.
+-- Written only by database/repositories/errorLog.js. An admin marks a row
+-- FIXED; the same error arriving again reopens it (`reopened`). Pruned by
+-- retention, deliberately NOT append-only.
+DROP TABLE IF EXISTS frontend_error_reports;
+CREATE TABLE IF NOT EXISTS error_log (
+  id            BIGSERIAL PRIMARY KEY,
+  fingerprint   TEXT NOT NULL UNIQUE,
+  source        TEXT NOT NULL,
+  category      TEXT NOT NULL,
+  severity      TEXT NOT NULL,
+  message       TEXT NOT NULL,
+  detail        TEXT,
+  component     TEXT,
+  location      TEXT,
+  occurrences   INTEGER NOT NULL DEFAULT 1,
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  status        TEXT NOT NULL DEFAULT 'OPEN',
+  fixed_at      TIMESTAMPTZ,
+  fixed_by      TEXT,
+  reopened      INTEGER NOT NULL DEFAULT 0,
+  CONSTRAINT error_log_source_known   CHECK (source IN ('SERVER', 'PLAYER_APP', 'MERCHANT_PANEL', 'ADMIN_PANEL')),
+  CONSTRAINT error_log_category_known CHECK (category IN (
+    'API', 'JOB', 'MONEY_ALERT', 'SERVER_LOG', 'SCREEN_CRASH', 'SCRIPT', 'PROMISE', 'UPDATE_LOAD')),
+  CONSTRAINT error_log_severity_known CHECK (severity IN ('CRITICAL', 'WARNING', 'MINOR')),
+  CONSTRAINT error_log_status_known   CHECK (status IN ('OPEN', 'FIXED')),
+  CONSTRAINT error_log_fixed_has_time CHECK ((status = 'FIXED') = (fixed_at IS NOT NULL)),
+  CONSTRAINT error_log_occurrences    CHECK (occurrences >= 1)
 );
-CREATE INDEX IF NOT EXISTS frontend_error_reports_recent_idx ON frontend_error_reports (created_at DESC);
+CREATE INDEX IF NOT EXISTS error_log_recent_idx ON error_log (last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS error_log_open_idx   ON error_log (severity, last_seen_at DESC) WHERE status = 'OPEN';
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- The PAN registry was removed 2026-09-30. Nothing in the product called it,
@@ -2751,6 +2812,13 @@ BEGIN
     RAISE EXCEPTION 'order % was created on the % rail (% routing) and cannot be moved to % (%)',
       OLD.order_id, OLD.payment_mode, OLD.inr_routing, NEW.payment_mode, NEW.inr_routing;
   END IF;
+  -- How the player pays a UPI/bank buy moves only with its rail (the re-rail
+  -- above): the player chose it, and the member was chosen for it.
+  IF OLD.buy_pay_method IS NOT NULL AND NEW.buy_pay_method IS DISTINCT FROM OLD.buy_pay_method
+     AND NEW.payment_mode IS NOT DISTINCT FROM OLD.payment_mode THEN
+    RAISE EXCEPTION 'order % is paid by % and cannot be moved to %',
+      OLD.order_id, OLD.buy_pay_method, NEW.buy_pay_method;
+  END IF;
   IF OLD.usdt_chain IS NOT NULL AND NEW.usdt_chain IS DISTINCT FROM OLD.usdt_chain THEN
     RAISE EXCEPTION 'order % is being paid on % and cannot be moved to another chain',
       OLD.order_id, OLD.usdt_chain;
@@ -3159,7 +3227,7 @@ ALTER TABLE users ADD CONSTRAINT users_account_type_check
 -- merchants, both of which are written at creation.
 UPDATE users SET account_type = 'STAFF'
  WHERE account_type = 'PLAYER'
-   AND (is_admin OR is_sub_admin OR is_queue_manager OR is_mediator);
+   AND (is_admin OR is_sub_admin OR is_mediator);
 UPDATE users SET account_type = 'MERCHANT'
  WHERE account_type = 'PLAYER' AND roles @> ARRAY['merchant'];
 
@@ -3194,12 +3262,11 @@ END $$;
 -- ── Staff authority lives on STAFF rows, and nowhere else ─────────────────
 -- The doors keep a PLAYER row out of the staff LOGIN. They do not keep staff
 -- authority out of a PLAYER SESSION: `isAdmin`, `hasPermission` and
--- `queueManagerOrPermission` read the flags on whatever row the session
--- belongs to. So a flag written onto a player's row is staff authority riding
--- a player's password, the player app's session and none of the staff
--- door's 2FA. Measured 2026-10-01: `POST /api/admin/users/:id/queue-manager`
--- with a PLAYER id answered 200, and that player's own session then read the
--- whole payment queue (`GET /api/admin/payment-queue`, 200).
+-- the stream doors read the flags on whatever row the session belongs to. So
+-- a flag written onto a player's row is staff authority riding a player's
+-- password, the player app's session and none of the staff door's 2FA.
+-- Measured 2026-10-01: a role grant with a PLAYER id answered 200, and that
+-- player's own session then read the whole payment queue.
 --
 -- Stated here rather than in each route because two routes wrote these flags
 -- and neither asked, and the next one would not either. Clearing a flag is
@@ -3207,7 +3274,7 @@ END $$;
 -- definition names the flag set, which may grow.
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_staff_flags_need_staff;
 ALTER TABLE users ADD CONSTRAINT users_staff_flags_need_staff
-  CHECK (account_type = 'STAFF' OR NOT (is_admin OR is_sub_admin OR is_queue_manager OR is_mediator));
+  CHECK (account_type = 'STAFF' OR NOT (is_admin OR is_sub_admin OR is_mediator));
 
 -- The same rule from the other side: phantom access is a PLAYER's. Phantom
 -- bets are placed from the player app, and the player's routes admit a
@@ -3322,6 +3389,70 @@ CREATE UNIQUE INDEX IF NOT EXISTS telegram_bot_one_slot_per_bot ON telegram_bot 
 ALTER TABLE telegram_bot DROP CONSTRAINT IF EXISTS telegram_bot_short_name_shape;
 ALTER TABLE telegram_bot ADD CONSTRAINT telegram_bot_short_name_shape
   CHECK (mini_app_short_name ~ '^[A-Za-z0-9_]{0,64}$');
+
+-- ── Signup channels and their join requests (owner, 2026-10-21) ──────────
+-- Telegram channels a new player is asked to join at Verify. None saved: the
+-- sign-in is what it was. Several may be on at once; rotating is adding the new
+-- one and switching the old one off. A channel is switched off, never deleted,
+-- so the requests it collected stay readable.
+--
+-- `chat_id` and `title` are Telegram's answer to `getChat`, never typed. The
+-- invite link asks Telegram for a JOIN REQUEST (`creates_join_request`), has
+-- no expiry date, and is checked by the `telegram-channel-links` job, which
+-- makes a new one when Telegram revoked it or another bot is now in use
+-- (`link_bot_id`: a bot can only edit the links it made).
+CREATE TABLE IF NOT EXISTS telegram_channels (
+  chat_id          TEXT PRIMARY KEY,
+  title            TEXT NOT NULL,
+  username         TEXT NOT NULL DEFAULT '',
+  invite_link      TEXT NOT NULL DEFAULT '',
+  link_bot_id      TEXT NOT NULL DEFAULT '',
+  link_checked_at  TIMESTAMPTZ,
+  link_error       TEXT NOT NULL DEFAULT '',
+  active           BOOLEAN NOT NULL DEFAULT true,
+  added_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  added_by         TEXT,
+  switched_at      TIMESTAMPTZ,
+  switched_by      TEXT
+);
+ALTER TABLE telegram_channels DROP CONSTRAINT IF EXISTS telegram_channels_chat_id_shape;
+ALTER TABLE telegram_channels ADD CONSTRAINT telegram_channels_chat_id_shape
+  CHECK (chat_id ~ '^-100[0-9]{5,20}$');
+ALTER TABLE telegram_channels DROP CONSTRAINT IF EXISTS telegram_channels_link_shape;
+ALTER TABLE telegram_channels ADD CONSTRAINT telegram_channels_link_shape
+  CHECK (invite_link = '' OR invite_link ~ '^https://t\.me/\+[A-Za-z0-9_-]+$');
+
+-- One row per channel and Telegram account: the request Telegram reported
+-- (`chat_join_request`, read by polling `getUpdates`; there is no webhook).
+-- Never approved by the server on its own: an admin approves the waiting ones
+-- (`approveWaiting`). GONE is a request Telegram no longer holds (it lapsed or
+-- was withdrawn), so the next Verify asks again; a new request reopens the row.
+CREATE TABLE IF NOT EXISTS telegram_join_requests (
+  chat_id           TEXT NOT NULL REFERENCES telegram_channels (chat_id),
+  telegram_user_id  TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'PENDING',
+  requested_at      TIMESTAMPTZ NOT NULL,
+  seen_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_at        TIMESTAMPTZ,
+  decided_by        TEXT,
+  error             TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (chat_id, telegram_user_id)
+);
+ALTER TABLE telegram_join_requests DROP CONSTRAINT IF EXISTS telegram_join_requests_status_known;
+ALTER TABLE telegram_join_requests ADD CONSTRAINT telegram_join_requests_status_known
+  CHECK (status IN ('PENDING', 'APPROVED', 'GONE'));
+CREATE INDEX IF NOT EXISTS telegram_join_requests_waiting
+  ON telegram_join_requests (chat_id, requested_at) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS telegram_join_requests_by_person
+  ON telegram_join_requests (telegram_user_id);
+
+-- Where each bot's `getUpdates` reading has got to: the next update id to ask
+-- for. Moves forward only (the WHERE), so two runs never re-read or skip.
+CREATE TABLE IF NOT EXISTS telegram_update_offsets (
+  bot_id       TEXT PRIMARY KEY,
+  next_offset  BIGINT NOT NULL DEFAULT 0,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- ── The link: an account verified by its own Telegram ─────────────────────
 -- One per account (the key) and, per panel, one account per Telegram account
@@ -3699,9 +3830,10 @@ CREATE INDEX IF NOT EXISTS team_pool_entries_team_idx ON team_pool_entries (team
 CREATE OR REPLACE TRIGGER team_pool_entries_append_only
   BEFORE UPDATE OR DELETE ON team_pool_entries FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
--- A supervisor asks the platform to sell tokens into a team's pool (BUY) or to
--- buy pool tokens back (SELL). An admin fulfils it, recording what was paid, or
--- rejects it. At most one PENDING request per team and direction.
+-- A supervisor asks the platform to sell tokens into a team's pool (BUY). An
+-- admin fulfils it, recording what was paid, or rejects it. At most one
+-- PENDING request per team. Tokens never go back to the platform (owner,
+-- 2026-10-21): there is no SELL.
 CREATE TABLE IF NOT EXISTS team_pool_requests (
   request_id         TEXT PRIMARY KEY,
   team_id            TEXT NOT NULL REFERENCES teams (team_id),
@@ -3714,7 +3846,6 @@ CREATE TABLE IF NOT EXISTS team_pool_requests (
   decided_at         TIMESTAMPTZ,
   decision_note      TEXT,
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT team_pool_requests_direction_known CHECK (direction IN ('BUY', 'SELL')),
   CONSTRAINT team_pool_requests_status_known CHECK (status IN ('PENDING', 'FULFILLED', 'REJECTED', 'CANCELLED')),
   CONSTRAINT team_pool_requests_tokens_positive CHECK (token_amount_paise > 0),
   CONSTRAINT team_pool_requests_decision_recorded CHECK (
@@ -3722,6 +3853,11 @@ CREATE TABLE IF NOT EXISTS team_pool_requests (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS team_pool_requests_one_pending
   ON team_pool_requests (team_id, direction) WHERE status = 'PENDING';
+-- Converges an older database (S31): BUY only from 2026-10-21. NOT VALID, so a
+-- test server's earlier buyback rows stay as the record they are.
+ALTER TABLE team_pool_requests DROP CONSTRAINT IF EXISTS team_pool_requests_direction_known;
+ALTER TABLE team_pool_requests ADD CONSTRAINT team_pool_requests_direction_known
+  CHECK (direction = 'BUY') NOT VALID;
 CREATE INDEX IF NOT EXISTS team_pool_requests_status_idx ON team_pool_requests (status, created_at);
 
 -- What the platform got, or paid, for a pool trade lives in the same table as
@@ -3885,6 +4021,39 @@ ALTER TABLE order_states ADD CONSTRAINT order_states_cash_link_shape CHECK (
   )
 );
 
+-- A merchant's TRACK RECORD (owner, 2026-10-21): how many of their orders
+-- succeeded and how many failed, counted from the order rows every time it is
+-- read, never kept as a counter (trap 6). Replaces `merchants.success_rate`,
+-- which counted only completions and so read 100% whatever happened.
+--   A decided dispute counts by its loser (`dispute_faults`): the player's
+--   loss is the merchant's success, the merchant's loss a failure.
+--   Otherwise: COMPLETED, or a sell marked PAID, succeeded; REJECTED and
+--   FAILED failed, and so did a cash buy that lapsed with no QR scanned (the
+--   merchant's, `playerCouldPay`). A decline (`order_rejections`) of an order
+--   that went on to someone else is a failure too.
+--   Not counted: a cancel, an open or undecided order, and an expiry that was
+--   the player's.
+-- Returns {succeeded, failed}, over orders created (and declines made) since
+-- `p_since` (all time by default).
+ALTER TABLE merchants DROP COLUMN IF EXISTS success_rate;
+CREATE OR REPLACE FUNCTION bb_merchant_track_record(p_merchant TEXT, p_since TIMESTAMPTZ DEFAULT '-infinity')
+RETURNS INTEGER[] AS $$
+  SELECT ARRAY[
+    count(*) FILTER (WHERE f.party = 'PLAYER'
+                        OR (f.party IS NULL AND (o.state = 'COMPLETED'
+                                                 OR (o.order_type = 'WITHDRAWAL' AND o.state = 'PAID'))))::int,
+    count(*) FILTER (WHERE f.party = 'MERCHANT'
+                        OR (f.party IS NULL AND (o.state IN ('REJECTED', 'FAILED')
+                                                 OR (o.state = 'EXPIRED' AND o.order_type = 'DEPOSIT'
+                                                     AND o.payment_mode = 'CASH_ATM' AND o.cash_link IS NULL))))::int
+      + (SELECT count(*)::int FROM order_rejections r JOIN order_states x ON x.order_id = r.order_id
+          WHERE r.merchant_id = p_merchant AND x.merchant_id IS DISTINCT FROM p_merchant
+            AND r.rejected_at >= p_since)]
+    FROM order_states o
+    LEFT JOIN dispute_faults f ON f.order_id = o.order_id
+   WHERE o.merchant_id = p_merchant AND o.created_at >= p_since
+$$ LANGUAGE sql STABLE;
+
 -- The link is the machine the order's member is standing at. When the order
 -- changes hands (reassignment, requeue, an admin move) the next member is at a
 -- different machine, so the old link is cleared in the same UPDATE, whichever
@@ -3960,12 +4129,12 @@ ALTER TABLE users ADD CONSTRAINT users_bank_account_not_a_mobile
      AND NOT bb_text_has_a_mobile(bank_details->>'accountHolderName')
      AND NOT bb_text_has_a_mobile(bank_details->>'bankName'));
 
--- A player's payout account is a BANK account: the four fields a transfer
--- needs, and no fifth. Every sell is a bank transfer to it, and no UPI handle
--- is ever a destination or shown (CLAUDE.md §2 "How each rail is paid", §24).
--- The Profile screen asked for a UPI ID and the sell copied
--- `bank_details.upiId` onto every order a member reads; an allowlist, so a
--- handle under any other name is refused the same way.
+-- A player's payout account: the four fields a bank transfer needs and the
+-- player's UPI ID (owner, 2026-10-21: the member paying a sell is shown the
+-- bank details and a UPI link built for that order's amount), and no other
+-- key; an allowlist, so a handle under any other name is refused the same way.
+-- A UPI ID whose name part is a mobile is refused by the row
+-- (`users_upi_id_shape`), since the member sees it (§24).
 -- Converged first (§32 S31): a stray key is dropped from a row written before
 -- the rule, and a JSON null becomes no value, or the constraint below would
 -- stop the apply here.
@@ -3974,30 +4143,71 @@ UPDATE users SET bank_details = NULL
 UPDATE users
    SET bank_details = bank_details - ARRAY(
          SELECT k FROM jsonb_object_keys(bank_details) AS k
-          WHERE k <> ALL (ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName']))
+          WHERE k <> ALL (ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName', 'upiId']))
  WHERE jsonb_typeof(bank_details) = 'object'
-   AND (bank_details - ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName']) <> '{}'::jsonb;
+   AND (bank_details - ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName', 'upiId']) <> '{}'::jsonb;
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_bank_details_bank_account_only;
 ALTER TABLE users ADD CONSTRAINT users_bank_details_bank_account_only
   CHECK (bank_details IS NULL
       OR (jsonb_typeof(bank_details) = 'object'
-          AND (bank_details - ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName']) = '{}'::jsonb));
+          AND (bank_details - ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName', 'upiId']) = '{}'::jsonb));
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_upi_id_shape;
+ALTER TABLE users ADD CONSTRAINT users_upi_id_shape
+  CHECK (bank_details->>'upiId' IS NULL
+      OR ((bank_details->>'upiId') ~ '^[A-Za-z0-9._-]{2,255}@[A-Za-z][A-Za-z0-9.-]{1,64}$'
+          AND NOT bb_text_has_a_mobile(split_part(bank_details->>'upiId', '@', 1))));
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- Step 2e (owner, 2026-10-02): the team commission, instant and per team.
+-- 🔒 PAYOUT DETAILS LOCK (owner, 2026-10-21)
+-- Once saved, a player's bank details and UPI ID stay as they are for
+-- bb_payout_details_lock() (48 hours, fixed), and never change while one of
+-- the player's orders is open: queued, started, paid, disputed, or rejected
+-- inside its dispute window. Every save of a different value starts the lock
+-- again, the first save included. The row's trigger asks both, so every
+-- writer is held to it; a withdrawal INSERT holds a share lock on the row
+-- (order_states_payout_hold), so a save and a new sell are serialised (§32 S6).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS payout_details_locked_until TIMESTAMPTZ;
+
+CREATE OR REPLACE FUNCTION bb_payout_details_lock() RETURNS interval
+  LANGUAGE sql IMMUTABLE AS $$ SELECT interval '48 hours' $$;
+
+CREATE OR REPLACE FUNCTION bb_lock_payout_details() RETURNS trigger AS $$
+BEGIN
+  IF NEW.bank_details IS NOT DISTINCT FROM OLD.bank_details THEN RETURN NEW; END IF;
+  -- Clearing them points no money anywhere (an open order keeps its own copy),
+  -- and the lock stays as it was, so a new account still waits it out.
+  IF NEW.bank_details IS NULL THEN RETURN NEW; END IF;
+  -- Nor does dropping a key and changing none (the convergence above).
+  IF OLD.bank_details IS NOT NULL AND OLD.bank_details @> NEW.bank_details THEN RETURN NEW; END IF;
+  IF OLD.payout_details_locked_until IS NOT NULL AND OLD.payout_details_locked_until > now() THEN
+    RAISE EXCEPTION 'payout details of % are locked until %', OLD.user_id, OLD.payout_details_locked_until
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'users_payout_details_locked';
+  END IF;
+  IF EXISTS (SELECT 1 FROM order_states o
+              WHERE o.user_id = OLD.user_id
+                AND (o.state IN ('PENDING_QUEUE', 'PROCESSING', 'PAID', 'DISPUTED')
+                     OR (o.state = 'REJECTED' AND o.dispute_window_until > now()))) THEN
+    RAISE EXCEPTION 'payout details of % are in use by an open order', OLD.user_id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'users_payout_details_in_use';
+  END IF;
+  NEW.payout_details_locked_until := now() + bb_payout_details_lock();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER users_payout_details_lock
+  BEFORE UPDATE OF bank_details ON users FOR EACH ROW EXECUTE FUNCTION bb_lock_payout_details();
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Order commission (owner, 2026-10-21; it replaced the matched-volume cycle
+-- of 2026-10-02): every COMPLETED order a team served earns
+-- `orderCommission.depositPercent` (a buy) or `withdrawalPercent` (a sell) of
+-- its tokens, paid as tokens into the team's pool out of the platform's
+-- commission pool (MERCHANT_BONUS_POOL in the accounting ledger, which an
+-- admin funds from distributable revenue). One row per order, written by
+-- `teamCommission.js` alone, in the transaction that credits the pool.
 --
--- A team's MATCHED volume is min(completed buys, completed sells), in tokens.
--- Every time it rises above the team's high-water mark, 10% of the rise is paid
--- as tokens into the team's pool, out of the platform's commission pool
--- (MERCHANT_BONUS_POOL in the accounting ledger, which an admin funds from
--- distributable revenue). The mark is the highest `to_high_paise` recorded for
--- the team: one row per rise, written by `teamCommission.js` alone, in the
--- transaction that credits the pool. Volume that falls (a completed sell
--- disputed and refunded) is never clawed back; it has to climb back past the
--- mark before anything is paid again.
---
--- `team_commissions_from_once` is the double-payment guard (§32 S6, S45): two
--- payments racing from the same mark cannot both land, whatever read them.
+-- `team_commissions_once_per_order` is the double-payment guard (§32 S6,
+-- S45): two payments for one order cannot both land, whatever read them.
 -- ═══════════════════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS team_commissions (
   commission_id    TEXT PRIMARY KEY,
@@ -4005,24 +4215,41 @@ CREATE TABLE IF NOT EXISTS team_commissions (
   -- The team's supervisor; NULL on a DIRECT team, which has none (its owner's
   -- share names them).
   supervisor_id    TEXT REFERENCES merchants (merchant_id),
-  from_high_paise  BIGINT NOT NULL,
-  to_high_paise    BIGINT NOT NULL,
-  buys_paise       BIGINT NOT NULL,
-  sells_paise      BIGINT NOT NULL,
+  order_id         TEXT,
+  order_type       TEXT,
+  -- The order's tokens and the rate it was paid at, in basis points.
+  base_paise       BIGINT,
+  commission_bp    INTEGER,
   commission_paise BIGINT NOT NULL,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT team_commissions_rises CHECK (from_high_paise >= 0 AND to_high_paise > from_high_paise),
-  CONSTRAINT team_commissions_is_matched CHECK (to_high_paise = LEAST(buys_paise, sells_paise)),
-  -- The percent of the rise is `team_commissions_percent_of_rise`, DIRECT
-  -- MERCHANTS below (the percent became a column, owner 2026-10-11).
-  CONSTRAINT team_commissions_from_once UNIQUE (team_id, from_high_paise),
-  CONSTRAINT team_commissions_to_once UNIQUE (team_id, to_high_paise)
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Converges a database made under the matched-volume rule (S31): its columns
+-- go, and with them their CHECKs and the once-per-mark keys.
+ALTER TABLE team_commissions ADD COLUMN IF NOT EXISTS order_id TEXT;
+ALTER TABLE team_commissions ADD COLUMN IF NOT EXISTS order_type TEXT;
+ALTER TABLE team_commissions ADD COLUMN IF NOT EXISTS base_paise BIGINT;
+ALTER TABLE team_commissions ADD COLUMN IF NOT EXISTS commission_bp INTEGER;
+ALTER TABLE team_commissions DROP COLUMN IF EXISTS from_high_paise;
+ALTER TABLE team_commissions DROP COLUMN IF EXISTS to_high_paise;
+ALTER TABLE team_commissions DROP COLUMN IF EXISTS buys_paise;
+ALTER TABLE team_commissions DROP COLUMN IF EXISTS sells_paise;
+ALTER TABLE team_commissions DROP COLUMN IF EXISTS commission_percent;
+-- The row is one order's commission, at the rate it records, rounded down to
+-- the paisa. NOT VALID: a test server's rows from the old rule stay as the
+-- record they are; every new row is held to it.
+ALTER TABLE team_commissions DROP CONSTRAINT IF EXISTS team_commissions_per_order;
+ALTER TABLE team_commissions ADD CONSTRAINT team_commissions_per_order CHECK (
+  order_id IS NOT NULL AND order_type IN ('DEPOSIT', 'WITHDRAWAL')
+  AND base_paise > 0 AND commission_bp BETWEEN 1 AND 2000
+  AND commission_paise = (base_paise * commission_bp) / 10000
+  AND commission_paise > 0) NOT VALID;
+CREATE UNIQUE INDEX IF NOT EXISTS team_commissions_once_per_order ON team_commissions (order_id);
+CREATE INDEX IF NOT EXISTS team_commissions_team_idx ON team_commissions (team_id, created_at DESC);
 CREATE OR REPLACE TRIGGER team_commissions_append_only
   BEFORE UPDATE OR DELETE ON team_commissions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
 -- Who earned what of each payment: 16% to the supervisor, 84% equally to the
--- team's approved members at that moment. A RECORD, not money: the tokens sit
+-- team's approved members at that moment (a merchant account: all to its owner). A RECORD, not money: the tokens sit
 -- in the team's pool. The shares of one payment add up to it exactly.
 CREATE TABLE IF NOT EXISTS team_commission_shares (
   commission_id TEXT NOT NULL REFERENCES team_commissions (commission_id),
@@ -4181,6 +4408,15 @@ ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_supervisor_no_mobile
 ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_name_not_a_mobile;
 ALTER TABLE merchants ADD CONSTRAINT merchants_name_not_a_mobile
   CHECK (NOT bb_text_has_a_mobile(name) AND NOT bb_text_has_a_mobile(username));
+-- An agent's UPI ID (owner, 2026-10-21): a player paying a UPI buy is given a
+-- link built from it for that order's amount, so its name part may not be a
+-- mobile (§24), the same rule as a player's (`users_upi_id_shape`).
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS upi_id TEXT;
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_upi_id_shape;
+ALTER TABLE merchants ADD CONSTRAINT merchants_upi_id_shape
+  CHECK (upi_id IS NULL
+      OR (upi_id ~ '^[A-Za-z0-9._-]{2,255}@[A-Za-z][A-Za-z0-9.-]{1,64}$'
+          AND NOT bb_text_has_a_mobile(split_part(upi_id, '@', 1))));
 ALTER TABLE teams DROP CONSTRAINT IF EXISTS teams_name_not_a_mobile;
 ALTER TABLE teams ADD CONSTRAINT teams_name_not_a_mobile CHECK (NOT bb_text_has_a_mobile(name));
 
@@ -4256,7 +4492,7 @@ $$;
 
 -- ── The supply ceiling ─────────────────────────────────────────────────────
 -- `SystemConfig.adminTokenSupply.total` tokens exist (owner, 2026-09-23: 20
--- billion). The platform cannot release more than that: past it, it would be
+-- billion; 2026-10-20: 100 billion). The platform cannot release more than that: past it, it would be
 -- holding fewer than none. The fallback is the spec's default
 -- (`database/spec/config.spec.js`); `conservationPg.test.js` holds them equal.
 CREATE OR REPLACE FUNCTION bb_token_supply_paise() RETURNS BIGINT
@@ -4264,7 +4500,7 @@ LANGUAGE sql STABLE AS $$
   SELECT (COALESCE(
     (SELECT (settings #>> '{adminTokenSupply,total}')::numeric
        FROM config_documents WHERE scope = 'system' AND doc_key = 'main'),
-    20000000000) * 100)::bigint
+    100000000000) * 100)::bigint
 $$;
 
 -- Asked only when a write RELEASES tokens (TOKEN_SUPPLY going down), so a
@@ -4508,6 +4744,21 @@ ALTER TABLE teams ADD CONSTRAINT teams_kind_shape CHECK (
 CREATE UNIQUE INDEX IF NOT EXISTS teams_one_direct_per_owner ON teams (owner_merchant_id)
   WHERE owner_merchant_id IS NOT NULL;
 
+-- A pool's CASH OUT (owner, 2026-10-21): its holder turns tokens into cash by
+-- serving buys only. From the start no new sell reaches it and its buys go
+-- first; the sells and disputes it already has stay with it. It ends when the
+-- pool can no longer cover the smallest buy it could be sent and it has no
+-- buy open (or its holder stops it), and then nothing new reaches it, and it
+-- buys no tokens, for 48 hours (`paused_until`). Written only by
+-- `database/repositories/teamCashOut.js`, its guards in each UPDATE's WHERE.
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS cash_out_started_at TIMESTAMPTZ;
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS cash_out_by TEXT;
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS paused_until TIMESTAMPTZ;
+ALTER TABLE teams DROP CONSTRAINT IF EXISTS teams_cash_out_or_pause;
+ALTER TABLE teams ADD CONSTRAINT teams_cash_out_or_pause CHECK (
+  (cash_out_started_at IS NULL OR paused_until IS NULL)
+  AND (cash_out_started_at IS NULL) = (cash_out_by IS NULL));
+
 -- A team is born AGENT or DIRECT and stays it; a DIRECT team keeps its owner.
 -- An owner is neither a supervisor nor a team member, and the reverse: the
 -- three roles are disjoint (extends `team_roles_disjoint`).
@@ -4547,19 +4798,9 @@ DROP TRIGGER IF EXISTS merchants_supervisor_not_direct_owner ON merchants;
 CREATE TRIGGER merchants_supervisor_not_direct_owner BEFORE UPDATE OF is_supervisor ON merchants
   FOR EACH ROW EXECUTE FUNCTION bb_direct_team_shape();
 
--- ── Commission: the percent is the admin's, and a row records it ──────────
--- An AGENT team is paid COMMISSION_PERCENT (10); a merchant account the
--- admin's `directMerchants.commissionPercent` (default 10). The row carries
--- the percent it was paid at, and the CHECK holds the sum to it, so every
--- writer pays exactly that percent of the rise, rounded down to the paisa.
+-- ── Commission: a merchant account's row names no supervisor ───────────────
 ALTER TABLE team_commissions ALTER COLUMN supervisor_id DROP NOT NULL;
-ALTER TABLE team_commissions ADD COLUMN IF NOT EXISTS commission_percent SMALLINT NOT NULL DEFAULT 10;
 ALTER TABLE team_commissions DROP CONSTRAINT IF EXISTS team_commissions_tenth;
-ALTER TABLE team_commissions DROP CONSTRAINT IF EXISTS team_commissions_percent_of_rise;
-ALTER TABLE team_commissions ADD CONSTRAINT team_commissions_percent_of_rise CHECK (
-  commission_percent BETWEEN 1 AND 50
-  AND commission_paise = ((to_high_paise - from_high_paise) * commission_percent) / 100
-  AND commission_paise > 0);
 -- A merchant account's whole payment is recorded to its owner: no supervisor share.
 ALTER TABLE team_commission_shares DROP CONSTRAINT IF EXISTS team_commission_shares_role_known;
 ALTER TABLE team_commission_shares ADD CONSTRAINT team_commission_shares_role_known
@@ -4684,6 +4925,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS merchant_payment_accounts_one_handle
 CREATE INDEX IF NOT EXISTS merchant_payment_accounts_merchant_idx
   ON merchant_payment_accounts (merchant_id, status);
 
+-- Which order sizes each account takes (owner, 2026-10-20): a buy of a listed
+-- size may be paid into it, a sell of a listed size paid from it. Only the
+-- seven ORDER_SIZES (denominations.js). An account made before this column
+-- takes every size, which is what it did. That every size the platform sends
+-- to merchant accounts is taken by some account is the writer's, asked after
+-- each write (merchantPaymentAccounts.js `coveredWrite`).
+ALTER TABLE merchant_payment_accounts ADD COLUMN IF NOT EXISTS buy_sizes INTEGER[] NOT NULL
+  DEFAULT '{500,1000,5000,10000,50000,100000,500000}';
+ALTER TABLE merchant_payment_accounts ADD COLUMN IF NOT EXISTS sell_sizes INTEGER[] NOT NULL
+  DEFAULT '{500,1000,5000,10000,50000,100000,500000}';
+ALTER TABLE merchant_payment_accounts DROP CONSTRAINT IF EXISTS merchant_payment_accounts_sizes_known;
+ALTER TABLE merchant_payment_accounts ADD CONSTRAINT merchant_payment_accounts_sizes_known CHECK (
+      buy_sizes <@ '{500,1000,5000,10000,50000,100000,500000}'::int[]
+  AND sell_sizes <@ '{500,1000,5000,10000,50000,100000,500000}'::int[]
+  AND array_position(buy_sizes, NULL) IS NULL AND array_position(sell_sizes, NULL) IS NULL);
+
 -- Nothing on an account may be or carry a mobile number (§24): the account
 -- number against the payments banks and the owner's own mobile, the names and
 -- the label as text, and the UPI handle's name part (a handle such as
@@ -4754,6 +5011,36 @@ ALTER TABLE order_states ADD COLUMN IF NOT EXISTS inr_routing TEXT;
 ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_inr_routing_known;
 ALTER TABLE order_states ADD CONSTRAINT order_states_inr_routing_known CHECK (
   inr_routing IS NULL OR inr_routing IN ('AGENTS', 'MERCHANTS'));
+-- `buy_pay_method` (owner, 2026-10-21): how the player pays an INR buy on the
+-- UPI/bank rail, chosen by them when they create it: UPI (a link built for the
+-- order's amount from the member's UPI ID, or a merchant account's UPI QR
+-- account) or BANK (a bank transfer to the member's or the account's bank
+-- account). Each has its own window (`SystemConfig.buyPayWindowSeconds`).
+-- Present exactly on those buys; frozen once set, except that a waiting cash
+-- buy re-railed to merchant accounts becomes UPI and back to agents none
+-- (`bb_forbid_order_mode_change`). Converged first (§32 S31).
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS buy_pay_method TEXT;
+UPDATE order_states SET buy_pay_method = 'BANK'
+ WHERE buy_pay_method IS NULL AND order_type = 'DEPOSIT' AND payment_mode = 'P2P_UPI' AND currency = 'INR';
+UPDATE order_states SET buy_pay_method = NULL
+ WHERE buy_pay_method IS NOT NULL AND NOT (order_type = 'DEPOSIT' AND payment_mode = 'P2P_UPI' AND currency = 'INR');
+-- Its default, in this one place: BANK, the rail's way before the choice,
+-- for a writer that names none (the player's route always names one).
+CREATE OR REPLACE FUNCTION bb_order_pay_method_default() RETURNS trigger AS $$
+BEGIN
+  IF NEW.buy_pay_method IS NULL AND NEW.order_type = 'DEPOSIT'
+     AND NEW.payment_mode = 'P2P_UPI' AND NEW.currency = 'INR' THEN
+    NEW.buy_pay_method := 'BANK';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER order_states_pay_method_default
+  BEFORE INSERT ON order_states FOR EACH ROW EXECUTE FUNCTION bb_order_pay_method_default();
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_buy_pay_method_shape;
+ALTER TABLE order_states ADD CONSTRAINT order_states_buy_pay_method_shape CHECK (
+  (buy_pay_method IS NULL OR buy_pay_method IN ('UPI', 'BANK'))
+  AND ((order_type = 'DEPOSIT' AND payment_mode = 'P2P_UPI' AND currency = 'INR') = (buy_pay_method IS NOT NULL)));
 -- `pay_account_id`: the account a merchant-account buy is paid INTO, chosen
 -- at assignment (least recently used). `paid_from_account_id`: the account a
 -- merchant-account sell was paid FROM, named by whoever marked it paid.
@@ -4828,7 +5115,7 @@ CREATE OR REPLACE TRIGGER merchant_flags_append_only
 -- ═══════════════════════════════════════════════════════════════════════════
 -- STAFF AUTHENTICATOR (owner, 2026-10-13)
 -- ═══════════════════════════════════════════════════════════════════════════
--- A STAFF account (admin, sub-admin, queue manager, mediator) signs in with its
+-- A STAFF account (admin, sub-admin, mediator) signs in with its
 -- mobile, its password and a code from an authenticator app (RFC 6238 TOTP).
 -- No Telegram. Written only by database/repositories/totp.js.
 --
@@ -5221,6 +5508,104 @@ CREATE TRIGGER usdt_final_wallets_frozen
   BEFORE UPDATE OR DELETE ON usdt_final_wallets FOR EACH ROW EXECUTE FUNCTION bb_usdt_final_wallet_frozen();
 
 -- ════════════════════════════════════════════════════════════════════════════
+-- USDT POOL BUYS (owner, 2026-10-21: a merchant buys pool tokens from the
+-- platform the way a player buys tokens, and they arrive with no admin step)
+-- A supervisor or a merchant account's owner asks for tokens paid in USDT: a
+-- BUY `team_pool_requests` row and, in the same transaction, an address
+-- derived for that request alone (`pool_usdt_addresses`, the same xpub and
+-- index sequence as a player's buy, so no address is ever shared), the price
+-- frozen at `SystemConfig.usdtPricing.merchantAdminBuyInr`. The watcher
+-- records what arrives (`pool_usdt_transfers`) and, once it covers the price,
+-- fulfils the request (`teamPools.fulfilRequestWithin`: TOKEN_SUPPLY →
+-- TEAM_FLOAT, the pool entry and the USDT consideration) in one transaction.
+-- Written only by database/repositories/usdtDeposits.js; swept with the
+-- player addresses by scripts/usdt-sweep.mjs.
+-- ════════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS pool_usdt_addresses (
+  request_id        TEXT PRIMARY KEY REFERENCES team_pool_requests (request_id),
+  chain             TEXT NOT NULL,
+  address           TEXT NOT NULL,
+  key_id            TEXT NOT NULL,
+  derivation_index  INTEGER NOT NULL,
+  -- The price, in micro-USDT, and the rate that set it: frozen with the row.
+  usdt_micro        BIGINT NOT NULL,
+  rate_used         NUMERIC(18, 6) NOT NULL,
+  expires_at        TIMESTAMPTZ NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  swept_at          TIMESTAMPTZ,
+  swept_tx_hash     TEXT,
+  swept_by          TEXT
+);
+ALTER TABLE pool_usdt_addresses DROP CONSTRAINT IF EXISTS pool_usdt_addresses_shape;
+ALTER TABLE pool_usdt_addresses ADD CONSTRAINT pool_usdt_addresses_shape CHECK (
+  chain = 'BEP20'
+  AND address ~ '^0x[0-9a-f]{40}$'
+  AND key_id ~ '^[0-9a-f]{16}$'
+  AND derivation_index >= 0
+  AND usdt_micro > 0 AND usdt_micro % 10000 = 0
+  AND rate_used > 0
+  AND ((swept_at IS NULL AND swept_tx_hash IS NULL AND swept_by IS NULL)
+    OR (swept_at IS NOT NULL AND swept_tx_hash ~ '^0x[0-9a-f]{64}$' AND swept_by IS NOT NULL)));
+CREATE UNIQUE INDEX IF NOT EXISTS pool_usdt_addresses_address_unique ON pool_usdt_addresses (address);
+CREATE UNIQUE INDEX IF NOT EXISTS pool_usdt_addresses_index_unique ON pool_usdt_addresses (key_id, derivation_index);
+
+CREATE OR REPLACE FUNCTION bb_pool_usdt_address_frozen() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'pool_usdt_addresses rows are never deleted'; END IF;
+  IF (to_jsonb(NEW) - 'swept_at' - 'swept_tx_hash' - 'swept_by')
+     IS DISTINCT FROM (to_jsonb(OLD) - 'swept_at' - 'swept_tx_hash' - 'swept_by') THEN
+    RAISE EXCEPTION 'a pool USDT address is fixed once derived (request %)', OLD.request_id;
+  END IF;
+  IF OLD.swept_at IS NOT NULL THEN
+    RAISE EXCEPTION 'pool USDT address of request % is already recorded as swept', OLD.request_id;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER pool_usdt_addresses_frozen
+  BEFORE UPDATE OR DELETE ON pool_usdt_addresses FOR EACH ROW EXECUTE FUNCTION bb_pool_usdt_address_frozen();
+
+CREATE TABLE IF NOT EXISTS pool_usdt_transfers (
+  chain          TEXT NOT NULL,
+  tx_hash        TEXT NOT NULL,
+  log_index      INTEGER NOT NULL,
+  request_id     TEXT NOT NULL REFERENCES pool_usdt_addresses (request_id),
+  from_address   TEXT NOT NULL,
+  amount_micro   BIGINT NOT NULL,
+  block_number   BIGINT NOT NULL,
+  -- The request's status when the transfer was seen: whether it could count.
+  status_at_arrival TEXT NOT NULL,
+  seen_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  handled_at     TIMESTAMPTZ,
+  handled_by     TEXT,
+  handled_note   TEXT,
+  PRIMARY KEY (chain, tx_hash, log_index)
+);
+ALTER TABLE pool_usdt_transfers DROP CONSTRAINT IF EXISTS pool_usdt_transfers_shape;
+ALTER TABLE pool_usdt_transfers ADD CONSTRAINT pool_usdt_transfers_shape CHECK (
+  chain = 'BEP20'
+  AND tx_hash ~ '^0x[0-9a-f]{64}$'
+  AND from_address ~ '^0x[0-9a-f]{40}$'
+  AND amount_micro >= 0 AND log_index >= 0 AND block_number >= 0
+  AND ((handled_at IS NULL AND handled_by IS NULL AND handled_note IS NULL)
+    OR (handled_at IS NOT NULL AND handled_by IS NOT NULL AND length(btrim(handled_note)) BETWEEN 1 AND 500)));
+CREATE INDEX IF NOT EXISTS pool_usdt_transfers_request_idx ON pool_usdt_transfers (request_id);
+
+CREATE OR REPLACE FUNCTION bb_pool_usdt_transfer_frozen() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'pool_usdt_transfers rows are never deleted'; END IF;
+  IF (to_jsonb(NEW) - 'handled_at' - 'handled_by' - 'handled_note')
+     IS DISTINCT FROM (to_jsonb(OLD) - 'handled_at' - 'handled_by' - 'handled_note') THEN
+    RAISE EXCEPTION 'a pool USDT transfer record is never edited (% #%)', OLD.tx_hash, OLD.log_index;
+  END IF;
+  IF OLD.handled_at IS NOT NULL THEN
+    RAISE EXCEPTION 'pool USDT transfer % #% is already marked handled', OLD.tx_hash, OLD.log_index;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER pool_usdt_transfers_frozen
+  BEFORE UPDATE OR DELETE ON pool_usdt_transfers FOR EACH ROW EXECUTE FUNCTION bb_pool_usdt_transfer_frozen();
+
+-- ════════════════════════════════════════════════════════════════════════════
 -- CRICKET OPINION POLLS (owner, 2026-10-18; docs/reference/CRICKET_OPINION_DESIGN.md)
 -- An in-house game. Matches come from one data feed the server alone reads
 -- (`cricket_feed`); an admin publishes a match (or follows a whole series) and
@@ -5498,3 +5883,28 @@ DROP TRIGGER IF EXISTS cricket_poll_options_book_bound ON cricket_poll_options;
 CREATE CONSTRAINT TRIGGER cricket_poll_options_book_bound
   AFTER INSERT OR UPDATE ON cricket_poll_options DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION bb_cricket_book_bound();
+
+-- ── Maintenance testers (owner, 2026-10-20) ─────────────────────────────────
+-- Player accounts that keep using the app while SystemConfig.maintenanceMode
+-- is on, so the team can test a release on the live platform before players
+-- return. Set only from the player's admin page (`PUT /api/admin/users/:userId/
+-- maintenance-tester`); asked by `maintenanceRefusal` in every player
+-- session check. A staff or merchant row cannot hold it.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS maintenance_tester BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_maintenance_tester_player;
+ALTER TABLE users ADD CONSTRAINT users_maintenance_tester_player
+  CHECK (account_type = 'PLAYER' OR NOT maintenance_tester);
+CREATE INDEX IF NOT EXISTS users_maintenance_testers_idx ON users (user_id) WHERE maintenance_tester;
+
+-- ── Demo results the admin typed (owner, 2026-10-20) ────────────────────────
+-- Per board and profile, the demo results that fill the analytics window
+-- before the board's oldest real result, as B (Bombay) and D (Delhi), OLDEST
+-- FIRST, at most 1,440 (the analytics window). Empty = the drawn ones
+-- (`redesign/DemoResults.tsx`). Display only: never a cycle, a bet or a
+-- figure. Written only by `setDemoResults` (boards.js).
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS demo_vip     TEXT NOT NULL DEFAULT '';
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS demo_general TEXT NOT NULL DEFAULT '';
+ALTER TABLE boards DROP CONSTRAINT IF EXISTS boards_demo_results_shape;
+ALTER TABLE boards ADD CONSTRAINT boards_demo_results_shape
+  CHECK (demo_vip ~ '^[BD]*$' AND demo_general ~ '^[BD]*$'
+         AND length(demo_vip) <= 1440 AND length(demo_general) <= 1440);

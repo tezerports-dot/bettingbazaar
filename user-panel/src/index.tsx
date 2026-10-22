@@ -6,13 +6,20 @@ import './index.css';
 import { captureReferralCode } from './services/referralCapture';
 import { listenForInstallPrompt } from './services/installPrompt';
 import { applyCachedBranding } from './services/branding';
+import { installErrorReporter } from './services/errorReporter';
+import { installChunkRecovery } from './services/chunkRecovery';
 
 // Grab ?ref=CODE before anything else touches the URL. A visitor who arrives on
 // an invite link rarely signs up in that first second — they look around first —
 // and by the time they open the bot the URL has long since changed. Capturing at
-// boot is what makes the referrer's ₹25 actually land.
+// boot is what makes the referrer's reward actually land.
 captureReferralCode();
 listenForInstallPrompt();
+// A page opened before a deploy reloads for the new build when a chunk it
+// holds the old name of is gone (services/chunkRecovery.ts).
+installChunkRecovery();
+// Uncaught errors and unhandled promises go to the admin's error log.
+installErrorReporter();
 // Paint the last-known branding (colours, palette) before the first frame, so
 // a STAKE deployment does not open gold and then flip (owner, 2026-10-15).
 applyCachedBranding();

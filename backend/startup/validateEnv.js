@@ -57,6 +57,9 @@ const REQUIRED = [
 
 // Only meaningful in a real deployment; absence is a warning, not a failure.
 const ADVISED = [
+  // The nightly pg_dump goes here and nowhere else (services/backup.service.js
+  // backupStorage): never the public upload bucket CDN_URL serves.
+  ['BACKUP_S3_BUCKET', 'a PRIVATE bucket for the nightly database backup; unset, no backup is taken'],
 ];
 
 const METRICS_TOKEN_PLACEHOLDERS = new Set([

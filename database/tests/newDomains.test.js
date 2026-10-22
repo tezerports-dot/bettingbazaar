@@ -397,24 +397,11 @@ describePg('the domains written from scratch', () => {
       expect(mine.spent).toBe(100);
     });
 
-    it('a programme cannot disburse past its budget', async () => {
-      await referrals.upsertProgramme({ key: `pg-${ID}`, budgetRupees: 50, memberCap: 2, active: true });
-      const draws = await Promise.all(
-        Array.from({ length: 10 }, () => referrals.drawFromProgramme(`pg-${ID}`, 10)),
-      );
-      expect(draws.filter((d) => d.ok)).toHaveLength(5);
-      expect((await referrals.getProgramme(`pg-${ID}`)).remaining).toBe(0);
-    });
-
-    it('gives back unspent budget, and never below nothing drawn', async () => {
-      // `disburse` reserves its whole pool up front and returns the unspent
-      // part (R6, F-040); the floor is in the statement.
-      await referrals.upsertProgramme({ key: `pr-${ID}`, budgetRupees: 100, memberCap: 2, active: true });
-      expect((await referrals.drawFromProgramme(`pr-${ID}`, 80)).ok).toBe(true);
-      expect((await referrals.returnToProgramme(`pr-${ID}`, 30)).ok).toBe(true);
-      expect((await referrals.getProgramme(`pr-${ID}`)).remaining).toBe(50);
-      expect((await referrals.returnToProgramme(`pr-${ID}`, 60)).ok).toBe(false);
-      expect((await referrals.getProgramme(`pr-${ID}`)).remaining).toBe(50);
+    it('the programme row has no budget and no switch (owner, 2026-10-20)', async () => {
+      const p = await referrals.upsertProgramme({ key: `pg-${ID}`, memberCap: 2 });
+      expect(p).toMatchObject({ key: `pg-${ID}`, memberCap: 2, verifiedMembers: 0 });
+      expect(p).not.toHaveProperty('budget');
+      expect(p).not.toHaveProperty('active');
     });
 
     it('counts a click once per viewer, so a refresh loop cannot inflate it', async () => {

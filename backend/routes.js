@@ -4,7 +4,7 @@
  * the session lifecycle.
  *
  * ── Staff (owner, 2026-10-13) ──────────────────────────────────────────────
- * A STAFF account (admin, sub-admin, queue manager, mediator) has no Telegram
+ * A STAFF account (admin, sub-admin, mediator) has no Telegram
  * at all. It signs in with its mobile, its password and a code from an
  * authenticator app (`/login/totp`), and enrols that app at its first sign-in
  * (`/login/totp/setup`, `/login/totp/activate`). The staff door has only those
@@ -56,25 +56,15 @@ import { formatMerchant } from './domains/merchant/merchantSelfView.js';
 
 const router = express.Router();
 
-// httpOnly cookie options — secure in production, lax in dev
-const COOKIE_OPTS = {
-  httpOnly: true,
-  secure:   process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-  maxAge:   7 * 24 * 60 * 60 * 1000,
-  path:     '/',
-};
-
-// Helper — extract token from cookie OR Authorization header
-// The bearer header wins: every panel is served from one origin, so a cookie
-// can belong to another panel's sign-in in the same browser.
+// A session travels ONLY in the Authorization header (owner, 2026-10-21). No
+// cookie is set or read: a browser attaches a cookie to a request another site
+// makes, never this header, so no page on another site can act for a signed-in
+// account (cross-site request forgery), whatever host each panel is served on.
 function extractToken(req) {
-  return req.headers.authorization?.replace('Bearer ', '')
-    || req.cookies?.auth_token
-    || null;
+  return req.headers.authorization?.replace('Bearer ', '') || null;
 }
 
-/** Admin, sub-admin, queue manager or mediator: `hasStaffRole`, the one rule. */
+/** Admin, sub-admin or mediator: `hasStaffRole`, the one rule. */
 const isStaffAccount = hasStaffRole;
 
 /**
@@ -137,7 +127,6 @@ function accountRefusal(door, user, loginType = null) {
   // The staff panel's role selector, re-applied on every leg.
   if (loginType === 'admin' && !user.isAdmin) return { status: 403, code: 'ROLE_REQUIRED', message: 'Admin access required.' };
   if (loginType === 'subadmin' && !user.isSubAdmin) return { status: 403, code: 'ROLE_REQUIRED', message: 'Sub-admin access required.' };
-  if (loginType === 'queue_manager' && !user.isQueueManager) return { status: 403, code: 'ROLE_REQUIRED', message: 'Queue manager access required.' };
   return null;
 }
 
@@ -208,13 +197,11 @@ export async function issueSession(user, res, { amr, extra = {} } = {}) {
   let role = 'user';
   if (user.isAdmin)          role = 'admin';
   else if (user.isSubAdmin)  role = 'subadmin';
-  else if (user.isQueueManager) role = 'queue_manager';
   else if (user.isMediator)  role = 'mediator';
 
   const token = signToken(
     { userId: user.userId, mobile: user.mobile, role,
       isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
-      isQueueManager: user.isQueueManager || false,
       amr: [...new Set(amr)],
       permissions: user.subAdminPermissions || {} }
   );
@@ -232,21 +219,19 @@ export async function issueSession(user, res, { amr, extra = {} } = {}) {
   const userPayload = {
     id: user.userId, _id: user.userId, username: user.username, mobile: user.mobile,
     role, isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
-    isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
+    permissions: user.subAdminPermissions || {},
     depositBalance: dep, winningsBalance: win, lockedBalance: balances.lockedBalance,
     // Sent separately, and never folded into walletBalance: only
     // `betReservePercent` of a stake may come from the reserve.
     reserveBalance: balances.reserveBalance,
     walletBalance: dep + win,
     bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
+    payoutDetailsLockedUntil: user.payoutDetailsLockedUntil ?? null,
     status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
     lastLogin: lastLogin?.lastLogin ?? new Date(),
     phantomAccess: user.phantomAccess || 'NONE',
   };
 
-  // Only a player session rides in the cookie. The admin panel sends its
-  // bearer header; on one origin a staff cookie would reach the player app.
-  if (user.accountType === 'PLAYER') res.cookie('auth_token', token, COOKIE_OPTS);
   return res.json({ ...extra, success: true, token, user: userPayload });
 }
 
@@ -475,7 +460,7 @@ export async function telegramLoginHandler(req, res) {
     const isPlayer = door.accountType === 'PLAYER';
     const opened = await openChallenge({
       door: door.accountType, req,
-      delivery: deliveryFor(req.body?.delivery, req.body?.returnOrigin),
+      delivery: deliveryFor(req.body?.delivery, req.body?.returnOrigin, door.accountType),
       referralCode: isPlayer ? normaliseReferralCode(req.body?.referralCode) : null,
     });
     return res.status(200).json({
@@ -611,11 +596,12 @@ router.get('/me', async (req, res) => {
       user: {
         id: user.userId, _id: user.userId, username: user.username, mobile: user.mobile,
         role: decoded.role, isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
-        isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
+        permissions: user.subAdminPermissions || {},
         depositBalance: dep, winningsBalance: win, lockedBalance: balances.lockedBalance || 0,
         reserveBalance: balances.reserveBalance || 0,
         walletBalance: dep + win,
         bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
+        payoutDetailsLockedUntil: user.payoutDetailsLockedUntil ?? null,
         status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
         lastLogin: user.lastLogin || null, phantomAccess: user.phantomAccess || 'NONE',
       },
@@ -639,7 +625,6 @@ router.post('/logout', async (req, res) => {
         await revokeToken(token, { ttlSeconds: Math.max(1, Math.ceil((exp - Date.now()) / 1000)) });
       } catch (e) {
         console.error('[auth] logout could not revoke the token:', e.message);
-        res.clearCookie('auth_token', { path: '/' });
         return res.status(500).json({
           success: false,
           message: 'Signed out on this device, but the session could not be revoked. '
@@ -647,7 +632,6 @@ router.post('/logout', async (req, res) => {
         });
       }
     }
-    res.clearCookie('auth_token', { path: '/' });
     res.json({ success: true, message: 'Logged out successfully' });
   } catch {
     res.json({ success: true, message: 'Logged out successfully' });

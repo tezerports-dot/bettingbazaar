@@ -7,9 +7,10 @@ import {
   Stats,
   MyTeam,
   Team,
-  PoolDirection,
   TeamPool,
   TeamPoolEntry,
+  TeamPoolRequest,
+  CashOut,
   MemberLog,
   SupervisorOrder,
   DisputeThreadMessage,
@@ -23,6 +24,7 @@ import {
   StaffDuty,
   MerchantReport,
   OrderReport,
+  BusinessLedger,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -97,6 +99,22 @@ export const signedOutReason = (): string | null => {
   return signedOutReasonValue;
 };
 
+/**
+ * A failure on this panel, for the admin's error log (owner, 2026-10-20;
+ * `POST /api/internal/error-report`, no session: a crashing panel may have
+ * none). Best-effort: never throws, never signs anybody out.
+ */
+export const reportPanelError = (report: Record<string, unknown>): void => {
+  try {
+    void fetch(`${BASE_URL}/api/internal/error-report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...report, panel: 'merchant' }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch { /* reporting never breaks the panel */ }
+};
+
 export const isAuthenticated = (): boolean => {
   return !!getAuthToken();
 };
@@ -124,7 +142,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
       ...options,
       headers,
       mode: 'cors',
-      credentials: 'include',
+      credentials: 'omit',
     });
     
     if (response.status === 401) {
@@ -542,6 +560,8 @@ export const setCashReady = async (ready: boolean): Promise<boolean> => {
 // to the platform (owner, 2026-10-18).
 export const updateProfile = async (data: {
   bankDetails: { accountHolderName?: string; bankName?: string; accountNo?: string; ifsc?: string };
+  // The UPI ID a UPI buy's link is built from (owner, 2026-10-21); '' clears it.
+  upiId?: string;
 }): Promise<any> => {
   const result = await request<any>(ENDPOINTS.PROFILE.UPDATE, {
     method: 'PUT',
@@ -605,13 +625,23 @@ export const removeTeamMember = async (teamId: string, merchantId: string): Prom
 export const getTeamPool = async (teamId: string): Promise<{ pool: TeamPool; entries: TeamPoolEntry[] }> =>
   request<{ pool: TeamPool; entries: TeamPoolEntry[] }>(ENDPOINTS.TEAM.POOL(teamId));
 
-/** BUY asks the platform for tokens; SELL asks it to buy pool tokens back. Whole tokens. */
+/** Asks the platform for tokens; nothing is sold back to it (owner, 2026-10-21). Whole tokens. */
 export const requestTeamPool = async (
-  teamId: string, direction: PoolDirection, tokenAmount: number, note: string,
+  teamId: string, tokenAmount: number, note: string,
 ): Promise<string> =>
   (await request<{ message: string }>(ENDPOINTS.TEAM.POOL_REQUEST(teamId), {
-    method: 'POST', body: JSON.stringify({ direction, tokenAmount, note: note || null }),
+    method: 'POST', body: JSON.stringify({ tokenAmount, note: note || null }),
   })).message;
+
+/** Start (`true`) or stop a team pool's cash out (owner, 2026-10-21). */
+export const setTeamCashOut = async (teamId: string, start: boolean): Promise<CashOut> =>
+  (await request<{ cashOut: CashOut }>(ENDPOINTS.TEAM.CASH_OUT(teamId), { method: start ? 'POST' : 'DELETE' })).cashOut;
+
+/** Buy pool tokens from the platform in USDT: the request, with where to pay (owner, 2026-10-21). */
+export const buyTeamPoolUsdt = async (teamId: string, tokenAmount: number): Promise<TeamPoolRequest> =>
+  (await request<{ request: TeamPoolRequest }>(ENDPOINTS.TEAM.POOL_USDT_BUY(teamId), {
+    method: 'POST', body: JSON.stringify({ tokenAmount }),
+  })).request;
 
 export const cancelTeamPoolRequest = async (requestId: string): Promise<void> => {
   await request(ENDPOINTS.TEAM.POOL_CANCEL(requestId), { method: 'DELETE' });
@@ -667,8 +697,16 @@ export interface PaymentAccountInput {
   bankName?: string;
   acceptsDeposits?: boolean;
   paysWithdrawals?: boolean;
+  buySizes?: number[];
+  sellSizes?: number[];
   status?: 'ACTIVE' | 'PAUSED';
 }
+
+/** Which sizes go to which account, every account in one save (refused 409 SIZES_UNCOVERED if one is left out). */
+export const setPaymentAccountSizes = async (
+  accounts: Array<{ accountId: string; buySizes: number[]; sellSizes: number[] }>,
+): Promise<PaymentAccount[]> =>
+  (await accountRequest<{ accounts: PaymentAccount[] }, []>(ENDPOINTS.ACCOUNT.SET_SIZES, [], { accounts })).accounts;
 
 export const addPaymentAccount = async (input: PaymentAccountInput): Promise<PaymentAccount> =>
   (await accountRequest<{ account: PaymentAccount }, []>(ENDPOINTS.ACCOUNT.ADD_ACCOUNT, [], input)).account;
@@ -699,11 +737,20 @@ export const unassignSubMemberAccount = async (staffId: string, accountId: strin
   (await accountRequest<{ staff: SubMember }, [string, string, string]>(
     ENDPOINTS.ACCOUNT.UNASSIGN_ACCOUNT, [staffId, accountId, duty])).staff;
 
-/** BUY asks the platform to sell tokens into the pool; SELL asks it to buy them back. Whole tokens. */
-export const requestMerchantPool = async (direction: PoolDirection, tokens: number, note: string): Promise<string> =>
+/** Asks the platform to sell tokens into the pool; nothing is sold back. Whole tokens. */
+export const requestMerchantPool = async (tokens: number, note: string): Promise<string> =>
   (await accountRequest<{ requestId: string }, []>(ENDPOINTS.ACCOUNT.REQUEST_POOL, [], {
-    direction, tokens, note: note || null,
+    tokens, note: note || null,
   })).requestId;
+
+/** Start (`true`) or stop the merchant account's cash out (owner, 2026-10-21). */
+export const setMerchantCashOut = async (start: boolean): Promise<CashOut> =>
+  (await accountRequest<{ cashOut: CashOut }, []>(
+    start ? ENDPOINTS.ACCOUNT.START_CASH_OUT : ENDPOINTS.ACCOUNT.STOP_CASH_OUT, [])).cashOut;
+
+/** A merchant account buys pool tokens in USDT: the request, with where to pay (owner, 2026-10-21). */
+export const buyMerchantPoolUsdt = async (tokens: number): Promise<TeamPoolRequest> =>
+  (await accountRequest<{ request: TeamPoolRequest }, []>(ENDPOINTS.ACCOUNT.BUY_POOL_USDT, [], { tokens })).request;
 
 export const cancelMerchantPoolRequest = async (requestId: string): Promise<void> => {
   await accountRequest(ENDPOINTS.ACCOUNT.CANCEL_POOL, [requestId]);
@@ -739,36 +786,51 @@ export const getOrderReport = async (query: OrderReportQuery, page: { limit: num
   request<OrderReport>(`${ENDPOINTS.ORDER_REPORT.PAGE}${orderReportQuery(query, page)}`);
 
 /**
- * The order report as a CSV file the browser saves. Fetched with the
+ * A workbook the server builds, saved by the browser. Fetched with the
  * session's token (a plain link would carry none), then handed to the browser
- * as a download. A refusal is thrown with the server's words.
+ * as a download under the server's name. A refusal is thrown with the
+ * server's words.
  */
-export const downloadOrderReportCsv = async (query: OrderReportQuery): Promise<void> => {
+const downloadWorkbook = async (path: string, fallbackName: string): Promise<void> => {
   const token = getAuthToken();
-  const response = await fetch(`${BASE_URL}${ENDPOINTS.ORDER_REPORT.CSV}${orderReportQuery(query)}`, {
+  const response = await fetch(`${BASE_URL}${path}`, {
     method: 'GET',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     mode: 'cors',
-    credentials: 'include',
+    credentials: 'omit',
   });
   if (!response.ok) {
-    let said = `The export failed (status ${response.status}).`;
+    let said = `The download failed (status ${response.status}).`;
     try {
       const body = await response.json();
       if (typeof body?.message === 'string' && body.message) said = body.message;
     } catch { /* not JSON: keep the status sentence */ }
     throw Object.assign(new Error(said), { status: response.status });
   }
+  const named = /filename="?([^";]+)"?/.exec(response.headers.get('content-disposition') || '')?.[1];
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `merchant-orders-${query.from || 'last7'}-${query.to || 'today'}.csv`;
+  link.download = named || fallbackName;
   document.body.appendChild(link);
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
+
+/** The order report as an Excel workbook: buys and sells in their own tables. */
+export const downloadOrderReport = (query: OrderReportQuery): Promise<void> =>
+  downloadWorkbook(`${ENDPOINTS.ORDER_REPORT.XLSX}${orderReportQuery(query)}`,
+    `merchant-orders-${query.from || 'last7'}-${query.to || 'today'}.xlsx`);
+
+/** The business ledger over IST days (empty: the last seven), with its totals. */
+export const getBusinessLedger = async (from: string, to: string): Promise<BusinessLedger> =>
+  request<BusinessLedger>(`${ENDPOINTS.LEDGER.PAGE}${rangeQuery(from, to)}`);
+
+/** The same ledger as an Excel workbook, one labelled table per kind. */
+export const downloadBusinessLedger = (from: string, to: string): Promise<void> =>
+  downloadWorkbook(`${ENDPOINTS.LEDGER.XLSX}${rangeQuery(from, to)}`, `business-ledger-${from || 'last7'}-${to || 'today'}.xlsx`);
 
 export const api = {
   // Auth
@@ -809,16 +871,22 @@ export const api = {
   addPaymentAccount,
   updatePaymentAccount,
   removePaymentAccount,
+  setPaymentAccountSizes,
   addSubMember,
   setSubMemberRoles,
   removeSubMember,
   assignSubMemberAccount,
   unassignSubMemberAccount,
   requestMerchantPool,
+  buyMerchantPoolUsdt,
+  setMerchantCashOut,
+  setTeamCashOut,
   cancelMerchantPoolRequest,
   getMerchantReport,
   getOrderReport,
-  downloadOrderReportCsv,
+  downloadOrderReport,
+  getBusinessLedger,
+  downloadBusinessLedger,
 
   // Red Flag
   // Utilities

@@ -1,0 +1,66 @@
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
+/**
+ * Every failure on a player's screen, for the admin's error log (owner,
+ * 2026-10-20; the server decides category and severity from `kind`:
+ * backend/server.js `/api/internal/error-report`, database/repositories/errorLog.js).
+ *
+ *   crash    a screen the ErrorBoundary caught
+ *   error    an uncaught script error
+ *   promise  a promise nobody handled
+ *
+ * A chunk that failed to load after a deploy is not reported: the page reloads
+ * for the new build (services/chunkRecovery.ts).
+ *
+ * A page load sends each distinct error once and at most `MAX_REPORTS` in all,
+ * so a loop that throws every frame costs one report, not thousands.
+ */
+import { platform } from './api';
+import { isStaleChunkError, reloadForNewBuild } from './chunkRecovery';
+
+export type ErrorKind = 'crash' | 'error' | 'promise';
+
+const MAX_REPORTS = 20;
+const sent = new Set<string>();
+
+/** Noise every browser produces that says nothing about this app. */
+const IGNORED = /ResizeObserver loop|^Script error\.?$|Non-Error promise rejection captured/i;
+
+const messageOf = (err: unknown): string => {
+  if (err instanceof Error) return err.message || err.name;
+  if (typeof err === 'string') return err;
+  try { return JSON.stringify(err) ?? String(err); } catch { return String(err); }
+};
+
+export function reportError(kind: ErrorKind, err: unknown, component?: string | null): void {
+  try {
+    const message = messageOf(err).slice(0, 2000);
+    if (!message || IGNORED.test(message)) return;
+    const key = `${kind}|${message}`;
+    if (sent.has(key) || sent.size >= MAX_REPORTS) return;
+    sent.add(key);
+    platform.reportCrash({
+      kind,
+      panel: 'user',
+      message,
+      stack: err instanceof Error ? err.stack : undefined,
+      component: component ?? undefined,
+      url: window.location.href,
+    });
+  } catch { /* reporting never breaks the app */ }
+}
+
+let installed = false;
+/** Listen for uncaught errors and unhandled promises. Once, at boot. */
+export function installErrorReporter(): void {
+  if (installed) return;
+  installed = true;
+  window.addEventListener('error', (e) => {
+    const err = e.error ?? e.message;
+    if (isStaleChunkError(err) && reloadForNewBuild()) return;
+    reportError('error', err);
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    if (isStaleChunkError(e.reason) && reloadForNewBuild()) return;
+    reportError('promise', e.reason);
+  });
+}

@@ -1,89 +1,81 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The captcha is solved before the tap (`warmCaptchaToken`) and each token is
- * still spent once: the next submit takes the warmed one, a retry solves anew.
+ * The sign-in's captcha is drawn in view (`mountCaptcha`): its token reaches
+ * the caller, a refusal is a sentence, removing it stops it answering. Every
+ * `getCaptchaToken` solves a fresh one (tokens are single-use).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 let solved = 0;
-let answer: (token: string | null) => void = () => {};
-let hold = false;
+let lastOpts: Record<string, unknown> = {};
+let removed: string[] = [];
 
 function installTurnstile() {
   (window as unknown as { turnstile: unknown }).turnstile = {
-    render: (_el: HTMLElement, opts: { callback: (t: string) => void; 'error-callback': (c: string) => boolean }) => {
+    render: (_el: HTMLElement, opts: Record<string, unknown>) => {
       solved += 1;
+      lastOpts = opts;
       const n = solved;
-      answer = (t) => (t ? opts.callback(t) : opts['error-callback']('300030'));
-      if (!hold) queueMicrotask(() => opts.callback(`token-${n}`));
+      if (opts.execution === 'execute') queueMicrotask(() => (opts.callback as (t: string) => void)(`token-${n}`));
       return `w${n}`;
     },
     execute: () => {},
-    remove: () => {},
+    remove: (id: string) => { removed.push(id); },
   };
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-const { warmCaptchaToken, getCaptchaToken, resetWarmCaptcha, WARM_TOKEN_MAX_AGE_MS } = await import('./captcha');
+const { getCaptchaToken, mountCaptcha, captchaOn } = await import('./captcha');
 
 beforeEach(() => {
   vi.stubEnv('VITE_TURNSTILE_SITE_KEY', 'site-key');
-  solved = 0; hold = false; resetWarmCaptcha();
+  solved = 0; lastOpts = {}; removed = [];
   installTurnstile();
 });
-afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
-describe('captcha warmed before the tap', () => {
-  it('the submit takes the warmed token without solving again, and a retry solves a fresh one', async () => {
-    warmCaptchaToken();
+describe('the captcha box drawn on the sign-in', () => {
+  it('is drawn visibly, and its token reaches the caller', async () => {
+    const onToken = vi.fn();
+    mountCaptcha(document.createElement('div'), { onToken, onError: vi.fn() });
     await flush();
-    expect(solved).toBe(1);
-    expect(await getCaptchaToken()).toBe('token-1');
-    expect(solved).toBe(1);
-    expect(await getCaptchaToken()).toBe('token-2');
-    expect(solved).toBe(2);
+    expect(lastOpts.appearance).toBe('always');
+    (lastOpts.callback as (t: string) => void)('tick');
+    expect(onToken).toHaveBeenCalledWith('tick');
   });
 
-  it('a submit while the warm-up is still solving waits for that one, not a second', async () => {
-    hold = true;
-    warmCaptchaToken();
-    const pending = getCaptchaToken();
+  it('says why when Cloudflare refuses', async () => {
+    const onError = vi.fn();
+    mountCaptcha(document.createElement('div'), { onToken: vi.fn(), onError });
     await flush();
-    answer('late-token');
-    expect(await pending).toBe('late-token');
-    expect(solved).toBe(1);
+    (lastOpts['error-callback'] as (c: string) => boolean)('110200');
+    expect(onError.mock.calls[0][0]).toMatch(/110200/);
   });
 
-  it('warming twice solves once', async () => {
-    warmCaptchaToken(); warmCaptchaToken();
+  it('once removed, it is taken off the page and answers nobody', async () => {
+    const onToken = vi.fn();
+    const remove = mountCaptcha(document.createElement('div'), { onToken, onError: vi.fn() });
     await flush();
-    expect(solved).toBe(1);
+    remove();
+    expect(removed).toEqual(['w1']);
+    (lastOpts.callback as (t: string) => void)('late');
+    expect(onToken).not.toHaveBeenCalled();
   });
 
-  it('a warmed token past its age is not used', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    warmCaptchaToken();
-    await flush();
-    vi.setSystemTime(Date.now() + WARM_TOKEN_MAX_AGE_MS + 1);
-    expect(await getCaptchaToken()).toBe('token-2');
-  });
-
-  it('a warm-up that fails while the player waits says so, without a second full wait', async () => {
-    hold = true;
-    warmCaptchaToken();
-    const pending = getCaptchaToken();
-    await flush();
-    answer(null);
-    expect(await pending).toBeNull();
-    expect(solved).toBe(1);
-  });
-
-  it('does nothing with captcha off', async () => {
+  it('draws nothing with captcha off', async () => {
     vi.stubEnv('VITE_TURNSTILE_SITE_KEY', '');
-    warmCaptchaToken();
+    expect(captchaOn()).toBe(false);
+    mountCaptcha(document.createElement('div'), { onToken: vi.fn(), onError: vi.fn() });
     await flush();
     expect(solved).toBe(0);
     expect(await getCaptchaToken()).toBeNull();
+  });
+});
+
+describe('a token per submission', () => {
+  it('each call solves a fresh one', async () => {
+    expect(await getCaptchaToken()).toBe('token-1');
+    expect(await getCaptchaToken()).toBe('token-2');
   });
 });

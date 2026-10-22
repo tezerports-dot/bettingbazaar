@@ -5,11 +5,12 @@
  * "only keep history until 1440 total cycles for each type of cycle in VIP
  * and General"), the one writer of `cycle_history_rollups`.
  *
- * A round past the window is deleted only once it is finished with: settled
+ * A round past the window leaves the live tables only once it is finished with: settled
  * (or cancelled) and no bet on it still PENDING. Before it goes, its figures
  * are added to its board, audience and IST day in `cycle_history_rollups`, in
  * the SAME transaction, so the totals never lose a round and never count one
- * twice.
+ * twice; and the round with its settlement rows is copied whole into cold
+ * storage (`cold_archive`, owner 2026-10-20), so nothing is lost.
  *
  * What is NOT deleted: the bets, their transitions and the ledger. They are the
  * money record, append-only by the schema (CLAUDE.md §19); a bet keeps its
@@ -17,6 +18,7 @@
  */
 import { withTransaction, pgQuery } from '../client.js';
 import { paiseToRupees } from '../../backend/shared/money.js';
+import { archiveCyclesWithin } from './coldArchive.js';
 
 /** Rounds kept per board and audience (owner, 2026-10-17). */
 export const CYCLE_HISTORY_KEEP = 1440;
@@ -89,6 +91,8 @@ export async function pruneCycleHistory({ keep = CYCLE_HISTORY_KEEP, batch = 200
          updated_at         = now()`,
       [ids],
     );
+    // Kept whole in cold storage (coldArchive.js), in this transaction.
+    await archiveCyclesWithin(client, ids);
     await client.query('DELETE FROM cycle_settlements WHERE cycle_id = ANY($1::text[])', [ids]);
     const { rowCount } = await client.query('DELETE FROM cycles WHERE cycle_id = ANY($1::text[])', [ids]);
     return { pruned: rowCount };

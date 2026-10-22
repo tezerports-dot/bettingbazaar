@@ -90,5 +90,8 @@ export function publicBoard(b) {
     homeOrder: b.homeOrder,
     // The panel attributes a legacy event that names only its cycleId by this.
     idPrefix: b.idPrefix,
+    // The admin's demo results per profile, B and D, oldest first; '' = the
+    // drawn ones (redesign/DemoResults.tsx; owner, 2026-10-20).
+    demoResults: { VIP: b.demoResults?.VIP ?? '', GENERAL: b.demoResults?.GENERAL ?? '' },
   };
 }

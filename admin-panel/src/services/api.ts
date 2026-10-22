@@ -124,12 +124,11 @@ export const auth = {
    * loginType:
    *   'admin'         -- full admin
    *   'subadmin'      -- sub-admin
-   *   'queue_manager' -- queue manager (sees only queue dashboard)
    */
   login: async (
     mobile: string,
     password: string,
-    loginType: 'admin' | 'subadmin' | 'queue_manager' = 'admin',
+    loginType: 'admin' | 'subadmin' = 'admin',
   ): Promise<LoginAnswer> => {
     const res = await api.post<any>('/api/admin/login', { mobile, password, loginType });
     // Not an error: the password was accepted and a code is next.
@@ -284,6 +283,17 @@ export const users = {
     }
     return res.data;
   },
+  /** Keep (or stop keeping) the app open to this player during maintenance (owner, 2026-10-20). */
+  setMaintenanceTester: async (userId: string, on: boolean) => {
+    const res = await api.put(`/api/admin/users/${userId}/maintenance-tester`, { on });
+    return res.data as { success: boolean; message: string; maintenanceTester: boolean };
+  },
+
+  /** The players who keep the app during maintenance. */
+  maintenanceTesters: async () => {
+    const res = await api.get('/api/admin/maintenance-testers');
+    return (res.data?.testers ?? []) as Array<{ userId: string; username: string; joiningNumber: number | null }>;
+  },
 };
 
 // --- MERCHANTS ----------------------------------------------------------------
@@ -302,7 +312,7 @@ export const merchants = {
   getProfile: async (merchantId: string) => {
     const res = await api.get<any>(`/api/admin/merchants/${merchantId}/profile`);
     if (res.data?.success && res.data?.merchant) {
-      return { success: true, data: res.data.merchant, summary: res.data.summary, choices: res.data.choices };
+      return { success: true, data: res.data.merchant, summary: res.data.summary, choices: res.data.choices, merchantPanelUrl: res.data.merchantPanelUrl as string };
     }
     return res.data;
   },
@@ -398,15 +408,15 @@ export const cleanParams = (o: object): Record<string, unknown> =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== ''));
 
 /**
- * Download a CSV a route builds, under the name the server gives it
- * (`Content-Disposition`), else `fallbackName`. Every table's "Download CSV"
+ * Download a file a route builds (an Excel workbook, or the sweep CSV), under the name the server gives it
+ * (`Content-Disposition`), else `fallbackName`. Every table's "Download Excel"
  * goes through here, so the file is always the server's rows, never a copy
  * the screen assembled.
  */
-export async function downloadCsv(path: string, params: Record<string, unknown>, fallbackName: string): Promise<void> {
+export async function downloadFile(path: string, params: Record<string, unknown>, fallbackName: string): Promise<void> {
   const res = await api.get(path, { params, responseType: 'blob' });
   const named = /filename="?([^";]+)"?/.exec(String(res.headers?.['content-disposition'] || ''))?.[1];
-  const url = URL.createObjectURL(new Blob([res.data as BlobPart], { type: 'text/csv' }));
+  const url = URL.createObjectURL(new Blob([res.data as BlobPart], { type: String(res.headers?.['content-type'] || 'application/octet-stream') }));
   const a = document.createElement('a');
   a.href = url;
   a.download = named || fallbackName;
@@ -436,9 +446,9 @@ export const cycles = {
     return res.data;
   },
 
-  /** The same filtered rows as CSV (`GET /api/admin/cycles/history.csv`). */
-  downloadHistoryCsv: (filters: CycleHistoryFilters = {}) =>
-    downloadCsv('/api/admin/cycles/history.csv', cleanParams(filters), 'cycle-history.csv'),
+  /** The same filtered rows as a workbook (`GET /api/admin/cycles/history.xlsx`). */
+  downloadHistory: (filters: CycleHistoryFilters = {}) =>
+    downloadFile('/api/admin/cycles/history.xlsx', cleanParams(filters), 'cycle-history.xlsx'),
 
   triggerEqualizer: async (cycleId: string) => {
     const res = await api.post(`/api/admin/cycles/${cycleId}/equalize`);
@@ -465,6 +475,14 @@ export const cycles = {
   },
 };
 
+export interface DemoResultsEntry { results: string; count: number; bombay: number; delhi: number }
+export interface DemoResultsPage {
+  success: boolean;
+  max: number;
+  audiences: Array<'VIP' | 'GENERAL'>;
+  boards: Array<{ key: string; name: string; enabled: boolean; VIP: DemoResultsEntry; GENERAL: DemoResultsEntry }>;
+}
+
 // --- BOARDS (owner, 2026-10-08) ------------------------------------------------
 // Admin-created board games, each with its own timer, and their home-page order.
 // backend/routes/admin/boards.admin.routes.js. Screens that only LABEL boards
@@ -476,6 +494,15 @@ export const boards = {
     (await api.put<any>(`/api/admin/boards/${encodeURIComponent(key)}`, patch)).data,
   setOrder: async (keys: string[]) => (await api.put<any>('/api/admin/boards/order', { keys })).data,
   rtpFunds: async () => (await api.get<any>('/api/admin/rtp')).data,
+  // Demo results the admin types, per board and profile (owner, 2026-10-20).
+  demoResults: async () => (await api.get<DemoResultsPage>('/api/admin/boards/demo-results')).data,
+  saveDemoResults: async (key: string, audience: string, results: string) =>
+    (await api.put<{ success: boolean; count: number; bombay: number; delhi: number; results: string }>(
+      `/api/admin/boards/${encodeURIComponent(key)}/demo-results`, { audience, results })).data,
+  importDemoResults: async (text: string) =>
+    (await api.post<{ success: boolean; saved: Array<{ key: string; audience: string; count: number }> }>(
+      '/api/admin/boards/demo-results/import', { text })).data,
+  downloadDemoResults: () => downloadFile('/api/admin/boards/demo-results.csv', {}, 'demo-results.csv'),
   saveRtp: async (game: string, audience: string, body: { enabled: boolean; ratePercent: number }) =>
     (await api.put<any>(`/api/admin/rtp/${encodeURIComponent(game)}/${encodeURIComponent(audience)}`, body)).data,
   rtpEntries: async (game: string, audience: string) =>
@@ -507,7 +534,7 @@ export const cricket = {
     (await api.post<any>(`/api/admin/cricket/polls/${encodeURIComponent(pollId)}/void`, { reason })).data,
   report: async (from: string, to: string) =>
     (await api.get<any>('/api/admin/cricket/report', { params: { from, to } })).data,
-  reportCsv: (from: string, to: string) => downloadCsv('/api/admin/cricket/report.csv', { from, to }, 'cricket-polls.csv'),
+  reportExcel: (from: string, to: string) => downloadFile('/api/admin/cricket/report.xlsx', { from, to }, 'cricket-polls.xlsx'),
 };
 
 // --- RULES POP-UP (owner, 2026-10-14) -------------------------------------------
@@ -572,9 +599,9 @@ export const depositPolicy = {
   },
 };
 
-// --- QUEUE MANAGER ------------------------------------------------------------
+// --- PAYMENT QUEUE (canManageMerchants) --------------------------------------
 
-export const queueManager = {
+export const paymentQueue = {
   getPendingOrders: async () => {
     const res = await api.get<any>('/api/admin/queue/pending-orders');
     if (res.data?.success && res.data?.orders) {
@@ -672,7 +699,49 @@ export const telegram = {
     const res = await api.post<TelegramBotSlot & { success: boolean }>(`/api/admin/telegram/bot/${slot}/resume`);
     return res.data;
   },
+
+  /** Signup channels (owner, 2026-10-21): every channel, the ones on first. */
+  getChannels: async () => {
+    const res = await api.get<{ success: boolean; channels: TelegramChannel[]; approvePerPress: number }>('/api/admin/telegram/channels');
+    return res.data;
+  },
+
+  /** Add a channel by @name, t.me link or -100… id; the bot must be its admin. */
+  addChannel: async (channel: string) => {
+    const res = await api.post<{ success: boolean; channels: TelegramChannel[] }>('/api/admin/telegram/channels', { channel });
+    return res.data;
+  },
+
+  /** Switch a channel on or off; on also checks its invite link. */
+  setChannelActive: async (chatId: string, active: boolean) => {
+    const res = await api.put<{ success: boolean; channels: TelegramChannel[] }>(`/api/admin/telegram/channels/${encodeURIComponent(chatId)}`, { active });
+    return res.data;
+  },
+
+  /** Approve a channel's waiting join requests, oldest first, up to `approvePerPress`. */
+  approveChannelRequests: async (chatId: string) => {
+    const res = await api.post<{
+      success: boolean; approved: number; gone: number; waiting: number; stopped: string | null; channels: TelegramChannel[];
+    }>(`/api/admin/telegram/channels/${encodeURIComponent(chatId)}/approve`);
+    return res.data;
+  },
 };
+
+/** `channelView` in backend/routes/admin/telegram.admin.routes.js. */
+export interface TelegramChannel {
+  chatId: string;
+  title: string;
+  username: string;
+  inviteLink: string;
+  linkCheckedAt: string | null;
+  linkError: string;
+  active: boolean;
+  addedAt: string;
+  switchedAt: string | null;
+  waiting: number;
+  approved: number;
+  gone: number;
+}
 
 // --- MY ACCOUNT: the signed-in staff account's own authenticator --------------
 // Server: backend/routes/admin/account.admin.routes.js (SELF_ROUTES).
@@ -742,11 +811,11 @@ export const referrals = {
     const res = await api.get<any>('/api/admin/referral/stats');
     return res.data as {
       success: boolean;
-      budget?: number; disbursed?: number; remaining?: number;
+      paid?: number; paidCount?: number;
       pendingCount?: number; pendingValue?: number;
       blockedCount?: number; blockedValue?: number;
       memberCap?: number; verifiedMembers?: number;
-      nextQueuePosition?: number; active?: boolean;
+      nextQueuePosition?: number;
       message?: string;
     };
   },
@@ -813,15 +882,6 @@ export const subAdmins = {
     return res.data;
   },
 
-  /**
-   * Queue-manager authority: routes players' payments, so a STAFF account
-   * only (the server refuses any other with 409 and says what to do).
-   */
-  setQueueManager: async (userId: string, enable: boolean) => {
-    const res = await api.post(`/api/admin/users/${userId}/queue-manager`, { enable });
-    return res.data;
-  },
-
   delete: async (subAdminId: string) => {
     const res = await api.delete(`/api/admin/sub-admins/${subAdminId}`);
     return res.data;
@@ -860,6 +920,7 @@ export const subAdmins = {
     });
     return res.data;
   },
+
 };
 
 // --- FINANCE ------------------------------------------------------------------
@@ -1072,23 +1133,85 @@ export const utr = {
 };
 
 
-// --- ERROR REPORTS --------------------------------------------------------
+// --- ERROR LOG --------------------------------------------------------------
+// Every failure, server and panels, one row per distinct error (owner,
+// 2026-10-20; backend/routes/admin/system.admin.routes.js, the vocabulary
+// arriving with each answer).
 
-export const errorReports = {
-  getAll: async () => {
-    const res = await api.get<any>('/api/admin/error-reports');
-    if (res.data?.success && res.data?.reports) {
-      return { success: true, data: res.data.reports as Array<{
-        _id: string; message: string; stack?: string; component?: string;
-        url?: string; panel: string; ts: string;
-      }>};
-    }
+export type ErrorSeverity = 'CRITICAL' | 'WARNING' | 'MINOR';
+export type ErrorStatus = 'OPEN' | 'FIXED';
+export interface ErrorLogEntry {
+  id: number;
+  source: string;
+  category: string;
+  severity: ErrorSeverity;
+  message: string;
+  detail: string | null;
+  component: string | null;
+  location: string | null;
+  occurrences: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  status: ErrorStatus;
+  fixedAt: string | null;
+  fixedBy: string | null;
+  reopened: number;
+}
+export interface ErrorLogPage {
+  entries: ErrorLogEntry[];
+  totals: { total: number; open: number; critical: number; warning: number; minor: number; fixed: number };
+  sources: string[];
+  categories: string[];
+  severities: ErrorSeverity[];
+  statuses: ErrorStatus[];
+}
+
+export const errorLog = {
+  list: async (filters: Partial<Record<'source' | 'category' | 'severity' | 'status', string>>): Promise<ErrorLogPage> => {
+    const res = await api.get<ErrorLogPage & { success: boolean }>('/api/admin/error-log', { params: filters });
     return res.data;
   },
-  clearAll: async () => {
-    const res = await api.delete<any>('/api/admin/error-reports');
+  setStatus: async (id: number, status: ErrorStatus): Promise<ErrorLogEntry> => {
+    const res = await api.patch<{ success: boolean; entry: ErrorLogEntry }>(`/api/admin/error-log/${id}`, { status });
+    return res.data.entry;
+  },
+  clearFixed: async (): Promise<{ cleared: number; message: string }> => {
+    const res = await api.delete<{ success: boolean; cleared: number; message: string }>('/api/admin/error-log/fixed');
     return res.data;
   },
+  /** A failure on this panel (`POST /api/internal/error-report`). Best-effort: never throws. */
+  report: (report: Record<string, unknown>): void => {
+    api.post('/api/internal/error-report', { ...report, panel: 'admin' }).catch(() => {});
+  },
+};
+
+// --- COLD STORAGE -------------------------------------------------------------
+// Old rounds, chats and notifications moved off every live screen, readable by
+// a full admin only (owner, 2026-10-20; backend/routes/admin/coldStorage.admin.routes.js).
+
+export type ColdKind = 'CYCLE' | 'CHAT' | 'NOTIFICATION';
+export interface ColdEntry {
+  id: number;
+  kind: ColdKind;
+  ref: string;
+  firstAt: string;
+  lastAt: string;
+  rowCount: number;
+  archivedAt: string;
+}
+export interface ColdPage {
+  kinds: ColdKind[];
+  coldAfterDays: number;
+  entries: ColdEntry[];
+  totals: Record<ColdKind, { entries: number; rows: number }>;
+}
+
+export const coldStorage = {
+  list: async (filters: { kind?: string; ref?: string; offset?: number }): Promise<ColdPage> =>
+    (await api.get<ColdPage & { success: boolean }>('/api/admin/cold-storage', { params: filters })).data,
+  open: async (id: number): Promise<ColdEntry & { rows: Array<{ table: string; row: Record<string, unknown> }> }> =>
+    (await api.get<{ success: boolean; entry: ColdEntry & { rows: Array<{ table: string; row: Record<string, unknown> }> } }>(
+      `/api/admin/cold-storage/${id}`)).data.entry,
 };
 
 // --- APP ASSETS ---------------------------------------------------------------
@@ -1303,9 +1426,16 @@ export interface UsdtWatcherStatus {
 }
 /** The owner's own wallet the sweep sends to (`usdt_final_wallets`, newest row in use). */
 export interface UsdtFinalWallet { address: string; setBy: string; setAt: string }
+/** A merchant's pool buy paid in USDT (`listPoolDeposits`, usdtDeposits.js). */
+export interface UsdtPoolBuy {
+  requestId: string; teamId: string; teamName: string; requesterName: string; address: string;
+  status: 'PENDING' | 'FULFILLED' | 'REJECTED' | 'CANCELLED'; tokens: number;
+  usdtRequired: number; usdtReceived: number; rate: number; expiresAt: string; createdAt: string;
+  transfers: number; attention: 'LATE' | 'SHORT' | 'OVERPAID' | null; sweptAt: string | null; sweptTxHash: string | null;
+}
 export interface UsdtDepositsResponse {
   success: boolean; filters: string[]; filter: string; total: number; page: number; pages: number;
-  deposits: UsdtDeposit[]; totals: UsdtDepositTotals; watcher: UsdtWatcherStatus;
+  deposits: UsdtDeposit[]; totals: UsdtDepositTotals; watcher: UsdtWatcherStatus; poolBuys: UsdtPoolBuy[];
   finalWallet: UsdtFinalWallet | null; finalWalletHistory: UsdtFinalWallet[]; mayChangeFinalWallet: boolean;
 }
 export const usdtDeposits = {
@@ -1321,7 +1451,7 @@ export const usdtDeposits = {
   recordSweeps: async (results: string) =>
     (await api.post<{ success: boolean; recorded: number; results: Array<{ orderId: string; recorded: boolean; reason: string | null }> }>(
       '/api/admin/usdt-deposits/sweeps', { results })).data,
-  downloadSweepFile: () => downloadCsv('/api/admin/usdt-deposits/sweep.csv', {}, 'usdt-sweep.csv'),
+  downloadSweepFile: () => downloadFile('/api/admin/usdt-deposits/sweep.csv', {}, 'usdt-sweep.csv'),
   /** Full admins only. */
   setFinalWallet: async (address: string) =>
     (await api.put<{ success: boolean; changed: boolean; finalWallet: UsdtFinalWallet }>('/api/admin/usdt-deposits/final-wallet', { address })).data,
@@ -1336,7 +1466,7 @@ export default {
   boards,
   boardRules,
   depositPolicy,
-  queueManager,
+  paymentQueue,
   teams,
   telegram,
   account,
@@ -1350,7 +1480,8 @@ export default {
   disputes,
   utr,
   usdtDeposits,
-  errorReports,
+  errorLog,
+  coldStorage,
   appAssets,
   orderActions,
   chat,

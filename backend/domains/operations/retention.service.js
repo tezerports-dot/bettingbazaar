@@ -3,8 +3,8 @@
  * domains/operations/retention.service.js — data retention.
  *
  * Prunes HIGH-VOLUME OPERATIONAL data that dominates database growth once it is
- * old and no longer needed: crash reports, expired referral clicks, expired
- * notifications. It NEVER touches financial, audit or user data — the money
+ * old and no longer needed: the error log and expired referral clicks (old
+ * notifications, chats and rounds move to cold storage, coldArchive.js). It NEVER touches financial, audit or user data — the money
  * history and the append-only ledgers are kept forever.
  *
  * ══════════════════════════════════════════════════════════════════════════

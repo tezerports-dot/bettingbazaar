@@ -25,12 +25,8 @@ export function attachSocketHandlers(io) {
   io.on('connection', async (socket) => {
     console.log('👤 Client connected:', socket.id);
 
-    const socketToken = () => {
-      const cookieHeader = socket.handshake.headers?.cookie || '';
-      const cookieToken  = cookieHeader.split(';').map(s => s.trim())
-        .find(s => s.startsWith('auth_token='))?.split('=')[1];
-      return socket.handshake.auth?.token || cookieToken;
-    };
+    // The handshake's own token only, never a cookie (routes.js `extractToken`).
+    const socketToken = () => socket.handshake.auth?.token;
 
     const loadActiveUser = async (decoded) => {
       if (!decoded?.userId) return null;
@@ -52,7 +48,7 @@ export function attachSocketHandlers(io) {
         if (!token) return;
         const decoded = verifyJwt(token);
         const user = await loadActiveUser(decoded);
-        if ((user?.isAdmin || user?.isSubAdmin || user?.isQueueManager) && await sessionIsLive(token, decoded, user)) {
+        if ((user?.isAdmin || user?.isSubAdmin) && await sessionIsLive(token, decoded, user)) {
           // One room per AREA the account holds, not one room for all staff:
           // an emit then reaches exactly who `staffMayReceive` allows, and the
           // personal room lets a permission change disconnect this socket.

@@ -5,7 +5,7 @@ Use this checklist when performing security reviews of Betting Bazaar. It is wri
 ## Ground rules for reviewers
 
 1. Every finding must cite a real file and line number; theoretical categories are not findings.
-2. For every finding, state reachability: anonymous user, logged-in user, merchant, subadmin, admin-only, or queue-manager.
+2. For every finding, state reachability: anonymous user, logged-in user, merchant, subadmin, or admin-only.
 3. Verify middleware is actually imported, mounted, ordered correctly, and applied to the route under review.
 4. Prefer end-to-end data-flow tracing over shallow keyword searches.
 5. Treat check-then-act patterns as race conditions unless the check and write are one atomic database operation.
@@ -15,7 +15,7 @@ Use this checklist when performing security reviews of Betting Bazaar. It is wri
 
 - Monorepo with `backend/` for Express 5, PostgreSQL (the only datastore — money, identity, config, content), Redis/ioredis/BullMQ, Kafka, Socket.io, and SSE; plus root, `admin-panel/`, and `merchant-panel/` React/Vite frontends.
 - Backend code is domain-oriented under `backend/domains/<domain>/`, with shared middleware, services, and providers.
-- Actor classes include user, merchant, subadmin, admin, and queue-manager. Review seams between roles carefully.
+- Actor classes include user, merchant, subadmin, and admin. Review seams between roles carefully.
 - User-content uploads use presigned S3-style direct-to-storage flows; review upload confirmation and persisted URL/key trust boundaries.
 - Real-time state is delivered through both Socket.io and SSE. Treat them as independent authorization systems.
 - Deployment can be self-hosted behind Caddy or direct on Railway; proxy-dependent controls must be checked against both paths.

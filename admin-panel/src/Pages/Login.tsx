@@ -18,12 +18,11 @@ import { RecoveryCodes } from '../components/RecoveryCodes';
 import toast from 'react-hot-toast';
 
 import { firstPermittedPath } from '../components/Layout';
-type LoginType = 'admin' | 'subadmin' | 'queue_manager';
+type LoginType = 'admin' | 'subadmin';
 
 const ROLES: { id: LoginType; label: string }[] = [
   { id: 'admin', label: 'Super Admin' },
   { id: 'subadmin', label: 'Sub-Admin' },
-  { id: 'queue_manager', label: 'Queue Manager' },
 ];
 
 /**
@@ -142,8 +141,6 @@ export const Login: React.FC = () => {
 
     if (admin.isAdmin) {
       navigate('/');
-    } else if (admin.isQueueManager) {
-      navigate('/queue-manager');
     } else {
       // The first area they were given, in sidebar order — the same list the
       // sidebar is drawn from, so a new area needs no line here.

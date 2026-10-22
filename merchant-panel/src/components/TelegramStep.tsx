@@ -5,10 +5,10 @@
 // to choose in Telegram and, on a wide screen, the link as a QR for the phone
 // to scan. The polling itself is `useTelegramPoll`; this only shows it.
 import React, { useMemo } from 'react';
-import QRCode from 'qrcode';
 import { Send } from 'lucide-react';
 import type { TelegramLink } from '../types';
 import { Spinner } from './ui';
+import { qrPath } from '../utils/qrPath';
 
 export interface TelegramStepProps {
   title: string;
@@ -23,22 +23,6 @@ export interface TelegramStepProps {
   backLabel?: string;
   /** A MATCH sign-in: the number the merchant chooses in Telegram. */
   matchNumber?: number | null;
-}
-
-/** The QR's dark modules as one SVG path. */
-function qrPath(link: string): { size: number; d: string } | null {
-  try {
-    const { modules } = QRCode.create(link, { errorCorrectionLevel: 'M' });
-    let d = '';
-    for (let row = 0; row < modules.size; row += 1) {
-      for (let col = 0; col < modules.size; col += 1) {
-        if (modules.get(row, col)) d += `M${col} ${row}h1v1h-1z`;
-      }
-    }
-    return { size: modules.size, d };
-  } catch {
-    return null;
-  }
 }
 
 /** The Telegram link as a QR, black on white for any scanner (§11: a scanner's contrast). */
@@ -83,7 +67,7 @@ export const TelegramStep: React.FC<TelegramStepProps> = ({
         }}
       >
         <Send size={16} />
-        Open Telegram{telegram.botUsername ? ` (@${telegram.botUsername})` : ''}
+        Open Telegram
       </a>
     )}
 

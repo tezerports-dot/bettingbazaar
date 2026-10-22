@@ -4,7 +4,7 @@
  * withdrawals over a range of IST days, per payment account and per
  * sub-member — orders, completed, completed tokens, disputes and disputes
  * lost — and the orders behind them, one row each with who pressed ✓ or ✗
- * (`OrderReportTable`, owner 2026-10-16), downloadable as CSV.
+ * (`OrderReportTable`, owner 2026-10-16), downloadable as Excel, and the business ledger (`BusinessLedger`, owner 2026-10-21).
  *
  * The figures are the server's (GET /api/merchant/account/reports); nothing
  * here adds them up again. The owner's and AUDIT's (`ownerOrAudit`); a range
@@ -17,6 +17,7 @@ import { formatTokens } from '../../utils/rail';
 import { Button, Card, CardTitle, Field, Skeleton, inputStyle } from '../../components/ui';
 import AccountShell, { Refusal } from './AccountShell';
 import OrderReportTable from '../../components/OrderReportTable';
+import BusinessLedger from '../../components/BusinessLedger';
 import type { MerchantReport, ReportFigures } from '../../types';
 
 const errorText = (err: any, fallback: string): string => err?.message || fallback;
@@ -128,6 +129,7 @@ const ReportsBody: React.FC = () => {
           </div>
         </Card>
       )}
+      <BusinessLedger from={shown.from} to={shown.to} />
       <OrderReportTable from={shown.from} to={shown.to} />
     </>
   );

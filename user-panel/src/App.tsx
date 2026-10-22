@@ -35,20 +35,23 @@ import FaqPage     from './pages/FaqPage';
 import MyBetsPage  from './pages/MyBetsPage';
 import SupportPage from './pages/SupportPage';
 import TelegramTicketPage from './pages/TelegramTicketPage';
+import { recoveringLoader } from './services/chunkRecovery';
 
 // ── LAZY GAME SECTIONS ────────────────────────────────────────────────────────
 // Each loader is kept so the chunks can be fetched while the phone is idle
 // after the first screen: otherwise the first tap on Wallet or Casino waited
 // on the network behind a skeleton, which read as a laggy button.
+// A loader whose chunk a deploy has replaced reloads for the new build
+// (`recoveringLoader`, services/chunkRecovery.ts) instead of an error screen.
 const LAZY_PAGES = {
-  casino:      () => import('./pages/CasinoPage'),
-  crash:       () => import('./pages/CrashPage'),
-  sports:      () => import('./pages/SportsPage'),
-  cricket:     () => import('./pages/CricketPage'),
-  winners:     () => import('./pages/WinnersPage'),
-  leaderboard: () => import('./pages/LeaderboardPage'),
-  wallet:      () => import('./pages/WalletPage'),
-  referral:    () => import('./pages/ReferralPage'),
+  casino:      recoveringLoader(() => import('./pages/CasinoPage')),
+  crash:       recoveringLoader(() => import('./pages/CrashPage')),
+  sports:      recoveringLoader(() => import('./pages/SportsPage')),
+  cricket:     recoveringLoader(() => import('./pages/CricketPage')),
+  winners:     recoveringLoader(() => import('./pages/WinnersPage')),
+  leaderboard: recoveringLoader(() => import('./pages/LeaderboardPage')),
+  wallet:      recoveringLoader(() => import('./pages/WalletPage')),
+  referral:    recoveringLoader(() => import('./pages/ReferralPage')),
 };
 const CasinoPage          = React.lazy(LAZY_PAGES.casino);
 const CrashPage           = React.lazy(LAZY_PAGES.crash);
@@ -66,8 +69,9 @@ const preloadLazyPages = () => {
 import ErrorBoundary from './components/ui/ErrorBoundary';
 import { applyBranding, applyCachedBranding } from './services/branding';
 import { getBackend } from './services/backend.service';
+import { platform } from './services/api';
 import { startAppUpdate, webBundleOutdated } from './services/appUpdate';
-import { brandLogo, fallBackToMark, uploadedAsset } from './services/brandAssets';
+import { brandLogo, fallBackToMark, uploadedAsset, useHeaderLogo } from './services/brandAssets';
 import NativeUpdateGate from './components/NativeUpdateGate';
 import { RejectedBuyPopup } from './components/DisputeWindow';
 import { isNativeShell } from './services/nativeLifecycle';
@@ -104,21 +108,26 @@ const PageSkeleton: React.FC = () => (
 
 /**
  * The first thing the app draws after the native splash hides — so it is the
- * splash an operator controls. The logo (Branding, else the uploaded logo
- * slot, else the generated mark) is always drawn; the admin's App Assets
- * `splash.png`, when one is uploaded, fades in over it full-bleed. An image
- * that is not there simply never appears — there is no broken state.
+ * splash an operator controls. It covers the whole screen (fixed, not the
+ * height of whatever holds it, which left it cut off half way; owner,
+ * 2026-10-20) with the header's own wordmark (`useHeaderLogo`: the bundled
+ * artwork at once, the uploaded `logo-header.png` once loaded) over the brand
+ * glow. The admin's App Assets `splash.png`, when one is uploaded, fades in
+ * over it full-bleed. An image that is not there simply never appears.
  */
 const LoadingScreen = () => {
   const [splashShown, setSplashShown] = useState(false);
+  const logo = useHeaderLogo();
   return (
-    <div className="relative flex flex-col items-center justify-center h-full text-[var(--brand-primary, #D4AF37)]" style={{ background: 'var(--app-bg, #0A0E17)' }}>
+    <div role="status" aria-label="Loading" className="fixed inset-0 z-[9000] flex flex-col items-center justify-center overflow-hidden"
+      style={{ background: 'var(--app-bg, #0A0E17)', color: 'var(--text)', minHeight: '100dvh', padding: 'env(safe-area-inset-top) 24px env(safe-area-inset-bottom)' }}>
+      <div aria-hidden className="absolute inset-0 pointer-events-none"
+        style={{ background: 'radial-gradient(70% 45% at 50% 42%, rgba(var(--brand-primary-rgb), 0.22), transparent 70%)' }} />
       <img
-        src={brandLogo('logo.png')}
+        src={logo}
         alt="Betting Bazaar"
-        className="h-40 w-auto object-contain mb-6"
-        onError={fallBackToMark}
-        style={{ filter: 'drop-shadow(0 4px 24px rgba(var(--brand-primary-rgb), 0.45))' }}
+        className="relative w-auto object-contain bb-rise"
+        style={{ width: 'min(78vw, 360px)', maxHeight: '22vh', filter: 'drop-shadow(0 6px 28px rgba(var(--brand-primary-rgb), 0.45))' }}
       />
       <img
         src={uploadedAsset('splash.png')}
@@ -129,13 +138,23 @@ const LoadingScreen = () => {
         className="absolute inset-0 w-full h-full object-cover"
         style={{ opacity: splashShown ? 1 : 0, transition: 'opacity 0.25s' }}
       />
-      <div className="relative w-10 h-10 border-4 border-[var(--brand-primary, #D4AF37)]/20 border-t-[var(--brand-primary, #D4AF37)] rounded-full animate-spin mb-4" />
-      <div className="relative text-[10px] font-black tracking-[0.3em] uppercase opacity-70">Synchronizing...</div>
+      <div aria-hidden className="relative mt-10 w-40 h-1 rounded-full overflow-hidden" style={{ background: 'rgba(var(--brand-primary-rgb), 0.18)' }}>
+        <div className="h-full w-1/3 rounded-full bb-splash-bar" style={{ background: 'var(--gold-metal, var(--brand-primary, #D4AF37))' }} />
+      </div>
     </div>
   );
 };
 
-const MaintenanceScreen = ({ message }: { message?: string }) => (
+// A maintenance tester signing in while maintenance is on (owner, 2026-10-20):
+// remembered for the tab so the sign-in screen stays reachable. The server
+// decides who is a tester; anyone else is sent back here by their first request.
+const TESTER_SIGN_IN_KEY = 'bb_maintenance_sign_in';
+const testerSigningIn = (): boolean => { try { return sessionStorage.getItem(TESTER_SIGN_IN_KEY) === '1'; } catch { return false; } };
+const setTesterSigningIn = (on: boolean) => {
+  try { if (on) sessionStorage.setItem(TESTER_SIGN_IN_KEY, '1'); else sessionStorage.removeItem(TESTER_SIGN_IN_KEY); } catch { /* storage blocked */ }
+};
+
+const MaintenanceScreen = ({ message, onTesterSignIn }: { message?: string; onTesterSignIn: () => void }) => (
   <div className="flex flex-col items-center justify-center h-full p-8 text-center" style={{ background: 'var(--app-bg, #0A0E17)', color: 'var(--text)' }}>
     <div className="w-24 h-24 bg-orange-500/10 rounded-full flex items-center justify-center text-5xl mb-6 border border-orange-500/20">🛠️</div>
     <h1 className="text-2xl font-black uppercase tracking-tight mb-2">Under Maintenance</h1>
@@ -143,6 +162,11 @@ const MaintenanceScreen = ({ message }: { message?: string }) => (
       {message || "We're currently fine-tuning the marketplace. Please check back in a few minutes."}
     </p>
     <div className="text-[10px] uppercase font-bold tracking-widest" style={{ color: 'var(--text3)' }}>System Stability Update</div>
+    {!platform.hasStoredSession() && (
+      <button type="button" onClick={onTesterSignIn} className="mt-10 text-[11px] underline" style={{ color: 'var(--text3)' }}>
+        Testing team sign in
+      </button>
+    )}
   </div>
 );
 
@@ -271,9 +295,13 @@ const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) =
       if (!config) { setStatus(prev => prev === 'LOADING' ? 'OK' : prev); return; }
       if (config.maintenanceMode && !window.location.hash.includes('admin')) {
         setMaintenanceMsg(config.maintenanceMessage || '');
-        setStatus('MAINTENANCE');
+        // Signed out: the maintenance screen, unless a tester is signing in.
+        if (!platform.hasStoredSession()) { setStatus(testerSigningIn() ? 'OK' : 'MAINTENANCE'); return; }
+        // Signed in: the server says whether this account is a tester.
+        void platform.maintenancePass().then((pass) => setStatus(pass ? 'OK' : 'MAINTENANCE'));
         return;
       }
+      setTesterSigningIn(false);
       const minRequired = config.minVersion || APP_VERSION;
       if (webBundleOutdated(APP_VERSION, minRequired, isNativeShell(), compareVersions)) {
         setLatestVer(config.latestVersion || 'Unknown');
@@ -305,6 +333,14 @@ const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) =
     const stream = (backend as any).sseBridge as EventTarget | undefined;
     const onConfig = (e: Event) => applyConfig((e as any).data);
     stream?.addEventListener('system_config', onConfig);
+    // Any request the server refused for maintenance (apiClient).
+    const onMaintenance = (e: Event) => {
+      setTesterSigningIn(false);
+      const said = (e as CustomEvent<{ message?: string }>).detail?.message;
+      if (said) setMaintenanceMsg(said);
+      setStatus('MAINTENANCE');
+    };
+    window.addEventListener(platform.MAINTENANCE_EVENT, onMaintenance);
 
     checkSystem();
     const loadingGuard = setTimeout(() => {
@@ -315,6 +351,7 @@ const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) =
       clearTimeout(loadingGuard);
       clearInterval(interval);
       stream?.removeEventListener('system_config', onConfig);
+      window.removeEventListener(platform.MAINTENANCE_EVENT, onMaintenance);
     };
   }, []);
 
@@ -322,7 +359,9 @@ const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) =
   useEffect(() => { if (ready) preloadLazyPages(); }, [ready]);
 
   if (status === 'LOADING')     return <LoadingScreen />;
-  if (status === 'MAINTENANCE') return <MaintenanceScreen message={maintenanceMsg} />;
+  if (status === 'MAINTENANCE') {
+    return <MaintenanceScreen message={maintenanceMsg} onTesterSignIn={() => { setTesterSigningIn(true); setStatus('OK'); }} />;
+  }
   if (status === 'OUTDATED')    return <UpdateRequiredScreen latest={latestVer} />;
   return children;
 };
@@ -331,7 +370,7 @@ const lazy = (node: React.ReactNode) => <Suspense fallback={<PageSkeleton />}>{n
 
 const App: React.FC = () => (
   <ThemeProvider>
-    <ErrorBoundary panel="user">
+    <ErrorBoundary>
       <EndpointGate>
       {/* Outside SystemGuard on purpose: a required update must show even
           during maintenance or while the web gate is loading. */}
@@ -347,7 +386,7 @@ const App: React.FC = () => (
                       {/* The pop-up when a member rejects a buy as unpaid,
                           wherever the player is in the app (2c+). */}
                       <RejectedBuyPopup />
-                      <ErrorBoundary panel="user">
+                      <ErrorBoundary>
                         <Routes>
                           <Route path="/"                element={<GamePage />} />
                           <Route path="/casino"          element={lazy(<CasinoPage />)} />

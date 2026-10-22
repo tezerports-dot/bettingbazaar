@@ -42,7 +42,7 @@ export function newMerchantId() {
 const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email,
   status, suspension_reason, is_online,
   accepts_deposits, accepts_withdrawals,
-  bank_account_holder_name, bank_name, bank_account_no, bank_ifsc,
+  bank_account_holder_name, bank_name, bank_account_no, bank_ifsc, upi_id,
   min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
   total_processed_volume_paise, earnings_paise, total_deposit_amount_paise,
   total_withdrawal_amount_paise, total_deposits_processed, total_withdrawals_processed,
@@ -51,13 +51,24 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   merchant_rejection_reason,
   monthly_processed_paise, daily_processed_paise, total_orders_processed,
   stats_last_reset_at,
-  success_rate, avg_response_minutes, dispute_rate, consecutive_rejections,
+  bb_merchant_track_record(merchant_id) AS track_record, avg_response_minutes, dispute_rate, consecutive_rejections,
   consecutive_expiries, assignment_paused_at, assignment_pause_reason, cash_ready,
   lost_disputes, high_risk_at,
   total_orders_completed, total_orders_all, is_supervisor, supervisor_rail,
   routing_priority, created_at, updated_at`;
 
 /** node-postgres returns BIGINT as a STRING. Cast once, here, at the boundary. */
+/** `{ ordersSucceeded, ordersFailed, successRate }` from the row's `track_record` ({succeeded, failed}). */
+export function trackRecordOf(track) {
+  const [succeeded, failed] = Array.isArray(track) ? track.map(Number) : [0, 0];
+  const decided = succeeded + failed;
+  return {
+    ordersSucceeded: succeeded,
+    ordersFailed: failed,
+    successRate: decided > 0 ? succeeded / decided : null,
+  };
+}
+
 const toInt = (v) => (v === null || v === undefined ? null : Number(v));
 const rupees = (v) => paiseToRupees(Number(v ?? 0));
 
@@ -97,13 +108,16 @@ function toMerchant(row) {
     acceptsDeposits: row.accepts_deposits,
     acceptsWithdrawals: row.accepts_withdrawals,
 
-    // A bank account and nothing else: no UPI handle is kept (§2, §24).
+    // The bank account a BANK buy is paid into.
     bankDetails: {
       accountHolderName: row.bank_account_holder_name,
       bankName: row.bank_name,
       accountNo: row.bank_account_no,
       ifsc: row.bank_ifsc,
     },
+    // The UPI ID a UPI buy's link is built from (owner, 2026-10-21); never a
+    // mobile (`merchants_upi_id_shape`). Players see it only inside that link.
+    upiId: row.upi_id ?? null,
 
     limits: {
       minDeposit: rupees(row.min_deposit_paise),
@@ -134,7 +148,9 @@ function toMerchant(row) {
       lastResetDate: row.stats_last_reset_at,
     },
 
-    successRate: Number(row.success_rate),
+    // Counted from the order rows on every read (`bb_merchant_track_record`,
+    // schema.sql; owner, 2026-10-21): null until an order has been decided.
+    ...trackRecordOf(row.track_record),
     avgResponseMinutes: Number(row.avg_response_minutes),
     // 1–5, the admin's; routing offers orders to the highest first (§2
     // "Which member serves an order"). Written only by `setRoutingPriority`.
@@ -232,12 +248,12 @@ export async function getMerchantByPublicRef(publicRef) {
 const UPDATABLE = new Set([
   'user_id', 'name', 'username', 'mobile', 'email',
   'status', 'suspension_reason', 'accepts_deposits', 'accepts_withdrawals',
-  'bank_account_holder_name', 'bank_name', 'bank_account_no', 'bank_ifsc',
+  'bank_account_holder_name', 'bank_name', 'bank_account_no', 'bank_ifsc', 'upi_id',
   'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise', 'max_withdraw_paise',
   'rating', 'panel_url',
   'merchant_approval_status', 'merchant_approved_by', 'merchant_approved_at',
   'merchant_rejection_reason',
-  'success_rate', 'dispute_rate',
+  'dispute_rate',
 ]);
 
 /** camelCase → column, derived from the allowlist so the two cannot drift. */
@@ -454,9 +470,9 @@ export async function setRoutingPriority(merchantId, priority) {
  * merchant's history is short by one order, which is the kind of drift nobody
  * notices until an operator asks why the totals do not add up.
  *
- * The rates are recomputed from the counters in the same statement rather than
- * patched separately, so `success_rate` can never describe a different number
- * of orders than `total_orders_all` counts.
+ * The dispute rate is recomputed from the counters in the same statement. The
+ * success rate is not kept here: it is counted from the order rows on every
+ * read (`bb_merchant_track_record`).
  */
 export async function recordCompletedOrder(merchantId, {
   direction, amountRupees = 0, earningsRupees = 0, disputed = false, responseMinutes = null,
@@ -480,10 +496,6 @@ export async function recordCompletedOrder(merchantId, {
                                       + (CASE WHEN $4 THEN $2 ELSE 0 END),
        total_withdrawal_amount_paise = total_withdrawal_amount_paise
                                       + (CASE WHEN $4 THEN 0 ELSE $2 END),
-       -- Derived from the counters this same statement just moved, so the rate
-       -- and the count it describes are always the same pair.
-       success_rate = (total_orders_completed + (CASE WHEN $5 THEN 0 ELSE 1 END))::float8
-                      / GREATEST(total_orders_all + 1, 1),
        dispute_rate = LEAST(1.0, GREATEST(0.0,
                         (dispute_rate * total_orders_all + (CASE WHEN $5 THEN 1 ELSE 0 END))
                         / GREATEST(total_orders_all + 1, 1))),

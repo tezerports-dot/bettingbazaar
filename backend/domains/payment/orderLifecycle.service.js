@@ -102,12 +102,12 @@ export async function transitionOrder(orderId, to, { set = {}, expectFrom = null
   // caller passes one.
   const result = await pgTransitionOrder(orderId, to, { set, expectFrom, expectMerchant, actor, reason, txId, within });
 
-  // ── A completed order may have earned its team commission (Step 2e) ────────
+  // ── A completed order earns its team commission (owner, 2026-10-21) ──────
   // Asked after the move committed, and never able to fail it: a payment that
-  // does not run here is paid by the sweep, because the mark moves only when
-  // a payment lands. A replayed completion asks again, which pays nothing twice.
+  // does not run here is paid by the sweep, because the order stays owed
+  // until its row exists. A replayed completion asks again, which pays nothing twice.
   if (to === ORDER_STATES.COMPLETED && result.ok && result.order?.teamId) {
-    await payCommissionFor(result.order.teamId, { actor: actor ?? 'system' });
+    await payCommissionFor(result.order, { actor: actor ?? 'system' });
   }
   return result;
 }

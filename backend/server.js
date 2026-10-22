@@ -94,7 +94,7 @@ import { startPgBouncerStats } from '#db/pgbouncerStats.js';
 import { CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';
 import { refreshProviderFrameSources, startProviderFrameSourceRefresh } from './domains/casino/providerFrameSources.js';
 import { securityHeaders } from './middleware/cspMiddleware.js';
-import { network, canonicalRedirect, adminHostGate } from './config/network.config.js';
+import { network, canonicalRedirect, adminHostGate, adminPreflightGate, merchantHostGate } from './config/network.config.js';
 import {
   attachProxyProtocolRequestMetadata,
   listenWithOptionalProxyProtocol,
@@ -132,8 +132,11 @@ import { db } from '#db';
 import { isDatabaseReachable } from '#db/client.js';
 import { mountSpaFallbacks } from './startup/spaFallbacks.js';
 import { isServableOrigin } from './config/servedHosts.js';
+import { installServerErrorCapture, flushErrorLog, logError } from './services/errorLog.service.js';
 
 // ─── APP SETUP ────────────────────────────────────────────────────────────────
+// Every console.error from here on is also an Admin › Error Logs entry.
+installServerErrorCapture();
 const runtime = runtimeProfile();
 console.log(`✅ Runtime role: ${runtime.role} (api=${runtime.acceptsHttpApi}, realtime=${runtime.acceptsRealtime}, schedulers=${runtime.runsSchedulers}, workers=${runtime.runsWorkers})`);
 const app = express();
@@ -240,14 +243,21 @@ app.use(securityHeaders);
 // Item 29: optional canonical-host 301 (only when CANONICAL_HOST is set; keys
 // on the requested Host only — see network.config.js).
 app.use(canonicalRedirect);
-// The admin panel answers only on ADMIN_HOST when it is set (network.config.js).
+// The admin panel answers only on ADMIN_HOST, and the merchant panel only on
+// MERCHANT_HOST, when each is set (network.config.js).
 app.use(adminHostGate);
+app.use(merchantHostGate);
 
 const corsOptions = { origin: corsOriginCheck, ...CORS_SHAPE };
 // AQ-6 (Express 5 / path-to-regexp 8): bare '*' is no longer a valid route
 // pattern — a catch-all wildcard must be named. '/{*splat}' matches every path
 // including the root. (app.use(cors) already answers preflights; this is the
 // explicit belt-and-suspenders preflight handler, kept for parity.)
+// The admin API answers OPTIONS only to a real preflight from a trusted origin
+// (owner, 2026-10-21); anything else there is a plain 404 with no method list.
+app.use(adminPreflightGate((origin) => new Promise((resolve) => {
+  corsOriginCheck(origin, (err, ok) => resolve(!err && ok === true));
+})));
 app.options('/{*splat}', cors(corsOptions));
 app.use(cors(corsOptions));
 // AQ-10: tighten the request-body limit. It was 10mb on EVERY route — a large
@@ -277,38 +287,13 @@ app.use((req, res, next) => {
   if (req.path.startsWith(_RAW_BODY_PREFIX)) return _rawJson(req, res, next);
   return (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _tightJson)(req, res, next);
 });
-// NO urlencoded body parser — deliberately. This is CSRF defence, not cleanup.
-//
-// Auth cookies are issued with `sameSite: 'none'` in production (routes.js),
-// because the Capacitor/Android shell runs on a different origin and would
-// otherwise never receive them. SameSite=None means the browser attaches
-// auth_token to CROSS-SITE requests, and authenticate() accepts the cookie as
-// proof of identity. The only thing then standing between an attacker's page
-// and a money mutation is whether the browser will send a usable request
-// without our permission.
-//
-// CORS does not stop it. For a "simple request" the browser SENDS the request
-// and only withholds the *response* — the mutation has already happened. The
-// simple content types are urlencoded, multipart, and text/plain, so a hidden
-// auto-submitting <form> posting urlencoded was a complete CSRF vector against
-// every authenticated POST, with no preflight to block it.
-//
-// Removing this parser closes that: with only express.json mounted, a
-// urlencoded body is never parsed, so req.body is empty and the handler fails
-// validation. multipart has no parser either, and express.json ignores
-// text/plain. Anything sending real application/json triggers a preflight,
-// which the CORS allow-list then rejects for untrusted origins.
-//
-// Verified before removing: nothing inbound needs it. No route reads a
-// form-encoded body, no panel sends one (the only x-www-form-urlencoded in the
-// tree is OUTBOUND, to Turnstile in middleware/captcha.js), and no test posts
-// one. If a provider callback ever needs form encoding, mount a urlencoded
-// parser ON THAT ROUTE ONLY — never globally — and require a signature on it.
-//
-// This is a vector fix, not a complete CSRF programme. Token-based CSRF, or
-// dropping cookie auth for the Authorization header everywhere, is the
-// structural answer and needs a decision spanning all three panels plus the
-// Android shell. See docs/governance/SECURITY_CODE_REVIEW_CHECKLIST.md.
+// NO urlencoded body parser — deliberately. No session rides in a cookie
+// (routes.js `extractToken`: the Authorization header only, owner 2026-10-21),
+// so a page on another site cannot act for a signed-in account at all; keeping
+// the parser off also keeps every "simple request" body (urlencoded, multipart,
+// text/plain) unparsed, so a cross-site <form> reaches no handler with fields.
+// If a provider callback ever needs form encoding, mount a urlencoded parser ON
+// THAT ROUTE ONLY, never globally, and require a signature on it.
 app.use(inputSanitize);
 app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
@@ -595,19 +580,30 @@ const errorReportLimiter = rateLimit({ windowMs: 60000, max: 10, store: createRa
 app.use('/api', clientTelemetryRoutes);
 // Where player apps should connect (Admin > Settings > API Host) — discovery's answer.
 app.use('/api', clientEndpointRoutes);
-app.post('/api/internal/error-report', errorReportLimiter, async (req, res) => {
-  try {
-    const { message, stack, component, url, panel } = req.body;
-    if (!message) return res.status(400).json({ success: false, message: 'message required' });
-    await db.operations.recordFrontendError({
-      message, stack, component, url,
-      panel: ['user', 'merchant'].includes(panel) ? panel : 'unknown',
-    });
-    res.json({ success: true });
-  } catch (err) {
-    console.error('[error-report] insert failed:', err.message);
-    res.json({ success: true });
-  }
+// A panel's report: which panel, what kind of failure. The severity is the
+// server's, from the kind, never the caller's (owner, 2026-10-20).
+const PANEL_SOURCES = { user: 'PLAYER_APP', merchant: 'MERCHANT_PANEL', admin: 'ADMIN_PANEL' };
+const PANEL_KINDS = {
+  crash:   { category: 'SCREEN_CRASH', severity: 'CRITICAL' },
+  error:   { category: 'SCRIPT',       severity: 'WARNING' },
+  promise: { category: 'PROMISE',      severity: 'MINOR' },
+  update:  { category: 'UPDATE_LOAD',  severity: 'MINOR' },
+};
+app.post('/api/internal/error-report', errorReportLimiter, (req, res) => {
+  const { message, stack, component, url, panel, kind } = req.body ?? {};
+  if (!message || typeof message !== 'string') return res.status(400).json({ success: false, message: 'message required' });
+  const source = PANEL_SOURCES[panel];
+  if (!source) return res.status(400).json({ success: false, message: 'panel must be user, merchant or admin' });
+  // A chunk that failed to load is a stale page after a deploy, whatever the panel called it.
+  const how = /dynamically imported module|Loading chunk|Importing a module script failed/i.test(message)
+    ? PANEL_KINDS.update : (PANEL_KINDS[kind] ?? PANEL_KINDS.crash);
+  logError({
+    source, ...how, message,
+    detail: typeof stack === 'string' ? stack : null,
+    component: typeof component === 'string' ? component : null,
+    location: typeof url === 'string' ? url : null,
+  });
+  res.json({ success: true });
 });
 
 // /api/download/android and /api/app/android/update — the uploaded, published
@@ -852,6 +848,7 @@ const _shutdown = (sig) => {
   // Stop background producers immediately (no new cycles/settlement work).
   try { gameEngine?.stop(); } catch (_) {}
   try { cycleGenerator?.stop(); } catch (_) {}
+  void flushErrorLog();
 
   const DRAIN_DELAY_MS = Number(process.env.SHUTDOWN_DRAIN_MS || 5000);
   const DEADLINE_MS    = Number(process.env.SHUTDOWN_DEADLINE_MS || 25000);

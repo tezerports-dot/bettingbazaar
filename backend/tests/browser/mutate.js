@@ -442,7 +442,7 @@ async function disputedBuys(n) {
     for (let i = 0; i < n; i++) {
       const player = await seedPlayer({ balancePaise: 0 });
       const pT = playerToken(player);
-      const made = await call(pT, 'POST', '/api/payment/deposit/create', { tokenAmount: BUY_TOKENS });
+      const made = await call(pT, 'POST', '/api/payment/deposit/create', { tokenAmount: BUY_TOKENS, payMethod: 'BANK' });
       const orderId = made.body?.order?.orderId;
       if (!orderId) throw new Error(`the buy was refused: ${made.status} ${String(made.body?.message ?? '').slice(0, 100)}`);
       buys.push({ orderId, player });
@@ -1974,7 +1974,7 @@ const CASES = [
       for (let i = 0; i < 3; i++) {
         const player = await seedPlayer({});
         const pT = playerToken(player);
-        const res = await call(pT, 'POST', '/api/payment/deposit/create', { tokenAmount: 50000 }); // the smallest UPI/bank size (2d)
+        const res = await call(pT, 'POST', '/api/payment/deposit/create', { tokenAmount: 50000, payMethod: 'BANK' }); // the smallest UPI/bank size (2d)
         const orderId = res.body?.order?.orderId;
         if (!orderId) { refused.push(`${res.status} ${String(res.body?.message ?? '').slice(0, 80)}`); continue; }
         made.push(orderId);
@@ -2086,46 +2086,6 @@ const CASES = [
         return ['FAILED', 'back on page 1 and Previous page is still enabled'];
       }
       return ['DROVE', 'disabled on page 1, enabled on page 2, pressed, disabled again'];
-    },
-  },
-
-
-  {
-    id: 'admin/staff/queue-manager',
-    panel: 'admin-panel',
-    what: 'Switch queue-manager access on, on a STAFF account\'s page — never a player\'s',
-    async run(page, cfg, base) {
-      // Queue-manager access routes players' payments, so it goes on a STAFF
-      // account only: the staff page opens for STAFF rows alone, the route
-      // refuses a player id with 409 and the database refuses the flag
-      // (owner, 2026-10-01 — separate accounts).
-      const target = await seedStaff({});
-      const player = await seedPlayer({ balancePaise: 0 });
-      await go(page, cfg, base, `/staff/${target.userId}`);
-      const toggle = page.getByRole('switch', { name: /queue-manager access/i }).first();
-      if (await toggle.count() === 0) return ['NOT DRIVEN', `no queue-manager switch on /staff/${target.userId}`];
-      const hit = await clickThrough(toggle, { timeout: 8000 });
-      if (!hit.ok) return ['FAILED', `the switch could not be pressed: ${hit.why}`];
-      await settle(page, 6000);
-
-      const granted = Boolean((await pgQuery(
-        'SELECT is_queue_manager FROM users WHERE user_id = $1', [target.userId],
-      )).rows[0]?.is_queue_manager);
-      if (!granted) return ['FAILED', 'pressed the switch and the staff account is still not a queue manager'];
-      await pgQuery('UPDATE users SET is_queue_manager = FALSE WHERE user_id = $1',
-        [target.userId]).catch(() => {});
-
-      // The opposite case: a PLAYER's id opens no staff page, so there is no
-      // switch to press, and the screen says why.
-      await go(page, cfg, base, `/staff/${player.userId}`);
-      await settle(page, 3000);
-      if (await page.getByRole('switch', { name: /queue-manager access/i }).count() > 0) {
-        return ['FAILED', 'a PLAYER account was offered the queue-manager switch'];
-      }
-      if (!/staff account not found/i.test(await words(page))) {
-        return ['FAILED', 'a player id opened the staff page, but the screen never said why there was nothing to switch'];
-      }
-      return ['DROVE', `${target.userId} (STAFF) became a queue manager; a PLAYER id opened no switch and the screen said why`];
     },
   },
 

@@ -7,7 +7,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 let config: Record<string, unknown> = { demoResultsOn: true };
 vi.mock('../services/backend.service', () => ({ getBackend: () => ({ getSystemConfig: () => Promise.resolve(config) }) }));
 
-const { demoWinners, withDemoResults } = await import('./DemoResults');
+const { demoWinners, withDemoResults, typedDemoWinners } = await import('./DemoResults');
 const { default: AnalyticsView } = await import('./AnalyticsView');
 
 const board = { key: 'b1', name: 'One Minute', kind: 'INTERVAL' } as any;
@@ -30,6 +30,25 @@ describe('demo results', () => {
     expect(b.winners.slice(4)).toEqual(a.winners.slice(3, 1439));
     expect(withDemoResults(Array(1500).fill('DELHI'), 'b1', 1440, true)).toMatchObject({ real: 1440 });
     expect(withDemoResults([...real], 'b1', 1440, false).winners).toHaveLength(3);
+  });
+
+  it('the admin\'s typed results fill the window instead, newest typed one next to the oldest real', () => {
+    // Typed oldest first: B, B, D (so D is the newest demo result).
+    expect(typedDemoWinners('BBD', 5)).toEqual(['DELHI', 'BOMBAY', 'BOMBAY']);
+    const out = withDemoResults(['BOMBAY'], 'b1', 1440, true, 'BBD');
+    expect(out).toEqual({ winners: ['BOMBAY', 'DELHI', 'BOMBAY', 'BOMBAY'], real: 1 });
+    // With a nearly full window only the newest typed ones are used.
+    expect(withDemoResults(Array(1439).fill('DELHI'), 'b1', 1440, true, 'BBD').winners[1439]).toBe('DELHI');
+    // Switched off, typed results are not shown either.
+    expect(withDemoResults(['BOMBAY'], 'b1', 1440, false, 'BBD').winners).toEqual(['BOMBAY']);
+  });
+
+  it('typed results are drawn like the drawn ones, faded, for the profile shown', async () => {
+    config = { demoResultsOn: true };
+    const typed = { ...board, demoResults: { VIP: 'DDD', GENERAL: 'BB' } };
+    render(<AnalyticsView board={typed} winners={['DELHI']} audience="GENERAL" />);
+    expect(await screen.findByText(/^3 One Minute results$/)).toBeInTheDocument();
+    expect(screen.getByTestId('run-strip').querySelectorAll('span[data-demo]').length).toBe(2);
   });
 
   it('the analytics show every result and do not mention demo results', async () => {

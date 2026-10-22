@@ -1,13 +1,12 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { logger } from '../../services/logging.service';
-import { platform } from '../../services/api';
+import { reportError } from '../../services/errorReporter';
+import { isStaleChunkError, reloadForNewBuild } from '../../services/chunkRecovery';
 
 interface Props {
   children?: ReactNode;
   fallback?: ReactNode;
-  /** Tag crash reports so admin knows which panel crashed */
-  panel?: 'user' | 'merchant';
 }
 
 interface State {
@@ -16,25 +15,6 @@ interface State {
   isAdmin:     boolean;
   showDetails: boolean;
 }
-
-// FIX-4d: POST to /api/internal/error-report
-// localStorage is origin-scoped — crash reports written in the user/merchant
-// panel can never be read by the admin panel on a different domain/port.
-// We POST to the shared backend instead.
-const storeCrashReport = (
-  error: Error,
-  componentStack?: string,
-  panel: 'user' | 'merchant' | 'unknown' = 'unknown',
-): void => {
-  platform.reportCrash({
-    message:   error.message,
-    stack:     error.stack,
-    component: componentStack,
-    ts:        new Date().toISOString(),
-    url:       window.location.href,
-    panel,
-  });
-};
 
 const checkIsAdmin = (): boolean => {
   try {
@@ -60,11 +40,11 @@ class ErrorBoundary extends Component<Props, State> {
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     logger.error(error, { componentStack: errorInfo.componentStack });
-    storeCrashReport(
-      error,
-      errorInfo.componentStack ?? undefined,
-      this.props.panel ?? 'unknown',
-    );
+    // A page older than the deploy asked for a chunk that is gone: reload
+    // into the new build instead of showing this screen.
+    if (isStaleChunkError(error) && reloadForNewBuild()) return;
+    // Into the admin's error log (Admin › Error Logs), as a crashed screen.
+    reportError('crash', error, errorInfo.componentStack ?? null);
     console.error('[ErrorBoundary]', error, errorInfo);
   }
 

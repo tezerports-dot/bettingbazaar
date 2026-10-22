@@ -58,6 +58,7 @@ export {
 import * as users from './repositories/users.js';
 import * as identity from './repositories/identity.js';
 import * as telegram from './repositories/telegram.js';
+import * as telegramChannels from './repositories/telegramChannels.js';
 import * as totp from './repositories/totp.js';
 import * as ipBlocks from './repositories/ipBlocks.js';
 import * as merchants from './repositories/merchants.js';
@@ -66,6 +67,7 @@ import * as config from './repositories/config.js';
 import * as balanceAdjustments from './repositories/balanceAdjustments.js';
 import * as markets from './repositories/markets.js';
 import * as cycleHistoryRetention from './repositories/cycleHistoryRetention.js';
+import * as coldArchive from './repositories/coldArchive.js';
 import * as games from './repositories/games.js';
 import * as content from './repositories/content.js';
 import * as androidReleases from './repositories/androidReleases.js';
@@ -81,10 +83,12 @@ import * as rtp from './repositories/rtp.js';
 import * as cricket from './repositories/cricket.js';
 import * as audit from './repositories/audit.js';
 import * as operations from './repositories/operations.js';
+import * as errorLog from './repositories/errorLog.js';
 import * as supportDocuments from './repositories/supportDocuments.js';
 import * as depositPolicy from './repositories/depositPolicy.js';
 import * as teams from './repositories/teams.js';
 import * as teamPools from './repositories/teamPools.js';
+import * as teamCashOut from './repositories/teamCashOut.js';
 import * as usdtDeposits from './repositories/usdtDeposits.js';
 import * as teamCommission from './repositories/teamCommission.js';
 import * as teamRouting from './repositories/teamRouting.js';
@@ -93,6 +97,7 @@ import * as merchantStaff from './repositories/merchantStaff.js';
 import * as merchantPaymentAccounts from './repositories/merchantPaymentAccounts.js';
 import * as merchantProblems from './repositories/merchantProblems.js';
 import * as merchantReports from './repositories/merchantReports.js';
+import * as merchantLedger from './repositories/merchantLedger.js';
 import * as adminDirectory from './repositories/adminDirectory.js';
 import * as tokenHolders from './repositories/tokenHolders.js';
 import * as tokenLedger from './repositories/tokenLedger.js';
@@ -127,6 +132,7 @@ export const db = Object.freeze({
   identity,
   ipBlocks,
   telegram,
+  telegramChannels,
   totp,
 
   // Money
@@ -139,6 +145,7 @@ export const db = Object.freeze({
   // Trading
   markets,
   cycleHistoryRetention,
+  coldArchive,
   bets: merge(betsCore, betsApi),
   settlements,
   casino: merge(casinoCore, casinoApi),
@@ -176,6 +183,7 @@ export const db = Object.freeze({
   depositPolicy,
   teams,
   teamPools,
+  teamCashOut,
   usdtDeposits,
   teamCommission,
   teamRouting,
@@ -185,6 +193,7 @@ export const db = Object.freeze({
   merchantPaymentAccounts,
   merchantProblems,
   merchantReports,
+  merchantLedger,
   // The admin's sortable player and merchant tables (owner, 2026-10-14)
   adminDirectory,
   // Who holds the token supply, holder by holder (owner, 2026-10-17)
@@ -192,6 +201,8 @@ export const db = Object.freeze({
   tokenLedger,
   disputeFaults,
   operations,
+  // Every failure, server and panels, one row per distinct error (owner, 2026-10-20)
+  errorLog,
   supportDocuments,
   stats,
 });

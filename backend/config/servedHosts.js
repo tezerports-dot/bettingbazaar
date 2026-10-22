@@ -7,6 +7,7 @@
  *
  *   DOMAINS              the domains this deployment serves (network.config.js)
  *   ADMIN_HOST           the one name the admin panel answers on (network.config.js)
+ *   MERCHANT_HOST        the one name the merchant panel answers on (network.config.js)
  *   API_ALLOWED_HOSTS    the API hosts an admin may point apps at (apiHosts.js)
  *   PUBLIC_APP_ORIGIN    the player site's host (publicAppOrigin.js)
  *   the signed gateway   every host of the document signed OFFLINE and served
@@ -37,6 +38,7 @@ export async function servableHosts() {
   const listed = [
     ...network.domains.map((d) => d.toLowerCase().replace(/\.$/, '')),
     network.adminHost,
+    network.merchantHost,
     ...approvedApiHosts(),
     hostOfOrigin(publicAppOrigin()),
     ...(await servedGatewayHosts()),

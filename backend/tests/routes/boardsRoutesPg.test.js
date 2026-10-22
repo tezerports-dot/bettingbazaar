@@ -69,7 +69,7 @@ describePg('board routes', () => {
     expect(seen.at(-1)).toMatchObject({ key: board.key, durationMin: 10, minBet: 20, maxBet: 2000 });
     // The public view carries what the panel draws and times by, nothing more.
     expect(Object.keys(seen.at(-1)).sort()).toEqual(
-      ['anchorHourIst', 'durationMin', 'homeOrder', 'idPrefix', 'key', 'kind', 'maxBet', 'minBet', 'name', 'phases'].sort());
+      ['anchorHourIst', 'demoResults', 'durationMin', 'homeOrder', 'idPrefix', 'key', 'kind', 'maxBet', 'minBet', 'name', 'phases'].sort());
 
     const off = await as(admin, gamesStaff).put(`/boards/${board.key}`).send({ enabled: false });
     expect(off.status).toBe(200);

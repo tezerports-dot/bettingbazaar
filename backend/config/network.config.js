@@ -58,6 +58,10 @@ export const network = {
   // domain, as before). See adminHostGate below (owner, 2026-10-15).
   adminHost: (process.env.ADMIN_HOST || '').trim().toLowerCase(),
 
+  // The one hostname the merchant panel and its API answer on ('' = every
+  // domain, as before). See merchantHostGate below (owner, 2026-10-20).
+  merchantHost: (process.env.MERCHANT_HOST || '').trim().toLowerCase(),
+
   // CORS allowlist (unchanged semantics — server.js consumes).
   allowedOrigins: parseList(process.env.ALLOWED_ORIGINS),
 
@@ -102,25 +106,68 @@ export function canonicalRedirect(req, res, next) {
 /** Paths that belong to the admin panel: its pages, its API, its event stream. */
 export const ADMIN_PATH_PREFIXES = ['/admin', '/api/admin', '/api/sse/admin'];
 
-function isAdminPath(path) {
-  return ADMIN_PATH_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`));
-}
+/** Paths that belong to the merchant panel: its pages, its API (sign-in included), its event stream. */
+export const MERCHANT_PATH_PREFIXES = ['/merchant', '/api/merchant', '/api/sse/merchant'];
+
+const underAny = (prefixes, path) => prefixes.some((p) => path === p || path.startsWith(`${p}/`));
+
+const requestHost = (req) => String(req.headers.host || '').toLowerCase().split(':')[0];
 
 /**
- * adminHostGate — with ADMIN_HOST set, the admin panel exists only on that
- * name (owner, 2026-10-15): on every other host (player domains, standbys,
- * the bare IP) its paths answer a plain 404, as if there were none. On the
- * admin host itself `/` goes to `/admin/`. Unset: no change. Keys on the
- * requested Host only, which Caddy passes through unchanged.
+ * One panel on its own name: with `host` set, the panel's paths answer a plain
+ * 404 on every other host (player domains, standbys, the bare IP, the other
+ * panel's host), as if there were none, and `/` on its own host goes to the
+ * panel's page. Unset: no change. Keys on the requested Host only, which Caddy
+ * passes through unchanged.
  */
-export function adminHostGate(req, res, next) {
-  const adminHost = network.adminHost;
-  if (!adminHost) return next();
-  const host = String(req.headers.host || '').toLowerCase().split(':')[0];
-  if (host === adminHost) {
-    if (req.path === '/' && (req.method === 'GET' || req.method === 'HEAD')) return res.redirect(302, '/admin/');
-    return next();
-  }
-  if (isAdminPath(req.path)) return res.status(404).type('text/plain').send('Not Found');
-  next();
+function panelHostGate(hostOf, prefixes, home) {
+  return function gate(req, res, next) {
+    const host = hostOf();
+    if (!host) return next();
+    if (requestHost(req) === host) {
+      if (req.path === '/' && (req.method === 'GET' || req.method === 'HEAD')) return res.redirect(302, home);
+      return next();
+    }
+    if (underAny(prefixes, req.path)) return res.status(404).type('text/plain').send('Not Found');
+    next();
+  };
+}
+
+/** adminHostGate — the admin panel only on ADMIN_HOST when it is set (owner, 2026-10-15). */
+export const adminHostGate = panelHostGate(() => network.adminHost, ADMIN_PATH_PREFIXES, '/admin/');
+
+/** merchantHostGate — the merchant panel only on MERCHANT_HOST when it is set (owner, 2026-10-20). */
+export const merchantHostGate = panelHostGate(() => network.merchantHost, MERCHANT_PATH_PREFIXES, '/merchant/');
+
+/**
+ * The origin a panel lives at for a link minted to it: `https://<its host>`
+ * when the panel has its own, else `fallback` (the player site's origin).
+ */
+export function panelOrigin(audience, fallback) {
+  const host = audience === 'MERCHANT' ? network.merchantHost : '';
+  return host ? `https://${host}` : fallback;
+}
+
+const ADMIN_API_PREFIXES = ADMIN_PATH_PREFIXES.filter((p) => p.startsWith('/api/'));
+
+/**
+ * adminPreflightGate — an OPTIONS request to the admin API (owner, 2026-10-21:
+ * "no list of allowed methods" for anyone not signed in). Only a real CORS
+ * preflight (an `Origin` and an `Access-Control-Request-Method`) from an origin
+ * `originAllowed` admits goes on to the CORS middleware, which answers it as
+ * before; every other OPTIONS gets the same plain 404 as a path that does not
+ * exist, with no Allow or Access-Control-Allow-* header. Every other method,
+ * and OPTIONS on any non-admin path, is untouched.
+ *
+ * @param {(origin: string) => Promise<boolean>} originAllowed
+ */
+export function adminPreflightGate(originAllowed) {
+  return (req, res, next) => {
+    if (req.method !== 'OPTIONS') return next();
+    if (!ADMIN_API_PREFIXES.some((p) => req.path === p || req.path.startsWith(`${p}/`))) return next();
+    const origin = req.headers.origin;
+    const notFound = () => res.status(404).type('text/plain').send('Not Found');
+    if (!origin || !req.headers['access-control-request-method']) return notFound();
+    Promise.resolve(originAllowed(origin)).then((ok) => (ok ? next() : notFound()), notFound);
+  };
 }

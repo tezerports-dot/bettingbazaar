@@ -35,7 +35,7 @@ import { useBoards } from '../../hooks/useBoards';
 interface PhantomAgent {
   userId: string;
   username: string;
-  mobile: string;
+  mobile?: string;
   status: string;
   phantomAccess: CycleType | 'BOTH' | 'NONE';
   lastLogin: string | null;

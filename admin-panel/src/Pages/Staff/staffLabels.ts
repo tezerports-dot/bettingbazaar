@@ -5,5 +5,5 @@
  * without a label shows as itself).
  */
 export const STAFF_ROLE_LABEL: Record<string, string> = {
-  ADMIN: 'Full admin', SUB_ADMIN: 'Sub-admin', QUEUE_MANAGER: 'Queue manager', MEDIATOR: 'Mediator',
+  ADMIN: 'Full admin', SUB_ADMIN: 'Sub-admin', MEDIATOR: 'Mediator',
 };

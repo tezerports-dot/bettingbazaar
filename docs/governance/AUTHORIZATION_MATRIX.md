@@ -19,8 +19,7 @@ bodies. Re-run the scan commands in the appendix after adding any route.
 | **Public** | none (some rate-limited) | n/a — read-only only | see list below |
 | **User** | `authenticatePlayer` — a PLAYER session only; a staff or merchant session is refused `403 WRONG_PANEL`, naming the panel it belongs to (2026-10-01) | `resource.userId === req.user.userId` — the order routes admit the order's OWNER only (`orderAccessGuard`). The guard's "assigned merchant" and "full admin" branches went with the second deposit-confirm route, which nothing called | user/payment/bet/wallet/support routes, game launch, profile picture, `/bonuses/my`, `/v1/auth/verification`, `/v1/auth/kyc/resubmit`; and the socket `join_user_room` (own room, PLAYER only) |
 | **Merchant** | `merchantAuth` | `order.merchantId === req.merchantId` | `domains/merchant/*` |
-| **Queue manager** | `authenticate` + `queueManagerOrPermission('canManageMerchants')` | the payment queue, nothing else | queue admin routes |
-| **Sub-admin** | `authenticate` + `hasPermission(<area>)` | exactly the areas an admin granted — one key per area, `backend/domains/identity/staffPermissions.js` | every staff route |
+| **Sub-admin** | `authenticate` + `hasPermission(<area>)` | exactly the areas an admin granted — one key per area, `backend/domains/identity/staffPermissions.js`; the payment queue is the merchants area (`canManageMerchants`): there is no queue manager role (owner, 2026-10-21) | every staff route |
 | **Admin** | `authenticate` + `hasPermission(<area>)` (passes all) or `isAdmin` | full; `isAdmin` alone guards the 7 routes in `ADMIN_ONLY_AREAS` (granting authority) | every staff route |
 
 `authenticate` — the shared door the staff tiers use — admits a PLAYER or a
@@ -47,7 +46,7 @@ verification + account-status checks (blocked/suspended/approved).
 
 1. **Every admin sub-router route carries a role guard.** Scanning all
    `routes/admin/*.js` + `domains/*/*.admin.routes.js` for an `authenticate`
-   without `isAdmin`/`isAdminOrSubAdmin`/`isSubAdmin`/`isQueueManager`/`hasPermission`:
+   without `isAdmin`/`isAdminOrSubAdmin`/`isSubAdmin`/`hasPermission`:
    **0 findings.** Note: KYC (`kyc.admin.routes.js`) and dispute-resolution
    (`disputeResolution.admin.routes.js`) admin routes guard with
    `authenticate, hasPermission('canVerifyKYC' | 'canResolveDisputes')` — a
@@ -112,7 +111,7 @@ None expose another user's private data or accept a state mutation.
 # admin routes missing a role guard (expect: only false-positive multiline defs)
 for f in backend/routes/admin/*.js backend/domains/*/*.admin.routes.js; do
   grep -nE "router\.(get|post|put|delete|patch)\(" "$f" | grep authenticate \
-    | grep -vE "isAdmin|isAdminOrSubAdmin|isSubAdmin|isQueueManager|hasPermission" && echo "  ^ in $f"
+    | grep -vE "isAdmin|isAdminOrSubAdmin|isSubAdmin|hasPermission" && echo "  ^ in $f"
 done
 # public (no-auth) route lines across public-facing routers — expect read-only only
 grep -rnE "router\.(get|post)\(" backend/routes.js backend/domains/user backend/routes/winners.routes.js \

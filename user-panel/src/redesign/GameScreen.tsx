@@ -545,7 +545,7 @@ const GameScreen: React.FC = () => {
       {/* The analytics, part of this page under the game across its full
           width, not a card in the middle column (owner, 2026-10-15). */}
       <div style={{ gridColumn: desktop ? '1 / -1' : undefined, minWidth: 0, padding: desktop ? '6px 0 0' : '10px 0 0' }}>
-        <AnalyticsView board={currentBoard} winners={winnersByType[cycleType] ?? NO_WINNERS} loadCycleHistory={loadCycleHistory} />
+        <AnalyticsView board={currentBoard} winners={winnersByType[cycleType] ?? NO_WINNERS} loadCycleHistory={loadCycleHistory} audience={audience} />
       </div>
 
       <BoardRulesModal isAuthenticated={!!isAuthenticated} />

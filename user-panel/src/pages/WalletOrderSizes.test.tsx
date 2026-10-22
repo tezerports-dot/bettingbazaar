@@ -89,10 +89,13 @@ describe('a buy is one of the sizes on offer', () => {
     fireEvent.click(await tile('50,000 tokens'));
     expect(screen.getByRole('radio', { name: '50,000 tokens' })).toHaveAttribute('aria-checked', 'true');
     expect(railNote()).toMatch(/UPI \/ bank purchase/);
+    // How to pay is the player's choice (owner, 2026-10-21): none yet, no Continue.
+    expect(continueButton()).toBeDisabled();
+    fireEvent.click(screen.getByRole('radio', { name: /By bank transfer/ }));
     expect(continueButton()).toBeEnabled();
 
     fireEvent.click(continueButton());
-    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/payment/deposit/create', { tokenAmount: 50000 }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/payment/deposit/create', { tokenAmount: 50000, payMethod: 'BANK' }));
   });
 
   it('draws the sizes the admin sends to merchant accounts as their own group, as a merchant purchase', async () => {
@@ -104,14 +107,17 @@ describe('a buy is one of the sizes on offer', () => {
     expect(screen.queryByRole('radiogroup', { name: 'UPI / bank team' })).toBeNull();
     fireEvent.click(await tile('50,000 tokens'));
     expect(railNote()).toMatch(/Merchant purchase/);
+    fireEvent.click(screen.getByRole('radio', { name: /By UPI/ }));
     fireEvent.click(continueButton());
-    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/payment/deposit/create', { tokenAmount: 50000 }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/payment/deposit/create', { tokenAmount: 50000, payMethod: 'UPI' }));
   });
 
   it('offers a cash size as a cash purchase, and creates it', async () => {
     await open();
     fireEvent.click(await tile('10,000 tokens'));
     expect(railNote()).toMatch(/Cash purchase/);
+    // A cash buy is paid at the machine: no choice is offered.
+    expect(screen.queryByRole('radiogroup', { name: 'How you will pay' })).toBeNull();
     fireEvent.click(continueButton());
     await waitFor(() => expect(post).toHaveBeenCalledWith('/api/payment/deposit/create', { tokenAmount: 10000 }));
   });
@@ -251,9 +257,11 @@ describe('INR orders to merchants: one flat list (owner, 2026-10-11)', () => {
     expect(screen.getByRole('radiogroup', { name: 'Order size' })).toHaveAccessibleDescription('UPI or bank transfer');
     expect(document.body.textContent).not.toMatch(/agent|merchant account/i);
     fireEvent.click(screen.getByRole('radio', { name: '500 tokens' }));
+    // A merchant's buy is UPI or bank: the player picks which (owner, 2026-10-21).
+    fireEvent.click(screen.getByRole('radio', { name: /By UPI/ }));
     fireEvent.click(continueButton());
     await waitFor(() => expect(post).toHaveBeenCalled());
-    expect(JSON.stringify(post.mock.calls[0])).toContain('500');
+    expect(post.mock.calls[0][1]).toEqual({ tokenAmount: 500, payMethod: 'UPI' });
   });
 });
 

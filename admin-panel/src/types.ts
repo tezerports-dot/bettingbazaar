@@ -30,11 +30,10 @@ export interface Admin {
   _id: string;
   id?: string;
   username: string;
-  mobile: string;
-  role: 'admin' | 'subadmin' | 'queue_manager';
+  mobile?: string; // full admins only (staffContactShield.js)
+  role: 'admin' | 'subadmin';
   isAdmin: boolean;
   isSubAdmin: boolean;
-  isQueueManager: boolean;
   // permissions is populated for sub-admins from subAdminPermissions on the User document
   permissions?: SubAdminPermissions;
   profilePic?: string;
@@ -59,7 +58,7 @@ export interface User {
    */
   userId: string;
   username: string;
-  mobile: string;
+  mobile?: string; // full admins only (staffContactShield.js)
 
   depositBalance: number;
   winningsBalance: number;
@@ -78,8 +77,8 @@ export interface User {
 
   bankDetails?: {
     accountHolderName: string;
-    accountNumber: string;
-    ifscCode: string;
+    accountNumber?: string;
+    ifscCode?: string;
     bankName: string;
   };
 
@@ -93,7 +92,6 @@ export interface User {
   /** Only on `GET /api/admin/sub-admins` (subadmins.admin.routes.js): a yes/no, never the secret. */
   authenticatorEnrolled?: boolean;
 
-  isQueueManager: boolean;
   isMediator: boolean;
   isMerchant: boolean;
   merchantApprovalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'SUSPENDED';
@@ -107,7 +105,7 @@ export interface User {
 }
 
 /** A staff role key, as the server names it (adminDirectory.js STAFF_ROLES). */
-export type StaffRole = 'ADMIN' | 'SUB_ADMIN' | 'QUEUE_MANAGER' | 'MEDIATOR';
+export type StaffRole = 'ADMIN' | 'SUB_ADMIN' | 'MEDIATOR';
 
 /**
  * One row of the staff table, as `GET /api/admin/staff` sends it
@@ -115,7 +113,7 @@ export type StaffRole = 'ADMIN' | 'SUB_ADMIN' | 'QUEUE_MANAGER' | 'MEDIATOR';
  * permission keys the grant holds true; their labels are the catalogue's.
  */
 export interface StaffRow {
-  userId: string; username: string | null; mobile: string; status: string; isBlocked: boolean;
+  userId: string; username: string | null; mobile?: string; status: string; isBlocked: boolean;
   joinedAt: string; lastLogin: string | null;
   roles: StaffRole[]; areas: string[]; authenticatorEnrolled: boolean;
 }
@@ -129,7 +127,7 @@ export interface StaffRow {
 export interface PlayerRow {
   userId: string;
   username: string;
-  mobile: string;
+  mobile?: string; // full admins only (staffContactShield.js)
   status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED' | 'DELETED';
   joinedAt: string;
   lastLogin: string | null;
@@ -154,7 +152,7 @@ export interface MerchantRow {
   merchantId: string;
   userId: string | null;
   name: string;
-  mobile: string;
+  mobile?: string; // full admins only (staffContactShield.js)
   status: 'ACTIVE' | 'SUSPENDED' | 'INACTIVE' | string;
   merchantApprovalStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | string;
   isOnline: boolean;
@@ -319,7 +317,7 @@ export interface Merchant {
   _id: string;
   userId: string;
   name: string;
-  mobile: string;
+  mobile?: string; // full admins only (staffContactShield.js)
   email?: string;
   status: 'ACTIVE' | 'SUSPENDED';
   merchantApprovalStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | 'SUSPENDED';
@@ -346,7 +344,8 @@ export interface MerchantProfile extends Merchant {
     totalOrders: number;
     completedOrders: number;
     failedOrders: number;
-    successRate: number;
+    /** Percent of decided orders that succeeded; null before any is decided (`bb_merchant_track_record`). */
+    successRate: number | null;
   };
 }
 
@@ -383,7 +382,7 @@ export interface PaymentOrder {
   type: 'DEPOSIT' | 'WITHDRAWAL';
   userId: string;
   userName: string;
-  userMobile: string;
+  userMobile?: string; // full admins only (staffContactShield.js)
   merchantId?: string;
   merchantName?: string;
   tokenAmount: number;
@@ -397,7 +396,7 @@ export interface PaymentOrder {
   /** The team serving it, once routed. */
   teamId?: string | null;
   status: OrderStatus;
-  /** May the queue manager move it to another member (`mayChangeHands`, orders.record.js). */
+  /** May an admin move it to another member (`mayChangeHands`, orders.record.js). */
   canReassign?: boolean;
   assignedBy?: string;
   assignedAt?: string;
@@ -451,7 +450,7 @@ export interface Transaction {
   txId: string;
   userId: string;
   /** LEFT JOINed, so it is null when the account is gone but the money moved. */
-  user: { userId: string; username: string; mobile: string } | null;
+  user: { userId: string; username: string; mobile?: string } | null;
   /** The DIRECTION of the movement. */
   type: 'CREDIT' | 'DEBIT';
   /** Which pocket moved. */
@@ -623,11 +622,13 @@ export interface TeamView {
   poolAvailablePaise: number; poolHeldPaise: number;
   /** What the held tokens are held for, and the sells on their way in. */
   poolExposure: PoolExposure;
+  /** Cash out and the pause after it (`toCashOut`, teamCashOut.js). */
+  cashOut?: CashOut;
   /** Team commission (Step 2e): mirrors `toSummary` in database/repositories/teamCommission.js — §5. */
   commission: {
-    teamId: string; buysPaise: number; sellsPaise: number; matchedPaise: number;
-    highPaise: number; paidPaise: number; owedPaise: number;
-    commissionPercent: number; supervisorSharePercent: number;
+    teamId: string; buysPaise: number; sellsPaise: number;
+    paidPaise: number; owedPaise: number;
+    depositPercent: number; withdrawalPercent: number; supervisorSharePercent: number;
   };
 }
 // Mirrors `toRequest` and POOL_DIRECTIONS in database/repositories/teamPools.js
@@ -673,6 +674,21 @@ export interface PoolExposure {
 }
 
 /** One line saying where a pool's held tokens are and what sells are bringing in. */
+/**
+ * A pool's cash out (owner, 2026-10-21): `toCashOut` in
+ * database/repositories/teamCashOut.js — §5. Buys only while active; nothing
+ * new until `pausedUntil`.
+ */
+export interface CashOut { active: boolean; startedAt: string | null; pausedUntil: string | null; pauseHours: number }
+
+/** The one line the admin's pool tables show for a cash out; '' when there is none. */
+export function cashOutLine(c: CashOut | undefined): string {
+  if (!c) return '';
+  if (c.active) return 'Cashing out: buy orders only';
+  if (c.pausedUntil) return `Paused after a cash out until ${new Date(c.pausedUntil).toLocaleString('en-IN')}`;
+  return '';
+}
+
 export function poolExposureLine(x: PoolExposure | undefined, tokens: (paise: number) => string): string {
   if (!x) return '';
   const parts = [`${tokens(x.heldOpenPaise)} in ${x.openBuys} open buy${x.openBuys === 1 ? '' : 's'}`];

@@ -34,7 +34,7 @@ const bad = (message, code = 'INVALID_BOARD') => Object.assign(new Error(message
 
 const COLUMNS = `board_key, name, kind, duration_min, anchor_hour_ist, merge_sec, equalizer_sec,
   close_sec, celebrate_sec, min_bet_paise, max_bet_paise, id_prefix, enabled, home_order,
-  created_at, updated_at`;
+  created_at, updated_at, demo_vip, demo_general`;
 
 /** Row → board. Stakes are whole rupees for the routes, paise kept beside them (trap 5). */
 export function toBoard(r) {
@@ -59,6 +59,8 @@ export function toBoard(r) {
     idPrefix: r.id_prefix,
     enabled: r.enabled === true,
     homeOrder: Number(r.home_order),
+    // The admin's demo results per profile, B and D, oldest first ('' = drawn).
+    demoResults: { VIP: r.demo_vip ?? '', GENERAL: r.demo_general ?? '' },
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -251,5 +253,84 @@ export async function setHomeOrder(keys) {
     const out = await client.query(`SELECT ${COLUMNS} FROM boards ORDER BY home_order, board_key`);
     return out.rows.map(toBoard);
   });
+}
+
+// ── Demo results the admin typed (owner, 2026-10-20) ─────────────────────────
+
+/** At most this many per board and profile: the analytics window (user-panel `ANALYTICS_WINDOW`). */
+export const DEMO_RESULTS_MAX = 1440;
+export const DEMO_AUDIENCES = Object.freeze(['VIP', 'GENERAL']);
+const DEMO_COLUMN = Object.freeze({ VIP: 'demo_vip', GENERAL: 'demo_general' });
+const DEMO_WORDS = Object.freeze({ B: 'B', BOMBAY: 'B', D: 'D', DELHI: 'D' });
+
+/**
+ * Typed demo results as stored: "B, D, d,BOMBAY delhi" → "BDDBD". Commas,
+ * spaces, new lines and semicolons all separate; B/D or the side's name, any
+ * case. Anything else is refused naming the entry and its place, so the admin
+ * can find it in 1,440 (§32 S29).
+ */
+export function parseDemoResults(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return '';
+  const tokens = raw.split(/[\s,;]+/).filter(Boolean);
+  if (tokens.length > DEMO_RESULTS_MAX) {
+    throw bad(`At most ${DEMO_RESULTS_MAX.toLocaleString('en-IN')} results; this has ${tokens.length.toLocaleString('en-IN')}.`, 'TOO_MANY_DEMO_RESULTS');
+  }
+  return tokens.map((t, i) => {
+    const side = DEMO_WORDS[t.toUpperCase()];
+    if (!side) throw bad(`Result ${i + 1} is "${t.slice(0, 20)}": use B (Bombay) or D (Delhi).`, 'INVALID_DEMO_RESULT');
+    return side;
+  }).join('');
+}
+
+/** Stored → the comma list the admin edits. */
+export const demoResultsText = (stored) => String(stored ?? '').split('').join(',');
+
+/** Save one board and profile's demo results (text as typed, or '' to go back to the drawn ones). */
+export async function setDemoResults(key, audience, text) {
+  if (!DEMO_AUDIENCES.includes(audience)) throw bad('The profile must be VIP or GENERAL.', 'UNKNOWN_AUDIENCE');
+  const stored = parseDemoResults(text);
+  const { rows } = await pgQuery(
+    `UPDATE boards SET ${DEMO_COLUMN[audience]} = $2 WHERE board_key = $1 RETURNING ${COLUMNS}`,
+    [String(key ?? ''), stored], 'boards_set_demo_results',
+  );
+  return toBoard(rows[0]);
+}
+
+/**
+ * A whole file of demo results, every board and profile at once: one line per
+ * board and profile, `<board key>,<VIP|GENERAL>,<B,D,…>`. A header line
+ * (`board,profile,…`), blank lines and lines starting with # are skipped.
+ * Every line is checked before anything is saved, and all are saved in one
+ * transaction, so a file with one bad line changes nothing.
+ * @returns {Promise<Array<{key:string, audience:string, count:number}>>}
+ */
+export async function importDemoResults(fileText) {
+  const lines = String(fileText ?? '').split(/\r?\n/);
+  const boardsNow = new Map((await listBoards()).map((b) => [b.key, b]));
+  const plan = [];
+  const seen = new Set();
+  lines.forEach((line, i) => {
+    const t = line.trim();
+    if (!t || t.startsWith('#') || /^board\s*[,;]/i.test(t)) return;
+    const [keyRaw, audRaw, ...rest] = t.split(/\s*[,;]\s*/);
+    const key = String(keyRaw ?? '').replace(/^"|"$/g, '').trim().toUpperCase();
+    const audience = String(audRaw ?? '').replace(/^"|"$/g, '').trim().toUpperCase();
+    if (!boardsNow.has(key)) throw bad(`Line ${i + 1}: there is no board "${key}". Use the keys in the template.`, 'BOARD_NOT_FOUND');
+    if (!DEMO_AUDIENCES.includes(audience)) throw bad(`Line ${i + 1}: the profile must be VIP or GENERAL, not "${audience}".`, 'UNKNOWN_AUDIENCE');
+    if (seen.has(`${key}:${audience}`)) throw bad(`Line ${i + 1}: ${key} ${audience} appears twice.`, 'DUPLICATE_DEMO_LINE');
+    seen.add(`${key}:${audience}`);
+    let stored;
+    try { stored = parseDemoResults(rest.join(',').replace(/"/g, '')); }
+    catch (e) { throw bad(`Line ${i + 1} (${key} ${audience}): ${e.message}`, e.code); }
+    plan.push({ key, audience, stored });
+  });
+  if (!plan.length) throw bad('The file has no board lines. Start from the template.', 'EMPTY_DEMO_FILE');
+  await withTransaction(async (client) => {
+    for (const p of plan) {
+      await client.query(`UPDATE boards SET ${DEMO_COLUMN[p.audience]} = $2 WHERE board_key = $1`, [p.key, p.stored]);
+    }
+  });
+  return plan.map((p) => ({ key: p.key, audience: p.audience, count: p.stored.length }));
 }
 

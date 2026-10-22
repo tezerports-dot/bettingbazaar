@@ -1,10 +1,10 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // The staff table (owner, 2026-10-14): every staff account — full admins,
-// sub-admins, queue managers, mediators — one row each, from
+// sub-admins, mediators — one row each, from
 // `GET /api/admin/staff` (adminDirectory.listStaff). The role tabs and sort
 // keys are the server's. A row opens the account's own page (StaffProfile),
-// where its areas, queue-manager access and authenticator are changed on the
+// where its areas and authenticator are changed on the
 // page itself. Support staff are sub-admins holding the chat and support
 // areas; the Areas column names them. Full admin only, as every route here.
 import React, { useCallback, useEffect, useState } from 'react';
@@ -16,7 +16,7 @@ import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
 import { DEFAULT_PERMISSIONS, type StaffPermissionCatalog } from '../../utils/permissions';
-import api, { downloadCsv, cleanParams } from '../../services/api';
+import api, { downloadFile, cleanParams } from '../../services/api';
 import type { StaffRole, StaffRow } from '../../types';
 import { PermissionPicker } from './PermissionPicker';
 import { STAFF_ROLE_LABEL } from './staffLabels';
@@ -46,12 +46,12 @@ export const StaffList: React.FC = () => {
   const [createProblem, setCreateProblem] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // Every staff account the filters match (`GET /api/admin/staff.csv`).
-  const exportCsv = async () => {
+  // Every staff account the filters match (`GET /api/admin/staff.xlsx`).
+  const exportExcel = async () => {
     try {
-      await downloadCsv('/api/admin/staff.csv', cleanParams({
+      await downloadFile('/api/admin/staff.xlsx', cleanParams({
         search: debouncedSearch, role: role === 'ALL' ? undefined : role, sort: sort.key, dir: sort.dir,
-      }), 'staff.csv');
+      }), 'staff.xlsx');
     } catch { toast.error('Export failed'); }
   };
 
@@ -146,7 +146,7 @@ export const StaffList: React.FC = () => {
         }))}
         search={{ value: search, onChange: (v) => { setSearch(v); setPage(1); }, placeholder: 'Search name, mobile, ID…' }}
         actions={[
-          { label: 'Download CSV', icon: Download, onClick: () => void exportCsv() },
+          { label: 'Download Excel', icon: Download, onClick: () => void exportExcel() },
           { label: creating ? 'Close' : 'Create Sub-Admin', icon: UserPlus, primary: !creating, onClick: () => setCreating((c) => !c) },
         ]}
       />

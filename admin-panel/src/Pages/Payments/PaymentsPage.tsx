@@ -24,7 +24,7 @@ import { Money, Toolbar } from '../../components/design';
 import { usePermissions } from '../../hooks/usePermission';
 import { MerchantAccountsPanel } from '../Merchants/MerchantAccountsPanel';
 import { PoolRequests } from './PoolRequests';
-import { poolExposureLine, type TeamView } from '../../types';
+import { poolExposureLine, cashOutLine, type TeamView } from '../../types';
 
 const tokens = (paise: number) => ((Number(paise) || 0) / 100).toLocaleString('en-IN');
 
@@ -56,7 +56,15 @@ const TeamPools: React.FC<{ reloadKey: number }> = ({ reloadKey }) => {
         </div>
       ),
     },
-    { key: 'available', label: 'Pool', numeric: true, render: (t) => <Money value={`${tokens(t.poolAvailablePaise)} tokens`} /> },
+    {
+      key: 'available', label: 'Pool', numeric: true,
+      render: (t) => (
+        <div>
+          <Money value={`${tokens(t.poolAvailablePaise)} tokens`} />
+          {cashOutLine(t.cashOut) && <p className="text-xs text-amber-400">{cashOutLine(t.cashOut)}</p>}
+        </div>
+      ),
+    },
     {
       key: 'held', label: 'Held', numeric: true,
       render: (t) => (

@@ -3,8 +3,9 @@
  * Team token pools (owner, 2026-10-02 — PROJECT_STATUS §3.10, Step 2b).
  *
  * A TEAM holds tokens; its members hold none. A supervisor asks the platform to
- * sell tokens into a team's pool (a BUY request) or to buy pool tokens back (a
- * SELL request), and an admin fulfils the request, recording what was paid.
+ * sell tokens into a team's pool (a BUY request), and an admin fulfils the
+ * request, recording what was paid — or the chain does, for USDT. Tokens never
+ * go back to the platform (owner, 2026-10-21).
  *
  * ── One owner, one transaction ───────────────────────────────────────────────
  * This module is the only writer of `team_pools`, `team_pool_entries` and the
@@ -15,8 +16,8 @@
  * of the pools.
  *
  * ── Guards are writes, not reads ─────────────────────────────────────────────
- * A buyback takes tokens only if the pool's `available` covers them, and that
- * test is the UPDATE's own WHERE under the row lock. Two buybacks racing for
+ * An order's hold takes tokens only if the pool's `available` covers them, and
+ * that test is the UPDATE's own WHERE under the row lock. Two holds racing for
  * the same tokens serialise on the row, and the second learns the answer from
  * whether its write landed (§32 S6, trap 18). A request is fulfilled at most
  * once because the status flip is `WHERE status = 'PENDING'` in the same
@@ -30,7 +31,9 @@ import { creditBuyWithin, consumeWithdrawalStakeWithin, returnSettledStakeWithin
 import { recordConsideration, assertRecordable, DIRECTIONS } from './adminTokenConsiderations.js';
 import { creditFirstDepositBonusWithin } from './promo.js';
 
-export const POOL_DIRECTIONS = Object.freeze({ BUY: 'BUY', SELL: 'SELL' });
+// A pool only BUYS from the platform: merchants never sell tokens back to it
+// (owner, 2026-10-21).
+export const POOL_DIRECTIONS = Object.freeze({ BUY: 'BUY' });
 
 const toNum = (v) => Number(v ?? 0);
 const newRequestId = () => `tpr_${randomBytes(10).toString('hex')}`;
@@ -82,14 +85,37 @@ function toRequest(row) {
     decidedAt: row.decided_at,
     decisionNote: row.decision_note,
     createdAt: row.created_at,
+    // A USDT buy (`usdtDeposits.openPoolUsdtBuy`): where to pay, how much, by
+    // when, and what has arrived. Null on a request an admin fulfils.
+    usdt: row.usdt_address ? {
+      chain: 'BEP20', address: row.usdt_address,
+      amount: toNum(row.usdt_micro) / 1e6, received: toNum(row.usdt_received_micro) / 1e6,
+      rate: Number(row.usdt_rate), expiresAt: row.usdt_expires_at,
+    } : null,
   };
 }
 
 const REQUEST_SELECT = `
-  SELECT r.*, t.name AS team_name, t.kind AS team_kind, s.name AS supervisor_name
+  SELECT r.*, t.name AS team_name, t.kind AS team_kind, s.name AS supervisor_name,
+         ua.address AS usdt_address, ua.usdt_micro, ua.rate_used AS usdt_rate, ua.expires_at AS usdt_expires_at,
+         (SELECT COALESCE(SUM(ut.amount_micro), 0) FROM pool_usdt_transfers ut WHERE ut.request_id = r.request_id) AS usdt_received_micro
     FROM team_pool_requests r
     JOIN teams t ON t.team_id = r.team_id
-    JOIN merchants s ON s.merchant_id = r.supervisor_id`;
+    JOIN merchants s ON s.merchant_id = r.supervisor_id
+    LEFT JOIN pool_usdt_addresses ua ON ua.request_id = r.request_id`;
+
+/**
+ * What a pool has bought from the platform, in tokens: its FULFILLED requests
+ * (owner, 2026-10-21: shown on the merchant's pool page).
+ */
+export async function poolTradeTotals(teamId) {
+  const { rows } = await pgQuery(
+    `SELECT COALESCE(SUM(token_amount_paise), 0) AS bought, COUNT(*)::int AS buys
+       FROM team_pool_requests WHERE team_id = $1 AND status = 'FULFILLED'`,
+    [String(teamId)], 'team_pool_trade_totals');
+  const r = rows[0];
+  return { boughtPaise: toNum(r.bought), buys: r.buys };
+}
 
 /** A team's pool. A team that has never traded holds nothing. */
 export async function getPool(teamId) {
@@ -150,6 +176,61 @@ export function toPoolExposure(row) {
   };
 }
 
+// ── How full a pool is, and what its holder can pay out ──────────────────────
+//
+// The owner's words (2026-10-21): a pool's SIZE is the security deposit plus
+// the bonus, and orders go by how much of it is consumed and how much is left.
+// Size = every token the pool was given, less every token taken from it for
+// good: the platform sales (and any old buyback), the commission, less the
+// dispute compensation paid out of it. What a buy spends and a sell brings
+// back moves tokens between the pool and the players, not the size. So:
+//   left      = available (the tokens a new buy can be held from);
+//   consumed  = size − available − held (sold to players for cash);
+//   sell room = consumed − the sells it is paying or has just paid
+//               (PROCESSING, PAID): the cash from buys not yet spent on sells.
+// A READ for ordering and display; a buy is still admitted only by its hold.
+
+/** The pool entries that change a pool's size. */
+export const POOL_SIZE_KINDS = Object.freeze(['ADMIN_SALE', 'ADMIN_BUYBACK', 'COMMISSION', 'DISPUTE_COMPENSATION']);
+/** A sell its holder is paying, or has paid inside its hold window. */
+export const SELL_OWED_STATES = Object.freeze(['PROCESSING', 'PAID']);
+
+/**
+ * `size_paise` and `sells_owed_paise` for the team named by `teamExpr` (a
+ * column or parameter the caller writes, e.g. `t.team_id`), for a LATERAL join.
+ */
+export function poolStandingSql(teamExpr) {
+  return `
+    SELECT COALESCE((SELECT sum(e.available_delta_paise) FROM team_pool_entries e
+                      WHERE e.team_id = ${teamExpr} AND e.kind IN (${sqlList(POOL_SIZE_KINDS)})), 0) AS size_paise,
+           COALESCE((SELECT sum(o.token_amount_paise) FROM order_states o
+                      WHERE o.team_id = ${teamExpr} AND o.order_type = 'WITHDRAWAL'
+                        AND o.state IN (${sqlList(SELL_OWED_STATES)})), 0) AS sells_owed_paise`;
+}
+
+/** Size, left, held, consumed and sell room, from `poolStandingSql` and the pool row (trap 5). */
+export function toPoolStanding({ size_paise, sells_owed_paise } = {}, { available_paise, held_paise } = {}) {
+  const sizePaise = toNum(size_paise);
+  const leftPaise = toNum(available_paise);
+  const heldPaise = toNum(held_paise);
+  const consumedPaise = Math.max(0, sizePaise - leftPaise - heldPaise);
+  const sellsOwedPaise = toNum(sells_owed_paise);
+  return {
+    sizePaise, leftPaise, heldPaise, consumedPaise, sellsOwedPaise,
+    sellRoomPaise: Math.max(0, consumedPaise - sellsOwedPaise),
+    leftPercent: sizePaise > 0 ? Math.round((leftPaise / sizePaise) * 1000) / 10 : 0,
+  };
+}
+
+/** One team's standing. */
+export async function poolStanding(teamId) {
+  const { rows } = await pgQuery(
+    `SELECT s.*, p.available_paise, p.held_paise
+       FROM (${poolStandingSql('$1')}) s LEFT JOIN team_pools p ON p.team_id = $1`,
+    [String(teamId)], 'team_pool_standing');
+  return toPoolStanding(rows[0], rows[0]);
+}
+
 /** One member's own orders, split the same way. */
 export async function memberExposure(merchantId) {
   const { rows } = await pgQuery(poolExposureSql('merchant_id = $1'), [String(merchantId)], 'team_pool_member_exposure');
@@ -168,59 +249,73 @@ export async function listEntries(teamId, { limit = 50 } = {}) {
 // ── Requests ─────────────────────────────────────────────────────────────────
 
 /**
- * A supervisor asks for a sale into, or a buyback from, one of THEIR teams —
- * or a merchant account's owner for its own pool (owner, 2026-10-11): the
- * requester is written to `supervisor_id` either way. Scoped in the WHERE to
- * the team the requester supervises or owns, so another's team id matches
- * nothing (trap 16). One pending request per team and direction — the partial
- * unique index refuses a second.
+ * A supervisor asks for a sale into one of THEIR teams' pools — or a merchant
+ * account's owner for its own pool (owner, 2026-10-11): the requester is
+ * written to `supervisor_id` either way. Scoped in the WHERE to the team the
+ * requester supervises or owns, so another's team id matches nothing (trap
+ * 16). One pending request per team — the partial unique index refuses a
+ * second.
  */
-export async function createRequest({ teamId, supervisorId, direction, tokenAmountPaise, note = null }) {
+export async function createRequest(input) {
+  return withTransaction((client) => createRequestWithin(client, input));
+}
+
+/**
+ * `createRequest` inside the caller's transaction: a USDT pool buy writes its
+ * address in the same commit (`usdtDeposits.openPoolUsdtBuy`).
+ */
+export async function createRequestWithin(client, { teamId, supervisorId, direction = POOL_DIRECTIONS.BUY, tokenAmountPaise, note = null }) {
   if (!Object.values(POOL_DIRECTIONS).includes(direction)) {
-    throw Object.assign(new Error('direction must be BUY or SELL.'), { status: 400 });
+    throw Object.assign(new Error('Pool tokens are only bought from the platform, never sold back to it.'),
+      { status: 400, code: 'POOL_BUY_ONLY' });
   }
   const amount = Number(tokenAmountPaise);
   if (!Number.isInteger(amount) || amount <= 0) {
     throw Object.assign(new Error('Enter a whole number of tokens greater than zero.'), { status: 400 });
   }
   const cleanNote = note === null || note === undefined ? null : String(note).trim().slice(0, 500) || null;
-  return withTransaction(async (client) => {
-    const { rows: t } = await client.query(
-      'SELECT team_id FROM teams WHERE team_id = $1 AND (supervisor_id = $2 OR owner_merchant_id = $2)',
-      [String(teamId), String(supervisorId)]);
-    if (!t[0]) return { ok: false, reason: 'team_not_found' };
-    if (direction === POOL_DIRECTIONS.SELL) {
-      // Asked now so the supervisor hears it now; asked AGAIN, as a write, at
-      // fulfilment — this read is a courtesy, never the guard.
-      const { rows: p } = await client.query(
-        'SELECT available_paise FROM team_pools WHERE team_id = $1', [String(teamId)]);
-      if (toNum(p[0]?.available_paise) < amount) return { ok: false, reason: 'pool_short' };
+  // Locked: a cash out (`teamCashOut.startCashOut`) takes the same row, so a
+  // pool never asks for tokens while it is giving them up (owner, 2026-10-21).
+  const { rows: t } = await client.query(
+    `SELECT team_id, cash_out_started_at IS NOT NULL AS cashing_out,
+            (paused_until IS NOT NULL AND paused_until > now()) AS paused, paused_until
+       FROM teams WHERE team_id = $1 AND (supervisor_id = $2 OR owner_merchant_id = $2) FOR UPDATE`,
+    [String(teamId), String(supervisorId)]);
+  if (!t[0]) return { ok: false, reason: 'team_not_found' };
+  if (t[0].cashing_out) return { ok: false, reason: 'cash_out_running' };
+  if (t[0].paused) return { ok: false, reason: 'cash_out_paused', pausedUntil: new Date(t[0].paused_until).toISOString() };
+  const requestId = newRequestId();
+  try {
+    await client.query('SAVEPOINT pool_request');
+    await client.query(
+      `INSERT INTO team_pool_requests (request_id, team_id, supervisor_id, direction, token_amount_paise, note)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [requestId, String(teamId), String(supervisorId), direction, amount, cleanNote]);
+  } catch (e) {
+    if (e?.code === '23505') {
+      await client.query('ROLLBACK TO SAVEPOINT pool_request');
+      return { ok: false, reason: 'request_pending' };
     }
-    const requestId = newRequestId();
-    try {
-      await client.query('SAVEPOINT pool_request');
-      await client.query(
-        `INSERT INTO team_pool_requests (request_id, team_id, supervisor_id, direction, token_amount_paise, note)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [requestId, String(teamId), String(supervisorId), direction, amount, cleanNote]);
-    } catch (e) {
-      if (e?.code === '23505') {
-        await client.query('ROLLBACK TO SAVEPOINT pool_request');
-        return { ok: false, reason: 'request_pending' };
-      }
-      throw e;
-    }
-    return { ok: true, requestId };
-  });
+    throw e;
+  }
+  return { ok: true, requestId };
 }
 
-/** A supervisor withdraws their own pending request. */
+/**
+ * A supervisor withdraws their own pending request. A USDT buy that has
+ * received anything is no longer theirs to withdraw: the coins are on chain,
+ * and it completes when they cover the price or goes to an admin.
+ */
 export async function cancelRequest({ requestId, supervisorId }) {
   const { rowCount } = await pgQuery(
     `UPDATE team_pool_requests SET status = 'CANCELLED', decided_by = $2, decided_at = now()
-      WHERE request_id = $1 AND supervisor_id = $2 AND status = 'PENDING'`,
+      WHERE request_id = $1 AND supervisor_id = $2 AND status = 'PENDING'
+        AND NOT EXISTS (SELECT 1 FROM pool_usdt_transfers t WHERE t.request_id = team_pool_requests.request_id)`,
     [String(requestId), String(supervisorId)], 'team_pool_request_cancel');
-  return rowCount ? { ok: true } : { ok: false, reason: 'request_not_pending' };
+  if (rowCount) return { ok: true };
+  const { rows } = await pgQuery(
+    'SELECT 1 FROM pool_usdt_transfers WHERE request_id = $1 LIMIT 1', [String(requestId)], 'team_pool_request_usdt_received');
+  return { ok: false, reason: rows[0] ? 'usdt_received' : 'request_not_pending' };
 }
 
 export async function getRequest(requestId) {
@@ -253,16 +348,14 @@ export async function rejectRequest({ requestId, actor, reason = null }) {
 }
 
 /**
- * An admin fulfils a pending request: tokens move between the platform and the
+ * An admin fulfils a pending request: tokens move from the platform into the
  * team's pool, and what was paid is recorded — all in one transaction.
  *
  * `consideration` is `{ currency, fiatAmountMinor, rateUsed }`, already
- * resolved by the route. A BUY is money RECEIVED by the platform; a SELL is
- * money PAID, in rupees only (the CHECK on the considerations table says so).
+ * resolved by the route: money RECEIVED by the platform.
  *
  * Returns `{ ok, pool }`, or `{ ok: false, reason }` with nothing moved:
  *   request_not_pending — already fulfilled, rejected or cancelled
- *   pool_short          — a SELL larger than the pool's available tokens
  *   supply_cap_exceeded — a BUY the platform's holding cannot cover
  */
 export async function fulfilRequest({ requestId, actor, consideration }) {
@@ -270,7 +363,7 @@ export async function fulfilRequest({ requestId, actor, consideration }) {
   // Refused before anything is locked, with the operator's own wording.
   const preview = await getRequest(requestId);
   if (!preview) return { ok: false, reason: 'request_not_found' };
-  const direction = preview.direction === POOL_DIRECTIONS.BUY ? DIRECTIONS.RECEIVED : DIRECTIONS.PAID;
+  const direction = DIRECTIONS.RECEIVED;
   assertRecordable({
     movementId, merchantId: preview.supervisorId, direction,
     tokenAmountPaise: preview.tokenAmountPaise, recordedBy: actor, ...consideration,
@@ -284,42 +377,51 @@ export async function fulfilRequest({ requestId, actor, consideration }) {
   }
 }
 
+/**
+ * `fulfilRequest` inside the caller's transaction (the USDT watcher's credit,
+ * `usdtDeposits.creditPoolUsdtBuyWithin`). A BUY only. Throws `PoolRefused`
+ * on any refusal, so the caller's transaction unwinds with it.
+ */
+export async function fulfilBuyWithin(client, { requestId, supervisorId, tokenAmountPaise, actor, consideration }) {
+  const movementId = `team_pool_${requestId}`;
+  assertRecordable({
+    movementId, merchantId: supervisorId, direction: DIRECTIONS.RECEIVED,
+    tokenAmountPaise, recordedBy: actor, ...consideration,
+  });
+  return fulfilWithin(client, { requestId, actor, consideration, movementId, direction: DIRECTIONS.RECEIVED });
+}
+
 async function fulfilWithin(client, { requestId, actor, consideration, movementId, direction }) {
   // The status flip IS the once-only guard: a second fulfilment, racing or
-  // redelivered, matches no PENDING row and moves nothing.
+  // redelivered, matches no PENDING row and moves nothing. A buyback asked
+  // before they were removed (a test server's) is never fulfilled as a sale.
   const { rows } = await client.query(
     `UPDATE team_pool_requests
         SET status = 'FULFILLED', decided_by = $2, decided_at = now()
-      WHERE request_id = $1 AND status = 'PENDING'
-      RETURNING team_id, supervisor_id, direction, token_amount_paise`,
+      WHERE request_id = $1 AND status = 'PENDING' AND direction = 'BUY'
+      RETURNING team_id, supervisor_id, token_amount_paise`,
     [String(requestId), String(actor)]);
   const req = rows[0];
   if (!req) throw new Refused('request_not_pending');
   const teamId = req.team_id;
   const amount = toNum(req.token_amount_paise);
-  const isBuy = req.direction === POOL_DIRECTIONS.BUY;
 
   await client.query(
     'INSERT INTO team_pools (team_id) VALUES ($1) ON CONFLICT (team_id) DO NOTHING', [teamId]);
-  // A sale adds; a buyback takes only what is available, decided by the
-  // write itself.
   const { rows: pool } = await client.query(
     `UPDATE team_pools
         SET available_paise = available_paise + $2, updated_at = now()
-      WHERE team_id = $1 AND available_paise + $2 >= 0
+      WHERE team_id = $1
       RETURNING available_paise, held_paise`,
-    [teamId, isBuy ? amount : -amount]);
-  if (!pool[0]) throw new Refused('pool_short');
+    [teamId, amount]);
 
   const moved = await postMovement({
     client,
     movementId,
-    operation: isBuy ? 'TEAM_POOL_SALE' : 'TEAM_POOL_BUYBACK',
-    legs: isBuy
-      ? { [ACCOUNTS.TOKEN_SUPPLY]: -amount, [ACCOUNTS.TEAM_FLOAT]: amount }
-      : { [ACCOUNTS.TEAM_FLOAT]: -amount, [ACCOUNTS.TOKEN_SUPPLY]: amount },
+    operation: 'TEAM_POOL_SALE',
+    legs: { [ACCOUNTS.TOKEN_SUPPLY]: -amount, [ACCOUNTS.TEAM_FLOAT]: amount },
     actor: String(actor), refModel: 'Team', refId: teamId,
-    reason: isBuy ? 'Tokens sold into a team pool' : 'Team pool tokens bought back',
+    reason: 'Tokens sold into a team pool',
   });
   if (!moved.ok) throw new Refused(moved.reason);
   // The movement already exists, so this request's money already moved —
@@ -332,7 +434,7 @@ async function fulfilWithin(client, { requestId, actor, consideration, movementI
        (tx_id, team_id, kind, available_delta_paise, held_delta_paise,
         available_after_paise, held_after_paise, actor, ref_id)
      VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8)`,
-    [movementId, teamId, isBuy ? 'ADMIN_SALE' : 'ADMIN_BUYBACK', isBuy ? amount : -amount,
+    [movementId, teamId, 'ADMIN_SALE', amount,
       toNum(pool[0].available_paise), toNum(pool[0].held_paise), String(actor), String(requestId)]);
 
   const { consideration: recorded } = await recordConsideration({
@@ -436,7 +538,7 @@ export async function releaseBuyHoldWithin(client, orderId, { actor = 'system', 
 
 /**
  * Take an order off its team, INSIDE the caller's transaction — the requeue
- * that puts it back for routing (a member declined it, or a queue manager
+ * that puts it back for routing (a member declined it, or an admin
  * moved it). A buy's hold comes off first, while the order still names the
  * pool it is in; then the team is cleared, so the next one is decided by
  * routing. One commit: the order is never found queued while still holding a

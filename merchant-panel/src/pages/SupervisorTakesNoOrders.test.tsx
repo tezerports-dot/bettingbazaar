@@ -26,6 +26,7 @@ vi.mock('../services/api', () => ({
     getStats: vi.fn().mockResolvedValue({}),
     getEarnings: vi.fn().mockResolvedValue({ earnings: null }),
     getWeeklyEarnings: vi.fn().mockResolvedValue({ weekly: [] }),
+    getBusinessLedger: vi.fn().mockRejectedValue(new Error('not in this test')),
     toggleOnlineStatus: vi.fn(),
     updatePreferences: vi.fn(),
     updateProfile: vi.fn(),

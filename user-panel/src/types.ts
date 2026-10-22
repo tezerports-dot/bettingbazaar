@@ -30,6 +30,8 @@ export interface Board {
   maxBet: number;
   homeOrder: number;
   idPrefix: string;
+  /** The admin's demo results per profile, 'B'/'D' oldest first; '' = drawn (owner, 2026-10-20). */
+  demoResults?: { VIP: string; GENERAL: string };
 }
 
 export enum BettingSide {
@@ -72,7 +74,6 @@ export interface User {
   profilePic?: string;
   isAdmin?: boolean;
   isMerchant?: boolean;
-  isQueueManager?: boolean;
   isMediator?: boolean;
   status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED';
 
@@ -84,7 +85,10 @@ export interface User {
     accountNumber: string;
     ifscCode: string;
     bankName: string;
+    upiId?: string;
   };
+  /** Bank details and UPI ID fixed until then (backend schema.sql "PAYOUT DETAILS LOCK"). */
+  payoutDetailsLockedUntil?: string | null;
 
   // 'NONE', a board's key, or 'BOTH' (= every board); the server's
   // `users_phantom_access_known` trigger holds it to an existing board.

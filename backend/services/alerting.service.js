@@ -13,6 +13,7 @@
 // page — full jitter so many instances alerting at once don't retry in lockstep.
 import { fetchWithRetry } from '../utils/retry.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { logAlert } from './errorLog.service.js';
 
 const COOLDOWN_MS = 10 * 60 * 1000; // same alert key at most once per 10 min
 const lastSent = new Map();         // key -> ts (per-instance; duplicates across instances are acceptable for v1)
@@ -32,6 +33,9 @@ async function getWebhookUrl() {
  * @param {object} details small JSON-safe context (ids, error message)
  */
 export async function sendAlert(key, title, details = {}) {
+  // Every alert is in the error log (Admin › Error Logs) as CRITICAL, webhook
+  // or not and cooldown or not: the log counts repeats, the webhook pages once.
+  logAlert(key, title, details);
   try {
     const now = Date.now();
     if ((lastSent.get(key) || 0) + COOLDOWN_MS > now) return; // cooldown

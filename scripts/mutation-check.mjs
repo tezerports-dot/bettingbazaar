@@ -423,9 +423,9 @@ const MUTATIONS = [
     id: 'M90', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
     test: 'backend/tests/routes/merchantOrderPrivacyRoutes.test.js',
     why: 'the allowlist admits the player phone number, which the panel then made searchable',
-    from: `  'canDecline',
+    from: `  'payoutUpiLink',
 ]);`,
-    to: `  'canDecline', 'userPhone',
+    to: `  'payoutUpiLink', 'userPhone',
 ]);`,
   },
   {
@@ -623,8 +623,8 @@ const MUTATIONS = [
     id: 'M130', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/retryAndMatchPg.test.js',
     why: 'a retry is created at ordinary rank, so the whole point of retrying — going before the first-time orders — silently does not happen',
-    from: `  const attempt = { priority: 1, retryOf: original.orderId };`,
-    to: `  const attempt = { priority: 0, retryOf: original.orderId };`,
+    from: `  const attempt = { priority: 1, retryOf: original.orderId, payMethod: original.buyPayMethod ?? undefined };`,
+    to: `  const attempt = { priority: 0, retryOf: original.orderId, payMethod: original.buyPayMethod ?? undefined };`,
   },
   {
     id: 'M136', file: 'database/repositories/orders.record.js', config: PG,
@@ -752,9 +752,9 @@ const MUTATIONS = [
     id: 'M156', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
     why: 'the one order insert stops writing the tamper tag, so every live order is untagged and the guard mounted on every order route checks nothing',
-    from: `    paymentMode, inrRouting, usdtChain, usdtPayAddress ? String(usdtPayAddress).toLowerCase() : null,
+    from: `    paymentMode, inrRouting, payMethod, usdtChain, usdtPayAddress ? String(usdtPayAddress).toLowerCase() : null,
     deriveOrderHmac(orderId)];`,
-    to: `    paymentMode, inrRouting, usdtChain, usdtPayAddress ? String(usdtPayAddress).toLowerCase() : null,
+    to: `    paymentMode, inrRouting, payMethod, usdtChain, usdtPayAddress ? String(usdtPayAddress).toLowerCase() : null,
     null];`,
   },
   {
@@ -1098,29 +1098,24 @@ const MUTATIONS = [
   // M201 deleted with telegram.routes.js; MS2 guards the same check in the Mini App.
   // M202 (Aadhaar recovery took a contact card with no user_id) deleted
   // 2026-10-02 with the recovery service. M201 still guards the same check on
-  // the one contact-share path that remains.  // ── A referral disbursal reserves its budget before it pays (R6) ────────
+  // the one contact-share path that remains.  // ── A referral payout run stays within its amount (R6; budget removed 2026-10-20) ──
   {
     id: 'M203', file: 'backend/domains/referral/referral.service.js', config: UNIT,
-    test: 'backend/tests/unit/referralDisbursalBudget.test.js',
-    why: 'a disbursal whose budget reservation was refused pays anyway, so the programme ceiling is crossed',
-    from: `  if (!reservation.ok) {`,
-    to: `  if (false) {`,
+    test: 'backend/tests/unit/referralAutopay.test.js',
+    why: 'a "Pay now" whose amount is spent keeps paying, so the run pays past what the admin entered',
+    from: `      if (!reserved.ok) break;`,
+    to: `      if (false) break;`,
   },
   {
     id: 'M204', file: 'database/repositories/referrals.js', config: PG,
     test: 'database/tests/newDomains.test.js',
-    why: 'returning unspent budget can drive the drawn total below zero, inventing budget',
-    from: `WHERE programme_key = $1 AND disbursed_paise - $2 >= 0`,
-    to: `WHERE programme_key = $1`,
+    why: 'concurrent payments against one run each pass on their own count, so a run overspends its amount',
+    from: `        AND spent_paise + $2 <= pool_paise`,
+    to: ``,
   },  // ── Commission recorded is commission delivered; one pass at a time (R6) ─
   // ── Queue writes are gated on a permission, not a tier (R6) ──────────────
-  {
-    id: 'M207', file: 'backend/routes/admin/_adminShared.js', config: PG,
-    test: 'backend/tests/routes/queueWritePermissionPg.test.js',
-    why: 'any sub-admin, whatever they hold, can reassign a player\'s order to any merchant or edit the merchant pool',
-    from: `    return byPermission(req, res, next);`,
-    to: `    return next();`,
-  },
+  // M207 (the queue-manager gate's permission fallback) deleted with the role
+  // (owner, 2026-10-21): every queue route is `hasPermission` alone.
   {
     id: 'M208', file: 'database/repositories/casino.core.js', config: PG,
     test: 'database/tests/casinoWinNeedsBetPg.test.js',
@@ -1289,8 +1284,14 @@ const MUTATIONS = [
     id: 'M230', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
     test: 'backend/tests/routes/staffPermissionsPg.test.js',
     why: 'an area is quietly made full-admin-only: a sub-admin holding it is refused, and the list says nothing',
-    from: `router.get('/phantom-agents', authenticate, hasPermission('canManagePhantomAgents'),`,
-    to: `router.get('/phantom-agents', authenticate, isAdmin,`,
+    // The route file no longer imports isAdmin, so the mutant imports it too
+    // (a mutant that cannot load is NOT MEASURED, never a verdict).
+    edits: [
+      [`  authenticate, express, hasPermission,\n} from './_adminShared.js';`,
+        `  authenticate, express, hasPermission, isAdmin,\n} from './_adminShared.js';`],
+      [`router.get('/phantom-agents', authenticate, hasPermission('canManagePhantomAgents'),`,
+        `router.get('/phantom-agents', authenticate, isAdmin,`],
+    ],
   },
   // ── Point 3 of the PR #198 verification (2026-10-01) ─────────────────────
   {
@@ -1328,8 +1329,8 @@ const MUTATIONS = [
   {
     id: 'M242', file: 'backend/domains/payment/paymentOrder.routes.js', config: PG,
     test: 'backend/tests/routes/queueWritePermissionPg.test.js',
-    why: "a queue manager's one screen cannot load its own queue",
-    from: `router.get('/payment-queue', authenticate, queueManagerOrPermission('canManageMerchants'),`,
+    why: "a staff account with the merchants area cannot load the payment queue",
+    from: `router.get('/payment-queue', authenticate, hasPermission('canManageMerchants'),`,
     to: `router.get('/payment-queue', authenticate, hasPermission('canViewTransactions'),`,
   },
   // ── Staff authority on STAFF rows only; a deleted account is closed (2026-10-01) ──
@@ -1337,16 +1338,10 @@ const MUTATIONS = [
     id: 'M243', file: 'database/schema.sql', config: PG,
     test: 'backend/tests/routes/adminUsersRoutes.test.js',
     why: 'a staff flag can be written onto a PLAYER row, and that player\'s own session carries it',
-    from: `CHECK (account_type = 'STAFF' OR NOT (is_admin OR is_sub_admin OR is_queue_manager OR is_mediator));`,
+    from: `CHECK (account_type = 'STAFF' OR NOT (is_admin OR is_sub_admin OR is_mediator));`,
     to: `CHECK (TRUE);`,
   },
-  {
-    id: 'M244', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
-    test: 'backend/tests/routes/adminUsersRoutes.test.js',
-    why: 'the queue-manager grant accepts a PLAYER id and the admin is not told why it failed',
-    from: `if (target.accountType !== 'STAFF') {`,
-    to: `if (false) {`,
-  },
+  // M244 (the queue-manager grant) deleted with the role (owner, 2026-10-21).
   {
     id: 'M245', file: 'database/repositories/users.js', config: PG,
     test: 'backend/tests/routes/closedAccountPg.test.js',
@@ -1655,9 +1650,9 @@ const MUTATIONS = [
   {
     id: 'M288', file: 'database/repositories/teamPools.js', config: PG,
     test: 'database/tests/teamPoolsPg.test.js',
-    why: 'a buyback larger than the pool is attempted anyway, and the platform pays for tokens the team does not hold',
-    from: `      WHERE team_id = $1 AND available_paise + $2 >= 0`,
-    to: `      WHERE team_id = $1`,
+    why: 'a merchant asks the platform to buy pool tokens back, which the owner removed (2026-10-21)',
+    from: `export const POOL_DIRECTIONS = Object.freeze({ BUY: 'BUY' });`,
+    to: `export const POOL_DIRECTIONS = Object.freeze({ BUY: 'BUY', SELL: 'SELL' });`,
   },
   {
     id: 'M289', file: 'database/repositories/teamPools.js', config: PG,
@@ -1670,8 +1665,8 @@ const MUTATIONS = [
     id: 'M290', file: 'database/repositories/teamPools.js', config: PG,
     test: 'database/tests/teamPoolsPg.test.js',
     why: "a supervisor can ask for tokens into another supervisor's team",
-    from: `'SELECT team_id FROM teams WHERE team_id = $1 AND (supervisor_id = $2 OR owner_merchant_id = $2)',`,
-    to: `'SELECT team_id FROM teams WHERE team_id = $1 OR (supervisor_id = $2 OR owner_merchant_id = $2)',`,
+    from: `FROM teams WHERE team_id = $1 AND (supervisor_id = $2 OR owner_merchant_id = $2) FOR UPDATE\``,
+    to: `FROM teams WHERE team_id = $1 OR (supervisor_id = $2 OR owner_merchant_id = $2) FOR UPDATE\``,
   },
   {
     id: 'M291', file: 'database/repositories/teams.js', config: PG,
@@ -1688,13 +1683,9 @@ const MUTATIONS = [
     from: `const POOL_AREA = 'canFundMerchants';`,
     to: `const POOL_AREA = 'canManageTeams';`,
   },
+  // M293 (a pool SALE booked as money paid) deleted: a pool only buys (owner,
+  // 2026-10-21), so every fulfilment is RECEIVED and there is no branch left.
   {
-    id: 'M293', file: 'database/repositories/teamPools.js', config: PG,
-    test: 'database/tests/teamPoolsPg.test.js',
-    why: 'a sale is recorded as money the platform PAID, so every pool sale reads as an outflow in the books',
-    from: `  const direction = preview.direction === POOL_DIRECTIONS.BUY ? DIRECTIONS.RECEIVED : DIRECTIONS.PAID;`,
-    to: `  const direction = DIRECTIONS.PAID;`,
-  },  {
     id: 'M294', file: 'database/repositories/teamRouting.js', config: PG,
     test: 'database/tests/teamRoutingPg.test.js',
     why: "the open orders are not counted again under the member's lock, so two racing orders both take a member's last place",
@@ -1706,8 +1697,8 @@ const MUTATIONS = [
     id: 'M459', file: 'database/repositories/teamRouting.js', config: PG,
     test: 'database/tests/teamRoutingPg.test.js',
     why: "the admin's routing priority is ignored, so a member set to 5 waits behind a faster member at 3",
-    from: "      ORDER BY m.routing_priority DESC,\n",
-    to: "      ORDER BY\n",
+    from: "               m.routing_priority DESC,\n",
+    to: "",
   },
   {
     id: 'M460', file: 'database/repositories/teamRouting.js', config: PG,
@@ -2124,8 +2115,8 @@ const MUTATIONS = [
     id: 'M354', file: 'database/repositories/teamRouting.js', config: PG,
     test: 'database/tests/teamRoutingPg.test.js',
     why: 'a bank-transfer buy goes to a member with no bank account, and the player is shown nowhere to pay',
-    from: "        AND (NOT ($3 AND $1 = 'UPI_BANK') OR (\n",
-    to: "        AND (true OR (\n",
+    from: "        AND (NOT ($3 AND $1 = 'UPI_BANK') OR ${MEMBER_CAN_BE_PAID_SQL('m', '$8')})\n",
+    to: "        AND (true OR ${MEMBER_CAN_BE_PAID_SQL('m', '$8')})\n",
   },
   {
     id: 'M355', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
@@ -2295,23 +2286,23 @@ const MUTATIONS = [
     id: 'M368', file: 'backend/domains/user/user.routes.js', config: PG,
     test: 'backend/tests/routes/payoutAccountNotAMobilePg.test.js',
     why: 'a player whose account is refused is told only that saving failed, with nothing to change',
-    from: "    if (isAccountMobileRefusal(error)) {\n",
+    from: "    if (refused) {\n",
     to: "    if (false) {\n",
   },
-  // ── Team commission (Step 2e) ──────────────────────────────────────────────
+  // ── Order commission (owner, 2026-10-21) ─────────────────────────────────────
   {
     id: 'M383', file: 'database/repositories/teamCommission.js', config: PG,
     test: 'backend/tests/routes/teamCommissionPg.test.js',
     why: 'a commission the platform pool cannot cover is paid anyway: the pool is overdrawn, and the platform pays more than it set aside (§26: never partial)',
-    from: `      if (poolPaise < amount) return { ok: false, reason: 'pool_short', owedPaise: amount, poolPaise, summary };\n`,
+    from: `      if (poolPaise < amount) return { ok: false, reason: 'pool_short', owedPaise: amount, poolPaise };\n`,
     to: '',
   },
   {
     id: 'M384', file: 'database/repositories/teamCommission.js', config: PG,
     test: 'backend/tests/routes/teamCommissionPg.test.js',
-    why: 'matched volume is the LARGER side: a team that only buys is paid commission on volume nobody matched',
-    from: `  const matched = Math.min(buys, sells);`,
-    to: `  const matched = Math.max(buys, sells);`,
+    why: 'a sell is paid the deposit rate: the admin\'s withdrawal percent is ignored',
+    from: `      const bp = rates.bp[order.order_type] ?? 0;`,
+    to: `      const bp = rates.bp.DEPOSIT;`,
   },
   {
     id: 'M385', file: 'database/repositories/teamCommission.js', config: UNIT,
@@ -2323,15 +2314,15 @@ const MUTATIONS = [
   {
     id: 'M386', file: 'backend/domains/payment/orderLifecycle.service.js', config: PG,
     test: 'backend/tests/routes/teamCommissionPg.test.js',
-    why: 'a buy that completes the match pays nothing until the sweep: commission is no longer instant',
+    why: 'a completed buy pays nothing until the sweep: commission is no longer instant',
     from: `  if (to === ORDER_STATES.COMPLETED && result.ok && result.order?.teamId) {`,
     to: `  if (false) {`,
   },
   {
     id: 'M387', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
     test: 'backend/tests/routes/teamCommissionPg.test.js',
-    why: 'a sell that completes the match pays nothing until the sweep: commission is no longer instant',
-    from: `  await payCommissionFor(order.teamId, { actor: 'settlement-worker' });\n`,
+    why: 'a completed sell pays nothing until the sweep: commission is no longer instant',
+    from: `  await payCommissionFor(order, { actor: 'settlement-worker' });\n`,
     to: '',
   },
   {
@@ -2344,9 +2335,9 @@ const MUTATIONS = [
   {
     id: 'M389', file: 'database/repositories/teamCommission.js', config: PG,
     test: 'backend/tests/routes/teamCommissionPg.test.js',
-    why: 'the mark is read as the LOWEST mark paid, so the same rise is paid again on the next ask',
-    from: `  SELECT COALESCE(MAX(to_high_paise), 0) AS high_paise,`,
-    to: `  SELECT COALESCE(MIN(to_high_paise), 0) AS high_paise,`,
+    why: 'a direction the admin switched off is reported as an amount too small to pay, so nobody can tell it is off',
+    from: `      if (bp <= 0) return { ok: true, paid: false, reason: 'rate_zero' };\n`,
+    to: '',
   },
   {
     id: 'M390', file: 'database/repositories/teamCommission.js', config: PG,
@@ -3529,8 +3520,23 @@ const MUTATIONS = [
     id: 'M463', file: 'database/repositories/merchantPaymentAccounts.js', config: PG,
     test: 'backend/tests/routes/merchantAccountPg.test.js',
     why: 'a sell is marked paid FROM an account that does not pay withdrawals, so the report and any dispute name the wrong account',
-    from: `                       AND a.status = 'ACTIVE' AND a.pays_withdrawals)`,
-    to: `                       )`,
+    from: `                       AND a.status = 'ACTIVE' AND a.pays_withdrawals
+                       AND (o.token_amount_paise`,
+    to: `                       AND (o.token_amount_paise`,
+  },
+  {
+    id: 'M463b', file: 'database/repositories/merchantPaymentAccounts.js', config: PG,
+    test: 'backend/tests/routes/merchantAccountPg.test.js',
+    why: 'a buy is paid into an account its merchant did not assign that order size to',
+    from: `        AND $3::int = ANY (buy_sizes)`,
+    to: `        AND $3::int IS NOT NULL`,
+  },
+  {
+    id: 'M463c', file: 'database/repositories/usdtDeposits.js', config: PG,
+    test: 'backend/tests/routes/usdtPoolBuyPg.test.js',
+    why: 'a merchant pool buy paid in USDT fills the pool before the USDT covers its price',
+    from: `  if (receivedMicro < requiredMicro) return { credited: false, reason: 'not_covered', requiredMicro, receivedMicro };`,
+    to: `  if (receivedMicro < 0n) return { credited: false, reason: 'not_covered', requiredMicro, receivedMicro };`,
   },
   {
     id: 'M464', file: 'backend/domains/merchant/merchantActor.js', config: PG,
@@ -3605,9 +3611,9 @@ const MUTATIONS = [
   {
     id: 'M474', file: 'database/repositories/teamCommission.js', config: PG,
     test: 'backend/tests/routes/merchantAccountPg.test.js',
-    why: 'a merchant account is paid the agents\' fixed percent, not the admin\'s',
-    from: `      const percent = direct ? directCommissionPercent(await getSystemConfig()) : COMMISSION_PERCENT;`,
-    to: `      const percent = COMMISSION_PERCENT;`,
+    why: 'the admin\'s commission percent is ignored and the schema default paid',
+    from: `  const deposit = bpOf(c.depositPercent, 5);     // schema default: 5`,
+    to: `  const deposit = bpOf(undefined, 5);     // schema default: 5`,
   },
   {
     id: 'M475', file: 'backend/domains/merchant/merchantRefusal.service.js', config: PG,
@@ -3676,8 +3682,8 @@ const MUTATIONS = [
     id: 'MRT2', file: 'database/repositories/merchantReports.js', config: PG,
     test: 'backend/tests/routes/merchantOrderReportPg.test.js',
     why: 'the report reads every merchant\'s orders, so a member sees another member\'s players and references',
-    from: "        WHERE o.merchant_id = $1 AND ${RANGE_SQL.replaceAll('created_at', 'o.created_at')}\n          AND ${filters.join(' AND ')}",
-    to: "        WHERE ${RANGE_SQL.replaceAll('created_at', 'o.created_at')} AND $1::text IS NOT NULL\n          AND ${filters.join(' AND ')}",
+    from: "        WHERE (o.merchant_id = $1 OR EXISTS (",
+    to: "        WHERE (TRUE OR EXISTS (",
   },
   {
     id: 'MRT3', file: 'database/repositories/merchantReports.js', config: PG,
@@ -3764,6 +3770,193 @@ const MUTATIONS = [
     why: 'one transaction paying two buys credits only the first; the second is refused as a reused reference',
     from: "export const paymentReferenceOf = (t) => `${String(t.tx_hash ?? t.txHash).toLowerCase()}:${Number(t.log_index ?? t.logIndex)}`;",
     to: "export const paymentReferenceOf = (t) => `${String(t.tx_hash ?? t.txHash).toLowerCase()}`;",
+  },
+  // ── Signup channels and their join requests (owner, 2026-10-21) ──────────
+  {
+    id: 'MCH1', file: 'database/repositories/telegramChannels.js', config: PG,
+    test: 'database/tests/telegramChannelsPg.test.js',
+    why: 'a request already approved or dropped is decided again, so an approved person is marked gone or approved twice',
+    from: `      WHERE chat_id = $1 AND telegram_user_id = $2 AND status = 'PENDING'`,
+    to: `      WHERE chat_id = $1 AND telegram_user_id = $2`,
+  },
+  {
+    id: 'MCH2', file: 'database/repositories/telegramChannels.js', config: PG,
+    test: 'database/tests/telegramChannelsPg.test.js',
+    why: 'a request Telegram dropped still counts, so that person is never asked to join again',
+    from: `                           AND r.status IN ('PENDING', 'APPROVED'))`,
+    to: `                           )`,
+  },
+  {
+    id: 'MCH3', file: 'backend/domains/telegram/signupChannels.service.js', config: PG,
+    test: 'database/tests/telegramChannelsPg.test.js',
+    why: 'an approval Telegram refused is counted as approved and the run keeps going past it',
+    from: `      stopped = res.retryAfter`,
+    to: `      if (await db.telegramChannels.decideRequest({ chatId: channel.chatId, telegramUserId: userId, status: 'APPROVED', by })) approved += 1; continue;
+      stopped = res.retryAfter`,
+  },
+  {
+    id: 'MCH4', file: 'database/repositories/telegramChannels.js', config: PG,
+    test: 'database/tests/telegramChannelsPg.test.js',
+    why: 'a bot\'s reading moves backward, so updates already read are read again and the reading never settles',
+    from: `      WHERE telegram_update_offsets.next_offset < EXCLUDED.next_offset`,
+    to: ``,
+  },
+  // ── Routing by the pool (owner, 2026-10-21) ──────────────────────────────
+  {
+    id: 'M489', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'the pool no longer orders the candidates: a faster member with a drained pool takes every buy',
+    from: "               m.routing_priority DESC,\n               ${poolOrderSql('$3', '$4')},",
+    to: "               m.routing_priority DESC,",
+  },
+  {
+    id: 'M490', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'the sells a pool owes are not taken off its sell room, so one pool is handed more sells than its cash',
+    from: "    sellRoomPaise: Math.max(0, consumedPaise - sellsOwedPaise),",
+    to: "    sellRoomPaise: Math.max(0, consumedPaise),",
+  },
+  // ── Cash out (owner, 2026-10-21) ─────────────────────────────────────────
+  {
+    id: 'M491', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a pool cashing out is still handed new sells, which refill the pool it is emptying',
+    from: "  AND (t.cash_out_started_at IS NULL OR ${isBuy})`;",
+    to: "  AND TRUE`;",
+  },
+  {
+    id: 'M492', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a pool cashing out waits behind fuller pools for the buys it needs',
+    from: "      ORDER BY (t.cash_out_started_at IS NOT NULL) DESC,\n               m.routing_priority DESC,",
+    to: "      ORDER BY m.routing_priority DESC,",
+  },
+  {
+    id: 'M493', file: 'database/repositories/teamCashOut.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'the cash out ends and the pause starts with a buy still open',
+    from: "        AND NOT EXISTS (SELECT 1 FROM order_states o\n                         WHERE o.team_id = t.team_id AND o.order_type = 'DEPOSIT' AND o.state = ANY($4))",
+    to: "        AND $4::text[] IS NOT NULL",
+  },
+  {
+    id: 'M494', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a pool asks the platform for tokens while it is cashing them out',
+    from: "  if (t[0].cashing_out) return { ok: false, reason: 'cash_out_running' };",
+    to: "",
+  },
+  // ── Track record (owner, 2026-10-21) ─────────────────────────────────────
+  {
+    id: 'M495', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a dispute the player lost still counts the merchant\'s rejection as a failure',
+    from: "    count(*) FILTER (WHERE f.party = 'PLAYER'\n                        OR (f.party IS NULL AND",
+    to: "    count(*) FILTER (WHERE (f.party IS NULL AND",
+  },
+  {
+    id: 'M496', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a cancelled order counts against the merchant',
+    from: "                        OR (f.party IS NULL AND (o.state IN ('REJECTED', 'FAILED')",
+    to: "                        OR (f.party IS NULL AND (o.state IN ('REJECTED', 'FAILED', 'CANCELLED')",
+  },  // ── Payout details and how a buy is paid (owner, 2026-10-21) ────────────
+  {
+    id: 'M497', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/userPg.test.js',
+    why: 'a player changes the account their sells are paid to minutes after saving it',
+    from: "  IF OLD.payout_details_locked_until IS NOT NULL AND OLD.payout_details_locked_until > now() THEN",
+    to: "  IF FALSE THEN",
+  },
+  {
+    id: 'M498', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/userPg.test.js',
+    why: 'a player repoints their payout while a sell to them is being paid',
+    from: "                AND (o.state IN ('PENDING_QUEUE', 'PROCESSING', 'PAID', 'DISPUTED')",
+    to: "                AND (o.state IN ('PENDING_QUEUE')",
+  },
+  {
+    id: 'M499', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/userPg.test.js',
+    why: 'a player saves a UPI ID that is their mobile, and the member paying them sees it',
+    from: "          AND NOT bb_text_has_a_mobile(split_part(bank_details->>'upiId', '@', 1))));",
+    to: "          AND TRUE));",
+  },
+  {
+    id: 'M500', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderPrivacyRoutes.test.js',
+    why: 'the member paying a sell is not given the UPI link for its amount',
+    from: "    if (upiId && Number(plain.fiatAmount) > 0) {",
+    to: "    if (false) {",
+  },
+  {
+    id: 'M501', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'backend/tests/routes/buyPayMethodPg.test.js',
+    why: 'a UPI buy goes to a member with no UPI ID, and the player is shown nowhere to pay',
+    from: "    THEN COALESCE(${m}.upi_id, '') <> ''",
+    to: "    THEN TRUE",
+  },
+  {
+    id: 'M502', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'backend/tests/routes/buyPayMethodPg.test.js',
+    why: 'a buy is given another pay method\'s window',
+    from: "  if (order.buyPayMethod) return buyPayWindowSettings(cfg)[order.buyPayMethod];",
+    to: "  if (order.buyPayMethod) return buyPayWindowSettings(cfg).UPI;",
+  },
+  {
+    id: 'M503', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'backend/tests/routes/merchantAccountPg.test.js',
+    why: 'a merchant account\'s buy is paid into the kind of account the player did not choose',
+    from: "                       AND (NOT $2 OR acct.kind = $7))",
+    to: "                       AND (NOT $2 OR $7::text IS NOT NULL))",
+  },
+  {
+    id: 'M504', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/buyPayMethodPg.test.js',
+    why: 'a UPI/bank buy is created without the player choosing how to pay it',
+    from: "      && !BUY_PAY_METHOD_LIST.includes(attempt.payMethod)) {",
+    to: "      && false) {",
+  },
+  {
+    id: 'M505', file: 'backend/domains/identity/staffContactShield.js', config: PG,
+    test: 'backend/tests/routes/staffContactShieldPg.test.js',
+    why: 'a sub-admin is sent a player\'s mobile and payout details',
+    from: "  if (seesContact(req.user)) return next();",
+    to: "  return next();",
+  },
+  {
+    id: 'M506', file: 'backend/domains/reporting/xlsx.util.js', config: PG,
+    test: 'backend/tests/routes/staffContactShieldPg.test.js',
+    why: 'a sub-admin\'s download carries the players\' mobiles',
+    from: "  if (viewer?.accountType === 'STAFF' && !seesContact(viewer)) workbook = shieldWorkbook(workbook);",
+    to: "",
+  },
+  {
+    id: 'M507', file: 'backend/domains/identity/staffContactShield.js', config: PG,
+    test: 'backend/tests/routes/staffContactShieldPg.test.js',
+    why: 'the shield leaves the account number in a nested payout detail',
+    from: "    if (CONTACT_KEYS.has(key)) continue;",
+    to: "    if (CONTACT_KEYS.has(key) && key === 'mobile') continue;",
+  },
+  {
+    id: 'M508', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/staffContactShieldPg.test.js',
+    why: 'a sub-admin finds whose mobile a number is by searching the players table',
+    from: "    const { rows, total } = await db.adminDirectory.listPlayers({\n      byMobile: seesContact(req.user),",
+    to: "    const { rows, total } = await db.adminDirectory.listPlayers({\n      byMobile: true,",
+  },
+  {
+    id: 'M509', file: 'database/repositories/merchantReports.js', config: PG,
+    test: 'backend/tests/routes/merchantOrderReportPg.test.js',
+    why: 'an order the member declined drops off their report, so the decline is named nowhere',
+    from: "        WHERE (o.merchant_id = $1 OR EXISTS (",
+    to: "        WHERE (o.merchant_id = $1 AND EXISTS (",
+  },
+  {
+    id: 'M510', file: 'database/repositories/merchantReports.js', config: PG,
+    test: 'backend/tests/routes/merchantAccountPg.test.js',
+    why: 'the report stops saying which sub-member took an action',
+    from: "    action: REPORT_ACTIONS[m.to], by: actorOfTag(m.actor, m.staffName), at: new Date(m.at).toISOString(),",
+    to: "    action: REPORT_ACTIONS[m.to], by: actorOfTag('merchant:', m.staffName), at: new Date(m.at).toISOString(),",
   },
 ];
 

@@ -111,12 +111,36 @@ describePg('team pool routes', () => {
     expect((await getPool(t.teamId)).availablePaise).toBe(30000);
   });
 
-  it('a buyback beyond the pool is refused when asked, naming what is available', async () => {
+  it('a supervisor starts and stops their own pool\'s cash out; another\'s team is not theirs; the refusal is worded', async () => {
+    const t = await supervisorWithTeam();
+    const other = await supervisorWithTeam();
+    expect((await as(merchantApp, other.sup).post(`/supervisor/teams/${t.teamId}/cash-out`)).status).toBe(404);
+    const started = await as(merchantApp, t.sup).post(`/supervisor/teams/${t.teamId}/cash-out`);
+    expect(started.status).toBe(200);
+    expect(started.body.cashOut).toMatchObject({ active: true, pauseHours: 48 });
+    // While it runs, the pool buys no tokens, and says why.
+    const ask = await as(merchantApp, t.sup).post(`/supervisor/teams/${t.teamId}/pool-requests`).send({ tokenAmount: 10 });
+    expect(ask.status).toBe(409);
+    expect(ask.body.code).toBe('cash_out_running');
+    expect(ask.body.message).toMatch(/cashing out/);
+    const stopped = await as(merchantApp, t.sup).delete(`/supervisor/teams/${t.teamId}/cash-out`);
+    expect(stopped.status).toBe(200);
+    expect(stopped.body.cashOut.pausedUntil).toBeTruthy();
+    const again = await as(merchantApp, t.sup).post(`/supervisor/teams/${t.teamId}/cash-out`);
+    expect(again.status).toBe(409);
+    expect(again.body.code).toBe('cash_out_paused');
+  });
+
+  it('a buyback is refused by name: tokens are never sold back to the platform (owner, 2026-10-21)', async () => {
     const t = await supervisorWithTeam();
     const res = await as(merchantApp, t.sup).post(`/supervisor/teams/${t.teamId}/pool-requests`)
       .send({ direction: 'SELL', tokenAmount: 10 });
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe('pool_short');
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('POOL_BUY_ONLY');
+    // With no direction at all, the request is a buy.
+    const buy = await as(merchantApp, t.sup).post(`/supervisor/teams/${t.teamId}/pool-requests`).send({ tokenAmount: 10 });
+    expect(buy.status).toBe(201);
+    expect(buy.body.request.direction).toBe('BUY');
   });
 
   it('an admin rejects; the supervisor sees the reason and may ask again', async () => {

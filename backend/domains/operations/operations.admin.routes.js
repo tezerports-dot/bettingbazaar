@@ -112,7 +112,7 @@ router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics
 router.get('/operations/config-catalog', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   res.json({ success: true, catalog: [
     { value: 'Deposit/reserve split + reserve usage rules (per currency)', owner: 'Business Policy — DepositPolicy', edit: 'PUT /api/admin/deposit-policy/:currency' },
-    { value: 'Team commission (10% of each rise in matched volume; 16% supervisor / 84% members)', owner: 'Fixed rule — database/repositories/teamCommission.js (PROJECT_STATUS §3.10, 2e); paid from the team commission pool', edit: 'POST /api/admin/revenue/bonus-pool/fund (funds the pool; the percentages are not editable)' },
+    { value: 'Order commission (a percent of each completed deposit and of each completed withdrawal; 16% supervisor / 84% members)', owner: 'SystemConfig.orderCommission — database/repositories/teamCommission.js; paid from the team commission pool', edit: 'Admin › Settings › Merchant Commission; POST /api/admin/revenue/bonus-pool/fund funds the pool' },
     { value: 'Boards: each board\'s timer, phase timings, stake limits, switch and home-page order', owner: 'boards table — database/repositories/boards.js (read by markets/cycleTypes, cached 5s)', edit: 'POST /api/admin/boards, PUT /api/admin/boards/:key, PUT /api/admin/boards/order' },
     { value: 'Deposit/withdrawal min/max', owner: 'Business Policy — SystemConfig', edit: 'PUT /api/admin/system/config' },
     { value: 'Payout fee %', owner: 'Business Policy — SystemConfig.payoutFeePercent (enforced by Risk, recorded by R&S)', edit: 'PUT /api/admin/system/config' },
@@ -126,7 +126,7 @@ router.get('/operations/config-catalog', authenticate, hasPermission('canViewAna
     // Business Config Audit (2026-07-11): payment order window, was hardcoded 15m.
     { value: 'Payment order windows and per-member concurrency, per rail', owner: 'Business Policy — SystemConfig.teamRouting (read by teamRouting.routingSettings)', edit: 'PUT /api/admin/system/config' },
     // Phase X X-7: operational-data retention window.
-    { value: 'Data retention (months of crash reports kept; expired referral clicks and notifications go after 30 days; bets, cycles, money and audit are never pruned)', owner: 'Business Policy — SystemConfig.retentionMonths (read by operations/retention.service)', edit: 'PUT /api/admin/system/config' },
+    { value: 'Data retention (months an error-log entry is kept once last seen (a fixed one 30 days after the fix); expired referral clicks and notifications go after 30 days; bets, cycles, money and audit are never pruned)', owner: 'Business Policy — SystemConfig.retentionMonths (read by operations/retention.service)', edit: 'PUT /api/admin/system/config' },
     { value: 'Team commission pool funding', owner: 'Revenue & Settlement (from distributable revenue only)', edit: 'POST /api/admin/revenue/bonus-pool/fund' },
     { value: 'Team pool tokens (supervisor requests, admin fulfils)', owner: 'Team pools — teamPools.js', edit: 'POST /api/admin/team-pool-requests/:id/fulfil' },
     { value: 'Funding providers (P2P / USDT / gateways)', owner: 'Funding Platform — providerRegistry adapters', edit: 'code adapter + registry entry (activation is a deploy, not a constant)' },

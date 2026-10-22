@@ -26,6 +26,7 @@
  *   Connection: keep-alive
  */
 
+import { seesContact, shieldContact } from '../domains/identity/staffContactShield.js';
 import express from 'express';
 import { db } from '#db';
 // AQ-1/AQ-2: verify via the single PASETO authority. This replaces a
@@ -293,7 +294,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         // result — the last thing a revoked admin should keep receiving.
         const adminUser = await db.users.getUser(decoded.userId);
         if (!adminUser || adminUser.isBlocked || adminUser.accountType !== 'STAFF'
-            || (!adminUser.isAdmin && !adminUser.isSubAdmin && !adminUser.isQueueManager)) {
+            || (!adminUser.isAdmin && !adminUser.isSubAdmin)) {
             return res.status(403).json({ success: false, message: 'Admin access required' });
         }
         // A password reset ends this stream too, not only the REST API.
@@ -322,7 +323,8 @@ export function initSSERoutes(sseManager, cycleGenerator) {
             });
 
             sseManager.writeEvent(res, 'queue_snapshot', {
-                orders: page.orders,
+                // Contact and payout details to full admins only (staffContactShield.js).
+                orders: seesContact(adminUser) ? page.orders : shieldContact(page.orders),
                 nextCursor: page.nextCursor ? encodeOrderCursor(page.nextCursor) : null,
                 hasMore: Boolean(page.nextCursor),
                 serverTime: Date.now(),

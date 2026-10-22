@@ -10,12 +10,15 @@
  *   Bank account  holder, account number, IFSC, bank name.
  *
  * Each has two switches, Accept deposits and Pay withdrawals, and is ACTIVE or
- * PAUSED, or removed for good. Every write is the owner's
+ * PAUSED, or removed for good. Which order sizes go to which account is one
+ * table, saved in one go (`SizesCard`, owner 2026-10-20): every size the
+ * platform sends here must be ticked on at least one account, and the server
+ * refuses a save that leaves one out (409 SIZES_UNCOVERED). Every write is the owner's
  * (merchantAccount.routes.js `ownerOnly`); a sub-member reads the list (they
  * name the account they paid a withdrawal from) and is offered no control.
  * Every refusal is the server's own sentence, announced (§32 S44).
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Landmark, Pause, Pencil, Play, Plus, QrCode, RotateCcw, Trash2, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../services/AuthContext';
@@ -29,7 +32,8 @@ import {
   type ConfirmRequest,
 } from '../../components/ui';
 import AccountShell, { Refusal } from './AccountShell';
-import type { PaymentAccount, PaymentAccountKind } from '../../types';
+import type { PaymentAccount, PaymentAccountKind, SizeCoverage } from '../../types';
+import { formatMoney } from '../../utils/rail';
 
 const KIND_LABEL: Record<PaymentAccountKind, string> = { UPI_QR: 'UPI scanner', BANK: 'Bank account' };
 
@@ -343,6 +347,149 @@ const AccountRow: React.FC<{
   );
 };
 
+// ── Which sizes go to which account ─────────────────────────────────────────
+
+type Direction = 'DEPOSIT' | 'WITHDRAWAL';
+type Picks = Record<string, { buySizes: number[]; sellSizes: number[] }>;
+
+const DIRECTIONS: Array<{ key: Direction; title: string; sub: string; field: 'buySizes' | 'sellSizes'; on: (a: PaymentAccount) => boolean; tone: string; bg: string }> = [
+  { key: 'DEPOSIT', title: 'Buys paid into', sub: 'A player buying this size pays into the ticked account.', field: 'buySizes',
+    on: (a) => a.acceptsDeposits, tone: 'var(--dep)', bg: 'var(--dep-bg)' },
+  { key: 'WITHDRAWAL', title: 'Sells paid from', sub: 'You pay a player selling this size from a ticked account.', field: 'sellSizes',
+    on: (a) => a.paysWithdrawals, tone: 'var(--wd)', bg: 'var(--wd-bg)' },
+];
+
+const picksOf = (accounts: PaymentAccount[]): Picks =>
+  Object.fromEntries(accounts.map((a) => [a.accountId, { buySizes: [...a.buySizes], sellSizes: [...a.sellSizes] }]));
+
+/**
+ * One table per direction: a row per size the platform sends here, a column
+ * per account switched on for that direction, a tick where that size goes.
+ * A size with no tick is shown in red and the save is refused by the server
+ * until it has one; what the server says is shown as it says it.
+ */
+export const SizesCard: React.FC<{
+  accounts: PaymentAccount[];
+  sizes: SizeCoverage;
+  owner: boolean;
+  onSaved: () => Promise<void>;
+}> = ({ accounts, sizes, owner, onSaved }) => {
+  const live = useMemo(() => accounts.filter((a) => a.status !== 'REMOVED'), [accounts]);
+  const [picks, setPicks] = useState<Picks>(() => picksOf(live));
+  const [busy, setBusy] = useState(false);
+  const [refusal, setRefusal] = useState('');
+  useEffect(() => { setPicks(picksOf(live)); }, [live]);
+
+  const toggle = (accountId: string, field: 'buySizes' | 'sellSizes', size: number) => setPicks((p) => {
+    const now = p[accountId]?.[field] ?? [];
+    const next = now.includes(size) ? now.filter((n) => n !== size) : [...now, size].sort((a, b) => a - b);
+    return { ...p, [accountId]: { ...p[accountId], [field]: next } };
+  });
+  const missing = (d: (typeof DIRECTIONS)[number]) => sizes.required[d.key].filter((size) =>
+    !live.some((a) => d.on(a) && (picks[a.accountId]?.[d.field] ?? []).includes(size)));
+  const gaps = DIRECTIONS.flatMap((d) => missing(d).map((size) => `${d.key === 'DEPOSIT' ? 'buy' : 'sell'} ${formatMoney(size)}`));
+  const dirty = live.some((a) => JSON.stringify(picks[a.accountId]) !== JSON.stringify({ buySizes: a.buySizes, sellSizes: a.sellSizes }));
+
+  const save = async () => {
+    setBusy(true); setRefusal('');
+    try {
+      await api.setPaymentAccountSizes(live.map((a) => ({ accountId: a.accountId, ...picks[a.accountId] })));
+      toast.success('Sizes saved');
+      await onSaved();
+    } catch (err) {
+      setRefusal(errorText(err, 'Could not save the sizes.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (live.length === 0) return null;
+  const anyRequired = sizes.required.DEPOSIT.length + sizes.required.WITHDRAWAL.length > 0;
+  return (
+    <Card>
+      <CardTitle
+        title="Which sizes go to which account"
+        sub="Every size must be ticked on at least one account, buys and sells both. Tick a size on more than one account to share it."
+      />
+      {!anyRequired && (
+        <div role="status" style={{ fontSize: 12.5, color: 'var(--muted)' }}>The platform sends no order sizes to merchant accounts right now.</div>
+      )}
+      {gaps.length > 0 && (
+        <div role="alert" style={{ marginBottom: 12 }}>
+          <Banner tone="danger" title="Some sizes have no account">
+            Nothing takes {gaps.join(', ')} yet. Orders of a size with no account are not sent to you.
+          </Banner>
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {DIRECTIONS.filter((d) => sizes.required[d.key].length > 0).map((d) => {
+          const columns = live.filter(d.on);
+          const gap = missing(d);
+          return (
+            <div key={d.key} style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: 12.5, minWidth: 320 }}>
+                <caption style={{ textAlign: 'left', padding: '0 0 8px' }}>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: d.tone }}>{d.title}</span>
+                  <span style={{ display: 'block', fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>{d.sub}</span>
+                </caption>
+                <thead>
+                  <tr style={{ background: d.bg }}>
+                    <th scope="col" style={{ textAlign: 'left', padding: '9px 12px', color: d.tone, borderRadius: '10px 0 0 10px' }}>Size</th>
+                    {columns.map((a, i) => (
+                      <th key={a.accountId} scope="col" style={{ padding: '9px 12px', color: 'var(--text)', textAlign: 'center', whiteSpace: 'nowrap',
+                        borderRadius: i === columns.length - 1 ? '0 10px 10px 0' : 0 }}>
+                        {a.label}{a.status === 'PAUSED' ? ' (paused)' : ''}
+                      </th>
+                    ))}
+                    {columns.length === 0 && <th scope="col" style={{ padding: '9px 12px', borderRadius: '0 10px 10px 0' }} />}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sizes.required[d.key].map((size) => {
+                    const left = gap.includes(size);
+                    return (
+                      <tr key={size} style={{ background: left ? 'var(--danger-bg)' : undefined }}>
+                        <th scope="row" className="bb-mono" style={{ textAlign: 'left', padding: '9px 12px', borderBottom: '1px solid var(--border-2)',
+                          color: left ? 'var(--danger)' : 'var(--text)' }}>
+                          {formatMoney(size)}{left ? ' · no account' : ''}
+                        </th>
+                        {columns.map((a) => {
+                          const on = (picks[a.accountId]?.[d.field] ?? []).includes(size);
+                          const id = `size-${d.key}-${a.accountId}-${size}`;
+                          return (
+                            <td key={a.accountId} style={{ textAlign: 'center', padding: '6px 12px', borderBottom: '1px solid var(--border-2)' }}>
+                              <input id={id} type="checkbox" checked={on} disabled={!owner || busy}
+                                aria-label={`${d.key === 'DEPOSIT' ? 'Buys' : 'Sells'} of ${formatMoney(size)} on ${a.label}`}
+                                onChange={() => toggle(a.accountId, d.field, size)}
+                                style={{ width: 18, height: 18, accentColor: d.tone, cursor: owner ? 'pointer' : 'default' }} />
+                            </td>
+                          );
+                        })}
+                        {columns.length === 0 && (
+                          <td style={{ padding: '9px 12px', color: 'var(--muted)', borderBottom: '1px solid var(--border-2)' }}>
+                            Switch an account on for {d.key === 'DEPOSIT' ? 'deposits' : 'withdrawals'} first.
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          );
+        })}
+      </div>
+      <Refusal message={refusal} style={{ marginTop: 10 }} />
+      {owner && anyRequired && (
+        <div style={{ display: 'flex', gap: 9, marginTop: 12, justifyContent: 'flex-end' }}>
+          <Button variant="outline" tone="neutral" disabled={!dirty || busy} onClick={() => { setPicks(picksOf(live)); setRefusal(''); }}>Undo</Button>
+          <Button onClick={() => void save()} busy={busy} disabled={!dirty}>Save sizes</Button>
+        </div>
+      )}
+    </Card>
+  );
+};
+
 // ── The screen ──────────────────────────────────────────────────────────────
 
 const PaymentAccountsBody: React.FC = () => {
@@ -391,6 +538,7 @@ const PaymentAccountsBody: React.FC = () => {
           ))}
         </div>
       )}
+      {overview?.sizes && <SizesCard accounts={accounts} sizes={overview.sizes} owner={owner} onSaved={reload} />}
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </>
   );

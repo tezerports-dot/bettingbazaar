@@ -18,7 +18,7 @@ import { ORDER_SIZE_RAILS, merchantSizes } from '../../domains/merchant/denomina
 import { assignQueuedOrders } from '../../domains/payment/paymentProcessing.service.js';
 import { db } from '#db';
 import { respondError } from '../../shared/httpError.js';
-import { toCsv } from '../../domains/reporting/csv.util.js';
+import { sendXlsx, oneTable, columnsOf, istText } from '../../domains/reporting/xlsx.util.js';
 import { systemConfigPayload, footerPagesOf, FOOTER_PAGE_KEYS, DEFAULT_FOOTER_PAGES } from '../../domains/configuration/systemConfigPayload.js';
 
 const router = express.Router();
@@ -60,11 +60,11 @@ router.get('/transactions', authenticate, hasPermission('canViewTransactions'), 
   }
 });
 
-/** GET /api/admin/transactions.csv — the same filtered ledger rows, as CSV. */
-router.get('/transactions.csv', authenticate, hasPermission('canViewTransactions'), async (req, res) => {
+/** GET /api/admin/transactions.xlsx — the same filtered ledger rows, as a workbook. */
+router.get('/transactions.xlsx', authenticate, hasPermission('canViewTransactions'), async (req, res) => {
   try {
     const ledger = await db.wallets.platformLedger({ ...ledgerFilters(req.query), exportAll: true });
-    const csv = toCsv(ledger.entries.map((t) => ({
+    const table = ledger.entries.map((t) => ({
       tx_id: t.txId,
       time: t.createdAt ? new Date(t.createdAt).toISOString() : '',
       user_id: t.userId,
@@ -76,13 +76,13 @@ router.get('/transactions.csv', authenticate, hasPermission('canViewTransactions
       balance_after: t.balanceAfter,
       reason: t.reason || '',
       ref_id: t.refId || '',
-    })));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition',
-      `attachment; filename="transactions-${req.query.startDate || 'start'}-${req.query.endDate || 'now'}.csv"`);
-    res.send(csv);
+    }));
+    sendXlsx(res, `transactions-${req.query.startDate || 'start'}-${req.query.endDate || 'now'}.xlsx`, oneTable({
+      name: 'Transactions', title: 'Wallet transactions', subtitle: `Downloaded ${istText(new Date())}`, accent: 'teal',
+      rows: table, columns: columnsOf(table, { money: ['amount', 'balance_before', 'balance_after'] }),
+    }));
   } catch (error) {
-    respondError(res, error, 'GET /admin/transactions.csv', { message: 'Could not build the export.' });
+    respondError(res, error, 'GET /admin/transactions.xlsx', { message: 'Could not build the export.' });
   }
 });
 
@@ -115,9 +115,9 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         // matched, so none of them was wrong — but a rebuild is a SHRINK: the
         // field list that goes stale the next time a field is declared.
         ...config,
-        // `total` is how many tokens EXIST — 20,000,000,000, all of them
+        // `total` is how many tokens EXIST — 100,000,000,000, all of them
         // already created and held by the platform until they are transferred.
-        adminTokenSupply: { total: config.adminTokenSupply?.total ?? 20000000000 }, // schema default: 20,000,000,000
+        adminTokenSupply: { total: config.adminTokenSupply?.total ?? 100000000000 }, // schema default: 100,000,000,000
         // The hosts `apiHost` may be set to (API_ALLOWED_HOSTS), for the API Host
         // picker. Read-only: it is the deployment's list, not a setting, and the
         // PUT ignores it (undeclared). The saved choice is checked against the
@@ -488,26 +488,44 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
 // non-exported getDashboardStats helper, so keeping it here created a latent
 // runtime failure if route order changed.
 
-router.get('/error-reports', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
+// ── The error log (owner, 2026-10-20) ────────────────────────────────────────
+// Every failure, server and panels, one row per distinct error
+// (database/repositories/errorLog.js). Filters are the repository's own
+// vocabulary, sent back with every answer so the screen keeps no copy (§2 S25).
+const ERROR_LOG_VOCAB = Object.freeze({
+  sources: db.errorLog.ERROR_SOURCES,
+  categories: db.errorLog.ERROR_CATEGORIES,
+  severities: db.errorLog.ERROR_SEVERITIES,
+  statuses: db.errorLog.ERROR_STATUSES,
+});
+
+router.get('/error-log', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
   try {
-    const reports = await db.operations.listFrontendErrors({ limit: 200 });
-    res.json({ success: true, reports });
+    const { source, category, severity, status, limit } = req.query;
+    const { entries, totals } = await db.errorLog.listErrors({ source, category, severity, status, limit });
+    res.json({ success: true, entries, totals, ...ERROR_LOG_VOCAB });
   } catch (err) {
-    console.error('[error-reports] list failed:', err.message);
-    res.status(500).json({ success: false, message: 'Failed to fetch error reports' });
+    respondError(res, err, 'GET /admin/error-log', { message: 'Failed to fetch the error log' });
   }
 });
 
-router.delete('/error-reports', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
+router.patch('/error-log/:id', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
   try {
-    // The count is reported. "All error reports cleared" for a delete that
-    // removed nothing looks the same as one that removed nine hundred, so an
-    // admin could not tell a clear from a no-op against an empty table.
-    const cleared = await db.operations.clearFrontendErrors();
-    res.json({ success: true, cleared, message: `${cleared} error report(s) cleared` });
+    const entry = await db.errorLog.setErrorStatus(req.params.id, req.body?.status, req.user?.username || req.userId);
+    if (!entry) return res.status(404).json({ success: false, message: 'That error is no longer in the log.' });
+    res.json({ success: true, entry });
   } catch (err) {
-    console.error('[error-reports] clear failed:', err.message);
-    res.status(500).json({ success: false, message: 'Failed to clear error reports' });
+    respondError(res, err, 'PATCH /admin/error-log/:id', { message: 'Could not change that error' });
+  }
+});
+
+router.delete('/error-log/fixed', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
+  try {
+    // The count is reported, so a clear that removed nothing reads as one.
+    const cleared = await db.errorLog.clearFixedErrors();
+    res.json({ success: true, cleared, message: `${cleared} fixed error(s) removed` });
+  } catch (err) {
+    respondError(res, err, 'DELETE /admin/error-log/fixed', { message: 'Could not remove the fixed errors' });
   }
 });
 

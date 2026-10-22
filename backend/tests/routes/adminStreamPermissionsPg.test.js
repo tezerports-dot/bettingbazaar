@@ -49,9 +49,8 @@ describePg('the admin live stream, by area', () => {
 
   it('sends the queue snapshot to staff who work the queue', async () => {
     const merchants = await actor({ isSubAdmin: true, permissions: { canManageMerchants: true } });
-    const qm = await actor({ isQueueManager: true });
     const admin = await actor({ isAdmin: true });
-    for (const who of [merchants, qm, admin]) {
+    for (const who of [merchants, admin]) {
       const { status, events } = await listen(who);
       expect(status).toBe(200);
       expect(events).toContain('queue_snapshot');

@@ -48,11 +48,11 @@ const COLUMNS = `
   status, wallet_address, profile_pic, warning_count,
   payment_flagged, payment_flag_reason, payment_flagged_at, payment_flag_count,
   consecutive_payment_failures, order_lock_until, lost_disputes, high_risk_at,
-  is_admin, is_sub_admin, is_queue_manager, is_mediator,
+  is_admin, is_sub_admin, is_mediator,
   sub_admin_role, sub_admin_permissions, phantom_access,
   is_blocked, block_reason, blocked_at, blocked_by,
   bank_details, last_login, roles, deleted_at, deleted_by, joined_at, updated_at,
-  account_type, sessions_valid_from, payout_hold_until`;
+  account_type, sessions_valid_from, payout_hold_until, maintenance_tester, payout_details_locked_until`;
 
 /**
  * The columns a caller may set through `updateUser`.
@@ -73,8 +73,10 @@ const UPDATABLE = Object.freeze(new Set([
   'status', 'wallet_address', 'profile_pic', 'warning_count',
   'payment_flagged', 'payment_flag_reason', 'payment_flagged_at', 'payment_flag_count',
   'consecutive_payment_failures', 'order_lock_until',
-  'is_admin', 'is_sub_admin', 'is_queue_manager', 'is_mediator',
+  'is_admin', 'is_sub_admin', 'is_mediator',
   'sub_admin_role', 'sub_admin_permissions', 'phantom_access',
+  // A player who keeps the app during maintenance (owner, 2026-10-20).
+  'maintenance_tester',
   'is_blocked', 'block_reason', 'blocked_at', 'blocked_by',
   'bank_details', 'last_login', 'roles',
   // Moved to `now()` by a password reset, which kills every session issued
@@ -155,11 +157,12 @@ function toUser(row) {
     highRiskAt: row.high_risk_at ?? null,
     isAdmin: row.is_admin,
     isSubAdmin: row.is_sub_admin,
-    isQueueManager: row.is_queue_manager,
     isMediator: row.is_mediator,
     subAdminRole: row.sub_admin_role,
     subAdminPermissions: row.sub_admin_permissions ?? {},
     phantomAccess: row.phantom_access,
+    // Keeps using the app while maintenance mode is on (owner, 2026-10-20).
+    maintenanceTester: row.maintenance_tester === true,
     isBlocked: row.is_blocked,
     blockReason: row.block_reason,
     blockedAt: row.blocked_at,
@@ -167,6 +170,9 @@ function toUser(row) {
     bankDetails: row.bank_details ?? null,
     // Withdrawals refused until then (schema.sql "PAYOUT HOLD"); null = none.
     payoutHoldUntil: row.payout_hold_until ?? null,
+    // Bank details and UPI ID fixed until then (schema.sql "PAYOUT DETAILS
+    // LOCK", written only by the row's trigger); null = never saved.
+    payoutDetailsLockedUntil: row.payout_details_locked_until ?? null,
     lastLogin: row.last_login,
     roles: row.roles ?? [],
     // Present so an admin reading a deleted account can see who removed it and
@@ -608,8 +614,8 @@ export async function setBlocked(userId, { blocked, reason = null, actor = null,
  * Set an account's roles and the flags derived from them, in one statement.
  *
  * ── isAdmin is DERIVED from roles, not stored beside it ────────────────────
- * The handler this replaced assigned `roles`, then `isAdmin`, `isSubAdmin` and
- * `isQueueManager` as four separate properties on a document and saved it. Any
+ * The handler this replaced assigned `roles`, then `isAdmin` and `isSubAdmin` as
+ * separate properties on a document and saved it. Any
  * failure between them left an account whose roles array and whose flags
  * disagreed — and the flags are what every authorisation check reads, so the
  * roles column would have said "not an admin" while the platform treated the
@@ -626,7 +632,6 @@ export async function setRoles(userId, roles = []) {
        roles = $2::text[],
        is_admin         = 'admin'         = ANY($2::text[]),
        is_sub_admin     = 'subadmin'      = ANY($2::text[]),
-       is_queue_manager = 'queue_manager' = ANY($2::text[]),
        updated_at = now()
       WHERE user_id = $1
       RETURNING ${COLUMNS}`,
@@ -676,8 +681,8 @@ export async function softDeleteUser(userId, { actor }) {
  * cursor total when two accounts share a timestamp.
  */
 export async function listUsers({
-  status = null, isAdmin = null, isSubAdmin = null, isQueueManager = null,
-  blocked = null, flagged = null, search = null,
+  status = null, isAdmin = null, isSubAdmin = null,
+  blocked = null, flagged = null, search = null, byMobile = false,
   excludeRole = null, accountType = null, limit = 50, cursor = null, page = null,
 } = {}) {
   const where = [];
@@ -703,7 +708,6 @@ export async function listUsers({
   if (status) add('status = $?', status);
   if (isAdmin !== null) add('is_admin = $?', Boolean(isAdmin));
   if (isSubAdmin !== null) add('is_sub_admin = $?', Boolean(isSubAdmin));
-  if (isQueueManager !== null) add('is_queue_manager = $?', Boolean(isQueueManager));
   if (blocked !== null) add('is_blocked = $?', Boolean(blocked));
   if (flagged !== null) add('payment_flagged = $?', Boolean(flagged));
   // Merchants are a separate entity with their own record and login; the
@@ -714,7 +718,10 @@ export async function listUsers({
   if (accountType) add('account_type = $?', String(accountType));
   // Anchored prefix match, so the index is usable and the pattern cannot be
   // turned into a leading-wildcard scan of every account by the search box.
-  if (search) add('(username ILIKE $? || \'%\' OR mobile LIKE $? || \'%\')', String(search));
+  // A search by mobile answers "whose number is this", so it is a full admin's
+  // only (`byMobile`, staffContactShield.js; CLAUDE.md §24).
+  if (search && byMobile) add('(username ILIKE $? || \'%\' OR mobile LIKE $? || \'%\')', String(search));
+  else if (search) add('username ILIKE $? || \'%\'', String(search));
   if (cursor?.joinedAt && cursor?.userId) {
     params.push(cursor.joinedAt, cursor.userId);
     where.push(`(joined_at, user_id) < ($${params.length - 1}, $${params.length})`);
@@ -870,6 +877,16 @@ export async function listPhantomAgents() {
       ORDER BY username`, [], 'user_list_phantom_agents',
   );
   return rows.map(toUser);
+}
+
+/** The players who keep the app during maintenance, for Admin › Settings (owner, 2026-10-20). */
+export async function listMaintenanceTesters() {
+  const { rows } = await pgQuery(
+    `SELECT user_id, username, joining_number FROM users
+      WHERE maintenance_tester AND account_type = 'PLAYER' AND status <> 'DELETED'
+      ORDER BY username`, [], 'user_list_maintenance_testers',
+  );
+  return rows.map((r) => ({ userId: r.user_id, username: r.username, joiningNumber: toInt(r.joining_number) }));
 }
 
 /** How many accounts match a status. Counted from rows, never accumulated. */

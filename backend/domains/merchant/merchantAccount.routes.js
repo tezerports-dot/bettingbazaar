@@ -16,7 +16,7 @@
  *                      (teamPools.js) — the OWNER's;
  *   reports            per account and sub-member — the owner's and AUDIT's.
  *                      The orders behind them, with who pressed ✓ or ✗, are
- *                      GET /merchant/reports/orders(.csv), every merchant's.
+ *                      GET /merchant/reports/orders(.xlsx), every merchant's.
  *
  * Every write is scoped to the session's own merchant in the repository's
  * WHERE (trap 16): an account or sub-member id of another merchant matches no
@@ -33,6 +33,9 @@ import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/
 import { ownerOnly, ownerOrAudit } from './merchantActor.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import { refuse as refuseTeam } from '../team/teamRefusals.js';
+import { getSystemConfig } from '#db/repositories/config.js';
+import { merchantSizes, offeredSizes } from './denominations.js';
+import { openMerchantPoolUsdtBuy } from '../payment/usdtDeposit.service.js';
 
 const router = express.Router();
 
@@ -65,6 +68,26 @@ function accountRefusal(res, err) {
   return null;
 }
 
+/**
+ * The sizes the platform sends to merchant accounts now, per direction: the
+ * admin's merchant sizes that are also on offer (owner, 2026-10-20). Every one
+ * must be taken by some account of the merchant (merchantPaymentAccounts.js).
+ */
+async function requiredSizes() {
+  const cfg = await getSystemConfig();
+  const of = (direction) => merchantSizes(cfg, direction).filter((n) => offeredSizes(cfg, direction).includes(n));
+  return { DEPOSIT: of('DEPOSIT'), WITHDRAWAL: of('WITHDRAWAL') };
+}
+
+/** A write that would leave a size with no account, in the owner's words, with what is left out. */
+function sizesRefusal(res, err) {
+  if (err?.code !== 'SIZES_UNCOVERED' && err?.code !== 'INVALID_ORDER_SIZES') return null;
+  return res.status(err.status).json({
+    success: false, code: err.code, message: err.message,
+    ...(err.uncovered ? { uncovered: err.uncovered } : {}),
+  });
+}
+
 // ── The overview ─────────────────────────────────────────────────────────────
 
 /**
@@ -76,16 +99,22 @@ function accountRefusal(res, err) {
 router.get('/account', merchantAuth, requireMerchantAccount, async (req, res) => {
   try {
     const owner = req.merchantActor?.isOwner !== false;
-    const [accounts, staff, flags, poolRequests] = await Promise.all([
+    const [accounts, staff, flags, poolRequests, sizes, poolTrades] = await Promise.all([
       db.merchantPaymentAccounts.listAccounts(req.merchantId),
       owner ? db.merchantStaff.listStaff(req.merchantId) : null,
       db.merchantProblems.listFlags({ merchantId: req.merchantId, days: 30 }),
       owner ? db.teamPools.listRequests({ teamId: req.directTeam.teamId, limit: 50 }) : null,
+      requiredSizes().then((required) => db.merchantPaymentAccounts.sizeCoverage(req.merchantId, required)),
+      db.teamPools.poolTradeTotals(req.directTeam.teamId),
     ]);
     res.json({
       success: true,
       team: req.directTeam,
       accounts,
+      // Which sizes the platform sends here, and which no account takes yet.
+      sizes,
+      // Tokens bought from the platform (owner, 2026-10-21).
+      poolTrades,
       ...(owner ? { staff, poolRequests } : {}),
       flags,
     });
@@ -98,32 +127,54 @@ router.get('/account', merchantAuth, requireMerchantAccount, async (req, res) =>
 
 router.post('/account/payment-accounts', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
   try {
-    const out = await db.merchantPaymentAccounts.addAccount(req.merchantId, req.body ?? {});
+    const out = await db.merchantPaymentAccounts.addAccount(req.merchantId, req.body ?? {}, { required: await requiredSizes() });
     if (!out.ok) return res.status(403).json({ success: false, code: 'NOT_A_MERCHANT_ACCOUNT', message: 'This is not a merchant account.' });
     res.status(201).json({ success: true, account: out.account });
   } catch (err) {
-    if (accountRefusal(res, err)) return;
+    if (accountRefusal(res, err) || sizesRefusal(res, err)) return;
     respondError(res, err, 'POST /merchant/account/payment-accounts', { message: 'Could not add the account.' });
+  }
+});
+
+/**
+ * PUT /api/merchant/account/payment-accounts/sizes `{ accounts: [{ accountId,
+ * buySizes, sellSizes }] }` — which order sizes go to which account, in one
+ * save (owner, 2026-10-20). Refused 409 SIZES_UNCOVERED, with `uncovered`,
+ * when a size the platform sends here would be left with no account.
+ */
+// Mounted before `/:accountId`, which would otherwise read "sizes" as an id.
+router.put('/account/payment-accounts/sizes', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
+  try {
+    const out = await db.merchantPaymentAccounts.setAccountSizes(req.merchantId, req.body?.accounts,
+      { required: await requiredSizes() });
+    if (!out.ok) return res.status(404).json({ success: false, code: 'ACCOUNT_NOT_FOUND', message: 'One of those accounts is not a live account of yours.' });
+    res.json({ success: true, accounts: out.accounts });
+  } catch (err) {
+    if (sizesRefusal(res, err)) return;
+    respondError(res, err, 'PUT /merchant/account/payment-accounts/sizes', { message: 'Could not save the sizes.' });
   }
 });
 
 router.put('/account/payment-accounts/:accountId', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
   try {
-    const out = await db.merchantPaymentAccounts.updateAccount(req.merchantId, req.params.accountId, req.body ?? {});
+    const out = await db.merchantPaymentAccounts.updateAccount(req.merchantId, req.params.accountId, req.body ?? {},
+      { required: await requiredSizes() });
     if (!out.ok) return res.status(404).json({ success: false, code: 'ACCOUNT_NOT_FOUND', message: 'No such account.' });
     res.json({ success: true, account: out.account });
   } catch (err) {
-    if (accountRefusal(res, err)) return;
+    if (accountRefusal(res, err) || sizesRefusal(res, err)) return;
     respondError(res, err, 'PUT /merchant/account/payment-accounts/:id', { message: 'Could not save the account.' });
   }
 });
 
 router.delete('/account/payment-accounts/:accountId', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
   try {
-    const out = await db.merchantPaymentAccounts.removeAccount(req.merchantId, req.params.accountId);
+    const out = await db.merchantPaymentAccounts.removeAccount(req.merchantId, req.params.accountId,
+      { required: await requiredSizes() });
     if (!out.ok) return res.status(404).json({ success: false, code: 'ACCOUNT_NOT_FOUND', message: 'No such account.' });
     res.json({ success: true });
   } catch (err) {
+    if (sizesRefusal(res, err)) return;
     respondError(res, err, 'DELETE /merchant/account/payment-accounts/:id', { message: 'Could not remove the account.' });
   }
 });
@@ -214,8 +265,9 @@ router.delete('/account/staff/:staffId/accounts/:accountId/:duty', merchantAuth,
 
 /**
  * POST /api/merchant/account/pool-requests — ask the platform to sell tokens
- * into the merchant account's pool (BUY) or buy them back (SELL), in whole
- * tokens. An admin with `canFundMerchants` fulfils it (Team pool requests).
+ * into the merchant account's pool, in whole tokens. An admin with
+ * `canFundMerchants` fulfils it (Team pool requests). Nothing is sold back
+ * (owner, 2026-10-21): another `direction` is 400 POOL_BUY_ONLY.
  */
 router.post('/account/pool-requests', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
   try {
@@ -225,7 +277,7 @@ router.post('/account/pool-requests', merchantAuth, requireMerchantAccount, owne
     }
     const out = await db.teamPools.createRequest({
       teamId: req.directTeam.teamId, supervisorId: req.merchantId,
-      direction: req.body?.direction, tokenAmountPaise: rupeesToPaise(tokens), note: req.body?.note,
+      direction: String(req.body?.direction ?? 'BUY').toUpperCase(), tokenAmountPaise: rupeesToPaise(tokens), note: req.body?.note,
     });
     if (!out.ok) return refuseTeam(res, out.reason);
     res.status(201).json({ success: true, requestId: out.requestId });
@@ -233,6 +285,50 @@ router.post('/account/pool-requests', merchantAuth, requireMerchantAccount, owne
     respondError(res, err, 'POST /merchant/account/pool-requests', { message: 'Could not send the request.' });
   }
 });
+
+/**
+ * POST /api/merchant/account/pool-requests/usdt { tokens } — buy pool tokens
+ * from the platform in USDT, the way a player buys (owner, 2026-10-21): an
+ * address of its own on BNB Smart Chain and the price, and the tokens arrive
+ * by themselves once the USDT does. No admin step.
+ */
+router.post('/account/pool-requests/usdt', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
+  try {
+    const tokens = Number(req.body?.tokens);
+    if (!Number.isInteger(tokens) || tokens <= 0) {
+      return res.status(400).json({ success: false, code: 'BAD_TOKENS', message: 'Enter a whole number of tokens greater than zero.' });
+    }
+    const out = await openMerchantPoolUsdtBuy({
+      teamId: req.directTeam.teamId, supervisorId: req.merchantId, tokenAmountPaise: rupeesToPaise(tokens),
+    });
+    if (!out.ok) return refuseTeam(res, out.reason);
+    res.status(201).json({ success: true, request: await db.teamPools.getRequest(out.requestId) });
+  } catch (err) {
+    respondError(res, err, 'POST /merchant/account/pool-requests/usdt', { message: 'Could not start the USDT payment.' });
+  }
+});
+
+/**
+ * POST /api/merchant/account/cash-out — start the merchant account's cash out;
+ * DELETE stops it early (owner, 2026-10-21; `teamCashOut.js`).
+ */
+const accountCashOut = (start) => async (req, res) => {
+  try {
+    const args = { teamId: req.directTeam.teamId, merchantId: req.merchantId };
+    const out = start ? await db.teamCashOut.startCashOut(args) : await db.teamCashOut.stopCashOut(args);
+    if (!out.ok) return refuseTeam(res, out.reason);
+    await db.audit.recordDetailed({
+      performedBy: req.merchantId, category: 'TREASURY', targetType: 'TEAM',
+      action: start ? 'TEAM_CASH_OUT_STARTED' : 'TEAM_CASH_OUT_STOPPED',
+      targetId: req.directTeam.teamId, ip: req.ip, details: out.cashOut,
+    });
+    res.json({ success: true, cashOut: out.cashOut });
+  } catch (err) {
+    respondError(res, err, `${start ? 'POST' : 'DELETE'} /merchant/account/cash-out`, { message: 'Could not change the cash out.' });
+  }
+};
+router.post('/account/cash-out', merchantAuth, requireMerchantAccount, ownerOnly, accountCashOut(true));
+router.delete('/account/cash-out', merchantAuth, requireMerchantAccount, ownerOnly, accountCashOut(false));
 
 router.delete('/account/pool-requests/:requestId', merchantAuth, requireMerchantAccount, ownerOnly, async (req, res) => {
   try {

@@ -17,7 +17,7 @@ import { StatusBadge } from '../../components/StatusBadge';
 import { DisputeRecordBadge } from '../../components/DisputeRecordBadge';
 import { UserAvatar } from '../../components/UserAvatar';
 import { Kpis } from '../../components/design';
-import { formatters } from '../../utils/formatters';
+import { formatters, CONTACT_HIDDEN } from '../../utils/formatters';
 import { usePermissions } from '../../hooks/usePermission';
 import { useBoards } from '../../hooks/useBoards';
 import api from '../../services/api';
@@ -25,10 +25,11 @@ import type { PlayerRow } from '../../types';
 import toast from 'react-hot-toast';
 
 interface ProfileUser {
-  userId: string; username: string; mobile: string; status: PlayerRow['status'];
-  accountType?: string; profilePic?: string; phantomAccess?: string;
+  userId: string; username: string; mobile?: string; status: PlayerRow['status'];
+  accountType?: string; profilePic?: string; phantomAccess?: string; maintenanceTester?: boolean;
   blockReason?: string | null; joinedAt: string; lastLogin?: string | null;
-  bankDetails?: { accountHolderName: string; accountNumber: string; ifscCode: string; bankName: string } | null;
+  // Account number, IFSC and UPI ID reach full admins only (staffContactShield.js).
+  bankDetails?: { accountHolderName: string; accountNumber?: string; ifscCode?: string; bankName: string; upiId?: string } | null;
 }
 interface Profile {
   user: ProfileUser;
@@ -121,6 +122,10 @@ export const UserProfile: React.FC = () => {
   const savePhantom = () => run('phantom',
     () => api.post(`/api/admin/users/${user.userId}/phantom-access`, { accessLevel: phantom }),
     `Phantom-bettor access set to ${phantom}`, 'Failed to set phantom-bettor access');
+
+  const setTester = (on: boolean) => run('tester',
+    () => api.users.setMaintenanceTester(user.userId, on),
+    on ? 'This player can use the app during maintenance' : 'Maintenance testing switched off', 'Failed to change maintenance testing');
 
   const closeAccount = async () => {
     if (await run('close', () => api.users.deleteUser(user.userId), 'Account closed', 'Failed to delete the account')) setConfirmClose(false);
@@ -260,13 +265,25 @@ export const UserProfile: React.FC = () => {
           </Section>
         )}
 
+        {canUsers && isPlayer && (
+          <Section title="Maintenance tester"
+            sub="While maintenance mode is on, everyone else sees the maintenance screen; a tester keeps using the app to check the release.">
+            <label htmlFor="maintenance-tester" className="flex items-center gap-3 text-sm text-gray-200 cursor-pointer">
+              <input id="maintenance-tester" type="checkbox" checked={user.maintenanceTester === true} disabled={busy === 'tester'}
+                onChange={(e) => void setTester(e.target.checked)} />
+              {user.maintenanceTester ? 'Can use the app during maintenance' : 'Sees the maintenance screen like everyone else'}
+            </label>
+          </Section>
+        )}
+
         <Section title="Bank account" sub="Where this player's sells are paid.">
           {user.bankDetails ? (
             <dl className="grid grid-cols-2 gap-y-2 text-sm">
               <dt className="text-gray-400">Account holder</dt><dd className="font-semibold">{user.bankDetails.accountHolderName}</dd>
-              <dt className="text-gray-400">Account number</dt><dd className="font-mono">{user.bankDetails.accountNumber}</dd>
-              <dt className="text-gray-400">IFSC</dt><dd className="font-mono">{user.bankDetails.ifscCode}</dd>
+              <dt className="text-gray-400">Account number</dt><dd className="font-mono">{user.bankDetails.accountNumber ?? CONTACT_HIDDEN}</dd>
+              <dt className="text-gray-400">IFSC</dt><dd className="font-mono">{user.bankDetails.ifscCode ?? CONTACT_HIDDEN}</dd>
               <dt className="text-gray-400">Bank</dt><dd>{user.bankDetails.bankName}</dd>
+              <dt className="text-gray-400">UPI ID</dt><dd className="font-mono">{user.bankDetails.upiId ?? CONTACT_HIDDEN}</dd>
             </dl>
           ) : (
             <p className="text-sm text-gray-500 flex items-center gap-2"><CreditCard size={16} className="opacity-40" /> No bank account added.</p>

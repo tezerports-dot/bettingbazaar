@@ -113,12 +113,19 @@ function isOutage(err: unknown): boolean {
 
 // ── Token helpers ─────────────────────────────────────────────────────────────
 function getToken(): string | null {
-  // Prefer HttpOnly cookie (set by server) — no JS access needed.
-  // Header token is only used when cookie transport isn't available (dev/mobile).
+  // The session travels only in the Authorization header; the server sets and
+  // reads no cookie (routes.js `extractToken`, cross-site request forgery).
   return typeof window !== 'undefined'
     ? window.__bbAuthToken__ ?? localStorage.getItem('auth_token')
     : null;
 }
+
+/**
+ * Fired on `window` when the server refuses this session for maintenance (503
+ * `MAINTENANCE`, auth.middleware.js `maintenanceRefusal`; owner, 2026-10-20),
+ * so the app shows the maintenance screen however the request was made.
+ */
+export const MAINTENANCE_EVENT = 'bb:maintenance';
 
 /** Whether this browser holds a session at all (it may still be refused). */
 export function hasStoredSession(): boolean {
@@ -194,7 +201,7 @@ async function performFetch(
   const fetchPromise = secureFetch(url, {
     method,
     headers,
-    credentials: 'include',
+    credentials: 'omit',
     body:        body !== undefined ? JSON.stringify(body) : undefined,
     signal:      options.signal,
   });
@@ -230,6 +237,9 @@ async function performFetch(
   }
 
   const json = await resp.json().catch(() => ({}));
+  if (resp.status === 503 && json?.code === 'MAINTENANCE' && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(MAINTENANCE_EVENT, { detail: { message: json?.message ?? '' } }));
+  }
   if (!resp.ok) throw Object.assign(new Error(json?.message ?? resp.statusText), { status: resp.status, data: json });
   return json;
 }

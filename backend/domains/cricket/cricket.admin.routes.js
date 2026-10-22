@@ -18,13 +18,13 @@
  *   GET  /cricket/matches/:id/polls       every poll with its book
  *   POST /cricket/polls/:pollId/settle    { winningOptions: [key, …] } (several: a dead heat)
  *   POST /cricket/polls/:pollId/void      { reason }
- *   GET  /cricket/report(.csv)?from&to    the house's result per ended poll
+ *   GET  /cricket/report(.xlsx)?from&to    the house's result per ended poll
  */
 import { authenticate, express, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { encryptField } from '../identity/fieldCrypto.util.js';
 import { respondError, refusal } from '../../shared/httpError.js';
-import { toCsv } from '../reporting/csv.util.js';
+import { sendXlsx, oneTable, columnsOf, istText } from '../reporting/xlsx.util.js';
 import { syncFixtures, openPublishedPolls, endPollByAdmin } from './cricketEngine.service.js';
 import { FEED_PROVIDERS, feedProviderList } from './cricketFeed.js';
 import { cricketOddsPublisher } from './cricketOddsPublisher.js';
@@ -237,22 +237,27 @@ router.get('/cricket/report', authenticate, ALLOWED, async (req, res) => {
   }
 });
 
-router.get('/cricket/report.csv', authenticate, ALLOWED, async (req, res) => {
+router.get('/cricket/report.xlsx', authenticate, ALLOWED, async (req, res) => {
   try {
     const { from, to } = windowOf(req.query);
     const rows = await db.cricket.pollReport({ from, to });
-    const r2 = (paise) => (paise / 100).toFixed(2);
-    const csv = toCsv(rows.map((r) => ({
+    const r2 = (paise) => Math.round(Number(paise) || 0) / 100;
+    const table = rows.map((r) => ({
       settled_at: r.settledAt ? new Date(r.settledAt).toISOString() : '',
       match: r.match, poll: r.title, kind: r.kind, status: r.status, winner: r.winnerLabel ?? '',
       bets: r.bets, stakes: r2(r.stakesPaise), claims_paid: r2(r.claimsPaidPaise), wins_paid: r2(r.wonPaidPaise),
       fees: r2(r.feesPaise), refunded: r2(r.refundedPaise), house_net: r2(r.houseNetPaise),
-    })));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="cricket-polls-${from.toISOString().slice(0, 10)}-${to.toISOString().slice(0, 10)}.csv"`);
-    res.send(csv);
+    }));
+    const day = (d) => d.toISOString().slice(0, 10);
+    const money = ['stakes', 'claims_paid', 'wins_paid', 'fees', 'refunded', 'house_net'];
+    sendXlsx(res, `cricket-polls-${day(from)}-${day(to)}.xlsx`, oneTable({
+      name: 'Cricket polls', title: 'Cricket polls', subtitle: `${day(from)} to ${day(to)}. Downloaded ${istText(new Date())}`,
+      accent: 'green', rows: table,
+      columns: table.length ? columnsOf(table, { money }) : [{ key: 'settled_at', label: 'Settled at' }],
+      totals: table.length ? Object.fromEntries(['bets', ...money].map((k) => [k, Math.round(table.reduce((sum, r) => sum + r[k], 0) * 100) / 100])) : undefined,
+    }));
   } catch (error) {
-    return respondError(res, error, 'GET /admin/cricket/report.csv', { message: 'Could not build the export.' });
+    return respondError(res, error, 'GET /admin/cricket/report.xlsx', { message: 'Could not build the export.' });
   }
 });
 

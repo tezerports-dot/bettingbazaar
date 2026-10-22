@@ -3,17 +3,17 @@
  * The order report table (owner, 2026-10-16): a row per order with
  * transaction ID, user, UTR, amount, time and ✓/✗ with who pressed it; the
  * totals are the server's (every row of the range, not the page); paging,
- * the direction filter and the CSV each ask the server; a refusal is said.
+ * the direction filter and the Excel download each ask the server; a refusal is said.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import OrderReportTable from './OrderReportTable';
 
 vi.mock('../services/api', () => ({
-  api: { getOrderReport: vi.fn(), downloadOrderReportCsv: vi.fn() },
+  api: { getOrderReport: vi.fn(), downloadOrderReport: vi.fn() },
 }));
 import { api } from '../services/api';
-const mocked = api as unknown as { getOrderReport: ReturnType<typeof vi.fn>; downloadOrderReportCsv: ReturnType<typeof vi.fn> };
+const mocked = api as unknown as { getOrderReport: ReturnType<typeof vi.fn>; downloadOrderReport: ReturnType<typeof vi.fn> };
 
 const row = (over: Record<string, unknown>) => ({
   orderId: 'DEP_1', type: 'DEPOSIT', userId: 'u_1', utr: '612345678901', tokenAmount: 50000,
@@ -25,7 +25,7 @@ const page = (rows: unknown[], total = rows.length) => ({
   pagination: { total, limit: 50, skip: 0 },
 });
 
-beforeEach(() => { mocked.getOrderReport.mockReset(); mocked.downloadOrderReportCsv.mockReset(); });
+beforeEach(() => { mocked.getOrderReport.mockReset(); mocked.downloadOrderReport.mockReset(); });
 
 describe('OrderReportTable', () => {
   it('draws each order with ✓/✗ and who pressed it, and the server\'s totals', async () => {
@@ -64,13 +64,13 @@ describe('OrderReportTable', () => {
       { from: '2026-10-01', to: '2026-10-07', type: 'WITHDRAWAL' }, { limit: 50, skip: 0 }));
   });
 
-  it('downloads the CSV from the server and says a refusal', async () => {
+  it('downloads the workbook from the server and says a refusal', async () => {
     mocked.getOrderReport.mockResolvedValue(page([row({})]));
-    mocked.downloadOrderReportCsv.mockRejectedValue(new Error('A report covers at most 366 days.'));
+    mocked.downloadOrderReport.mockRejectedValue(new Error('A report covers at most 366 days.'));
     render(<OrderReportTable />);
     await screen.findByText('DEP_1');
-    fireEvent.click(screen.getByRole('button', { name: /Download CSV/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Download orders/ }));
     expect(await screen.findByRole('alert')).toHaveTextContent('A report covers at most 366 days.');
-    expect(mocked.downloadOrderReportCsv).toHaveBeenCalledWith({ from: '', to: '', type: '' });
+    expect(mocked.downloadOrderReport).toHaveBeenCalledWith({ from: '', to: '', type: '' });
   });
 });

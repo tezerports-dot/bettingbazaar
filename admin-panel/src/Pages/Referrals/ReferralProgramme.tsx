@@ -1,6 +1,13 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * ReferralProgramme.tsx — funding the queue.
+ * ReferralProgramme.tsx — the referral payout queue.
+ *
+ * ── Paid by itself ──────────────────────────────────────────────────────────
+ * Every referral bonus is paid a minute or less after its joiner verifies, by
+ * the `referral-autopay` cron, out of the platform's token holding. There is
+ * no budget and no on/off switch (owner, 2026-10-20: "no cap … auto deducted
+ * from that total token"); the amounts per level are System Settings ›
+ * Referral Rewards. "Pay now" runs the same payout at once, up to an amount.
  *
  * ── The admin supplies an amount, and nothing else ──────────────────────────
  * There is no "pay this person" button here, and that absence is the design.
@@ -23,7 +30,7 @@
  * someone who did the work of inviting a player.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { Users, IndianRupee, AlertTriangle } from 'lucide-react';
+import { Users, IndianRupee, Zap } from 'lucide-react';
 import { Kpis, inr } from '../../components/design';
 import { formatters } from '../../utils/formatters';
 import api from '../../services/api';
@@ -81,45 +88,38 @@ export const ReferralProgramme: React.FC = () => {
   const capUsedPct = stats?.memberCap
     ? Math.min(100, ((stats.verifiedMembers || 0) / stats.memberCap) * 100)
     : 0;
-  const budgetUsedPct = stats?.budget
-    ? Math.min(100, ((stats.disbursed || 0) / stats.budget) * 100)
-    : 0;
 
   return (
     <div className="om-fade" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Kpis items={[
-        { label: 'Owed and unpaid', value: inr(stats?.pendingValue), sub: `${formatters.number(stats?.pendingCount || 0)} earner(s)`, tone: 'var(--warning)' },
-        { label: 'Paid to date', value: inr(stats?.disbursed), sub: `${budgetUsedPct.toFixed(1)}% of budget` },
-        { label: 'Budget remaining', value: inr(stats?.remaining) },
-        { label: 'Verified members', value: formatters.number(stats?.verifiedMembers || 0), sub: `${capUsedPct.toFixed(2)}% of cap` },
+        { label: 'Waiting to be paid', value: inr(stats?.pendingValue), sub: `${formatters.number(stats?.pendingCount || 0)} earning(s), paid within a minute`, tone: 'var(--warning)' },
+        { label: 'Paid to date', value: inr(stats?.paid), sub: `${formatters.number(stats?.paidCount || 0)} bonus(es)`, tone: 'var(--success)' },
+        { label: 'Not payable', value: inr(stats?.blockedValue), sub: `${formatters.number(stats?.blockedCount || 0)} earning(s)`, tone: (stats?.blockedCount || 0) ? 'var(--danger)' : undefined },
+        { label: 'Verified members', value: formatters.number(stats?.verifiedMembers || 0), sub: stats?.memberCap ? `${capUsedPct.toFixed(2)}% of cap` : 'no cap' },
       ]} />
 
-      {stats?.active === false && (
-        <div className="card" style={{ padding: '16px 18px', display: 'flex', gap: 12, borderColor: 'var(--danger)' }}>
-          <AlertTriangle size={20} style={{ color: 'var(--danger)', flex: 'none', marginTop: 1 }} />
-          <div>
-            <div style={{ fontSize: 13.5, fontWeight: 700 }}>The programme is closed</div>
-            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4, lineHeight: 1.6 }}>
-              Either the budget or the member cap has been reached. New referrals no longer
-              accrue; earnings already owed can still be paid out below.
-            </div>
-          </div>
+      <div className="card" style={{ padding: '14px 18px', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+        <Zap size={18} style={{ color: 'var(--gold-ink)', flex: 'none', marginTop: 1 }} />
+        <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.65 }}>
+          <strong style={{ color: 'var(--text)' }}>Referral bonuses are paid automatically.</strong> A minute or less after a new
+          player verifies in Telegram, each referrer up their invite chain is paid into their General balance, in joining
+          order, out of the platform&apos;s token holding (Token Flow). There is no budget to fund. The amount per level is
+          set under System Settings › Referral Rewards.
         </div>
-      )}
+      </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(330px,1fr))', gap: 16 }}>
         {/* ── Fund the queue ──────────────────────────────────────────── */}
         <div className="card" style={{ padding: 22 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
             <IndianRupee size={17} style={{ color: 'var(--gold-ink)' }} />
-            <div style={{ fontSize: 15, fontWeight: 800 }}>Fund the queue</div>
+            <div style={{ fontSize: 15, fontWeight: 800 }}>Pay now</div>
           </div>
           <p style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.65, marginBottom: 16 }}>
-            Enter an amount. It is paid out in strict joining order — earliest joiner first —
-            until it runs out. Nobody is chosen by hand, and a reward is never split: if the
-            pool cannot cover the next reward in full, it stops there and the remainder is
-            reported back to you unspent. What each joiner earns is set under System Settings ›
-            Referral Rewards.
+            Not needed day to day: the queue pays itself every minute. To pay it at once, enter an amount. It is
+            paid in strict joining order, earliest joiner first, until it runs out. Nobody is chosen by hand, and a
+            reward is never split: if the amount cannot cover the next reward in full, it stops there and the rest
+            is reported back unspent.
           </p>
 
           <label style={{ display: 'block', fontSize: 10.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 5 }} htmlFor="pool-amount">
@@ -189,10 +189,9 @@ export const ReferralProgramme: React.FC = () => {
         <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 14 }}>Programme position</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: '0 28px' }}>
           {[
-            { k: 'Total budget', v: inr(stats?.budget) },
-            { k: 'Paid to date', v: inr(stats?.disbursed) },
-            { k: 'Remaining', v: inr(stats?.remaining) },
-            { k: 'Member cap', v: formatters.number(stats?.memberCap || 0) },
+            { k: 'Paid to date', v: inr(stats?.paid) },
+            { k: 'Bonuses paid', v: formatters.number(stats?.paidCount || 0) },
+            { k: 'Member cap', v: stats?.memberCap ? formatters.number(stats.memberCap) : 'None' },
             { k: 'Verified members', v: formatters.number(stats?.verifiedMembers || 0) },
             { k: 'Next joining number', v: formatters.number(stats?.nextQueuePosition || 0) },
           ].map((r) => (

@@ -63,8 +63,9 @@ export const PoolRequests: React.FC<{ kind: TeamPoolRequest['teamKind']; onChang
       <h2 className="text-base font-semibold mb-1">Pool token requests</h2>
       <p className="text-xs text-gray-400 mb-3">
         {kind === 'DIRECT'
-          ? 'A merchant asks to buy tokens for its own pool, or to sell them back.'
-          : 'A supervisor asks to buy tokens for an agents\' team pool, or to sell them back.'}
+          ? 'A merchant asks to buy tokens for its own pool.'
+          : 'A supervisor asks to buy tokens for an agents\' team pool.'}
+        {' '}Tokens are never bought back from a pool.
         {' '}Fulfil only once the money has changed hands, and record how much.
       </p>
       {loading ? <LoadingSpinner /> : requests.length === 0 ? (
@@ -72,14 +73,16 @@ export const PoolRequests: React.FC<{ kind: TeamPoolRequest['teamKind']; onChang
       ) : (
         <ul className="space-y-3">
           {requests.map((r) => {
+            // A buyback asked before they were removed (owner, 2026-10-21) can
+            // only be rejected: the server never fulfils one.
             const isBuy = r.direction === 'BUY';
-            const cur = isBuy ? (currency[r.requestId] ?? 'INR') : 'INR';
+            const cur = currency[r.requestId] ?? 'INR';
             const typed = amount[r.requestId] ?? '';
             return (
               <li key={r.requestId} className="border border-dark-600 rounded-lg p-3">
                 <div className="flex flex-wrap items-center gap-2 mb-2 text-sm">
                   <span className={`text-xs px-2 py-0.5 rounded-lg ${isBuy ? 'bg-green-500/20 text-green-400' : 'bg-orange-500/20 text-orange-400'}`}>
-                    {isBuy ? 'Buy tokens' : 'Sell back'}
+                    {isBuy ? 'Buy tokens' : 'Sell back (no longer allowed: reject it)'}
                   </span>
                   <span className="font-medium">{tokens(r.tokenAmountPaise)} tokens</span>
                   <span className="text-gray-400">for {r.teamName ?? r.teamId}</span>
@@ -87,9 +90,10 @@ export const PoolRequests: React.FC<{ kind: TeamPoolRequest['teamKind']; onChang
                   {r.note && <span className="text-xs text-gray-400 italic">“{r.note}”</span>}
                 </div>
                 <div className="flex flex-wrap gap-2 items-end">
+                  {isBuy && (<>
                   <div>
                     <label htmlFor={`pr-amt-${r.requestId}`} className="block text-xs text-gray-400 mb-1">
-                      {isBuy ? 'Platform received' : 'Platform paid'}
+                      Platform received
                     </label>
                     <input id={`pr-amt-${r.requestId}`} inputMode="decimal" value={typed}
                       onChange={(e) => setAmount((a) => ({ ...a, [r.requestId]: e.target.value }))}
@@ -97,11 +101,11 @@ export const PoolRequests: React.FC<{ kind: TeamPoolRequest['teamKind']; onChang
                   </div>
                   <div>
                     <label htmlFor={`pr-cur-${r.requestId}`} className="block text-xs text-gray-400 mb-1">Currency</label>
-                    <select id={`pr-cur-${r.requestId}`} value={cur} disabled={!isBuy}
+                    <select id={`pr-cur-${r.requestId}`} value={cur}
                       onChange={(e) => setCurrency((c) => ({ ...c, [r.requestId]: e.target.value as 'INR' | 'USDT' }))}
                       className="bg-dark-700 border border-dark-600 rounded-lg px-3 py-1.5 text-sm">
                       <option value="INR">INR</option>
-                      {isBuy && <option value="USDT">USDT</option>}
+                      <option value="USDT">USDT</option>
                     </select>
                   </div>
                   <button disabled={!!busy || typed.trim() === ''}
@@ -109,8 +113,9 @@ export const PoolRequests: React.FC<{ kind: TeamPoolRequest['teamKind']; onChang
                       () => api.teams.fulfilPoolRequest(r.requestId, { settlementCurrency: cur, settlementAmount: Number(typed) }),
                       'Fulfilled', 'Could not fulfil')}
                     className="px-3 py-1.5 rounded-lg bg-yellow-500 text-black text-sm font-semibold disabled:opacity-50">
-                    {isBuy ? `Sell ${tokens(r.tokenAmountPaise)} tokens to ${r.teamName ?? 'team'}` : `Buy ${tokens(r.tokenAmountPaise)} tokens back from ${r.teamName ?? 'team'}`}
+                    {`Sell ${tokens(r.tokenAmountPaise)} tokens to ${r.teamName ?? 'team'}`}
                   </button>
+                  </>)}
                   <div>
                     <label htmlFor={`pr-why-${r.requestId}`} className="block text-xs text-gray-400 mb-1">Reason (if rejecting)</label>
                     <input id={`pr-why-${r.requestId}`} value={reason[r.requestId] ?? ''}

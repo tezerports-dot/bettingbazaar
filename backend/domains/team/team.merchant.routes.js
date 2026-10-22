@@ -15,6 +15,7 @@ import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { respondError } from '../../shared/httpError.js';
 import { refuse } from './teamRefusals.js';
 import { rupeesToPaise } from '../../shared/money.js';
+import { openMerchantPoolUsdtBuy } from '../payment/usdtDeposit.service.js';
 import { listMessages, postSupervisorMessage } from '#db/repositories/chat.js';
 import { toSupervisorOrderView, toSupervisorOrderViews } from '../merchant/merchantOrderView.js';
 import {
@@ -40,6 +41,8 @@ router.get('/team', merchantAuth, async (req, res) => {
       const teams = await db.teams.listTeams({ supervisorId: me.merchantId });
       const members = (await Promise.all(teams.map((t) => db.teams.listMembers({ teamId: t.teamId })))).flat();
       const poolRequests = await db.teamPools.listRequests({ supervisorId: me.merchantId, limit: 50 });
+      // Per team: tokens bought from the platform.
+      for (const t of teams) t.poolTrades = await db.teamPools.poolTradeTotals(t.teamId);
       // Team commission (Step 2e): each team's recent payments with this
       // supervisor's 16% of each, and their total across every team.
       const [commissions, myCommissionPaise] = await Promise.all([
@@ -160,14 +163,14 @@ router.get('/supervisor/teams/:teamId/pool', merchantAuth, requireSupervisor, as
 });
 
 /**
- * POST /api/merchant/supervisor/teams/:teamId/pool-requests
- *   { direction: 'BUY'|'SELL', tokenAmount, note }
- * BUY asks the platform to sell tokens into the pool; SELL asks it to buy pool
- * tokens back. An admin fulfils it after the money has changed hands.
+ * POST /api/merchant/supervisor/teams/:teamId/pool-requests { tokenAmount, note }
+ * Asks the platform to sell tokens into the pool; an admin fulfils it after
+ * the money has changed hands. Nothing is sold back (owner, 2026-10-21): a
+ * `direction` other than BUY is 400 POOL_BUY_ONLY.
  */
 router.post('/supervisor/teams/:teamId/pool-requests', merchantAuth, requireSupervisor, async (req, res) => {
   try {
-    const direction = String(req.body?.direction ?? '').toUpperCase();
+    const direction = String(req.body?.direction ?? 'BUY').toUpperCase();
     const tokens = Number(req.body?.tokenAmount);
     if (!Number.isInteger(tokens) || tokens <= 0) {
       return res.status(400).json({ success: false, code: 'bad_amount', message: 'Enter a whole number of tokens greater than zero.' });
@@ -179,17 +182,60 @@ router.post('/supervisor/teams/:teamId/pool-requests', merchantAuth, requireSupe
     if (!out.ok) return refuse(res, out.reason);
     await db.audit.recordDetailed({
       performedBy: req.merchantId, category: 'TREASURY', targetType: 'TEAM',
-      action: direction === 'BUY' ? 'TEAM_POOL_BUY_REQUESTED' : 'TEAM_POOL_SELL_REQUESTED',
+      action: 'TEAM_POOL_BUY_REQUESTED',
       targetId: req.params.teamId, ip: req.ip, details: { requestId: out.requestId, tokenAmount: tokens },
     });
     res.status(201).json({
       success: true, request: await db.teamPools.getRequest(out.requestId),
-      message: direction === 'BUY'
-        ? 'Requested. Pay the platform, and an admin will add the tokens once the payment is confirmed.'
-        : 'Requested. An admin will pay you and take the tokens out of the pool.',
+      message: 'Requested. Pay the platform, and an admin will add the tokens once the payment is confirmed.',
     });
   } catch (err) { respondError(res, err, 'POST /merchant/supervisor/teams/:id/pool-requests'); }
 });
+
+/**
+ * POST /api/merchant/supervisor/teams/:teamId/pool-requests/usdt { tokenAmount }
+ * Buy pool tokens from the platform in USDT (owner, 2026-10-21): the team's
+ * own address and the price; the tokens arrive once the USDT does.
+ */
+router.post('/supervisor/teams/:teamId/pool-requests/usdt', merchantAuth, requireSupervisor, async (req, res) => {
+  try {
+    const tokens = Number(req.body?.tokenAmount);
+    if (!Number.isInteger(tokens) || tokens <= 0) {
+      return res.status(400).json({ success: false, code: 'bad_amount', message: 'Enter a whole number of tokens greater than zero.' });
+    }
+    const out = await openMerchantPoolUsdtBuy({
+      teamId: req.params.teamId, supervisorId: req.merchantId, tokenAmountPaise: rupeesToPaise(tokens),
+    });
+    if (!out.ok) return refuse(res, out.reason);
+    await db.audit.recordDetailed({
+      performedBy: req.merchantId, category: 'TREASURY', targetType: 'TEAM', action: 'TEAM_POOL_BUY_REQUESTED',
+      targetId: req.params.teamId, ip: req.ip, details: { requestId: out.requestId, tokenAmount: tokens, usdt: out.usdt },
+    });
+    res.status(201).json({ success: true, request: await db.teamPools.getRequest(out.requestId) });
+  } catch (err) { respondError(res, err, 'POST /merchant/supervisor/teams/:id/pool-requests/usdt'); }
+});
+
+/**
+ * POST /api/merchant/supervisor/teams/:teamId/cash-out — start the team pool's
+ * cash out; DELETE stops it early (owner, 2026-10-21; `teamCashOut.js`): buys
+ * only, and first, while it runs; the sells and disputes already open stay;
+ * then 48 hours with nothing new. Another supervisor's team matches no row.
+ */
+const cashOutRoute = (start) => async (req, res) => {
+  try {
+    const args = { teamId: req.params.teamId, merchantId: req.merchantId };
+    const out = start ? await db.teamCashOut.startCashOut(args) : await db.teamCashOut.stopCashOut(args);
+    if (!out.ok) return refuse(res, out.reason);
+    await db.audit.recordDetailed({
+      performedBy: req.merchantId, category: 'TREASURY', targetType: 'TEAM',
+      action: start ? 'TEAM_CASH_OUT_STARTED' : 'TEAM_CASH_OUT_STOPPED',
+      targetId: req.params.teamId, ip: req.ip, details: out.cashOut,
+    });
+    res.json({ success: true, cashOut: out.cashOut });
+  } catch (err) { respondError(res, err, `${start ? 'POST' : 'DELETE'} /merchant/supervisor/teams/:id/cash-out`); }
+};
+router.post('/supervisor/teams/:teamId/cash-out', merchantAuth, requireSupervisor, cashOutRoute(true));
+router.delete('/supervisor/teams/:teamId/cash-out', merchantAuth, requireSupervisor, cashOutRoute(false));
 
 // DELETE /api/merchant/supervisor/pool-requests/:requestId — a pending request only.
 router.delete('/supervisor/pool-requests/:requestId', merchantAuth, requireSupervisor, async (req, res) => {

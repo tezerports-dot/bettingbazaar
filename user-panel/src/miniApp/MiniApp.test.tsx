@@ -31,9 +31,17 @@ beforeEach(() => {
 });
 
 describe('the Mini App', () => {
-  it('refuses to work outside Telegram', () => {
+  it('without Telegram\'s launch data, says what to do rather than "open this page from Telegram"', () => {
     render(<MiniApp app={null} />);
-    expect(screen.getByRole('alert').textContent).toMatch(/inside the telegram app/i);
+    expect(screen.getByRole('alert').textContent).toMatch(/telegram did not pass your sign-in/i);
+    expect(screen.getByText(/press login with telegram again/i)).toBeTruthy();
+  });
+
+  it('opened inside Telegram with no launch data, offers to close the window', () => {
+    const empty = { ...app(), initData: '' };
+    render(<MiniApp app={empty} />);
+    fireEvent.click(screen.getByRole('button', { name: /close/i }));
+    expect(empty.close).toHaveBeenCalled();
   });
 
   // Verify is the only thing the page does (owner, 2026-10-14): no separate
@@ -59,12 +67,12 @@ describe('the Mini App', () => {
     expect(approve).not.toHaveBeenCalled();
   });
 
-  it('says a new merchant Verify confirms the account an admin created, and relays a refusal when there is none', async () => {
+  it('says a new merchant Verify sends an application, and relays a refusal', async () => {
     context.mockResolvedValue(newAccount({ panel: 'MERCHANT', account: { panel: 'MERCHANT', isNew: true, mobileHint: '' } }));
     approve.mockRejectedValue(Object.assign(new Error('There is no merchant account for this mobile number. Ask an admin to create your account with this mobile, then Continue with Telegram again.'), { status: 404, code: 'NO_MERCHANT_ACCOUNT' }));
     const a = app();
     render(<MiniApp app={a} />);
-    expect((await screen.findByTestId('verify-account')).textContent).toMatch(/merchant account an admin created/i);
+    expect((await screen.findByTestId('verify-account')).textContent).toMatch(/sends your merchant application/i);
     fireEvent.click(screen.getByRole('button', { name: /share contact and verify/i }));
     expect((await screen.findByRole('alert')).textContent).toMatch(/Ask an admin to create your account/i);
     expect(a.openLink).not.toHaveBeenCalled();
@@ -165,5 +173,47 @@ describe('the Verify screen (Continue with Telegram)', () => {
     expect(await screen.findByText(/opening bettingbazaar\.com/i)).toBeTruthy();
     expect(continueToSite).toHaveBeenCalledWith(a.initData, null);
     expect(a.openLink).toHaveBeenCalledWith('https://bettingbazaar.com/#/tg/xyz');
+  });
+  it('a player\'s Verify also opens the signup channel\'s join request, after the sign-in, and lists every channel', async () => {
+    const channels = [
+      { title: 'Bazaar News', inviteLink: 'https://t.me/+news' },
+      { title: 'Bazaar Two', inviteLink: 'https://t.me/+two' },
+    ];
+    context.mockResolvedValue(signIn({ delivery: 'HANDOFF', choices: null, channels }));
+    approve.mockResolvedValue({ approved: true, message: 'Opening…', redirectUrl: 'https://bettingbazaar.com/#/tg/abc' });
+    const a = { ...app(), openTelegramLink: vi.fn() };
+    render(<MiniApp app={a} />);
+    expect((await screen.findByTestId('verify-channels')).textContent).toMatch(/Bazaar News, Bazaar Two.*admin approves/i);
+    expect(a.openTelegramLink).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /^verify$/i }));
+    expect(await screen.findByText(/opening bettingbazaar\.com/i)).toBeTruthy();
+    expect(a.openLink).toHaveBeenCalledWith('https://bettingbazaar.com/#/tg/abc');
+    expect(a.openTelegramLink).toHaveBeenCalledWith('https://t.me/+news');
+    fireEvent.click(screen.getByRole('button', { name: /request to join bazaar two/i }));
+    expect(a.openTelegramLink).toHaveBeenLastCalledWith('https://t.me/+two');
+  });
+
+  it('a MATCH with a channel keeps the join buttons on the finished screen', async () => {
+    context.mockResolvedValue(signIn({ delivery: 'MATCH', choices: [31, 47, 82], channels: [{ title: 'Bazaar News', inviteLink: 'https://t.me/+news' }] }));
+    approve.mockResolvedValue({ approved: true, message: 'Done. Go back to the website or app — it will continue on its own.', redirectUrl: null });
+    const a = { ...app(), openTelegramLink: vi.fn() };
+    render(<MiniApp app={a} />);
+    fireEvent.click(await screen.findByRole('button', { name: '47' }));
+    fireEvent.click(screen.getByRole('button', { name: /^verify$/i }));
+    expect(await screen.findByText(/go back to the website/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /request to join bazaar news/i })).toBeTruthy();
+    expect(a.openTelegramLink).toHaveBeenCalledWith('https://t.me/+news');
+  });
+
+  it('with no channel on, Verify says nothing about channels and opens none', async () => {
+    context.mockResolvedValue(signIn({ delivery: 'HANDOFF', choices: null, channels: [] }));
+    approve.mockResolvedValue({ approved: true, message: 'Opening…', redirectUrl: 'https://bettingbazaar.com/#/tg/abc' });
+    const a = { ...app(), openTelegramLink: vi.fn() };
+    render(<MiniApp app={a} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^verify$/i }));
+    expect(await screen.findByText(/opening bettingbazaar\.com/i)).toBeTruthy();
+    expect(screen.queryByTestId('verify-channels')).toBeNull();
+    expect(screen.queryByTestId('join-channels')).toBeNull();
+    expect(a.openTelegramLink).not.toHaveBeenCalled();
   });
 });

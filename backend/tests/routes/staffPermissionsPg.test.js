@@ -137,10 +137,9 @@ describePg('staff permissions: every area, every route', () => {
     expect((await as(app, m).get('/queue/pending-orders')).status).toBe(200);
   });
 
-  it('a queue manager still works the queue and nothing else', async () => {
-    const qm = await actor({ isQueueManager: true });
-    expect((await as(app, qm).get('/queue/pending-orders')).status).toBe(200);
-    expect((await as(app, qm).get('/merchants')).status).toBe(403);
+  it('a sub-admin without the merchants area is refused the queue (no queue manager role; owner, 2026-10-21)', async () => {
+    const other = await actor({ isSubAdmin: true, permissions: { canManageContent: true } });
+    expect((await as(app, other).get('/queue/pending-orders')).status).toBe(403);
   });
 
   // ── The grant ──────────────────────────────────────────────────────────────

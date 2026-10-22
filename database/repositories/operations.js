@@ -170,52 +170,12 @@ export async function getCounter(key) {
   return rows[0] ? Number(rows[0].value) : 0;
 }
 
-// ── Client crash reports ────────────────────────────────────────────────────
-
-/** Record a crash from a browser panel. High volume, pruned by retention. */
-export async function recordFrontendError({ message, stack = null, component = null, url = null, panel = null }) {
-  if (!message) return null;
-  const { rows } = await pgQuery(
-    `INSERT INTO frontend_error_reports (message, stack, component, url, panel)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at`,
-    [String(message).slice(0, 4000), stack ? String(stack).slice(0, 20000) : null,
-      component, url, panel], 'frontend_error_record',
-  );
-  return { id: Number(rows[0].id), createdAt: rows[0].created_at };
-}
-
-export async function listFrontendErrors({ limit = 100 } = {}) {
-  const { rows } = await pgQuery(
-    `SELECT id, message, stack, component, url, panel, created_at
-       FROM frontend_error_reports ORDER BY created_at DESC LIMIT $1`,
-    [Math.min(Math.max(Number(limit) || 100, 1), 1000)], 'frontend_error_list',
-  );
-  return rows.map((r) => ({
-    id: Number(r.id), message: r.message, stack: r.stack, component: r.component,
-    url: r.url, panel: r.panel, createdAt: r.created_at,
-  }));
-}
-
-/**
- * Clear the crash-report inbox.
- *
- * Returns how many rows went. The endpoint above it reported "All error reports
- * cleared" whether it deleted nine hundred or none, so an admin could not tell
- * a clear from a no-op against an empty table — or from a clear that ran
- * against the wrong deployment.
- */
-export async function clearFrontendErrors() {
-  const { rowCount } = await pgQuery(
-    'DELETE FROM frontend_error_reports', [], 'frontend_error_clear',
-  );
-  return rowCount;
-}
-
 /**
  * Prune operational data past the retention window.
  *
  * Deliberately narrow. Financial, audit and user data is NEVER pruned — this
- * touches crash reports, expired referral clicks and expired notifications, and
+ * touches the error log and expired referral clicks (old notifications move to
+ * cold storage instead, coldArchive.js), and
  * a hard floor stops a misconfigured `retentionMonths` from deleting anything
  * recent whatever the admin set.
  */
@@ -233,19 +193,16 @@ export async function clearFrontendErrors() {
  * that does the deleting rather than in a caller that might be bypassed.
  */
 const PRUNABLE = Object.freeze({
-  frontendErrors: {
-    table: 'frontend_error_reports',
-    where: "created_at < now() - $1::interval AND created_at < now() - interval '30 days'",
+  // The error log (errorLog.js): an error marked fixed goes 30 days after the
+  // fix; any other once it has not been seen for the retention window.
+  errorLog: {
+    table: 'error_log',
+    where: "((status = 'FIXED' AND fixed_at < now() - interval '30 days') OR last_seen_at < now() - $1::interval) AND last_seen_at < now() - interval '30 days'",
     usesInterval: true,
   },
   referralClicks: {
     table: 'referral_clicks',
     where: "expires_at < now() - interval '30 days'",
-    usesInterval: false,
-  },
-  notifications: {
-    table: 'notifications',
-    where: "expires_at IS NOT NULL AND expires_at < now() - interval '30 days'",
     usesInterval: false,
   },
 });

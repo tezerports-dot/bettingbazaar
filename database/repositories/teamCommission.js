@@ -1,35 +1,35 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * Team commission (owner, 2026-10-02 — PROJECT_STATUS §3.10, Step 2e).
+ * Order commission (owner, 2026-10-21; replaces the matched-volume cycle of
+ * 2026-10-02).
  *
- * A team's MATCHED volume is min(completed buys, completed sells), in tokens.
- * Each time it rises above the team's high-water mark — even by 500 — 10% of
- * the rise is paid as tokens into the team's pool, out of the platform's
- * commission pool. 16% of each payment is recorded to the supervisor and 84%
- * to the approved members in equal parts, so each person sees what they
- * earned; the tokens themselves sit in the pool. It replaces the per-merchant,
- * per-variety engine (deleted in 2c).
+ * Every COMPLETED order a team served earns a percent of its tokens, paid as
+ * tokens into that team's pool out of the platform's commission pool: a buy
+ * (a player's deposit) `orderCommission.depositPercent`, a sell (a player's
+ * withdrawal) `orderCommission.withdrawalPercent` — 5 and 5 by default, both
+ * the admin's (Admin › Settings). Rounded down to the paisa. An agents' team
+ * records 16% of each payment to its supervisor and the rest to its approved
+ * members in equal parts; a merchant account records the whole payment to its
+ * owner. The tokens themselves sit in the pool.
  *
- * ── The mark is the rows ─────────────────────────────────────────────────────
- * One `team_commissions` row per rise, keyed by where it started and where it
- * ended. The mark is the highest `to_high_paise` the team has; nothing else
- * stores it, so it cannot disagree with what was paid (§26: the mark is read
- * from the idempotency key). A payment from a mark already paid from collides
- * on `team_commissions_from_once` and moves nothing.
+ * ── Once per order ───────────────────────────────────────────────────────────
+ * One `team_commissions` row per order, keyed by the order (`commission_id`
+ * `tcm~<orderId>` and the unique `order_id`). A second payment for the same
+ * order collides and moves nothing. The row records the order's tokens and
+ * the rate it was paid at, in basis points, and its CHECK holds the sum to
+ * them, so every writer pays exactly that.
  *
  * ── Never partial ────────────────────────────────────────────────────────────
  * The platform's commission pool is `MERCHANT_BONUS_POOL` in the accounting
  * ledger, which an admin funds from distributable revenue. A commission it
- * cannot cover in full is not paid and the mark does not move, so the next
- * completion — or the sweep, or the admin's next top-up — pays the whole rise
- * at once (§26: never partial-issue). Paying part and recording the whole
- * would under-pay for good.
+ * cannot cover in full is not paid; the order stays owed, and the sweep (or
+ * the admin's next top-up) pays it whole (§26).
  *
  * ── One transaction, one payment at a time ───────────────────────────────────
  * The commission row, its shares, the ledger event, the pool credit and the
- * treasury movement commit together (§21). The pool balance is a gate read and
- * then spent, so every payment takes the same advisory lock first: the gate is
- * a serialised write, not a snapshot (§32 S6, trap 18).
+ * treasury movement commit together (§21). The commission pool's balance is a
+ * gate read and then spent, so every payment takes the same advisory lock
+ * first: the gate is a serialised write, not a snapshot (§32 S6, trap 18).
  */
 import { pgQuery, withTransaction } from '../client.js';
 import { getSystemConfig } from './config.js';
@@ -37,48 +37,36 @@ import { creditCommissionWithin, PoolRefused } from './teamPools.js';
 import { recordEvent, accountBalancePaise } from './ledger.core.js';
 import { ACCOUNTS as LEDGER, EVENT_TYPES, buildBonusIssuePostings } from '../../backend/domains/revenue/chartOfAccounts.js';
 
-/** Of each rise in matched volume, paid into the team's pool (owner). */
-export const COMMISSION_PERCENT = 10;
 /** Of each payment, recorded to the supervisor; the rest to the members equally (owner). */
 export const SUPERVISOR_SHARE_PERCENT = 16;
 export const SHARE_ROLES = Object.freeze({ SUPERVISOR: 'SUPERVISOR', MEMBER: 'MEMBER', OWNER: 'OWNER' });
 
-/**
- * The percent a merchant account (a DIRECT team) is paid: the admin's
- * `directMerchants.commissionPercent` (owner, 2026-10-11), with no supervisor
- * share. An agents' team stays at COMMISSION_PERCENT.
- */
-export function directCommissionPercent(cfg) {
-  const n = Number(cfg?.directMerchants?.commissionPercent ?? 10); // schema default: 10
-  return Number.isInteger(n) && n >= 1 && n <= 50 ? n : 10; // schema default: 10
-}
-
 const PAY_LOCK = `SELECT pg_advisory_xact_lock(hashtext('bb_team_commission_pay'))`;
 const toNum = (v) => Number(v ?? 0);
+const bpOf = (percent, fallback) => {
+  const n = Number(percent ?? fallback);
+  return Number.isFinite(n) && n >= 0 && n <= 20 ? Math.round(n * 100) : Math.round(fallback * 100);
+};
 
 /**
- * A team's completed volume in tokens, as one SQL fragment: the payment and
- * every screen read the same one (§32 S11). `team` is the SQL that names the
- * team — a parameter or a column. Tokens, never fiat (trap 15).
+ * The admin's two rates, in percent and in basis points (hundredths of a
+ * percent), with the schema defaults (config.spec.js `orderCommission`).
  */
-export const teamVolumeSql = (team) => `
-  SELECT COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS buys_paise,
-         COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS sells_paise
-    FROM order_states WHERE team_id = ${team} AND state = 'COMPLETED'`;
+export function commissionRates(cfg) {
+  const c = cfg?.orderCommission ?? {};
+  const deposit = bpOf(c.depositPercent, 5);     // schema default: 5
+  const withdrawal = bpOf(c.withdrawalPercent, 5); // schema default: 5
+  return {
+    depositPercent: deposit / 100, withdrawalPercent: withdrawal / 100,
+    bp: { DEPOSIT: deposit, WITHDRAWAL: withdrawal },
+  };
+}
 
-/** The team's mark and what it has been paid in all. */
-export const teamMarkSql = (team) => `
-  SELECT COALESCE(MAX(to_high_paise), 0) AS high_paise, COALESCE(SUM(commission_paise), 0) AS paid_paise
-    FROM team_commissions WHERE team_id = ${team}`;
-
-/**
- * `percent` of the rise above the mark (COMMISSION_PERCENT for an agents'
- * team), rounded down to the paisa; 0 without a rise. The CHECK does the same
- * sum with the percent the row records (`team_commissions_percent_of_rise`).
- */
-export function commissionFor(matchedPaise, highPaise, percent = COMMISSION_PERCENT) {
-  const rise = Number(matchedPaise) - Number(highPaise);
-  return rise > 0 ? Math.floor((rise * Number(percent)) / 100) : 0;
+/** `bp` basis points of an order's tokens, rounded down to the paisa. The CHECK does the same sum. */
+export function commissionFor(basePaise, bp) {
+  const base = Number(basePaise);
+  const rate = Number(bp);
+  return base > 0 && rate > 0 ? Math.floor((base * rate) / 10000) : 0;
 }
 
 /**
@@ -103,83 +91,97 @@ export function splitShares(commissionPaise, supervisorId, memberIds) {
 }
 
 /**
- * A team's commission picture from a row carrying the volume and mark columns
- * above. A merchant account (`kind: 'DIRECT'`) is paid `percent` and has no
- * supervisor share.
+ * A team's completed volume and its commission, as one SQL fragment: the
+ * payment's sweep and every screen read the same one (§32 S11). `team` is the
+ * SQL that names the team — a parameter or a column. Tokens, never fiat (trap
+ * 15). `unpaid_*` are completed orders with no commission row yet.
  */
-export function toSummary(teamId, row, { percent = COMMISSION_PERCENT, kind = 'AGENT' } = {}) {
-  const direct = kind === 'DIRECT';
-  const rate = direct ? Number(percent ?? COMMISSION_PERCENT) : COMMISSION_PERCENT;
-  const buys = toNum(row?.buys_paise);
-  const sells = toNum(row?.sells_paise);
-  const matched = Math.min(buys, sells);
-  const high = toNum(row?.high_paise);
+export const teamCommissionSql = (team) => `
+  SELECT COALESCE(SUM(o.token_amount_paise) FILTER (WHERE o.order_type = 'DEPOSIT'), 0)    AS buys_paise,
+         COALESCE(SUM(o.token_amount_paise) FILTER (WHERE o.order_type = 'WITHDRAWAL'), 0) AS sells_paise,
+         COALESCE(SUM(o.token_amount_paise) FILTER (WHERE o.order_type = 'DEPOSIT' AND c.order_id IS NULL), 0)    AS unpaid_buys_paise,
+         COALESCE(SUM(o.token_amount_paise) FILTER (WHERE o.order_type = 'WITHDRAWAL' AND c.order_id IS NULL), 0) AS unpaid_sells_paise,
+         (SELECT COALESCE(SUM(commission_paise), 0) FROM team_commissions WHERE team_id = ${team}) AS paid_paise
+    FROM order_states o
+    LEFT JOIN team_commissions c ON c.order_id = o.order_id
+   WHERE o.team_id = ${team} AND o.state = 'COMPLETED'`;
+
+/**
+ * A team's commission picture from a row carrying the columns above. The
+ * rates are the admin's now; `owedPaise` is what the orders still unpaid earn
+ * at them (rounded per direction, so it can read a paisa above the per-order
+ * payments that settle it).
+ */
+export function toSummary(teamId, row, rates, { kind = 'AGENT' } = {}) {
+  const r = rates ?? commissionRates(null);
   return {
     teamId: String(teamId),
-    buysPaise: buys,
-    sellsPaise: sells,
-    matchedPaise: matched,
-    highPaise: high,
+    buysPaise: toNum(row?.buys_paise),
+    sellsPaise: toNum(row?.sells_paise),
     paidPaise: toNum(row?.paid_paise),
-    // Earned by volume already completed and not paid yet: the pool could not
-    // cover it, or the payment after the completion did not run. The sweep and
-    // the admin's next top-up pay it.
-    owedPaise: commissionFor(matched, high, rate),
+    // Earned by orders already completed and not paid yet: the commission pool
+    // could not cover it, or the payment after the completion did not run.
+    // The sweep and the admin's next top-up pay it.
+    owedPaise: commissionFor(row?.unpaid_buys_paise, r.bp.DEPOSIT) + commissionFor(row?.unpaid_sells_paise, r.bp.WITHDRAWAL),
     // The rule itself, so no screen keeps its own copy of the numbers (§4).
-    commissionPercent: rate,
-    supervisorSharePercent: direct ? 0 : SUPERVISOR_SHARE_PERCENT,
+    depositPercent: r.depositPercent,
+    withdrawalPercent: r.withdrawalPercent,
+    supervisorSharePercent: kind === 'DIRECT' ? 0 : SUPERVISOR_SHARE_PERCENT,
   };
 }
 
 /**
- * Pay whatever this team has earned and not been paid. Safe to call any number
- * of times, from any path: a call with nothing to pay changes nothing.
+ * Pay one completed order's commission into the pool of the team that served
+ * it. Safe to call any number of times, from any path: an order already paid,
+ * not completed, served by no team or at a rate of 0 moves nothing.
  *
  * Returns { ok: true, paid: true, commission, shares, pool }
- *       | { ok: true, paid: false, reason: 'no_rise' | 'rise_too_small' | 'already_paid' }
- *       | { ok: false, reason: 'team_not_found' | 'pool_short' | <treasury reason>, … }
+ *       | { ok: true, paid: false, reason: 'not_completed' | 'no_team' | 'rate_zero' | 'too_small' | 'already_paid' }
+ *       | { ok: false, reason: 'order_not_found' | 'pool_short' | <treasury reason>, … }
  */
-export async function payTeamCommission(teamId, { actor = 'system' } = {}) {
-  const tid = String(teamId);
+export async function payOrderCommission(orderId, { actor = 'system' } = {}) {
+  const oid = String(orderId);
+  const rates = commissionRates(await getSystemConfig());
   try {
     return await withTransaction(async (client) => {
       await client.query(PAY_LOCK);
-      const { rows: team } = await client.query(
-        'SELECT team_id, kind, supervisor_id, owner_merchant_id FROM teams WHERE team_id = $1', [tid]);
-      if (!team[0]) return { ok: false, reason: 'team_not_found' };
-      // A merchant account is paid the admin's percent into its own pool, all
-      // of it recorded to its owner (owner, 2026-10-11).
-      const direct = team[0].kind === 'DIRECT';
-      const percent = direct ? directCommissionPercent(await getSystemConfig()) : COMMISSION_PERCENT;
-      // Read after the lock, so a completion that committed while this waited is counted.
-      const { rows: [vol] } = await client.query(teamVolumeSql('$1'), [tid]);
-      const { rows: [mark] } = await client.query(teamMarkSql('$1'), [tid]);
-      const summary = toSummary(tid, { ...vol, ...mark }, { percent, kind: team[0].kind });
-      const amount = summary.owedPaise;
-      if (amount <= 0) {
-        return { ok: true, paid: false, reason: summary.matchedPaise > summary.highPaise ? 'rise_too_small' : 'no_rise', summary };
-      }
+      const { rows: [order] } = await client.query(
+        `SELECT o.order_id, o.order_type, o.state, o.token_amount_paise, o.team_id,
+                t.kind, t.supervisor_id, t.owner_merchant_id
+           FROM order_states o LEFT JOIN teams t ON t.team_id = o.team_id
+          WHERE o.order_id = $1`, [oid]);
+      if (!order) return { ok: false, reason: 'order_not_found' };
+      if (order.state !== 'COMPLETED') return { ok: true, paid: false, reason: 'not_completed' };
+      if (!order.team_id || !order.kind) return { ok: true, paid: false, reason: 'no_team' };
+      const { rows: done } = await client.query('SELECT 1 FROM team_commissions WHERE order_id = $1', [oid]);
+      if (done[0]) return { ok: true, paid: false, reason: 'already_paid' };
+
+      const bp = rates.bp[order.order_type] ?? 0;
+      if (bp <= 0) return { ok: true, paid: false, reason: 'rate_zero' };
+      const base = toNum(order.token_amount_paise);
+      const amount = commissionFor(base, bp);
+      if (amount <= 0) return { ok: true, paid: false, reason: 'too_small' };
 
       const poolPaise = await accountBalancePaise(LEDGER.MERCHANT_BONUS_POOL.code, { client });
-      if (poolPaise < amount) return { ok: false, reason: 'pool_short', owedPaise: amount, poolPaise, summary };
+      if (poolPaise < amount) return { ok: false, reason: 'pool_short', owedPaise: amount, poolPaise };
 
-      const commissionId = `tcm~${tid}~${summary.matchedPaise}`;
+      const teamId = order.team_id;
+      const direct = order.kind === 'DIRECT';
+      const commissionId = `tcm~${oid}`;
       const { rows: [paid] } = await client.query(
         `INSERT INTO team_commissions
-           (commission_id, team_id, supervisor_id, from_high_paise, to_high_paise,
-            buys_paise, sells_paise, commission_paise, commission_percent)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING *`,
-        [commissionId, tid, team[0].supervisor_id, summary.highPaise, summary.matchedPaise,
-          summary.buysPaise, summary.sellsPaise, amount, percent]);
+           (commission_id, team_id, supervisor_id, order_id, order_type, base_paise, commission_bp, commission_paise)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING created_at`,
+        [commissionId, teamId, direct ? null : order.supervisor_id, oid, order.order_type, base, bp, amount]);
 
       let shares;
       if (direct) {
-        shares = [{ merchantId: team[0].owner_merchant_id, role: SHARE_ROLES.OWNER, sharePaise: amount }];
+        shares = [{ merchantId: order.owner_merchant_id, role: SHARE_ROLES.OWNER, sharePaise: amount }];
       } else {
         const { rows: members } = await client.query(
-          `SELECT merchant_id FROM team_members WHERE team_id = $1 AND status = 'APPROVED'`, [tid]);
-        shares = splitShares(amount, team[0].supervisor_id, members.map((m) => m.merchant_id));
+          `SELECT merchant_id FROM team_members WHERE team_id = $1 AND status = 'APPROVED'`, [teamId]);
+        shares = splitShares(amount, order.supervisor_id, members.map((m) => m.merchant_id));
       }
       await client.query(
         `INSERT INTO team_commission_shares (commission_id, merchant_id, role, share_paise)
@@ -187,59 +189,68 @@ export async function payTeamCommission(teamId, { actor = 'system' } = {}) {
            FROM unnest($2::text[], $3::text[], $4::bigint[]) AS s(merchant_id, role, share_paise)`,
         [commissionId, shares.map((s) => s.merchantId), shares.map((s) => s.role), shares.map((s) => s.sharePaise)]);
 
+      const label = order.order_type === 'DEPOSIT' ? 'deposit' : 'withdrawal';
       const event = await recordEvent({
         client,
         eventType: EVENT_TYPES.MERCHANT_BONUS_ISSUED,
         idempotencyKey: `acct_${commissionId}`,
         postings: buildBonusIssuePostings(amount).map((p) => ({ account: p.account, amountPaise: p.amountMinor })),
-        refModel: 'Team', refId: tid, amountPaise: amount,
-        description: `Team commission: ${percent}% of matched volume ${summary.highPaise / 100} → ${summary.matchedPaise / 100}`,
+        refModel: 'Team', refId: teamId, amountPaise: amount,
+        description: `Order commission: ${bp / 100}% of ${label} ${oid} (${base / 100} tokens)`,
       });
       // The commission row above is new, so its event cannot exist; one that
       // does was posted outside this module. Never pay against it twice.
-      if (event.idempotent) throw new Error(`payTeamCommission: ledger already holds ${commissionId}`);
+      if (event.idempotent) throw new Error(`payOrderCommission: ledger already holds ${commissionId}`);
 
-      const pool = await creditCommissionWithin(client, { teamId: tid, commissionId, amountPaise: amount, actor });
+      const pool = await creditCommissionWithin(client, { teamId, commissionId, amountPaise: amount, actor });
       return {
         ok: true, paid: true,
         commission: {
-          commissionId, teamId: tid, fromHighPaise: summary.highPaise, toHighPaise: summary.matchedPaise,
-          commissionPaise: amount, createdAt: paid.created_at,
+          commissionId, teamId, orderId: oid, orderType: order.order_type,
+          basePaise: base, commissionBp: bp, commissionPaise: amount, createdAt: paid.created_at,
         },
         shares, pool,
       };
     });
   } catch (e) {
     if (e instanceof PoolRefused) return { ok: false, reason: e.reason };
-    // A payment from the same mark landed first (the lock makes this a replay,
-    // not a race): nothing moved here.
-    if (e.code === '23505' && /team_commissions_(from|to)_once|team_commissions_pkey/.test(e.constraint ?? '')) {
+    // A payment for the same order landed first (the lock makes this a
+    // replay, not a race): nothing moved here.
+    if (e.code === '23505' && /team_commissions_(once_per_order|pkey)/.test(e.constraint ?? '')) {
       return { ok: true, paid: false, reason: 'already_paid' };
     }
     throw e;
   }
 }
 
-/** Teams whose completed volume has earned something not yet paid — what the sweep pays. */
-export async function teamsOwed({ limit = 200 } = {}) {
+/**
+ * Completed orders a team served with no commission yet, at a rate above 0 —
+ * what the sweep pays, oldest first.
+ */
+export async function ordersOwed({ limit = 200 } = {}) {
+  const { bp } = commissionRates(await getSystemConfig());
   const { rows } = await pgQuery(
-    `SELECT t.team_id FROM teams t
-       CROSS JOIN LATERAL (${teamVolumeSql('t.team_id')}) v
-       CROSS JOIN LATERAL (${teamMarkSql('t.team_id')}) k
-      WHERE LEAST(v.buys_paise, v.sells_paise) > k.high_paise
-      ORDER BY t.team_id LIMIT $1`,
-    [Math.min(Math.max(Number(limit) || 200, 1), 1000)], 'team_commission_owed');
-  return rows.map((r) => r.team_id);
+    `SELECT o.order_id, o.team_id FROM order_states o
+      WHERE o.state = 'COMPLETED' AND o.team_id IS NOT NULL
+        AND ((o.order_type = 'DEPOSIT' AND $2::int > 0) OR (o.order_type = 'WITHDRAWAL' AND $3::int > 0))
+        AND NOT EXISTS (SELECT 1 FROM team_commissions c WHERE c.order_id = o.order_id)
+      ORDER BY o.completed_at NULLS FIRST, o.order_id LIMIT $1`,
+    [Math.min(Math.max(Number(limit) || 200, 1), 1000), bp.DEPOSIT, bp.WITHDRAWAL], 'team_commission_owed');
+  return rows.map((r) => ({ orderId: r.order_id, teamId: r.team_id }));
 }
 
-/** Pay every team that is owed. One transaction per team; one team's refusal does not stop the rest. */
+/** Pay every order that is owed. One transaction per order; one refusal does not stop the rest. */
 export async function payOwedCommissions({ actor = 'system:commission-sweep' } = {}) {
   const results = [];
-  for (const teamId of await teamsOwed()) {
+  for (const { orderId, teamId } of await ordersOwed()) {
     try {
-      results.push({ teamId, ...(await payTeamCommission(teamId, { actor })) });
+      const out = await payOrderCommission(orderId, { actor });
+      results.push({ orderId, teamId, ...out });
+      // The commission pool is short: every later order would be refused the
+      // same way. Wait for the admin's top-up.
+      if (out.reason === 'pool_short') break;
     } catch (e) {
-      results.push({ teamId, ok: false, reason: 'error', error: e.message });
+      results.push({ orderId, teamId, ok: false, reason: 'error', error: e.message });
     }
   }
   return results;
@@ -248,35 +259,34 @@ export async function payOwedCommissions({ actor = 'system:commission-sweep' } =
 /** One team's commission picture, for its supervisor, its members, its owner and the admin. */
 export async function teamSummary(teamId) {
   const { rows } = await pgQuery(
-    `SELECT v.*, k.*, (SELECT kind FROM teams WHERE team_id = $1) AS kind
-       FROM (${teamVolumeSql('$1')}) v, (${teamMarkSql('$1')}) k`,
+    `SELECT v.*, (SELECT kind FROM teams WHERE team_id = $1) AS kind FROM (${teamCommissionSql('$1')}) v`,
     [String(teamId)], 'team_commission_summary');
-  const kind = rows[0]?.kind ?? 'AGENT';
-  const percent = kind === 'DIRECT' ? directCommissionPercent(await getSystemConfig()) : COMMISSION_PERCENT;
-  return toSummary(teamId, rows[0], { percent, kind });
+  return toSummary(teamId, rows[0], commissionRates(await getSystemConfig()), { kind: rows[0]?.kind ?? 'AGENT' });
 }
 
 /**
- * A team's payments, newest first, each with the shares recorded for it. With
- * `merchantId`, each payment also carries that merchant's own share (0 when
- * they were not in the team then).
+ * A team's payments, newest first, each naming its order. With `merchantId`,
+ * each payment also carries that merchant's own share (0 when they were not
+ * in the team then).
  */
 export async function listCommissions(teamId, { merchantId = null, limit = 20 } = {}) {
   const { rows } = await pgQuery(
-    `SELECT c.commission_id, c.from_high_paise, c.to_high_paise, c.commission_paise, c.created_at,
+    `SELECT c.commission_id, c.order_id, c.order_type, c.base_paise, c.commission_bp, c.commission_paise, c.created_at,
             COALESCE((SELECT s.share_paise FROM team_commission_shares s
                        WHERE s.commission_id = c.commission_id AND s.merchant_id = $2), 0) AS my_share_paise
        FROM team_commissions c
       WHERE c.team_id = $1
-      ORDER BY c.to_high_paise DESC
+      ORDER BY c.created_at DESC, c.commission_id DESC
       LIMIT $3`,
     [String(teamId), merchantId === null ? null : String(merchantId), Math.min(Math.max(Number(limit) || 20, 1), 200)],
     'team_commission_list');
   return rows.map((r) => ({
     commissionId: r.commission_id,
     teamId: String(teamId),
-    fromHighPaise: toNum(r.from_high_paise),
-    toHighPaise: toNum(r.to_high_paise),
+    orderId: r.order_id ?? null,
+    orderType: r.order_type ?? null,
+    basePaise: toNum(r.base_paise),
+    commissionPercent: r.commission_bp === null ? null : Number(r.commission_bp) / 100,
     commissionPaise: toNum(r.commission_paise),
     mySharePaise: toNum(r.my_share_paise),
     createdAt: r.created_at,

@@ -109,6 +109,13 @@ describePg('round history retention', () => {
     });
     // The bet is the money record: it stays, with its round's id.
     expect((await getBet(betId))?.cycleId).toBe(rounds[0].id);
+    // The removed rounds are kept whole in cold storage, one entry each.
+    const { rows: cold } = await pgQuery(
+      `SELECT ref, row_count, rows->0->>'table' AS t, rows->0->'row'->>'cycle_id' AS id
+         FROM cold_archive WHERE kind = 'CYCLE' AND ref = ANY($1::text[]) ORDER BY ref`,
+      [rounds.slice(0, 3).map((r) => r.id)]);
+    expect(cold.map((c) => c.ref)).toEqual(rounds.slice(0, 3).map((r) => r.id).sort());
+    expect(cold.every((c) => c.t === 'cycles' && c.id === c.ref && c.row_count >= 1)).toBe(true);
 
     // A second run has nothing left to do and adds nothing twice.
     expect((await pruneCycleHistory({ keep: 2, cycleType: board })).pruned).toBe(0);

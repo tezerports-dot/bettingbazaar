@@ -54,10 +54,13 @@ describePg('balance adjustment — its own area, players only', () => {
 
   it('finds a player, with their wallet, for an account holding balance adjustment alone', async () => {
     const p = await funded(1234);
-    const res = await as(app, adjuster).get('/admin/balance-adjust/players').query({ search: p.mobile, limit: 10 });
+    // By username: a search by mobile is a full admin's only (byMobile, CLAUDE.md §24).
+    const res = await as(app, adjuster).get('/admin/balance-adjust/players').query({ search: p.userId, limit: 10 });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const row = res.body.players.find((x) => x.userId === p.userId);
-    expect(row).toMatchObject({ userId: p.userId, username: p.userId, mobile: p.mobile });
+    expect(row).toMatchObject({ userId: p.userId, username: p.userId });
+    const byMobile = await as(app, adjuster).get('/admin/balance-adjust/players').query({ search: p.mobile, limit: 10 });
+    expect(byMobile.body.players.map((x) => x.userId)).not.toContain(p.userId);
     expect(row.depositBalance).toBe(1234);
     expect(row.winningsBalance).toBe(0);
     // The ceiling, from the one owner, without reading System Settings.
@@ -66,8 +69,9 @@ describePg('balance adjustment — its own area, players only', () => {
   });
 
   it('lists PLAYERS only — never a staff or merchant login on the same number', async () => {
+    // By username (the harness names it after the id): a sub-admin's search never matches a mobile (byMobile).
     const staff = await actor({ isSubAdmin: true, permissions: {} });
-    const res = await as(app, adjuster).get('/admin/balance-adjust/players').query({ search: staff.mobile });
+    const res = await as(app, adjuster).get('/admin/balance-adjust/players').query({ search: staff.userId });
     expect(res.status).toBe(200);
     expect(res.body.players.map((x) => x.userId)).not.toContain(staff.userId);
   });

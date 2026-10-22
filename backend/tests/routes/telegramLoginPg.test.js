@@ -258,17 +258,24 @@ describePg('Continue with Telegram at the merchant door; none at the staff door'
       expect((await signIn({ tgId })).status).toBe(200);
     });
 
-    it('a mobile no admin made an account for is refused, says to ask an admin, and nothing is made', async () => {
+    it('a mobile with no merchant account applies: made PENDING, and its sign-in waits for an admin', async () => {
       const tgId = freshTelegramUserId();
       const mobile = freshMobile('7');
       const opened = await open('MERCHANT');
       const res = await approve(opened, tgId, { phone: `+91${mobile}` });
-      expect(res.status).toBe(404);
-      expect(res.body.code).toBe('NO_MERCHANT_ACCOUNT');
-      expect(res.body.message).toMatch(/Ask an admin/);
-      expect(await getUserByMobile(mobile, 'MERCHANT')).toBeNull();
-      expect(await db.telegram.getLinkByTelegramId(tgId, 'MERCHANT')).toBeNull();
-      expect((await complete('MERCHANT', opened)).status).toBe(202);
+      expect(res.body, JSON.stringify(res.body)).toMatchObject({ success: true, approved: true, created: true, panel: 'MERCHANT' });
+      const made = await getUserByMobile(mobile, 'MERCHANT');
+      expect(made).toBeTruthy();
+      expect((await db.telegram.getLinkByTelegramId(tgId, 'MERCHANT')).userId).toBe(made.userId);
+      const waiting = await complete('MERCHANT', opened);
+      expect(waiting.status).toBe(403);
+      expect(waiting.body.code).toBe('MERCHANT_NOT_ACTIVE');
+      expect(waiting.body.message).toMatch(/waiting for an admin/);
+
+      // The admin approves the application; the next Telegram sign-in enters.
+      const m = await db.merchants.getMerchantByUserId(made.userId);
+      await db.merchants.approveMerchant(m.merchantId);
+      expect((await signIn({ tgId })).status).toBe(200);
     });
 
     it('a player signing up the same way is still made (the opposite door)', async () => {
@@ -279,14 +286,14 @@ describePg('Continue with Telegram at the merchant door; none at the staff door'
       expect(await getUserByMobile(mobile, 'PLAYER')).toBeTruthy();
     });
 
-    it('another Telegram account cannot enter a merchant: asked for a contact, and refused with its own', async () => {
+    it('another Telegram account cannot enter a merchant: asked for a contact, and its own number only applies', async () => {
       const m = await merchant();
       const intruderTg = freshTelegramUserId();
       const opened = await open('MERCHANT');
       expect((await approve(opened, intruderTg)).body.code).toBe('CONTACT_REQUIRED');
       const res = await approve(opened, intruderTg, { phone: freshMobile('7') });
-      expect(res.body.code).toBe('NO_MERCHANT_ACCOUNT');
-      expect((await complete('MERCHANT', opened)).status).toBe(202);
+      expect(res.body).toMatchObject({ approved: true, created: true });
+      expect((await complete('MERCHANT', opened)).body.code).toBe('MERCHANT_NOT_ACTIVE');
       expect((await db.telegram.getLinkByUserId(m.userId)).telegramUserId).toBe(m.tgId);
     });
 

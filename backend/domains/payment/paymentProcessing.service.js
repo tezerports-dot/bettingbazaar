@@ -61,9 +61,10 @@ import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate 
 import { getSystemConfig } from '#db/repositories/config.js';
 // Which rail an order runs on, and the per-rail timers and caps.
 import {
-  PAYMENT_MODES, railOf, routingSettings, merchantRoutingSettings, routedToMerchants,
+  PAYMENT_MODES, railOf, routingSettings, merchantRoutingSettings, routedToMerchants, orderWindowSeconds,
 } from '#db/repositories/teamRouting.js';
 import { routingForSize } from '../merchant/denominations.js';
+import { paymentModeFor, takesPayMethod, BUY_PAY_METHOD_LIST } from '#db/repositories/orderRails.js';
 // The only shape of an order a player receives.
 import { toPlayerOrderView, playerCancelFrom } from './playerOrderView.js';
 // The mirror of it, pointing the other way: the one shape a MERCHANT receives.
@@ -121,7 +122,7 @@ export function merchantDisplayRef(merchant) {
  * account-holder name. The screen rendered the handle in a copy-to-clipboard
  * row.
  */
-function buildMerchantSnapshot(merchant, expiresAt, payAccount = null) {
+function buildMerchantSnapshot(merchant, expiresAt, payAccount = null, payMethod = null) {
   const merchantRef = merchantDisplayRef(merchant);
   // ── A merchant-account buy (owner, 2026-10-11) ──────────────────────────
   // The player pays the payment account routing chose for this order
@@ -136,8 +137,15 @@ function buildMerchantSnapshot(merchant, expiresAt, payAccount = null) {
     // agent's order). `upiPa`/`upiPn` only on a UPI_QR account.
     payAccountId:   payAccount?.accountId ?? null,
     payAccountKind: payAccount?.kind ?? null,
-    upiPa:          payAccount?.kind === 'UPI_QR' ? payAccount.upiId : null,
-    upiPn:          payAccount?.kind === 'UPI_QR' ? payAccount.upiName : null,
+    // The payee of a UPI buy (owner, 2026-10-21): a merchant account's UPI QR
+    // account, or an agent's own UPI ID when the player chose UPI. Neither is
+    // ever a mobile (the rows refuse one); the player gets them only inside
+    // the link built for their order.
+    upiPa: payAccount?.kind === 'UPI_QR' ? payAccount.upiId
+      : (!payAccount && payMethod === 'UPI' ? (merchant.upiId ?? null) : null),
+    upiPn: payAccount?.kind === 'UPI_QR' ? payAccount.upiName
+      : (!payAccount && payMethod === 'UPI'
+        ? (merchant.bankDetails?.accountHolderName || merchantRef) : null),
 
     // ── For the player, through `toPlayerOrderView` ─────────────────────
     // An opaque label, and on an INR bank-transfer buy the member's bank
@@ -241,9 +249,7 @@ async function tryAssignMerchant(order, { alsoBar = [] } = {}) {
  */
 async function postStartedNote(order, cfg) {
   const amount = formatOrderFiat(order);
-  const windowMinutes = Math.round((routedToMerchants(order)
-    ? merchantRoutingSettings(cfg).processingWindowSeconds[order.type]
-    : routingSettings(cfg).processingWindowSeconds[railOf(order)]) / 60);
+  const windowMinutes = Math.round(orderWindowSeconds(cfg, order) / 60);
   let text;
   if (order.type === 'DEPOSIT') {
     // Named the way the player's screen names it, never a UPI handle (§24).
@@ -266,7 +272,7 @@ async function postStartedNote(order, cfg) {
 /** An order merchant accounts serve: the window and cap are `merchantRouting`'s, per direction. */
 async function assignToMerchantAccount(order, cfg, barredMerchantIds) {
   const settings = merchantRoutingSettings(cfg);
-  const expiresAt = new Date(Date.now() + settings.processingWindowSeconds[order.type] * 1000);
+  const expiresAt = new Date(Date.now() + orderWindowSeconds(cfg, order) * 1000);
   return db.teamRouting.assignToDirect(order, {
     cap: settings.concurrency[order.type],
     barredMerchantIds,
@@ -287,7 +293,7 @@ async function assignToMerchantAccount(order, cfg, barredMerchantIds) {
 /** An order agents serve: the window and cap are `teamRouting`'s, per rail. */
 async function assignToAgents(order, cfg, barredMerchantIds) {
   const settings = routingSettings(cfg);
-  const expiresAt = new Date(Date.now() + settings.processingWindowSeconds[railOf(order)] * 1000);
+  const expiresAt = new Date(Date.now() + orderWindowSeconds(cfg, order) * 1000);
 
   return db.teamRouting.assignToTeam(order, {
     cap: settings.concurrency[railOf(order)],
@@ -302,7 +308,7 @@ async function assignToAgents(order, cfg, barredMerchantIds) {
         assignedAt: now,
         processingAt: now,
         expiresAt,
-        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt),
+        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, null, order.buyPayMethod),
       };
     },
   });
@@ -404,6 +410,26 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // authority. It reads the same config row the picker is built from.
   await assessFundingOrder({ userId, tokenAmount, type: 'DEPOSIT', currency, usdtAmount });
 
+  // ── How the player pays a UPI/bank buy (owner, 2026-10-21) ─────────────
+  // A buy of a UPI/bank size is paid by UPI or by bank transfer, chosen by the
+  // player (`attempt.playerChoosesPayMethod`, the player's route) before
+  // anything is written; each has its own window. The rail is read the way
+  // the writer will stamp it (`paymentModeFor`).
+  if (currency === ORDER_CURRENCY.INR && attempt.playerChoosesPayMethod
+      && takesPayMethod({
+        type: 'DEPOSIT', currency,
+        paymentMode: paymentModeFor({
+          currency, tokenAmountPaise: Math.round(Number(tokenAmount) * 100),
+          inrRouting: routingForSize(cfg, Number(tokenAmount), 'DEPOSIT'),
+        }),
+      })
+      && !BUY_PAY_METHOD_LIST.includes(attempt.payMethod)) {
+    throw Object.assign(
+      new Error('Choose how you will pay this buy: by UPI or by bank transfer.'),
+      { status: 400, code: 'PAY_METHOD_REQUIRED', payMethods: BUY_PAY_METHOD_LIST },
+    );
+  }
+
   const user = await db.users.getUser(userId);
   if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
   if (user.isBlocked) {
@@ -416,8 +442,8 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // ── What the player actually pays, and in what ──────────────────────────
   //
   // On the INR rails: the peg. 1 BB token = ₹1, no buy/sell spread (Phase 006
-  // flattening, 2026-07-08) — merchant earnings come from team commission on
-  // matched volume (2e), never from a rate spread. Named rather than a
+  // flattening, 2026-07-08) — merchant earnings come from order commission
+  // (teamCommission.js), never from a rate spread. Named rather than a
   // bare 1 so the rule is legible and has one owner.
   //
   // On the USDT rail: a USDT amount, derived from the admin's rate. The
@@ -484,6 +510,8 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
     // carries the address for this chain alone.
     currency,
     usdtChain,
+    // UPI or BANK on a UPI/bank buy (the writer ignores it on any other).
+    ...(BUY_PAY_METHOD_LIST.includes(attempt.payMethod) ? { buyPayMethod: attempt.payMethod } : {}),
     merchantProfit:    0,
     depositAllocation: split.depositAllocation,
     reserveAllocation: split.reserveAllocation,
@@ -624,14 +652,16 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
     // A merchant verifies a payout against these. `userKycSnapshot` was removed
     // 2026-08-25: it was stripped from every response before it reached anyone,
     // and its `aadhaar` field was never a real path on the model.
-    // The bank account a sell is paid into, and nothing else: no UPI handle is
-    // a destination (§2 "How each rail is paid", §24), and the player's row
-    // holds none (`users_bank_details_bank_account_only`).
+    // Where a sell is paid (owner, 2026-10-21): the player's bank account and
+    // their UPI ID, which the member is shown only inside the link built for
+    // this order's amount (merchantOrderView.js `payoutUpiLink`; §24). The
+    // row refuses a UPI ID that is a mobile (`users_upi_id_shape`).
     userBankDetails: {
       accountNumber:     user.bankDetails?.accountNumber || '',
       ifscCode:          user.bankDetails?.ifscCode      || '',
       bankName:          user.bankDetails?.bankName      || '',
       accountHolderName: user.bankDetails?.accountHolderName || user.username || '',
+      ...(user.bankDetails?.upiId ? { upiId: user.bankDetails.upiId } : {}),
     },
     userPhone: user.mobile,
   });
@@ -770,7 +800,8 @@ export async function retryOrder(userId, orderId) {
     );
   }
 
-  const attempt = { priority: 1, retryOf: original.orderId };
+  // A retried buy is paid the way the player chose for the first one.
+  const attempt = { priority: 1, retryOf: original.orderId, payMethod: original.buyPayMethod ?? undefined };
   // A USDT buy is retried AS a USDT buy, for the USDT it asked for, on BNB
   // Smart Chain whatever chain it named: it is priced in USDT (Step 2d), and its token count is not
   // an INR size, so retrying it on the INR rail would be refused — or worse,

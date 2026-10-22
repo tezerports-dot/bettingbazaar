@@ -39,7 +39,6 @@ export function brandingPayload(b) {
     userPanelName:           b.userPanelName,
     adminPanelName:          b.adminPanelName,
     merchantPanelName:       b.merchantPanelName,
-    queueManagerPanelName:   b.queueManagerPanelName,
     tagline:                 b.tagline,
     description:             b.description,
     contactEmail:            b.contactEmail,

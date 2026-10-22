@@ -22,6 +22,14 @@
  * Money arriving at an order that can no longer take it (expired, cancelled,
  * or already completed) is recorded all the same and shown to an admin as
  * needing attention (`listDeposits`), never credited by the server.
+ *
+ * ── A merchant's pool buy (owner, 2026-10-21) ───────────────────────────────
+ * The same three steps for a BUY `team_pool_requests` row: `openPoolUsdtBuy`
+ * writes the request and its own address (`pool_usdt_addresses`, the same
+ * index sequence, so no address is shared with an order), the watcher records
+ * what arrives (`pool_usdt_transfers`), and `creditPoolUsdtBuyWithin` fulfils
+ * the request once it covers the frozen price (`teamPools.fulfilBuyWithin`).
+ * The id a sweep line carries is the order's or the request's.
  */
 import { pgQuery, withTransaction } from '../client.js';
 import { ACCOUNTS, postMovement } from './treasury.js';
@@ -30,6 +38,7 @@ import { creditBuyWithin } from './wallets.js';
 import { creditFirstDepositBonusWithin } from './promo.js';
 import { claimUtrWithin } from './utr.js';
 import { prepareOrderRecord } from './orders.record.js';
+import { createRequestWithin, fulfilBuyWithin, PoolRefused } from './teamPools.js';
 import { paiseToRupees } from '../../backend/shared/money.js';
 
 export const USDT_DEPOSIT_CHAIN = 'BEP20';
@@ -71,6 +80,39 @@ export async function openUsdtBuy({ orderInput, keyId, deriveAddress, windowSeco
   });
 }
 
+/** Micro-USDT in a frozen price: the tokens at the rate, rounded UP to a hundredth of a USDT. */
+export function poolUsdtPriceMicro(tokenAmountPaise, rate) {
+  const r = Number(rate);
+  if (!Number.isFinite(r) || r <= 0) throw new Error(`poolUsdtPriceMicro: rate ${rate}`);
+  // paise ÷ (₹ per USDT) = hundredths of a USDT.
+  return BigInt(Math.ceil(Number(tokenAmountPaise) / r)) * MICRO_PER_HUNDREDTH;
+}
+
+/**
+ * Open a merchant's pool buy paid in USDT: the BUY request and its own
+ * address, the price frozen, in one commit. Refusals of the request are its
+ * own (`team_not_found`, `request_pending`) and write nothing.
+ */
+export async function openPoolUsdtBuy({ teamId, supervisorId, tokenAmountPaise, rate, note = null, keyId, deriveAddress, windowSeconds }) {
+  const usdtMicro = poolUsdtPriceMicro(tokenAmountPaise, rate);
+  const { rows: seq } = await pgQuery(`SELECT nextval('usdt_deposit_index_seq')::int AS i`, [], 'usdt_pool_next_index');
+  const index = seq[0].i;
+  const address = String(deriveAddress(index)).toLowerCase();
+  return withTransaction(async (client) => {
+    const made = await createRequestWithin(client, { teamId, supervisorId, direction: 'BUY', tokenAmountPaise, note });
+    if (!made.ok) return made;
+    const { rows } = await client.query(
+      `INSERT INTO pool_usdt_addresses (request_id, chain, address, key_id, derivation_index, usdt_micro, rate_used, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, now() + ($8 || ' seconds')::interval)
+       RETURNING expires_at`,
+      [made.requestId, USDT_DEPOSIT_CHAIN, address, keyId, index, String(usdtMicro), Number(rate), String(windowSeconds)]);
+    return {
+      ok: true, requestId: made.requestId, address, chain: USDT_DEPOSIT_CHAIN,
+      usdt: Number(usdtMicro) / 1e6, rate: Number(rate), expiresAt: rows[0].expires_at,
+    };
+  });
+}
+
 /** The address an order is paid to, and what has arrived at it. Null for an order with none. */
 export async function depositFor(orderId) {
   const { rows } = await pgQuery(
@@ -103,7 +145,12 @@ export async function watchedAddresses({ lateWatchHours }) {
       WHERE a.chain = $1
         AND (o.state IN ('PENDING_QUEUE', 'PROCESSING')
              OR o.updated_at > now() - make_interval(hours => $2::int))
-      ORDER BY a.created_at`,
+     UNION ALL
+     SELECT p.address, NULL
+       FROM pool_usdt_addresses p
+       JOIN team_pool_requests r ON r.request_id = p.request_id
+      WHERE p.chain = $1
+        AND (r.status = 'PENDING' OR r.decided_at > now() - make_interval(hours => $2::int))`,
     [USDT_DEPOSIT_CHAIN, Math.max(1, Number(lateWatchHours) || 1)], 'usdt_watched_addresses');
   return rows.map((r) => ({ address: r.address, orderId: r.order_id }));
 }
@@ -175,9 +222,97 @@ export async function recordTransfer({ txHash, logIndex, to, from, amountMicro, 
      RETURNING order_id, order_state_at_arrival`,
     [USDT_DEPOSIT_CHAIN, String(txHash).toLowerCase(), Number(logIndex), String(to).toLowerCase(),
       String(from).toLowerCase(), String(amountMicro), Number(blockNumber)], 'usdt_transfer_record');
-  return rows[0]
-    ? { recorded: true, orderId: rows[0].order_id, orderState: rows[0].order_state_at_arrival }
+  if (rows[0]) return { recorded: true, orderId: rows[0].order_id, orderState: rows[0].order_state_at_arrival };
+  // Not an order's address: a merchant's pool buy, or nobody's.
+  const { rows: pool } = await pgQuery(
+    `INSERT INTO pool_usdt_transfers
+       (chain, tx_hash, log_index, request_id, from_address, amount_micro, block_number, status_at_arrival)
+     SELECT p.chain, $2, $3, p.request_id, $5, $6, $7, r.status
+       FROM pool_usdt_addresses p JOIN team_pool_requests r ON r.request_id = p.request_id
+      WHERE p.address = $4 AND p.chain = $1
+     ON CONFLICT (chain, tx_hash, log_index) DO NOTHING
+     RETURNING request_id, status_at_arrival`,
+    [USDT_DEPOSIT_CHAIN, String(txHash).toLowerCase(), Number(logIndex), String(to).toLowerCase(),
+      String(from).toLowerCase(), String(amountMicro), Number(blockNumber)], 'usdt_pool_transfer_record');
+  return pool[0]
+    ? { recorded: true, requestId: pool[0].request_id, requestStatus: pool[0].status_at_arrival }
     : { recorded: false };
+}
+
+/** Pending pool buys whose address has received something: the watcher credits them. */
+export async function pendingPoolBuysWithTransfers() {
+  const { rows } = await pgQuery(
+    `SELECT DISTINCT t.request_id
+       FROM pool_usdt_transfers t
+       JOIN team_pool_requests r ON r.request_id = t.request_id
+      WHERE r.status = 'PENDING'`, [], 'usdt_pool_pending_with_transfers');
+  return rows.map((r) => r.request_id);
+}
+
+/**
+ * Fulfil a pool buy whose transfers cover its frozen price, in one
+ * transaction with the pool, the treasury and the USDT consideration (valued
+ * at the frozen rate). Short of the price, nothing moves:
+ * `{ credited: false, reason: 'not_covered' }`.
+ */
+export async function creditPoolUsdtBuy(requestId, { actor = 'usdt-watcher' } = {}) {
+  try {
+    return await withTransaction((client) => creditPoolUsdtBuyWithin(client, requestId, { actor }));
+  } catch (e) {
+    if (e instanceof PoolRefused) return { credited: false, reason: e.reason };
+    throw e;
+  }
+}
+
+export async function creditPoolUsdtBuyWithin(client, requestId, { actor = 'usdt-watcher' } = {}) {
+  const rid = String(requestId);
+  const { rows: r } = await client.query(
+    `SELECT r.supervisor_id, r.team_id, r.token_amount_paise, r.status, r.direction, p.usdt_micro, p.rate_used
+       FROM team_pool_requests r JOIN pool_usdt_addresses p ON p.request_id = r.request_id
+      WHERE r.request_id = $1 FOR UPDATE OF r`, [rid]);
+  const req = r[0];
+  if (!req) return { credited: false, reason: 'not_found' };
+  if (req.status !== 'PENDING' || req.direction !== 'BUY') return { credited: false, reason: 'not_pending' };
+  const { rows: sum } = await client.query(
+    'SELECT COALESCE(SUM(amount_micro), 0) AS received FROM pool_usdt_transfers WHERE request_id = $1', [rid]);
+  const requiredMicro = big(req.usdt_micro);
+  const receivedMicro = big(sum[0].received);
+  if (receivedMicro < requiredMicro) return { credited: false, reason: 'not_covered', requiredMicro, receivedMicro };
+  const done = await fulfilBuyWithin(client, {
+    requestId: rid, supervisorId: req.supervisor_id, tokenAmountPaise: Number(req.token_amount_paise), actor,
+    consideration: { currency: 'USDT', fiatAmountMinor: Number(requiredMicro / MICRO_PER_HUNDREDTH), rateUsed: Number(req.rate_used) },
+  });
+  return {
+    credited: true, teamId: req.team_id, supervisorId: req.supervisor_id,
+    tokenAmountPaise: Number(req.token_amount_paise), pool: done.pool,
+    requiredMicro, receivedMicro, excessMicro: receivedMicro - requiredMicro,
+  };
+}
+
+/** Pending pool buys past their payment window, oldest first (the watcher asks `usdtBuyMayLapse` of each). */
+export async function overduePoolBuys() {
+  const { rows } = await pgQuery(
+    `SELECT p.request_id, p.expires_at FROM pool_usdt_addresses p
+       JOIN team_pool_requests r ON r.request_id = p.request_id
+      WHERE r.status = 'PENDING' AND p.expires_at < now()
+      ORDER BY p.expires_at`, [], 'usdt_pool_overdue');
+  return rows.map((x) => ({ requestId: x.request_id, expiresAt: x.expires_at }));
+}
+
+/**
+ * A pool buy whose window ended unpaid is cancelled; one paid short stays for
+ * an admin (it shows as needing attention), never cancelled under its money.
+ */
+export async function lapsePoolUsdtBuy(requestId) {
+  const { rowCount } = await pgQuery(
+    `UPDATE team_pool_requests r
+        SET status = 'CANCELLED', decided_by = 'usdt-watcher', decided_at = now(),
+            decision_note = 'The USDT payment window ended with nothing received.'
+       FROM pool_usdt_addresses p
+      WHERE r.request_id = $1 AND p.request_id = r.request_id AND r.status = 'PENDING' AND p.expires_at < now()
+        AND NOT EXISTS (SELECT 1 FROM pool_usdt_transfers t WHERE t.request_id = r.request_id)`,
+    [String(requestId)], 'usdt_pool_lapse');
+  return rowCount === 1;
 }
 
 /** A transfer's payment reference in `utr_registry`: its transaction hash and log index. */
@@ -332,12 +467,54 @@ export async function listDeposits({ filter = 'ALL', limit = 100, offset = 0 } =
   return { total: rows[0] ? Number(rows[0].total) : 0, rows: rows.map(toDeposit) };
 }
 
-/** The transfers that arrived at one order's address. */
+/**
+ * Every merchant pool buy paid in USDT, newest first, with what arrived and
+ * why it needs a person, if it does: LATE (money at a request no longer
+ * waiting, other than the fulfilled one's price), SHORT (its window ended with
+ * less than the price), OVERPAID (fulfilled with more than the price).
+ */
+export async function listPoolDeposits({ limit = 100 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT x.*, CASE
+         WHEN x.status IN ('CANCELLED', 'REJECTED') AND x.open_micro > 0 THEN 'LATE'
+         WHEN x.status = 'PENDING' AND x.expires_at < now() AND x.open_micro > 0 THEN 'SHORT'
+         WHEN x.status = 'FULFILLED' AND x.open_micro > 0 AND x.received_micro > x.usdt_micro THEN 'OVERPAID'
+         ELSE NULL END AS attention
+       FROM (
+         SELECT p.request_id, p.address, p.usdt_micro, p.rate_used, p.expires_at, p.created_at,
+                p.swept_at, p.swept_tx_hash, r.status, r.token_amount_paise, r.team_id, t.name AS team_name,
+                m.name AS requester_name,
+                COALESCE(SUM(tr.amount_micro), 0) AS received_micro,
+                COALESCE(SUM(tr.amount_micro) FILTER (WHERE tr.handled_at IS NULL), 0) AS open_micro,
+                COUNT(tr.tx_hash)::int AS transfers
+           FROM pool_usdt_addresses p
+           JOIN team_pool_requests r ON r.request_id = p.request_id
+           JOIN teams t ON t.team_id = r.team_id
+           JOIN merchants m ON m.merchant_id = r.supervisor_id
+           LEFT JOIN pool_usdt_transfers tr ON tr.request_id = p.request_id
+          GROUP BY p.request_id, r.request_id, t.name, m.name) x
+      ORDER BY x.created_at DESC LIMIT $1`,
+    [Math.max(1, Math.min(Number(limit) || 100, 1000))], 'usdt_pool_deposits_list');
+  return rows.map((r) => ({
+    requestId: r.request_id, teamId: r.team_id, teamName: r.team_name, requesterName: r.requester_name,
+    address: r.address, status: r.status, tokens: paiseToRupees(Number(r.token_amount_paise)),
+    usdtRequired: Number(r.usdt_micro) / 1e6, usdtReceived: Number(r.received_micro) / 1e6,
+    rate: Number(r.rate_used), expiresAt: r.expires_at, createdAt: r.created_at,
+    transfers: r.transfers, attention: r.attention, sweptAt: r.swept_at, sweptTxHash: r.swept_tx_hash,
+  }));
+}
+
+/** The transfers that arrived at one order's address, or one pool buy's (by its request id). */
 export async function transfersFor(orderId) {
   const { rows } = await pgQuery(
     `SELECT tx_hash, log_index, from_address, amount_micro, block_number, order_state_at_arrival,
             seen_at, handled_at, handled_by, handled_note
-       FROM usdt_deposit_transfers WHERE order_id = $1 ORDER BY block_number, log_index`,
+       FROM usdt_deposit_transfers WHERE order_id = $1
+     UNION ALL
+     SELECT tx_hash, log_index, from_address, amount_micro, block_number, status_at_arrival,
+            seen_at, handled_at, handled_by, handled_note
+       FROM pool_usdt_transfers WHERE request_id = $1
+     ORDER BY block_number, log_index`,
     [String(orderId)], 'usdt_transfers_for');
   return rows.map((r) => ({
     txHash: r.tx_hash, logIndex: r.log_index, from: r.from_address,
@@ -365,7 +542,17 @@ export async function markHandled(orderId, { actor, note }) {
         AND t.handled_at IS NULL AND o.state NOT IN ('PENDING_QUEUE', 'PROCESSING')
       RETURNING t.tx_hash`,
     [String(orderId), String(actor), text], 'usdt_mark_handled');
-  return { marked: rows.length };
+  if (rows.length) return { marked: rows.length };
+  // A pool buy's: once it is no longer waiting, or still waiting past its window.
+  const { rows: pool } = await pgQuery(
+    `UPDATE pool_usdt_transfers t
+        SET handled_at = now(), handled_by = $2, handled_note = $3
+       FROM team_pool_requests r, pool_usdt_addresses p
+      WHERE t.request_id = $1 AND r.request_id = t.request_id AND p.request_id = t.request_id
+        AND t.handled_at IS NULL AND (r.status <> 'PENDING' OR p.expires_at < now())
+      RETURNING t.tx_hash`,
+    [String(orderId), String(actor), text], 'usdt_pool_mark_handled');
+  return { marked: pool.length };
 }
 
 /**
@@ -387,7 +574,17 @@ export async function recordSweep(orderId, { actor, txHash }) {
         AND EXISTS (SELECT 1 FROM usdt_deposit_transfers t WHERE t.order_id = a.order_id)
       RETURNING a.order_id`,
     [String(orderId), hash, String(actor)], 'usdt_record_sweep');
-  return { ok: rows.length === 1 };
+  if (rows.length === 1) return { ok: true };
+  const { rows: pool } = await pgQuery(
+    `UPDATE pool_usdt_addresses p
+        SET swept_at = now(), swept_tx_hash = $2, swept_by = $3
+       FROM team_pool_requests r
+      WHERE p.request_id = $1 AND r.request_id = p.request_id AND p.swept_at IS NULL
+        AND r.status <> 'PENDING'
+        AND EXISTS (SELECT 1 FROM pool_usdt_transfers t WHERE t.request_id = p.request_id)
+      RETURNING p.request_id`,
+    [String(orderId), hash, String(actor)], 'usdt_pool_record_sweep');
+  return { ok: pool.length === 1 };
 }
 
 /** Totals for the admin's header and the token ledger's cash check, in the order's own units. */
@@ -399,7 +596,11 @@ export async function depositTotals() {
             COALESCE((SELECT SUM(amount_micro) FROM usdt_deposit_transfers), 0) AS received_micro,
             COALESCE((SELECT SUM(t.amount_micro) FROM usdt_deposit_transfers t
                        JOIN usdt_deposit_addresses s ON s.order_id = t.order_id
-                      WHERE s.swept_at IS NULL), 0) AS unswept_micro
+                      WHERE s.swept_at IS NULL), 0)
+            + COALESCE((SELECT SUM(t.amount_micro) FROM pool_usdt_transfers t
+                       JOIN pool_usdt_addresses s ON s.request_id = t.request_id
+                      WHERE s.swept_at IS NULL), 0) AS unswept_micro,
+            COALESCE((SELECT SUM(amount_micro) FROM pool_usdt_transfers), 0) AS pool_received_micro
        FROM usdt_deposit_addresses a JOIN order_states o ON o.order_id = a.order_id`,
     [], 'usdt_deposit_totals');
   const r = rows[0];
@@ -407,7 +608,9 @@ export async function depositTotals() {
     waiting: r.waiting, credited: r.credited,
     creditedTokens: paiseToRupees(Number(r.credited_tokens_paise)),
     usdtReceived: Number(r.received_micro) / 1e6,
+    // Every address's coins, players' and merchants' pool buys alike: what a sweep would move.
     usdtUnswept: Number(r.unswept_micro) / 1e6,
+    poolUsdtReceived: Number(r.pool_received_micro) / 1e6,
   };
 }
 
@@ -419,11 +622,20 @@ export async function depositTotals() {
 export async function sweepCandidates() {
   const { rows } = await pgQuery(
     `SELECT a.order_id, o.usdt_pay_address AS address, a.key_id, a.derivation_index, o.state,
-            COALESCE((SELECT SUM(t.amount_micro) FROM usdt_deposit_transfers t WHERE t.order_id = a.order_id), 0) AS received_micro
+            COALESCE((SELECT SUM(t.amount_micro) FROM usdt_deposit_transfers t WHERE t.order_id = a.order_id), 0) AS received_micro,
+            a.created_at
        FROM usdt_deposit_addresses a JOIN order_states o ON o.order_id = a.order_id
       WHERE a.swept_at IS NULL AND o.state NOT IN ('PENDING_QUEUE', 'PROCESSING')
         AND EXISTS (SELECT 1 FROM usdt_deposit_transfers t WHERE t.order_id = a.order_id)
-      ORDER BY a.created_at, a.order_id`,
+     UNION ALL
+     -- A merchant's pool buy, once it is no longer waiting: its request id
+     -- stands where an order id does, and the sweep is recorded against it.
+     SELECT p.request_id, p.address, p.key_id, p.derivation_index, r.status,
+            (SELECT SUM(t.amount_micro) FROM pool_usdt_transfers t WHERE t.request_id = p.request_id), p.created_at
+       FROM pool_usdt_addresses p JOIN team_pool_requests r ON r.request_id = p.request_id
+      WHERE p.swept_at IS NULL AND r.status <> 'PENDING'
+        AND EXISTS (SELECT 1 FROM pool_usdt_transfers t WHERE t.request_id = p.request_id)
+      ORDER BY created_at, order_id`,
     [], 'usdt_sweep_candidates');
   return rows.map((r) => ({
     orderId: r.order_id, address: r.address, keyId: r.key_id, derivationIndex: r.derivation_index,

@@ -9,8 +9,9 @@
  * (`checkBotHealth` suspends one whose token Telegram rejects), and a Mini App
  * opened from any saved bot is proved by that bot's token. Accounts key on
  * the PERSON's Telegram id, so every bot knows every account. Staff have no
- * Telegram (owner, 2026-10-13), so no bot messages anybody. No channel, no
- * webhook.
+ * Telegram (owner, 2026-10-13), so no bot messages anybody. No webhook: the
+ * signup channels' join requests are polled (signupChannels.service.js,
+ * owner 2026-10-21).
  *
  * ── Why the bot is read per call, through a short cache ───────────────────
  * Telegram suspends gambling bots, so an admin replaces the token at runtime

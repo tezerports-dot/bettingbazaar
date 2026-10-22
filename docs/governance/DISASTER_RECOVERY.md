@@ -23,12 +23,14 @@ Money safety: settlement/reconcile jobs are idempotent + crash-resume-proven
 (CI); a mid-settlement crash resumes via payoutRecoveryTask on next boot.
 
 ## 2. Database restore (data corruption / loss)
-Backups: daily `pg_dump` gzip archives in S3 `backups/` (newest 14 kept),
-failure pages the webhook (services/backup.service.js).
+Backups: daily `pg_dump` custom-format archives in the PRIVATE bucket
+`BACKUP_S3_BUCKET`, under `backups/` (newest 14 kept), never in the public
+upload bucket; a failure or a missing bucket pages the webhook
+(services/backup.service.js).
 1. STOP writes: enable maintenance mode (System Settings) — the guard blocks
    user traffic while admins keep access.
-2. Download the chosen archive from S3.
-3. `gunzip -c bb-<ts>.sql.gz | psql "$DATABASE_URL"` into a **freshly created,
+2. Download the chosen archive from the backup bucket.
+3. `pg_restore --no-owner -d "$DATABASE_URL" bb-<ts>.dump` into a **freshly created,
    empty** database — never over a live one. Then repoint `DATABASE_URL`.
 4. Run the ledger integrity check (GET /api/admin/revenue/summary →
    `integrityOk` must be true) before disabling maintenance mode. A restore that

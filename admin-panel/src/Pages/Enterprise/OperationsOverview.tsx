@@ -39,9 +39,8 @@ const KV: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
  * so a table added there is never silently hidden from the operator.
  */
 const RETENTION_LABEL: Record<string, string> = {
-  frontendErrors: 'Crash reports',
+  errorLog: 'Error log',
   referralClicks: 'Expired referral clicks',
-  notifications: 'Expired notifications',
 };
 
 type RetentionOutcome = {
@@ -321,8 +320,8 @@ export const OperationsOverview: React.FC = () => {
             <div className="mt-4 pt-4 border-t border-dark-700 space-y-3">
               <div className="flex items-center justify-between gap-4">
                 <p className="text-xs text-gray-400">
-                  Retention prunes old operational data every night: crash reports past the window set in
-                  System Settings, and expired referral clicks and notifications. Money, bets, the ledger and
+                  Retention prunes old operational data every night: error-log entries past the window set in
+                  System Settings, and expired referral clicks. Old notifications, chats and rounds move to Cold Storage instead. Money, bets, the ledger and
                   the audit trail are never touched, and nothing younger than 30 days is ever deleted.
                 </p>
                 <div className="flex gap-2 shrink-0">

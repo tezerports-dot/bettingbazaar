@@ -72,7 +72,7 @@ describe('the sign-in screen', () => {
 
   it('says an admin creates the account first, and Telegram confirms it', async () => {
     await mount();
-    expect(screen.getByText(/An admin first creates your account with your mobile number/i)).toBeTruthy();
+    expect(screen.getByText(/share your contact to apply/i)).toBeTruthy();
   });
 
   it('says plainly that nobody can sign in when no bot is set up', async () => {

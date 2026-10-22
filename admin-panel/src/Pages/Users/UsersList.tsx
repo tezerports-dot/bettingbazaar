@@ -15,7 +15,7 @@ import { Kpis, Toolbar, AvatarCell, Money } from '../../components/design';
 import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
-import api, { downloadCsv, cleanParams } from '../../services/api';
+import api, { downloadFile, cleanParams } from '../../services/api';
 import type { PlayerRow } from '../../types';
 import toast from 'react-hot-toast';
 
@@ -69,12 +69,12 @@ export const UsersList: React.FC = () => {
 
   const changeSort = (next: TableSort) => { setSort(next); setPage(1); };
 
-  // Every player the filters match, not the page (`GET /api/admin/users.csv`).
-  const exportCsv = async () => {
+  // Every player the filters match, not the page (`GET /api/admin/users.xlsx`).
+  const exportExcel = async () => {
     try {
-      await downloadCsv('/api/admin/users.csv', cleanParams({
+      await downloadFile('/api/admin/users.xlsx', cleanParams({
         search: debouncedSearch, status: statusFilter === 'ALL' ? undefined : statusFilter, sort: sort.key, dir: sort.dir,
-      }), 'players.csv');
+      }), 'players.xlsx');
     } catch { toast.error('Export failed'); }
   };
   const open = (u: PlayerRow) => navigate(`/users/${encodeURIComponent(u.userId)}`);
@@ -126,7 +126,7 @@ export const UsersList: React.FC = () => {
           onClick: () => { setStatusFilter(s); setPage(1); },
         }))}
         search={{ value: search, onChange: (v) => { setSearch(v); setPage(1); }, placeholder: 'Search name, mobile, ID…' }}
-        actions={[{ label: 'Download CSV', icon: Download, onClick: () => void exportCsv() }]}
+        actions={[{ label: 'Download Excel', icon: Download, onClick: () => void exportExcel() }]}
       />
 
       {/* The same sort as the column headers, for a phone where the table

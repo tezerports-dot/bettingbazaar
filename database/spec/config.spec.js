@@ -138,7 +138,7 @@ export const SYSTEM_CONFIG_SPEC = group({
   //
   // always, and the books prove it (`reconcileAgainstSubLedgers`). How much the
   // platform has handed out is DERIVED from the treasury, never counted here.
-  adminTokenSupply: group({ total: n(20000000000, 0) }),
+  adminTokenSupply: group({ total: n(100000000000, 0) }),  // 100 billion (owner, 2026-10-20; was 20 billion)
 
   // Per-merchant order rules. Concurrency per member is `teamRouting`.
   merchantOrderLimits: group({
@@ -268,22 +268,35 @@ export const SYSTEM_CONFIG_SPEC = group({
       WITHDRAWAL: int(10, 1, 100),
     }),
     // Seconds, as `teamRouting`: a queued order nobody could take expires
-    // after assignmentWait; an assigned order after its processing window.
+    // after assignmentWait; an assigned sell after its processing window (a
+    // buy is always on the UPI/bank rail here, so `buyPayWindowSeconds`).
     assignmentWaitSeconds:   n(1500, 60, 86400),
     processingWindowSeconds: group({
-      DEPOSIT:    n(900, 60, 7200),
       WITHDRAWAL: n(900, 60, 7200),
     }),
   }),
+  // ── How long a player has to pay a UPI/bank buy (owner, 2026-10-21) ──────
+  // Seconds from assignment, by how the player chose to pay it
+  // (`order_states.buy_pay_method`), whoever serves it, agents or merchant
+  // accounts. Cash buys keep `teamRouting.processingWindowSeconds.CASH`.
+  buyPayWindowSeconds: group({
+    UPI:  n(900, 60, 7200),
+    BANK: n(1800, 60, 7200),
+  }),
   // ── Merchant accounts (owner, 2026-10-11) ───────────────────────────────
   directMerchants: group({
-    // Percent of each rise in matched volume paid into the merchant account's
-    // own pool (`payTeamCommission`; no supervisor share). Agents' teams stay
-    // at COMMISSION_PERCENT.
-    commissionPercent:         int(10, 1, 50),
     // Problems (refusals, unpaid buys counted against it, lost disputes) in
     // one IST day that flag a merchant account. A flag suspends nothing.
     dailyProblemFlagThreshold: int(5, 1, 100),
+  }),
+  // ── Order commission (owner, 2026-10-21) ────────────────────────────────
+  // Percent of each COMPLETED order's tokens paid into the pool of the team
+  // or merchant account that served it (`payOrderCommission`,
+  // teamCommission.js): a buy (a player's deposit) and a sell (a player's
+  // withdrawal) apart. Two decimals at most (basis points on the row); 0 off.
+  orderCommission: group({
+    depositPercent:    n(5, 0, 20),
+    withdrawalPercent: n(5, 0, 20),
   }),
   // ── Referral rewards (owner, 2026-10-14: admin-editable) ─────────────────
   // What a verified joiner earns each player up the invite chain, in whole
@@ -318,9 +331,11 @@ export const SYSTEM_CONFIG_SPEC = group({
   // (seed × options), per poll kind, in whole tokens.
   cricket: group({
     enabled: b(false),
-    // While the game is off, players still see its tab, opening a full-screen
+    // While the game is off, players may still see its tab, opening a full-screen
     // "coming soon" image (Branding.cricketComingSoonImageUrl; owner, 2026-10-18).
-    comingSoon: b(true),
+    // Off by default: no Cricket tab until an admin switches it on, as with
+    // Casino and Crash (owner, 2026-10-20).
+    comingSoon: b(false),
     spreadPercent: n(10, 0, 50),
     rtpBoostPoints: n(5, 0, 50),
     inPlayDelaySec: int(5, 0, 30),
@@ -476,7 +491,7 @@ export const BRANDING_SPEC = group({
   logo: s(''), icon: s(''), favicon: s(''), splashScreen: s(''),
   // ── Panel titles ──────────────────────────────────────────────────────────
   userPanelName: s('Betting Bazaar'), adminPanelName: s('Bazaar Admin'),
-  merchantPanelName: s('Merchant Panel'), queueManagerPanelName: s('Queue Manager'),
+  merchantPanelName: s('Merchant Panel'),
   // ── Brand colours ─────────────────────────────────────────────────────────
   //
   // This spec is the OWNER, and its secondary and accent had drifted from the
@@ -557,8 +572,8 @@ export const DEPOSIT_POLICY_SPEC = group({
 
 // A `merchantBonusPolicy` scope used to sit here, declaring a per-order spread
 // (depositBonusPercent / withdrawalBonusPercent / maxBonusPerOrder). Nothing
-// ever read it, and what a merchant earns is owned by team commission
-// (`database/repositories/teamCommission.js`, 2e): a fixed rule, not a policy.
+// ever read it, and what a merchant earns is owned by order commission
+// (`orderCommission` above, `database/repositories/teamCommission.js`).
 // A second set of earnings fields an admin could reach was a second owner
 // waiting to disagree with the first, so it is gone rather than left dormant.
 

@@ -274,33 +274,21 @@ describePg('admin user routes', () => {
   });
 
   // ── Staff authority lives on STAFF rows only ─────────────────────────────
-  // `isAdmin`, `hasPermission` and `queueManagerOrPermission` read the FLAGS on
-  // the session's row and never its `account_type`. The doors keep a PLAYER row
-  // out of the admin LOGIN, but a player's own session, from the player app,
-  // carries whatever flags its row holds. So a flag written onto a PLAYER row
-  // was staff authority riding a player's password and a player's session.
-  // `PUT /users/:id/roles` (no screen) and `POST /users/:id/queue-manager`
-  // (the Sub-admins screen takes a typed user id) both wrote one.
-  it('refuses to make a PLAYER account a queue manager, and the player gains nothing', async () => {
+  // `isAdmin` and `hasPermission` read the FLAGS on the session's row and never
+  // its `account_type`. The doors keep a PLAYER row out of the admin LOGIN, but
+  // a player's own session, from the player app, carries whatever flags its row
+  // holds. So a flag written onto a PLAYER row was staff authority riding a
+  // player's password and a player's session. The queue-manager grant that
+  // wrote one is gone with the role (owner, 2026-10-21).
+  it('has no queue-manager grant any more, and a player still cannot read the queue', async () => {
     plain = await subject();
     const res = await as(app, admin)
       .post(`/users/${plain.userId}/queue-manager`).send({ enable: true });
-    expect(res.status, JSON.stringify(res.body)).toBe(409);
-    expect(res.body.message).toMatch(/staff account/i);
-    expect((await getUser(plain.userId)).isQueueManager).toBe(false);
+    expect(res.status).toBe(404);
+    expect(await getUser(plain.userId)).not.toHaveProperty('isQueueManager');
 
     const queue = mountRouter((await import('../../domains/payment/paymentOrder.routes.js')).default);
     expect((await as(queue, plain).get('/payment-queue')).status).toBe(403);
-  });
-
-  it('still grants and revokes queue-manager access on a STAFF account', async () => {
-    const colleague = await actor({ isSubAdmin: true, permissions: {} });
-    const on = await as(app, admin).post(`/users/${colleague.userId}/queue-manager`).send({ enable: true });
-    expect(on.status, JSON.stringify(on.body)).toBe(200);
-    expect((await getUser(colleague.userId)).isQueueManager).toBe(true);
-    const off = await as(app, admin).post(`/users/${colleague.userId}/queue-manager`).send({ enable: false });
-    expect(off.status, JSON.stringify(off.body)).toBe(200);
-    expect((await getUser(colleague.userId)).isQueueManager).toBe(false);
   });
 
   // Both database probes put the row back in a `finally`. Under a mutant that
@@ -311,13 +299,13 @@ describePg('admin user routes', () => {
   it('the DATABASE refuses a staff flag on a non-staff row, whatever path writes it', async () => {
     plain = await subject();
     try {
-      for (const flag of ['is_admin', 'is_sub_admin', 'is_queue_manager', 'is_mediator']) {
+      for (const flag of ['is_admin', 'is_sub_admin', 'is_mediator']) {
         await expect(pgQuery(`UPDATE users SET ${flag} = TRUE WHERE user_id = $1`, [plain.userId]))
           .rejects.toThrow(/users_staff_flags_need_staff/);
       }
     } finally {
       // Clearing one is always allowed: revoking must never be refused.
-      await pgQuery(`UPDATE users SET is_admin = FALSE, is_sub_admin = FALSE, is_queue_manager = FALSE,
+      await pgQuery(`UPDATE users SET is_admin = FALSE, is_sub_admin = FALSE,
         is_mediator = FALSE WHERE user_id = $1`, [plain.userId]);
     }
   });
@@ -325,7 +313,7 @@ describePg('admin user routes', () => {
   // ── Phantom access is a PLAYER's (2026-10-01) ──────────────────────────
   // Phantom bets are placed from the player app, whose routes admit a player's
   // session only. The grant took any id, so a staff account could hold access
-  // it could never use — the same shape as the queue-manager grant above.
+  // it could never use — the same shape as a staff flag on a player row.
   it('refuses phantom access on a STAFF account, and the row is unchanged', async () => {
     const colleague = await actor({ isSubAdmin: true, permissions: {} });
     const res = await as(app, admin)

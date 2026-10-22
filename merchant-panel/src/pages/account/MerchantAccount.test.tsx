@@ -12,7 +12,7 @@
  *     anything is sent; the server's refusal is announced (S44);
  *   • sub-members: the add form sends name, mobile (no password) and the ticked
  *     roles; ticking an account assigns it for that duty;
- *   • pool and reports: the request and the CSV download reach their calls.
+ *   • pool and reports: the request and the Excel downloads reach their calls.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
@@ -30,16 +30,20 @@ const api = vi.hoisted(() => ({
   addPaymentAccount: vi.fn(),
   updatePaymentAccount: vi.fn(),
   removePaymentAccount: vi.fn(),
+  setPaymentAccountSizes: vi.fn(),
   addSubMember: vi.fn(),
   setSubMemberRoles: vi.fn(),
   removeSubMember: vi.fn(),
   assignSubMemberAccount: vi.fn(),
   unassignSubMemberAccount: vi.fn(),
   requestMerchantPool: vi.fn(),
+  buyMerchantPoolUsdt: vi.fn(),
   cancelMerchantPoolRequest: vi.fn(),
   getMerchantReport: vi.fn(),
   getOrderReport: vi.fn(),
-  downloadOrderReportCsv: vi.fn(),
+  downloadOrderReport: vi.fn(),
+  getBusinessLedger: vi.fn(),
+  downloadBusinessLedger: vi.fn(),
   toggleOnlineStatus: vi.fn(),
 }));
 vi.mock('../../services/api', () => ({ api }));
@@ -63,6 +67,7 @@ const ACCOUNT = {
   accountId: 'mpa_1', merchantId: 'm-1', kind: 'BANK', label: 'Shop HDFC', upiId: null, upiName: null, upiLink: null,
   holderName: 'Shop Ltd', accountNo: '123456789012', ifsc: 'HDFC0001234', bankName: 'HDFC',
   acceptsDeposits: true, paysWithdrawals: true, status: 'ACTIVE', lastUsedAt: null, createdAt: '', updatedAt: '', removedAt: null,
+  buySizes: [50000, 100000], sellSizes: [50000, 100000],
 };
 const OVERVIEW = {
   success: true,
@@ -70,10 +75,13 @@ const OVERVIEW = {
     teamId: 't-d', kind: 'DIRECT', ownerMerchantId: 'm-1', ownerName: 'Shop', ownerRef: 'M1', ownerStatus: 'ACTIVE',
     ownerApproval: 'APPROVED', ownerOnline: true, routingPriority: 3, name: 'Shop', poolAvailablePaise: 500000, poolHeldPaise: 100000,
     poolExposure: { heldOpenPaise: 60000, heldDisputedPaise: 40000, openBuys: 1, sellsSettlingPaise: 250000, sellsDisputedPaise: 0, openSells: 1 },
-    commission: { teamId: 't-d', buysPaise: 0, sellsPaise: 0, matchedPaise: 0, highPaise: 0, paidPaise: 0, owedPaise: 0, commissionPercent: 10, supervisorSharePercent: 0 },
+    poolStanding: { sizePaise: 0, leftPaise: 0, heldPaise: 0, consumedPaise: 0, sellsOwedPaise: 0, sellRoomPaise: 0, leftPercent: 0 },
+    cashOut: { active: false, startedAt: null, pausedUntil: null, pauseHours: 48 },
+    commission: { teamId: 't-d', buysPaise: 0, sellsPaise: 0, paidPaise: 0, owedPaise: 0, depositPercent: 5, withdrawalPercent: 5, supervisorSharePercent: 0 },
     createdAt: '',
   },
   accounts: [ACCOUNT],
+  sizes: { required: { DEPOSIT: [50000, 100000], WITHDRAWAL: [50000, 100000] }, uncovered: { DEPOSIT: [], WITHDRAWAL: [] } },
   staff: [{ staffId: 'mst_1', merchantId: 'm-1', userId: 'u-9', name: 'Ravi', mobile: '9876543210', roles: ['DEPOSITS'], status: 'ACTIVE', createdAt: '', removedAt: null, assignments: [] }],
   poolRequests: [],
   flags: [],
@@ -141,9 +149,10 @@ describe('who sees the merchant account screens', () => {
 
   it('an auditor reads the payment accounts and is offered no control on them', async () => {
     at(ROUTES.ACCOUNT_PAYMENT_ACCOUNTS, AUDITOR, <PaymentAccountsPage />);
-    expect(await screen.findByText('Shop HDFC')).toBeInTheDocument();
+    expect((await screen.findAllByText('Shop HDFC')).length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: /Add a UPI scanner|Add a bank account|Edit|Pause|Remove/ })).toBeNull();
     expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save sizes' })).toBeNull();
   });
 
   it('an agent opening an account screen is told these are for merchant accounts', () => {
@@ -270,12 +279,39 @@ describe('pool and reports', () => {
     expect(screen.getByText('400 BB')).toBeInTheDocument();
     expect(screen.getByText('Incoming from sells')).toBeInTheDocument();
     expect(screen.getByText('2,500 BB')).toBeInTheDocument();
+    // Buying in USDT is the default: no admin, an address back (owner, 2026-10-21).
+    api.buyMerchantPoolUsdt.mockResolvedValue({ requestId: 'req-u' });
+    fireEvent.change(screen.getByLabelText('Tokens (whole number)'), { target: { value: '2000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Get the USDT address' }));
+    await waitFor(() => expect(api.buyMerchantPoolUsdt).toHaveBeenCalledWith(2000));
+    expect(api.requestMerchantPool).not.toHaveBeenCalled();
+    // Paying an admin another way is still a request an admin fulfils.
+    fireEvent.click(screen.getByRole('button', { name: 'Pay an admin another way' }));
     fireEvent.change(screen.getByLabelText('Tokens (whole number)'), { target: { value: '2000' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send request' }));
-    await waitFor(() => expect(api.requestMerchantPool).toHaveBeenCalledWith('BUY', 2000, ''));
+    await waitFor(() => expect(api.requestMerchantPool).toHaveBeenCalledWith(2000, ''));
   });
 
-  it('the report shows the server\'s figures and the orders table and its CSV follow the same range', async () => {
+  it('a USDT pool buy shows where to pay, the amount and the network, and what the pool bought', async () => {
+    api.getMerchantAccount.mockResolvedValue({
+      ...OVERVIEW,
+      poolTrades: { boughtPaise: 1_200_000, buys: 2 },
+      poolRequests: [{
+        requestId: 'req-u', teamId: 'team-1', direction: 'BUY', tokenAmountPaise: 900_000, status: 'PENDING',
+        note: null, decisionNote: null, decidedAt: null, createdAt: '2026-10-21T10:00:00Z',
+        usdt: { chain: 'BEP20', address: '0x' + 'ab'.repeat(20), amount: 100, received: 0, rate: 90, expiresAt: '2099-01-01T00:00:00Z' },
+      }],
+    });
+    at(ROUTES.ACCOUNT_POOL, OWNER, <PoolPage />);
+    const card = await screen.findByTestId('usdt-pay-card');
+    expect(card.textContent).toMatch(/Pay 100 USDT for 9,000 BB tokens/);
+    expect(card.textContent).toMatch(/BNB Smart Chain \(BEP-20\)/);
+    expect(card.textContent).toContain('0x' + 'ab'.repeat(20));
+    expect(screen.getByText('12,000 BB')).toBeInTheDocument();
+    expect(screen.queryByText(/Returned to the platform/)).not.toBeInTheDocument();
+  });
+
+  it('the report shows the server\'s figures and the orders table and its download follow the same range', async () => {
     const zero = { orders: 0, completed: 0, completedPaise: 0, disputed: 0, disputesLost: 0 };
     api.getMerchantReport.mockResolvedValue({
       success: true, range: { from: null, to: null },
@@ -292,7 +328,12 @@ describe('pool and reports', () => {
       totals: { orders: 1, confirmed: 1, rejected: 0, confirmedBuyPaise: 100000, confirmedSellPaise: 0 },
       pagination: { total: 1, limit: 50, skip: 0 },
     });
-    api.downloadOrderReportCsv.mockResolvedValue(undefined);
+    api.downloadOrderReport.mockResolvedValue(undefined);
+    const ledgerTotals = { boughtPaise: 0, paidToAdminPaise: 0,
+      userBuys: 0, userBuysPaise: 0, userSells: 0, userSellsPaise: 0, netUserPaise: 0, commissionPaise: 0, compensationPaise: 0,
+      netCommissionPaise: 0, netProfitPaise: 0, pools: 1, poolAvailablePaise: 0, poolHeldPaise: 0 };
+    api.getBusinessLedger.mockResolvedValue({ success: true, range: { from: null, to: null }, truncated: false,
+      buys: [], sells: [], commission: [], pool: [], disputes: [], totals: ledgerTotals });
     at(ROUTES.ACCOUNT_REPORTS, AUDITOR, <ReportsPage />);
     expect(await screen.findByText('The last seven days')).toBeInTheDocument();
     expect(screen.getByRole('table', { name: 'Totals' })).toHaveTextContent('7');
@@ -305,10 +346,50 @@ describe('pool and reports', () => {
     fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-10-07' } });
     fireEvent.click(screen.getByRole('button', { name: 'Show report' }));
     await waitFor(() => expect(api.getMerchantReport).toHaveBeenLastCalledWith('2026-10-01', '2026-10-07'));
-    // The table follows the range the figures were built for, and so does the CSV.
+    // The table follows the range the figures were built for, and so does the download.
     await waitFor(() => expect(api.getOrderReport).toHaveBeenLastCalledWith(
       { from: '2026-10-01', to: '2026-10-07', type: '' }, { limit: 50, skip: 0 }));
-    fireEvent.click(screen.getByRole('button', { name: /Download CSV/ }));
-    await waitFor(() => expect(api.downloadOrderReportCsv).toHaveBeenCalledWith({ from: '2026-10-01', to: '2026-10-07', type: '' }));
+    fireEvent.click(screen.getByRole('button', { name: /Download orders/ }));
+    await waitFor(() => expect(api.downloadOrderReport).toHaveBeenCalledWith({ from: '2026-10-01', to: '2026-10-07', type: '' }));
+    // The business ledger follows the same range.
+    await waitFor(() => expect(api.getBusinessLedger).toHaveBeenLastCalledWith('2026-10-01', '2026-10-07'));
+    expect(screen.getByRole('region', { name: 'Totals' })).toHaveTextContent('Net profit');
+  });
+});
+
+describe('which sizes go to which account', () => {
+  const SECOND = { ...ACCOUNT, accountId: 'mpa_2', label: 'Shop ICICI', buySizes: [], sellSizes: [] };
+
+  it('sends every account\'s ticks in one save, and shows a size with no account in red', async () => {
+    api.getMerchantAccount.mockResolvedValue({ ...OVERVIEW, accounts: [ACCOUNT, SECOND] });
+    api.setPaymentAccountSizes.mockResolvedValue([]);
+    at(ROUTES.ACCOUNT_PAYMENT_ACCOUNTS, OWNER, <PaymentAccountsPage />);
+    const tick = await screen.findByRole('checkbox', { name: /Buys of ₹1,00,000 on Shop HDFC/ });
+    fireEvent.click(tick);
+    // Nothing takes ₹1,00,000 buys now: said before anything is sent.
+    expect(screen.getByRole('alert')).toHaveTextContent(/buy ₹1,00,000/);
+    fireEvent.click(screen.getByRole('checkbox', { name: /Buys of ₹1,00,000 on Shop ICICI/ }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Save sizes' }));
+    await waitFor(() => expect(api.setPaymentAccountSizes).toHaveBeenCalledWith([
+      { accountId: 'mpa_1', buySizes: [50000], sellSizes: [50000, 100000] },
+      { accountId: 'mpa_2', buySizes: [100000], sellSizes: [] },
+    ]));
+  });
+
+  it('says the server\'s refusal as it says it', async () => {
+    api.getMerchantAccount.mockResolvedValue({ ...OVERVIEW, accounts: [ACCOUNT, SECOND] });
+    api.setPaymentAccountSizes.mockRejectedValue(Object.assign(new Error('Every size must go to at least one of your accounts.'), { status: 409 }));
+    at(ROUTES.ACCOUNT_PAYMENT_ACCOUNTS, OWNER, <PaymentAccountsPage />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Sells of ₹50,000 on Shop ICICI/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save sizes' }));
+    expect(await screen.findByText('Every size must go to at least one of your accounts.')).toBeInTheDocument();
+  });
+
+  it('a sub-member sees the ticks and cannot change them', async () => {
+    at(ROUTES.ACCOUNT_PAYMENT_ACCOUNTS, { ...AUDITOR, actor: { ...AUDITOR.actor, roles: ['WITHDRAWALS'] } }, <PaymentAccountsPage />);
+    const tick = await screen.findByRole('checkbox', { name: /Buys of ₹50,000 on Shop HDFC/ });
+    expect(tick).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save sizes' })).toBeNull();
   });
 });

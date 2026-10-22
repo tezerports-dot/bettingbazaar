@@ -316,13 +316,13 @@ export async function enrolAuthenticator({ userId }) {
   return secret;
 }
 
-export async function seedStaff({ subAdmin = false, queueManager = false, permissions = {}, verified = true } = {}) {
+export async function seedStaff({ subAdmin = false, permissions = {}, verified = true } = {}) {
   const userId = rid('staff');
   const mobile = mob();
   const { user } = await db.users.createUser({
     userId, username: userId, mobile, status: 'ACTIVE', accountType: 'STAFF',
   });
-  const roles = [subAdmin ? 'subadmin' : null, queueManager ? 'queue_manager' : null].filter(Boolean);
+  const roles = [subAdmin ? 'subadmin' : null].filter(Boolean);
   if (roles.length) await db.users.setRoles(userId, roles);
   if (subAdmin) await db.users.updateUser(userId, { subAdminPermissions: permissions });
   const totpSecret = verified ? await enrolAuthenticator({ userId }) : null;

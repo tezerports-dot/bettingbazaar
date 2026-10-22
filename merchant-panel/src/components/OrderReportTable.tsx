@@ -1,11 +1,12 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * The order report as a table (owner, 2026-10-16): transaction ID, user, UTR,
- * amount, time, and the ✓ or ✗ pressed with who pressed it, one row per order.
+ * amount, time, and the ✓ or ✗ pressed with who pressed it, one row per order;
+ * under it every action taken on the order and by whom (owner, 2026-10-21).
  *
  * Every figure is the server's (GET /api/merchant/reports/orders): the totals
  * cover every row of the range, not this page, and nothing here adds them up
- * again. The CSV is the same rows from the server (…/orders.csv). A refusal
+ * again. The Excel download is the same rows from the server (…/orders.xlsx). A refusal
  * (a bad range) is said in the server's words.
  */
 import React, { useCallback, useEffect, useState } from 'react';
@@ -68,7 +69,7 @@ const OrderReportTable: React.FC<{ from?: string; to?: string }> = ({ from = '',
   const download = async () => {
     setDownloading(true); setRefusal('');
     try {
-      await api.downloadOrderReportCsv({ from, to, type });
+      await api.downloadOrderReport({ from, to, type });
     } catch (err) {
       setRefusal(errorText(err, 'Could not build the export.'));
     } finally {
@@ -88,7 +89,7 @@ const OrderReportTable: React.FC<{ from?: string; to?: string }> = ({ from = '',
           options={[{ value: '', label: 'All' }, { value: 'DEPOSIT', label: 'Buys' }, { value: 'WITHDRAWAL', label: 'Sells' }]}
         />
         <Button variant="outline" tone="neutral" onClick={() => void download()} busy={downloading} style={{ padding: '9px 14px', fontSize: 12.5 }}>
-          <Download size={15} /> Download CSV
+          <Download size={15} /> Download orders (Excel)
         </Button>
       </div>
 
@@ -123,6 +124,7 @@ const OrderReportTable: React.FC<{ from?: string; to?: string }> = ({ from = '',
                 <th scope="col" style={{ ...cell, textAlign: 'right' }}>Amount</th>
                 <th scope="col" style={cell}>Time</th>
                 <th scope="col" style={cell}>✓ / ✗</th>
+                <th scope="col" style={cell}>Every action</th>
               </tr>
             </thead>
             <tbody>
@@ -137,6 +139,15 @@ const OrderReportTable: React.FC<{ from?: string; to?: string }> = ({ from = '',
                   <td className="bb-mono" style={{ ...cell, textAlign: 'right' }}>{formatTokens(row.tokenAmount)}</td>
                   <td className="bb-mono" style={cell}>{when(row.at)}</td>
                   <td style={cell}><ResultCell row={row} /></td>
+                  <td style={{ ...cell, whiteSpace: 'normal', minWidth: 220 }}>
+                    {(row.actions ?? []).length === 0 ? <span style={{ color: 'var(--muted)' }}>—</span> : (
+                      <ol style={{ margin: 0, paddingLeft: 16, fontSize: 11.5, color: 'var(--text-2)' }}>
+                        {row.actions.map((m, i) => (
+                          <li key={i}>{m.action} · {m.by?.name ?? 'Unknown'} · <span className="bb-mono">{when(m.at)}</span></li>
+                        ))}
+                      </ol>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

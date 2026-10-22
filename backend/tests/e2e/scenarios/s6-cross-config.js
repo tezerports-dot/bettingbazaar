@@ -171,24 +171,12 @@ export default async function run() {
     check(A, 'merchant', 'the supervisor sees the request fulfilled', 'FULFILLED',
       String(buyDone?.status ?? 'ABSENT'), buyDone?.status === 'FULFILLED');
 
-    // ── And the BUYBACK: the platform takes tokens out of the pool ──────────
+    // ── And no BUYBACK: tokens never go back to the platform (owner, 2026-10-21)
     const back = await POST(sT, `/api/merchant/supervisor/teams/${team.teamId}/pool-requests`, {
       direction: 'SELL', tokenAmount: 5000, note: 'e2e cross-panel buyback',
     });
-    const sellReq = back.body?.request;
-    check(A, 'merchant', 'the supervisor asks the platform to buy 5,000 tokens back', '201 PENDING',
-      `${back.status} ${sellReq?.status ?? JSON.stringify(back.body).slice(0, 120)}`,
-      back.status === 201 && sellReq?.status === 'PENDING');
-    if (!sellReq?.requestId) return;
-    const bought = await POST(aT, `/api/admin/team-pool-requests/${sellReq.requestId}/fulfil`, {
-      settlementCurrency: 'INR', settlementAmount: 5000,
-    });
-    check(A, 'admin', 'fulfil the buyback, recording what was paid out', '200',
-      `${bought.status} ${bought.body?.message ?? JSON.stringify(bought.body).slice(0, 120)}`, bought.status === 200);
-    const end = await read();
-    const left = Number(end.pool?.availablePaise ?? NaN);
-    check(A, 'merchant', 'the supervisor\'s pool shows the buyback too', `${had + 2000000} paise`,
-      `${left} paise`, left === had + 2000000);
+    check(A, 'merchant', 'the supervisor cannot ask the platform to buy tokens back', '400 POOL_BUY_ONLY',
+      `${back.status} ${back.body?.code ?? ''}`, back.status === 400 && back.body?.code === 'POOL_BUY_ONLY');
 
     // ── And the MONEY record beside each token movement ─────────────────────
     // A pool that moved with no record of what was paid for it is half a
@@ -198,12 +186,10 @@ export default async function run() {
     const money = (await db.adminTokenConsiderations.listForMerchant(team.supervisor.merchantId))
       .filter((c) => c.teamId === team.teamId);
     const got = money.find((c) => c.direction === 'RECEIVED');
-    const paid = money.find((c) => c.direction === 'PAID');
-    check(A, 'system', 'each pool movement carries what the platform was paid, or paid', 'RECEIVED ₹25,000 for 25,000 tokens; PAID ₹5,000 for 5,000',
+    check(A, 'system', 'the pool movement carries what the platform was paid', 'RECEIVED ₹25,000 for 25,000 tokens',
       money.map((c) => `${c.direction} ${c.currency} ${c.fiatAmountMinor} for ${c.tokenAmountPaise}`).join('; ') || 'NO RECORD',
-      money.length === 2
-        && got?.currency === 'INR' && got.fiatAmountMinor === 2500000 && got.tokenAmountPaise === 2500000
-        && paid?.currency === 'INR' && paid.fiatAmountMinor === 500000 && paid.tokenAmountPaise === 500000,
+      money.length === 1
+        && got?.currency === 'INR' && got.fiatAmountMinor === 2500000 && got.tokenAmountPaise === 2500000,
       'trap 19: the sender\'s receipt is not the record — the table is');
   }
 

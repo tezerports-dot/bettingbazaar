@@ -13,7 +13,7 @@ import {
   MessageCircle, Shield, History, Scale, Search, Sun, Moon, Bell,
   SlidersHorizontal, Trophy, Star, Gamepad2, Bot, Share2,
   type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, Hourglass, Fingerprint,
-  Ghost, Smartphone, ShieldBan, KeyRound, Wallet, ScrollText, Coins, LifeBuoy } from 'lucide-react';
+  Ghost, Smartphone, ShieldBan, KeyRound, Wallet, ScrollText, Coins, LifeBuoy, Archive } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -38,7 +38,6 @@ interface MenuItem {
   /** The area this screen belongs to — or several, when it serves more than one. */
   permission?: PermissionKey | PermissionKey[];
   adminOnly?: boolean;
-  queueManagerAccess?: boolean;
   badge?: BadgeKind;      // live count badge (resolved from stats)
 }
 
@@ -66,11 +65,11 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/merchants',           icon: Store,            label: 'Agents & Merchants', title: 'Agents & Merchants', sub: 'Agents, supervisors and merchants with volume, pool and commission; a row opens the merchant', permission: 'canManageMerchants' },
     { path: '/teams',               icon: Users,            label: 'Teams',          title: 'Supervisors & Teams', sub: 'Supervisors, their agent teams, agents waiting for approval, red flags', permission: 'canManageTeams' },
     { path: '/users/phantom-agents',icon: Ghost,            label: 'Phantom Bettors',  title: 'Phantom Bettors',      sub: 'Who can place cosmetic bets, and on which boards', permission: 'canManagePhantomAgents' },
-    { path: '/staff',               icon: ShieldCheck,      label: 'Staff',          title: 'Staff',              sub: 'Admins, sub-admins, queue managers and mediators; a row opens the account', adminOnly: true },
+    { path: '/staff',               icon: ShieldCheck,      label: 'Staff',          title: 'Staff',              sub: 'Admins, sub-admins and mediators; a row opens the account', adminOnly: true },
   ] },
   { key: 'payments', label: 'Payments', items: [
     { path: '/payments',        icon: Wallet,   label: 'Pools & Requests', title: 'Pools & Requests', sub: 'Every pool and pool request: agents\' teams and merchants behind one switch', permission: ['canFundMerchants', 'canManageTeams', 'canManageMerchants'] },
-    { path: '/queue-manager',   icon: Layers,   label: 'Queue Manager',  title: 'Queue Manager', sub: 'Live payment order queue — orders are routed to agent teams or merchants', queueManagerAccess: true, permission: 'canManageMerchants', badge: 'queue' },
+    { path: '/payment-queue',   icon: Layers,   label: 'Payment Queue',  title: 'Payment Queue', sub: 'Live payment order queue — orders are routed to agent teams or merchants', permission: 'canManageMerchants', badge: 'queue' },
     { path: '/disputes',        icon: Scale,    label: 'Disputes',       title: 'Disputes',      sub: 'Payment order disputes & resolution', permission: 'canResolveDisputes' },
     { path: '/disputes/stalled-withdrawals', icon: Hourglass, label: 'Stalled Payouts', title: 'Stalled Withdrawals', sub: 'Payouts no merchant has taken, and the tokens locked behind them', permission: 'canResolveDisputes' },
     { path: '/transactions',    icon: FileText, label: 'Transactions',   title: 'Transactions',  sub: 'Ledger of deposits, withdrawals, bets & adjustments', permission: 'canViewTransactions' },
@@ -117,6 +116,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/blocked-ips',      icon: ShieldBan,   label: 'Blocked IPs',      title: 'Blocked IPs',      sub: 'Refuse every request from an address or range', permission: 'canManageIpBlocks' },
     { path: '/audit-logs',       icon: Shield,      label: 'Audit Logs',       title: 'Audit Logs',       sub: 'Administrative action trail', permission: 'canViewAuditLogs' },
     { path: '/error-logs',       icon: Shield,      label: 'Error Logs',       title: 'Error Logs',       sub: 'Runtime errors & failed jobs', permission: 'canViewAuditLogs' },
+    { path: '/cold-storage',     icon: Archive,     label: 'Cold Storage',     title: 'Cold Storage',     sub: 'Old rounds, chats and notifications kept off every live screen', adminOnly: true },
     { path: '/account/security', icon: KeyRound,    label: 'My Authenticator', title: 'My Authenticator', sub: 'Your authenticator app and recovery codes' },
   ] },
 ];
@@ -136,10 +136,9 @@ export function firstPermittedPath(canAny: (keys: PermissionKey[]) => boolean): 
   return null;
 }
 
-const ROLE_IDENTITY = (admin: { username?: string; role?: string; isAdmin?: boolean; isSubAdmin?: boolean; isQueueManager?: boolean } | null) => {
+const ROLE_IDENTITY = (admin: { username?: string; role?: string; isAdmin?: boolean; isSubAdmin?: boolean } | null) => {
   if (admin?.isAdmin) return { role: 'Super Admin', color: 'var(--gold-ink)' };
   if (admin?.isSubAdmin) return { role: 'Sub-Admin', color: 'var(--risk)' };
-  if (admin?.isQueueManager) return { role: 'Queue Manager', color: 'var(--info)' };
   return { role: 'Admin', color: 'var(--text-2)' };
 };
 
@@ -152,7 +151,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const { admin, logout } = useAuthStore();
-  const { can, canAny, isAdmin, isQueueManager } = usePermissions();
+  const { can, canAny, isAdmin } = usePermissions();
   const { theme, toggleTheme, collapsed, toggleCollapsed } = useThemeStore();
 
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -195,10 +194,9 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const canSee = useCallback((item: MenuItem): boolean => {
     if (isAdmin) return true;
     if (item.adminOnly) return false;
-    if (item.queueManagerAccess && isQueueManager) return true;
     if (item.permission) return canAny(Array.isArray(item.permission) ? item.permission : [item.permission]);
     return true; // dashboard etc. — any authenticated user
-  }, [isAdmin, isQueueManager, canAny]);
+  }, [isAdmin, canAny]);
 
   const visibleGroups = useMemo(
     () => NAV_GROUPS.map((g) => ({ ...g, items: g.items.filter(canSee) })).filter((g) => g.items.length),

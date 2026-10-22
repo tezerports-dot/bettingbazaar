@@ -42,7 +42,7 @@ interface Rejection {
 interface FlaggedPlayer {
   userId: string;
   username: string;
-  mobile: string;
+  mobile?: string;
   warningCount: number;
   paymentFlagCount: number;
   paymentFlagReason: string | null;

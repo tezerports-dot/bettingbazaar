@@ -41,7 +41,9 @@ import teamAdminRoutes from '../../domains/team/team.admin.routes.js';
 import merchantAccountAdminRoutes from '../../domains/merchant/merchantAccount.admin.routes.js';
 import usdtDepositAdminRoutes from '../../domains/payment/usdtDeposit.admin.routes.js';
 import cricketAdminRoutes from '../../domains/cricket/cricket.admin.routes.js';
+import coldStorageRoutes from './coldStorage.admin.routes.js';
 import { authenticateStaff } from '../../domains/identity/auth.middleware.js';
+import { shieldContactForStaff } from '../../domains/identity/staffContactShield.js';
 
 const router = express.Router();
 
@@ -49,6 +51,9 @@ const router = express.Router();
 // or merchant's session is refused here, 403 WRONG_PANEL, before any route
 // asks for an area; sub-routes still ask for theirs.
 router.use(authenticateStaff);
+// Contact and payout details reach full admins only (owner, 2026-10-21;
+// CLAUDE.md §24): every other staff answer is shielded here, at the door.
+router.use(shieldContactForStaff);
 
 router.use('/', analyticsRoutes);
 router.use('/', usersRoutes);
@@ -73,6 +78,7 @@ router.use('/', ipBlocksRoutes);
 router.use('/', teamAdminRoutes);
 router.use('/', merchantAccountAdminRoutes);
 router.use('/', usdtDepositAdminRoutes);
+router.use('/', coldStorageRoutes);
 router.use('/', cricketAdminRoutes);
 router.use('/', telegramAdminRoutes);
 router.use('/', communicationRoutes);

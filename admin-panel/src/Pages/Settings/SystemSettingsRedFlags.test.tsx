@@ -15,7 +15,7 @@ const { getConfig, updateConfig, toggleMaintenance } = vi.hoisted(() => ({
   getConfig: vi.fn(), updateConfig: vi.fn(), toggleMaintenance: vi.fn(),
 }));
 vi.mock('../../services/api', () => ({
-  default: { system: { getConfig, updateConfig, toggleMaintenance }, get: vi.fn(), put: vi.fn(), post: vi.fn() },
+  default: { system: { getConfig, updateConfig, toggleMaintenance }, users: { maintenanceTesters: async () => [] }, get: vi.fn(), put: vi.fn(), post: vi.fn() },
 }));
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('../../components/ConfirmDialog', () => ({ ConfirmDialog: () => null }));

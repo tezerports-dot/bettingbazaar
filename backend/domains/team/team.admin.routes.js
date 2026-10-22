@@ -132,16 +132,16 @@ router.get('/team-pool-requests', authenticate, hasPermission(POOL_AREA), async 
  * POST /api/admin/team-pool-requests/:requestId/fulfil
  *   { settlementCurrency: 'INR'|'USDT', settlementAmount }
  *
- * Sells the tokens into the pool (a BUY request) or buys them back (a SELL
- * request), and records what was paid — one transaction (teamPools.js). A
+ * Sells the tokens into the pool and records what was paid — one transaction (teamPools.js). A
  * second press, or a redelivery, finds the request no longer PENDING.
  */
 router.post('/team-pool-requests/:requestId/fulfil', authenticate, hasPermission(POOL_AREA), async (req, res) => {
   try {
     const request = await db.teamPools.getRequest(req.params.requestId);
     if (!request) return refuse(res, 'request_not_found');
-    const direction = request.direction === 'BUY' ? CONSIDERATION_DIRECTIONS.RECEIVED : CONSIDERATION_DIRECTIONS.PAID;
-    const { currency, fiatAmountMinor, rateUsed } = await resolveConsideration(req.body, direction);
+    // A USDT pool buy is fulfilled by the chain watcher, against its own address.
+    if (request.usdt) return refuse(res, 'usdt_paid_on_chain');
+    const { currency, fiatAmountMinor, rateUsed } = await resolveConsideration(req.body, CONSIDERATION_DIRECTIONS.RECEIVED);
     const out = await db.teamPools.fulfilRequest({
       requestId: request.requestId, actor: req.user.userId,
       consideration: { currency, fiatAmountMinor, rateUsed },
@@ -149,7 +149,7 @@ router.post('/team-pool-requests/:requestId/fulfil', authenticate, hasPermission
     if (!out.ok) return refuse(res, out.reason);
     await db.audit.recordDetailed({
       performedBy: req.user.userId, category: 'TREASURY', targetType: 'TEAM',
-      action: request.direction === 'BUY' ? 'TEAM_POOL_SALE' : 'TEAM_POOL_BUYBACK',
+      action: 'TEAM_POOL_SALE',
       targetId: out.teamId, ip: req.ip,
       details: {
         requestId: request.requestId, tokenAmount: paiseToRupees(request.tokenAmountPaise),
@@ -161,9 +161,7 @@ router.post('/team-pool-requests/:requestId/fulfil', authenticate, hasPermission
     });
     res.json({
       success: true,
-      message: request.direction === 'BUY'
-        ? `Sold ${paiseToRupees(request.tokenAmountPaise)} tokens into the team's pool.`
-        : `Bought ${paiseToRupees(request.tokenAmountPaise)} tokens back from the team's pool.`,
+      message: `Sold ${paiseToRupees(request.tokenAmountPaise)} tokens into the team's pool.`,
       pool: out.pool,
       settlement: {
         currency: out.consideration.currency,

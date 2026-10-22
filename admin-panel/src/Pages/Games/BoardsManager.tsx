@@ -19,6 +19,7 @@ import toast from 'react-hot-toast';
 import { boards as boardsApi } from '../../services/api';
 import type { Board } from '../../types';
 import { RtpFunds } from './RtpFunds';
+import { DemoResultsEditor } from './DemoResultsEditor';
 
 type Phases = Board['phases'];
 interface Form {
@@ -257,6 +258,7 @@ export const BoardsManager: React.FC = () => {
         </div>
       )}
       <RtpFunds />
+      <DemoResultsEditor />
     </div>
   );
 };

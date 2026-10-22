@@ -48,6 +48,7 @@ import { systemConfigPayload } from '../../domains/configuration/systemConfigPay
 import { signToken } from '../../domains/identity/paseto.util.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
+import { binary, readXlsx } from '../_xlsx.js';
 import { ORDER_SIZES } from '../../domains/merchant/denominations.js';
 
 // Every size of both directions to merchant accounts, or every size to agents.
@@ -97,7 +98,7 @@ describePg('merchant accounts', () => {
     const cfg = await getSystemConfig();
     prior = {
       merchantBuySizes: [...cfg.merchantBuySizes], merchantSellSizes: [...cfg.merchantSellSizes],
-      directMerchants: { ...cfg.directMerchants },
+      directMerchants: { ...cfg.directMerchants }, orderCommission: { ...cfg.orderCommission },
     };
   }, 60_000);
 
@@ -211,11 +212,13 @@ describePg('merchant accounts', () => {
     return res.body.staff;
   };
 
-  const queuedBuy = async (tokens, who = null) => {
+  // Paid by UPI unless named (owner, 2026-10-21): the accounts above take buys
+  // on their UPI QR account only.
+  const queuedBuy = async (tokens, who = null, buyPayMethod = 'UPI') => {
     const p = who ?? await player();
     const orderId = oid();
     const order = await createOrderRecord({
-      orderId, userId: p.userId, type: 'DEPOSIT',
+      orderId, userId: p.userId, type: 'DEPOSIT', buyPayMethod,
       tokenAmountRupees: tokens, fiatAmountRupees: tokens, depositAllocation: tokens, reserveAllocation: 0,
     });
     return { order, orderId, player: p };
@@ -336,7 +339,8 @@ describePg('merchant accounts', () => {
 
     const endToEnd = async (tokens, expectAccount) => {
       const paise = tokens * 100;
-      const { order, orderId, player: p } = await queuedBuy(tokens);
+      // Paid the way the account it should land in is paid (owner, 2026-10-21).
+      const { order, orderId, player: p } = await queuedBuy(tokens, null, expectAccount.kind === 'BANK' ? 'BANK' : 'UPI');
       const poolBefore = await getPool(m.team.teamId);
       expect(await tryAssignMerchant(order), 'the buy was not routed').toBe(true);
       const assigned = await getOrderRecord(orderId);
@@ -382,8 +386,10 @@ describePg('merchant accounts', () => {
     });
 
     it('a BANK buy: the player is given the account, never a UPI handle', async () => {
-      expect((await as(accountApp, m).put(`/account/payment-accounts/${m.upi.accountId}`).send({ acceptsDeposits: false })).status).toBe(200);
+      // The bank account takes buys BEFORE the UPI one stops: switching the
+      // only buy account off first would leave the sizes with no account.
       expect((await as(accountApp, m).put(`/account/payment-accounts/${m.bank.accountId}`).send({ acceptsDeposits: true })).status).toBe(200);
+      expect((await as(accountApp, m).put(`/account/payment-accounts/${m.upi.accountId}`).send({ acceptsDeposits: false })).status).toBe(200);
       try {
         const view = await endToEnd(50_000, m.bank);
         expect(view.paymentLink).toBeUndefined();
@@ -394,6 +400,19 @@ describePg('merchant accounts', () => {
       }
     });
 
+    it('a buy is paid into the kind of account the player chose, and never another (owner, 2026-10-21)', async () => {
+      const { directCandidates } = await import('#db/repositories/teamRouting.js');
+      const { takeDepositAccountWithin } = await import('#db/repositories/merchantPaymentAccounts.js');
+      // Only the UPI QR account takes buys: a BANK buy has nowhere to go here.
+      const { order: bankBuy } = await queuedBuy(1_000, null, 'BANK');
+      expect((await directCandidates(bankBuy, { cap: 10 })).map((c) => c.merchantId)).not.toContain(String(m.merchantId));
+      expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, m.upi.accountId, 1_000, 'BANK'))).toBe(null);
+      // The opposite case: a UPI buy is routed to it.
+      const { order: upiBuy } = await queuedBuy(1_000, null, 'UPI');
+      expect((await directCandidates(upiBuy, { cap: 10 })).map((c) => c.merchantId)).toContain(String(m.merchantId));
+      await pgQuery("UPDATE order_states SET state = 'CANCELLED' WHERE order_id = ANY($1)", [[bankBuy.orderId, upiBuy.orderId]]);
+    });
+
     it('a paused account is no reason to route, and is not taken under its lock', async () => {
       const { directCandidates } = await import('#db/repositories/teamRouting.js');
       const { takeDepositAccountWithin } = await import('#db/repositories/merchantPaymentAccounts.js');
@@ -402,10 +421,10 @@ describePg('merchant accounts', () => {
       await as(accountApp, m).put(`/account/payment-accounts/${m.upi.accountId}`).send({ status: 'PAUSED' });
       try {
         expect((await directCandidates(order, { cap: 10 })).map((c) => c.merchantId)).not.toContain(String(m.merchantId));
-        expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, m.upi.accountId))).toBe(null);
+        expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, m.upi.accountId, 1_000, 'UPI'))).toBe(null);
         // Another merchant's account is never taken for this one.
         const other = await merchantAccount({ poolTokens: 0 });
-        expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, other.upi.accountId))).toBe(null);
+        expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, other.upi.accountId, 1_000, 'UPI'))).toBe(null);
         await onlyDirectOnline(m.merchantId);
       } finally {
         await as(accountApp, m).put(`/account/payment-accounts/${m.upi.accountId}`).send({ status: 'ACTIVE' });
@@ -461,6 +480,134 @@ describePg('merchant accounts', () => {
     });
   });
 
+  // ── Which sizes go to which account (owner, 2026-10-20) ─────────────────
+  describe('which sizes go to which account', () => {
+    let m;
+    const ALL = [...ORDER_SIZES];
+    const without = (...gone) => ALL.filter((n) => !gone.includes(n));
+    const sizes = (accounts) => as(accountApp, m).put('/account/payment-accounts/sizes').send({ accounts });
+    beforeAll(async () => {
+      await config({ ...TO_MERCHANTS });
+      m = await merchantAccount();
+      // Both accounts work both ways, so sizes can be split between them.
+      expect((await as(accountApp, m).put(`/account/payment-accounts/${m.bank.accountId}`).send({ acceptsDeposits: true })).status).toBe(200);
+      expect((await as(accountApp, m).put(`/account/payment-accounts/${m.upi.accountId}`).send({ paysWithdrawals: true })).status).toBe(200);
+    });
+
+    it('a new account takes every size the platform sends here, and the overview says nothing is left out', async () => {
+      expect(m.upi.buySizes).toEqual(ALL);
+      const view = (await as(accountApp, m).get('/account')).body;
+      expect(view.sizes.required).toEqual({ DEPOSIT: ALL, WITHDRAWAL: ALL });
+      expect(view.sizes.uncovered).toEqual({ DEPOSIT: [], WITHDRAWAL: [] });
+    });
+
+    it('refuses a save that leaves a size with no account, naming it, and changes nothing', async () => {
+      const res = await sizes([
+        { accountId: m.upi.accountId, buySizes: without(1_000), sellSizes: ALL },
+        { accountId: m.bank.accountId, buySizes: without(1_000), sellSizes: without(500_000) },
+      ]);
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ code: 'SIZES_UNCOVERED', uncovered: { DEPOSIT: [1_000], WITHDRAWAL: [] } });
+      expect(res.body.message).toMatch(/₹1,000/);
+      const accounts = (await as(accountApp, m).get('/account')).body.accounts;
+      expect(accounts.every((a) => a.buySizes.length === ALL.length)).toBe(true);
+      // A size that is not an order size is refused by name.
+      const bad = await sizes([{ accountId: m.upi.accountId, buySizes: [700], sellSizes: ALL }]);
+      expect(bad.status).toBe(400);
+      expect(bad.body.code).toBe('INVALID_ORDER_SIZES');
+      // Another merchant's account is not this merchant's to set.
+      const other = await merchantAccount({ poolTokens: 0 });
+      await onlyDirectOnline(m.merchantId);
+      expect((await sizes([{ accountId: other.upi.accountId, buySizes: ALL, sellSizes: ALL }])).status).toBe(404);
+      // Unticking the only account's size one by one is refused too.
+      const one = await as(accountApp, m).put(`/account/payment-accounts/${m.upi.accountId}`).send({ buySizes: without(1_000) });
+      expect(one.status).toBe(200);
+      const last = await as(accountApp, m).put(`/account/payment-accounts/${m.bank.accountId}`).send({ buySizes: without(1_000) });
+      expect(last.status).toBe(409);
+      expect(last.body.uncovered).toEqual({ DEPOSIT: [1_000], WITHDRAWAL: [] });
+      // …and so is removing the account that was the last to take it.
+      const gone = await as(accountApp, m).delete(`/account/payment-accounts/${m.bank.accountId}`);
+      expect(gone.status).toBe(409);
+      expect((await as(accountApp, m).put(`/account/payment-accounts/${m.upi.accountId}`).send({ buySizes: ALL })).status).toBe(200);
+    });
+
+    it('a buy goes only to the account that takes its size', async () => {
+      const saved = await sizes([
+        { accountId: m.upi.accountId, buySizes: without(1_000), sellSizes: ALL },
+        { accountId: m.bank.accountId, buySizes: [1_000], sellSizes: ALL },
+      ]);
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+      try {
+        // Asked again where the account is taken, under its lock (trap 18).
+        const { takeDepositAccountWithin } = await import('#db/repositories/merchantPaymentAccounts.js');
+        expect(await withTransaction((c) => takeDepositAccountWithin(c, m.merchantId, m.upi.accountId, 1_000, 'UPI'))).toBe(null);
+        for (const [tokens, account] of [[1_000, m.bank], [5_000, m.upi]]) {
+          const { order, orderId } = await queuedBuy(tokens, null, account.kind === 'BANK' ? 'BANK' : 'UPI');
+          await onlyDirectOnline(m.merchantId);
+          expect(await tryAssignMerchant(order), `the ${tokens} buy was not routed`).toBe(true);
+          expect((await getOrderRecord(orderId)).payAccountId).toBe(account.accountId);
+          await pgQuery("UPDATE order_states SET state = 'CANCELLED' WHERE order_id = $1", [orderId]).catch(() => {});
+          const { releaseBuyHold } = await import('#db/repositories/teamPools.js');
+          await releaseBuyHold(orderId, { actor: 'test' });
+        }
+      } finally {
+        expect((await sizes([
+          { accountId: m.upi.accountId, buySizes: ALL, sellSizes: ALL },
+          { accountId: m.bank.accountId, buySizes: ALL, sellSizes: ALL },
+        ])).status).toBe(200);
+      }
+    });
+
+    it('a sell is marked paid only from an account that takes its size', async () => {
+      expect((await sizes([
+        { accountId: m.upi.accountId, buySizes: ALL, sellSizes: [50_000] },
+        { accountId: m.bank.accountId, buySizes: ALL, sellSizes: without(50_000) },
+      ])).status).toBe(200);
+      try {
+        const { orderId } = await routedSell(m, 50_000);
+        const ref = utr();
+        const wrong = await as(panel, m).post(`/confirm/${orderId}`).send({ utrNumber: ref, paidFromAccountId: m.bank.accountId });
+        expect(wrong.status).toBe(400);
+        expect(wrong.body.code).toBe('PAID_FROM_ACCOUNT_REQUIRED');
+        const { stampPaidFromWithin } = await import('#db/repositories/merchantPaymentAccounts.js');
+        await expect(withTransaction((c) => stampPaidFromWithin(c, { orderId, accountId: m.bank.accountId })))
+          .rejects.toMatchObject({ code: 'PAID_FROM_ACCOUNT_REFUSED' });
+        const ok = await as(panel, m).post(`/confirm/${orderId}`).send({ utrNumber: ref, paidFromAccountId: m.upi.accountId });
+        expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+        expect(await getOrderRecord(orderId)).toMatchObject({ status: 'PAID', paidFromAccountId: m.upi.accountId });
+      } finally {
+        await sizes([
+          { accountId: m.upi.accountId, buySizes: ALL, sellSizes: ALL },
+          { accountId: m.bank.accountId, buySizes: ALL, sellSizes: ALL },
+        ]);
+      }
+    });
+
+    it('a size the admin sends here later shows as left out until an account takes it', async () => {
+      await config({ merchantBuySizes: [500, 1_000], merchantSellSizes: [500] });
+      try {
+        // Only 500 and 1,000 are required now, so an account may drop the rest.
+        expect((await sizes([
+          { accountId: m.upi.accountId, buySizes: [500, 1_000], sellSizes: [500] },
+          { accountId: m.bank.accountId, buySizes: [], sellSizes: [] },
+        ])).status).toBe(200);
+        await config({ merchantBuySizes: [500, 1_000, 5_000], merchantSellSizes: [500] });
+        const view = (await as(accountApp, m).get('/account')).body;
+        expect(view.sizes.uncovered).toEqual({ DEPOSIT: [5_000], WITHDRAWAL: [] });
+        // A save that does not cover it is refused; one that does lands.
+        expect((await as(accountApp, m).put(`/account/payment-accounts/${m.bank.accountId}`).send({ label: 'Renamed' })).status).toBe(200);
+        expect((await sizes([{ accountId: m.bank.accountId, buySizes: [], sellSizes: [] }])).status).toBe(409);
+        expect((await sizes([{ accountId: m.bank.accountId, buySizes: [5_000], sellSizes: [] }])).status).toBe(200);
+      } finally {
+        await config({ ...TO_MERCHANTS });
+        await sizes([
+          { accountId: m.upi.accountId, buySizes: ALL, sellSizes: ALL },
+          { accountId: m.bank.accountId, buySizes: ALL, sellSizes: ALL },
+        ]);
+      }
+    });
+  });
+
   // ── Sub-members ───────────────────────────────────────────────────────────
   describe('sub-members and their roles', () => {
     let m;
@@ -513,11 +660,14 @@ describePg('merchant accounts', () => {
         const row = report.body.rows.find((r) => r.orderId === orderId);
         expect(row).toMatchObject({ result: 'CONFIRMED', actedBy: { kind: 'STAFF', name: desk.name }, type: 'DEPOSIT' });
         expect(row.tokenAmount).toBe(1_000);
-        expect(Object.keys(row).every((k) => ['orderId', 'type', 'userId', 'utr', 'tokenAmount', 'state', 'result', 'actedBy', 'at'].includes(k))).toBe(true);
+        expect(Object.keys(row).every((k) => ['orderId', 'type', 'userId', 'utr', 'tokenAmount', 'state', 'result', 'actedBy', 'actions', 'at'].includes(k))).toBe(true);
+        // Every action, named with the desk who took it (owner, 2026-10-21).
+        expect(row.actions).toEqual([{ action: 'Confirmed the payment', by: { kind: 'STAFF', name: desk.name }, at: expect.any(String) }]);
       }
-      const csvLine = (await as(panel, m).get('/reports/orders.csv')).text.split('\n').find((l) => l.startsWith(orderId));
-      expect(csvLine).toContain('✓');
-      expect(csvLine).toContain(desk.name);
+      const { Orders } = readXlsx((await as(panel, m).get('/reports/orders.xlsx').buffer(true).parse(binary)).body);
+      const line = Orders.find((r) => r[r.length - 1] === orderId);
+      expect(line).toContain('✓ Confirmed');
+      expect(line).toContain(desk.name);
       // Their list shows the buys paid into their account.
       const list = await as(panel, s).get('/orders');
       expect(list.status).toBe(200);
@@ -543,9 +693,11 @@ describePg('merchant accounts', () => {
       const report = await as(accountApp, fresh).get('/account/reports');
       expect(report.status, JSON.stringify(report.body)).toBe(200);
       expect(report.body.totals).toBeTruthy();
-      const csv = await as(panel, fresh).get('/reports/orders.csv');
-      expect(csv.status).toBe(200);
-      expect(csv.headers['content-type']).toMatch(/text\/csv/);
+      const book = await as(panel, fresh).get('/reports/orders.xlsx');
+      expect(book.status).toBe(200);
+      expect(book.headers['content-type']).toMatch(/spreadsheetml/);
+      expect((await as(panel, fresh).get('/reports/ledger')).status).toBe(200);
+      expect((await as(panel, staffSession(m, await addStaff(m, ['DEPOSITS']))).get('/reports/ledger')).body.code).toBe('ROLE_REQUIRED');
       const { order, orderId } = await queuedBuy(1_000);
       await onlyDirectOnline(m.merchantId);
       expect(await tryAssignMerchant(order)).toBe(true);
@@ -641,8 +793,8 @@ describePg('merchant accounts', () => {
 
   // ── Commission ────────────────────────────────────────────────────────────
   describe('commission', () => {
-    it('pays the admin\'s percent of the matched rise into the account\'s own pool, all of it the owner\'s', async () => {
-      await config({ ...TO_MERCHANTS, directMerchants: { commissionPercent: 7 } });
+    it('pays the admin\'s percent of each completed order into the account\'s own pool, all of it the owner\'s', async () => {
+      await config({ ...TO_MERCHANTS, orderCommission: { depositPercent: 7, withdrawalPercent: 3 } });
       const m = await merchantAccount({ poolTokens: 200_000 });
       // The platform's commission pool, funded from revenue for this case.
       const need = 10_000_000 - await bonusPoolPaise();
@@ -666,19 +818,18 @@ describePg('merchant accounts', () => {
       const poolBefore = (await getPool(m.team.teamId)).availablePaise;
       expect(await settleHold(sell.orderId)).toBe(true);
 
-      const { rows } = await pgQuery('SELECT * FROM team_commissions WHERE team_id = $1', [m.team.teamId]);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({
-        from_high_paise: '0', to_high_paise: '5000000', commission_paise: '350000', commission_percent: 7,
-      });
-      expect(rows[0].supervisor_id).toBe(null);
+      const { rows } = await pgQuery('SELECT * FROM team_commissions WHERE team_id = $1 ORDER BY created_at', [m.team.teamId]);
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({ order_id: orderId, order_type: 'DEPOSIT', commission_bp: 700, commission_paise: '350000' });
+      expect(rows[1]).toMatchObject({ order_id: sell.orderId, order_type: 'WITHDRAWAL', commission_bp: 300, commission_paise: '150000' });
+      expect(rows.every((r) => r.supervisor_id === null)).toBe(true);
       const { rows: shares } = await pgQuery(
         'SELECT role, merchant_id, share_paise FROM team_commission_shares WHERE commission_id = $1', [rows[0].commission_id]);
       expect(shares).toEqual([{ role: 'OWNER', merchant_id: String(m.merchantId), share_paise: '350000' }]);
-      // The sell's tokens and the commission both landed in the account's own pool.
-      expect((await getPool(m.team.teamId)).availablePaise - poolBefore).toBe(5_000_000 + 350_000);
+      // The sell's tokens and its commission both landed in the account's own pool.
+      expect((await getPool(m.team.teamId)).availablePaise - poolBefore).toBe(5_000_000 + 150_000);
       const summary = (await as(accountApp, m).get('/account')).body.team.commission;
-      expect(summary).toMatchObject({ commissionPercent: 7, supervisorSharePercent: 0 });
+      expect(summary).toMatchObject({ depositPercent: 7, withdrawalPercent: 3, supervisorSharePercent: 0, paidPaise: 500_000 });
     });
   });
 

@@ -24,11 +24,34 @@ export interface WebApp {
   requestContact(cb: (shared: boolean, res?: { response?: string }) => void): void;
   /** Opens a link outside Telegram: how Verify sends the person to the site. */
   openLink?(url: string): void;
+  /** Opens a t.me link inside Telegram (a channel's join screen). */
+  openTelegramLink?(url: string): void;
 }
 
 export function webApp(): WebApp | null {
   const w = (window as unknown as { Telegram?: { WebApp?: WebApp } }).Telegram?.WebApp;
   return w && typeof w.initData === 'string' ? w : null;
+}
+
+/**
+ * Tell the admin's error log that this page opened without Telegram's launch
+ * data, and why as far as the page can see: whether Telegram's script ran,
+ * whether the bundled copy was needed, whether the address carried the data.
+ * Never the launch data itself. Fire and forget.
+ */
+export function reportNoLaunchData(seen: { hasScript: boolean; bundled: boolean }): void {
+  const carried = /(?:^#|&)tgWebAppData=/.test(window.location.hash || '');
+  const why = !seen.hasScript ? 'Telegram script did not load'
+    : carried ? 'launch data in the address but not read' : 'no launch data from Telegram';
+  void secureFetch(apiUrl('/api/internal/error-report'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'omit',
+    body: JSON.stringify({
+      panel: 'user',
+      message: `Mini App opened without sign-in data: ${why}`,
+      component: `script=${seen.hasScript} bundledScript=${seen.bundled} hashData=${carried} ua=${navigator.userAgent}`,
+      url: `${window.location.origin}${window.location.pathname}`,
+    }),
+  }).catch(() => { /* the screen says what to do either way */ });
 }
 
 /**
@@ -67,6 +90,8 @@ export interface MiniAppContext {
     strikesLeft?: number | null;
     destination?: string;
     account?: VerifyAccount;
+    /** A player's Verify also asks to join these channels (owner, 2026-10-21); empty or absent with none on. */
+    channels?: Array<{ title: string; inviteLink: string }>;
   };
   accounts: Array<{ panel: Panel; mobileHint: string }>;
 }

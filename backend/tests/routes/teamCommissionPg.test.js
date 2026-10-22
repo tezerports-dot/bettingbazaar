@@ -1,21 +1,23 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * Team commission (PROJECT_STATUS §3.10, Step 2e), through the real order
- * paths, the real routers and a real database.
+ * Order commission (owner, 2026-10-21), through the real order paths, the
+ * real routers and a real database.
  *
- * The rule (owner): a team's matched volume is min(completed buys, completed
- * sells). Each time it rises above the team's high-water mark, 10% of the rise
- * is paid as tokens into the team's pool from the platform's commission pool;
- * 16% of each payment is recorded to the supervisor and 84% to the members in
- * equal parts.
+ * The rule: every COMPLETED order a team served pays the admin's percent of
+ * its tokens (`orderCommission.depositPercent` for a buy, `withdrawalPercent`
+ * for a sell; 5 and 5 by default) into the team's pool from the platform's
+ * commission pool; 16% of each payment is recorded to the supervisor and 84%
+ * to the members in equal parts.
  *
  * What is pinned:
  *   · nothing is paid while the commission pool cannot cover ALL of it, and
- *     the mark does not move (§26: never partial);
+ *     the order stays owed (§26: never partial);
  *   · an admin's top-up pays what was waiting, at once;
- *   · a completion pays at once, on the smaller side only;
+ *   · a completion pays at once, on a buy and on a sell alike;
  *   · the shares add up to the payment, 16 / 84 equally;
- *   · replays and races pay once (§32 S6);
+ *   · replays and races pay once per order (§32 S6);
+ *   · a rate of 0 pays nothing and leaves nothing owed; the rate is the one
+ *     at completion, recorded on the row;
  *   · tokens move TOKEN_SUPPLY → TEAM_FLOAT, the ledger's pool pays for them;
  *   · a member's screen carries their own share and nobody else's.
  *
@@ -38,8 +40,9 @@ import { updateUser } from '#db/repositories/users.js';
 import { getPool } from '#db/repositories/teamPools.js';
 import { recordEvent } from '#db/repositories/ledger.core.js';
 import {
-  payTeamCommission, teamSummary, listShares, teamsOwed,
+  payOrderCommission, teamSummary, listShares, ordersOwed,
 } from '#db/repositories/teamCommission.js';
+import { db } from '#db';
 import { merchantEarnings } from '#db/repositories/stats.js';
 import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js';
 import {
@@ -149,6 +152,7 @@ describePg('team commission', () => {
     const res = await as(panel, m).post(`/confirm/${orderId}`);
     expect(res.status, res.body.message).toBe(200);
     expect((await getOrderRecord(orderId)).state).toBe('COMPLETED');
+    return orderId;
   };
 
   const completedSell = async (m, tokens) => {
@@ -166,65 +170,62 @@ describePg('team commission', () => {
     // The hold sweep's own settler, for this order: the sell completes there.
     expect(await settleHold(orderId)).toBe(true);
     expect((await getOrderRecord(orderId)).state).toBe('COMPLETED');
+    return orderId;
   };
 
   const rows = async (teamId) => (await pgQuery(
-    'SELECT * FROM team_commissions WHERE team_id = $1 ORDER BY to_high_paise', [teamId])).rows;
+    'SELECT * FROM team_commissions WHERE team_id = $1 ORDER BY created_at, commission_id', [teamId])).rows;
+  const owedIds = async () => (await ordersOwed({ limit: 1000 })).map((o) => o.orderId);
 
   let m; // the member the payment cases share
-  let other; // a second team's member: the race, and a buy that completes the match
+  let other; // a second team's member: the race and the rate cases
+  let mBuy;
 
   it('pays nothing while the commission pool cannot cover it all, and says what is waiting', async () => {
     m = await member();
-    await setPool(400_000); // 4,000 tokens — the 5,000 earned below does not fit
-    await completedBuy(m, 50_000);
-    await completedSell(m, 50_000);
+    await setPool(200_000); // 2,000 tokens — the 2,500 a 50,000 buy earns does not fit
+    mBuy = await completedBuy(m, 50_000);
     expect(await teamSummary(m.team.teamId)).toMatchObject({
-      buysPaise: 5_000_000, sellsPaise: 5_000_000, matchedPaise: 5_000_000,
-      highPaise: 0, paidPaise: 0, owedPaise: 500_000,
+      buysPaise: 5_000_000, sellsPaise: 0, paidPaise: 0, owedPaise: 250_000, depositPercent: 5, withdrawalPercent: 5,
     });
     expect(await rows(m.team.teamId)).toHaveLength(0);
-    // The pool holds what was bought into it, the buy paid out, the sell paid in — no commission.
-    expect((await getPool(m.team.teamId)).availablePaise).toBe(50_000_000);
-    expect(await payTeamCommission(m.team.teamId)).toMatchObject({ ok: false, reason: 'pool_short', owedPaise: 500_000 });
-    expect(await poolPaise()).toBe(400_000);
-    expect(await teamsOwed({ limit: 1000 })).toContain(m.team.teamId);
+    // The pool holds what was bought into it less the buy paid out — no commission.
+    expect((await getPool(m.team.teamId)).availablePaise).toBe(45_000_000);
+    expect(await payOrderCommission(mBuy)).toMatchObject({ ok: false, reason: 'pool_short', owedPaise: 250_000 });
+    expect(await poolPaise()).toBe(200_000);
+    expect(await owedIds()).toContain(mBuy);
   });
 
   it("an admin's top-up pays what was waiting, at once, into the team's pool", async () => {
     // Revenue to fund from, as a settled cycle's profit would leave it.
     await adjust([{ account: 'USER_FUNDS', amountPaise: 100_000_000 }, { account: 'PLATFORM_REVENUE', amountPaise: -100_000_000 }]);
-    const owedElsewhere = (await teamsOwed({ limit: 1000 })).filter((t) => t !== m.team.teamId);
-    expect(owedElsewhere, 'another suite left a team owed commission; this case funds exactly ours').toEqual([]);
+    const owedElsewhere = (await owedIds()).filter((o) => o !== mBuy);
+    expect(owedElsewhere, 'another suite left an order owed commission; this case funds exactly ours').toEqual([]);
     const res = await as(revenue, admin).post('/revenue/bonus-pool/fund')
-      .send({ amount: 1_000, justification: 'teamCommissionPg top-up' });
+      .send({ amount: 500, justification: 'teamCommissionPg top-up' });
     expect(res.status, res.body.message).toBe(200);
     expect(res.body.commissionsPaid).toBe(1);
     const [paid] = await rows(m.team.teamId);
-    expect(paid).toMatchObject({ from_high_paise: '0', to_high_paise: '5000000', commission_paise: '500000' });
-    expect((await getPool(m.team.teamId)).availablePaise).toBe(50_500_000);
-    // 4,000 + 1,000 funded, 5,000 paid.
+    expect(paid).toMatchObject({
+      commission_id: `tcm~${mBuy}`, order_id: mBuy, order_type: 'DEPOSIT',
+      base_paise: '5000000', commission_bp: 500, commission_paise: '250000',
+    });
+    expect((await getPool(m.team.teamId)).availablePaise).toBe(45_250_000);
+    // 2,000 + 500 funded, 2,500 paid.
     expect(await poolPaise()).toBe(0);
     expect((await teamSummary(m.team.teamId)).owedPaise).toBe(0);
   });
 
-  it('a completion pays at once, on the smaller side only', async () => {
+  it('a completed sell pays at once as well', async () => {
     await setPool(10_000_000);
-    // More buys than sells: the matched volume does not move, nothing is paid.
-    await completedBuy(m, 50_000);
-    expect(await rows(m.team.teamId)).toHaveLength(1);
-    // And every screen is told so: the matched side is the smaller one, nothing is owed.
-    expect(await teamSummary(m.team.teamId)).toMatchObject({
-      buysPaise: 10_000_000, sellsPaise: 5_000_000, matchedPaise: 5_000_000, owedPaise: 0,
-    });
     const before = (await getPool(m.team.teamId)).availablePaise;
-    // The sell matches it: the rise of 50,000 pays 5,000 the moment the sell completes.
-    await completedSell(m, 50_000);
+    const sell = await completedSell(m, 50_000);
     const all = await rows(m.team.teamId);
     expect(all).toHaveLength(2);
-    expect(all[1]).toMatchObject({ from_high_paise: '5000000', to_high_paise: '10000000', commission_paise: '500000' });
-    expect((await getPool(m.team.teamId)).availablePaise - before).toBe(5_000_000 + 500_000);
-    expect(await poolPaise()).toBe(9_500_000);
+    expect(all[1]).toMatchObject({ order_id: sell, order_type: 'WITHDRAWAL', commission_bp: 500, commission_paise: '250000' });
+    expect((await getPool(m.team.teamId)).availablePaise - before).toBe(5_000_000 + 250_000);
+    expect(await poolPaise()).toBe(9_750_000);
+    expect(await teamSummary(m.team.teamId)).toMatchObject({ buysPaise: 5_000_000, sellsPaise: 5_000_000, paidPaise: 500_000, owedPaise: 0 });
   });
 
   it('records 16% to the supervisor and 84% equally to the members, adding up to the payment', async () => {
@@ -232,13 +233,13 @@ describePg('team commission', () => {
     const shares = await listShares(second.commission_id);
     expect(shares).toHaveLength(11);
     expect(shares.find((s) => s.role === 'SUPERVISOR')).toEqual(
-      { merchantId: m.team.supervisorId, role: 'SUPERVISOR', sharePaise: 80_000 });
+      { merchantId: m.team.supervisorId, role: 'SUPERVISOR', sharePaise: 40_000 });
     const members = shares.filter((s) => s.role === 'MEMBER');
     expect(members.map((s) => s.merchantId).sort()).toEqual([...m.team.members].sort());
-    expect(members.every((s) => s.sharePaise === 42_000)).toBe(true);
-    expect(shares.reduce((sum, s) => sum + s.sharePaise, 0)).toBe(500_000);
-    // What the member's earnings tile reads: two payments, 420 each.
-    expect((await merchantEarnings(m.merchantId)).lifetime.totalEarnings).toBe(840);
+    expect(members.every((s) => s.sharePaise === 21_000)).toBe(true);
+    expect(shares.reduce((sum, s) => sum + s.sharePaise, 0)).toBe(250_000);
+    // What the member's earnings tile reads: two payments, 210 each.
+    expect((await merchantEarnings(m.merchantId)).lifetime.totalEarnings).toBe(420);
   });
 
   it('moves the tokens out of the platform holding and the cost out of the ledger pool', async () => {
@@ -246,62 +247,84 @@ describePg('team commission', () => {
     const { rows: legs } = await pgQuery(
       'SELECT account, amount_paise FROM treasury_entries WHERE movement_id = $1 ORDER BY account',
       [`team_commission_${second.commission_id}`]);
-    expect(legs.map((l) => [l.account, Number(l.amount_paise)])).toEqual([['TEAM_FLOAT', 500_000], ['TOKEN_SUPPLY', -500_000]]);
+    expect(legs.map((l) => [l.account, Number(l.amount_paise)])).toEqual([['TEAM_FLOAT', 250_000], ['TOKEN_SUPPLY', -250_000]]);
     const { rows: [event] } = await pgQuery(
       'SELECT event_type, ref_model, ref_id, postings FROM accounting_events WHERE idempotency_key = $1',
       [`acct_${second.commission_id}`]);
     expect(event).toMatchObject({ event_type: 'MERCHANT_BONUS_ISSUED', ref_model: 'Team', ref_id: m.team.teamId });
     expect(event.postings).toEqual([
-      { account: 'MERCHANT_BONUS_POOL', amountPaise: 500_000 },
-      { account: 'MERCHANT_FUNDS', amountPaise: -500_000 },
+      { account: 'MERCHANT_BONUS_POOL', amountPaise: 250_000 },
+      { account: 'MERCHANT_FUNDS', amountPaise: -250_000 },
     ]);
     const { rows: [pe] } = await pgQuery(
       `SELECT kind, available_delta_paise FROM team_pool_entries WHERE tx_id = $1`, [`pool_commission_${second.commission_id}`]);
-    expect(pe).toMatchObject({ kind: 'COMMISSION', available_delta_paise: '500000' });
+    expect(pe).toMatchObject({ kind: 'COMMISSION', available_delta_paise: '250000' });
   });
 
-  it('pays once however many ask at once, and nothing when nothing rose', async () => {
+  it('pays once however many ask at once, and nothing for an order already paid', async () => {
     other = await member();
     await setPool(0);
-    await completedBuy(other, 50_000);
-    await completedSell(other, 50_000); // owed, and waiting
+    const buy = await completedBuy(other, 50_000); // owed, and waiting
     await setPool(10_000_000);
     const before = (await getPool(other.team.teamId)).availablePaise;
-    const outcomes = await Promise.all(Array.from({ length: 6 }, () => payTeamCommission(other.team.teamId)));
+    const outcomes = await Promise.all(Array.from({ length: 6 }, () => payOrderCommission(buy)));
     expect(outcomes.filter((o) => o.paid)).toHaveLength(1);
-    expect(outcomes.filter((o) => !o.paid).every((o) => o.ok && ['no_rise', 'already_paid'].includes(o.reason))).toBe(true);
+    expect(outcomes.filter((o) => !o.paid).every((o) => o.ok && o.reason === 'already_paid')).toBe(true);
     expect(await rows(other.team.teamId)).toHaveLength(1);
-    expect((await getPool(other.team.teamId)).availablePaise - before).toBe(500_000);
-    expect(await poolPaise()).toBe(9_500_000);
+    expect((await getPool(other.team.teamId)).availablePaise - before).toBe(250_000);
+    expect(await poolPaise()).toBe(9_750_000);
     // The first team, a bystander here, was not touched.
     expect(await rows(m.team.teamId)).toHaveLength(2);
-    expect(await payTeamCommission(m.team.teamId)).toMatchObject({ ok: true, paid: false, reason: 'no_rise' });
+    expect(await payOrderCommission(mBuy)).toMatchObject({ ok: true, paid: false, reason: 'already_paid' });
   });
 
-  it('a BUY that completes the match pays at once as well', async () => {
-    await setPool(10_000_000);
-    // A sell first: more sells than buys, so nothing rises.
-    await completedSell(other, 50_000);
-    expect(await rows(other.team.teamId)).toHaveLength(1);
-    // The buy that matches it is completed on the member's panel, and pays there.
-    await completedBuy(other, 50_000);
-    const all = await rows(other.team.teamId);
-    expect(all).toHaveLength(2);
-    expect(all[1]).toMatchObject({ from_high_paise: '5000000', to_high_paise: '10000000', commission_paise: '500000' });
+  it('pays the rate in force at completion, and a rate of 0 pays nothing and owes nothing', async () => {
+    const stored = (await db.config.getSystemConfig())?.orderCommission ?? {};
+    try {
+      await db.config.applyConfig({
+        scope: 'system', actor: 'test', patch: { orderCommission: { depositPercent: 2.5, withdrawalPercent: 0 } },
+      });
+      await setPool(10_000_000);
+      const sell = await completedSell(other, 50_000);
+      expect(await payOrderCommission(sell)).toMatchObject({ ok: true, paid: false, reason: 'rate_zero' });
+      expect(await owedIds()).not.toContain(sell);
+      const buy = await completedBuy(other, 50_000);
+      const [row] = (await rows(other.team.teamId)).filter((r) => r.order_id === buy);
+      expect(row).toMatchObject({ commission_bp: 250, commission_paise: '125000' });
+      expect(await rows(other.team.teamId)).toHaveLength(2);
+    } finally {
+      await db.config.applyConfig({
+        scope: 'system', actor: 'test',
+        patch: { orderCommission: { depositPercent: stored.depositPercent ?? 5, withdrawalPercent: stored.withdrawalPercent ?? 5 } }, // schema default: 5
+      });
+    }
+  });
+
+  it('the row holds every writer to the rate it records', async () => {
+    const [row] = await rows(m.team.teamId);
+    await expect(pgQuery(
+      `INSERT INTO team_commissions (commission_id, team_id, order_id, order_type, base_paise, commission_bp, commission_paise)
+       VALUES ($1, $2, $3, 'DEPOSIT', 5000000, 500, 250001)`, [`tcm~probe-${row.commission_id}`, m.team.teamId, `probe-${oid()}`]))
+      .rejects.toMatchObject({ code: '23514' });
+    // And one order, one row, by any writer.
+    await expect(pgQuery(
+      `INSERT INTO team_commissions (commission_id, team_id, order_id, order_type, base_paise, commission_bp, commission_paise)
+       VALUES ($1, $2, $3, 'DEPOSIT', 5000000, 500, 250000)`, [`tcm~again-${oid()}`, m.team.teamId, mBuy]))
+      .rejects.toMatchObject({ code: '23505' });
   });
 
   it("a member's screen carries their own share of each payment, never anyone else's", async () => {
     const res = await as(teamRoutes, m).get('/team');
     expect(res.status, res.body.message).toBe(200);
     expect(res.body.role).toBe('MEMBER');
-    expect(res.body.myCommissionPaise).toBe(84_000);
+    expect(res.body.myCommissionPaise).toBe(42_000);
     expect(res.body.commissions).toHaveLength(2);
     for (const c of res.body.commissions) {
       expect(Object.keys(c).sort()).toEqual(
-        ['commissionId', 'commissionPaise', 'createdAt', 'fromHighPaise', 'mySharePaise', 'teamId', 'toHighPaise']);
-      expect(c.mySharePaise).toBe(42_000);
+        ['basePaise', 'commissionId', 'commissionPaise', 'commissionPercent', 'createdAt', 'mySharePaise', 'orderId', 'orderType', 'teamId']);
+      expect(c.mySharePaise).toBe(21_000);
     }
-    expect(res.body.team.commission).toMatchObject({ matchedPaise: 10_000_000, paidPaise: 1_000_000, owedPaise: 0 });
-    expect(JSON.stringify(res.body)).not.toContain('sharePaise":80000');
+    expect(res.body.team.commission).toMatchObject({ buysPaise: 5_000_000, sellsPaise: 5_000_000, paidPaise: 500_000, owedPaise: 0 });
+    expect(JSON.stringify(res.body)).not.toContain('sharePaise":40000');
   });
 });

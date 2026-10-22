@@ -42,12 +42,12 @@ const TEAM = {
   teamId: 't-1', supervisorId: 's-1', supervisorName: 'Sup One', supervisorRef: 'MSUP1', name: 'Alpha',
   rail: 'UPI_BANK', approvedCount: 3, pendingCount: 0, size: 10, strength: 'WORKING', createdAt: '',
   poolAvailablePaise: 700_000, poolHeldPaise: 0, poolExposure: null,
-  commission: { teamId: 't-1', buysPaise: 0, sellsPaise: 0, matchedPaise: 0, highPaise: 0, paidPaise: 12_000, owedPaise: 0, commissionPercent: 10, supervisorSharePercent: 16 },
+  commission: { teamId: 't-1', buysPaise: 0, sellsPaise: 0, paidPaise: 12_000, owedPaise: 0, depositPercent: 5, withdrawalPercent: 5, supervisorSharePercent: 16 },
 };
 const DIRECT = {
   teamId: 'TD-1', ownerMerchantId: 'MRC-9', ownerName: 'shop', ownerRef: 'M9', ownerStatus: 'ACTIVE', ownerOnline: true,
   name: 'Shop Direct', poolAvailablePaise: 250000, poolHeldPaise: 50000,
-  commission: { paidPaise: 1000, owedPaise: 0, commissionPercent: 10 },
+  commission: { paidPaise: 1000, owedPaise: 0, depositPercent: 5, withdrawalPercent: 5 },
   accounts: [{ accountId: 'mpa_1', kind: 'UPI_QR', label: 'Counter', upiId: 'shop@okhdfc', bankName: 'HDFC', accountNo: '123456789012', acceptsDeposits: true, paysWithdrawals: false, status: 'ACTIVE' }],
   staff: [{ staffId: 'mst_1', name: 'Asha', mobile: '9876500000', roles: ['DEPOSITS', 'AUDIT'], status: 'ACTIVE' }],
   problemDays: [],
@@ -84,19 +84,20 @@ describe('Payments, agents\' teams side', () => {
 
   it('fulfils the request on the row pressed, with the payment typed on THAT row', async () => {
     renderAt();
-    fireEvent.change(await screen.findByLabelText('Platform paid'), { target: { value: '390' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Buy 400 tokens back from Bravo' }));
-    await waitFor(() => expect(teams.fulfilPoolRequest).toHaveBeenCalledWith('pr-2', { settlementCurrency: 'INR', settlementAmount: 390 }));
+    fireEvent.change((await screen.findAllByLabelText('Platform received'))[0], { target: { value: '1500' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sell 1,500 tokens to Alpha' }));
+    await waitFor(() => expect(teams.fulfilPoolRequest).toHaveBeenCalledWith('pr-1', { settlementCurrency: 'INR', settlementAmount: 1500 }));
     expect(teams.fulfilPoolRequest).toHaveBeenCalledTimes(1);
     // The pools re-read after the request moved one.
     await waitFor(() => expect(teams.list).toHaveBeenCalledTimes(2));
   });
 
-  it('cannot fulfil with no payment typed, and a buyback offers rupees only', async () => {
+  it('cannot fulfil with no payment typed, and an old buyback can only be rejected', async () => {
     renderAt();
     expect(await screen.findByRole('button', { name: /Sell 1,500 tokens to Alpha/ })).toBeDisabled();
-    const sellCurrency = screen.getAllByLabelText('Currency')[1] as HTMLSelectElement;
-    expect([...sellCurrency.options].map((o) => o.value)).toEqual(['INR']);
+    expect(screen.queryByRole('button', { name: /tokens back from Bravo/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/Sell back \(no longer allowed/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reject request from Bravo' })).toBeEnabled();
   });
 
   it('shows the server\'s refusal verbatim', async () => {

@@ -2,27 +2,34 @@
 //
 // History — design handoff "BB Merchant Panel.dc.html": three totals, then one
 // of three tabs (Volume, Earnings, Report). Report is the server's order table
-// with ✓/✗ and who pressed it, and its CSV (`OrderReportTable`, owner 2026-10-16).
+// with ✓/✗ and who pressed it, and its download (`OrderReportTable`, owner 2026-10-16), under the business
+// ledger (`BusinessLedger`, owner 2026-10-21).
 //
 // The totals and series are the server's, over every completed order
 // (GET /merchant/earnings and /merchant/earnings/weekly) — nothing here is a
 // placeholder series (GOVERNANCE §2: no invented business figures).
 import React, { useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router';
 import { api } from '../services/api';
 import { useViewport } from '../hooks/useViewport';
 import { formatMoney, formatMoneyCompact, formatTokens } from '../utils/rail';
 import type { Earnings } from '../types';
 import { Card, CardTitle, SegmentedControl, Skeleton, cardStyle } from '../components/ui';
 import OrderReportTable from '../components/OrderReportTable';
+import BusinessLedger from '../components/BusinessLedger';
 
-type Tab = 'volume' | 'earnings' | 'report';
+type Tab = 'volume' | 'earnings' | 'ledger';
+
+/** What another screen asks History to open on, as router state (a Dashboard tile). */
+export interface HistoryLinkState { tab?: Tab }
 
 interface WeeklyPoint { date: string; earnings: number; orders: number; depositVolume: number; withdrawalVolume: number; }
 
 const HistoryViews: React.FC = () => {
   const { isMobile } = useViewport();
 
-  const [tab, setTab] = useState<Tab>('volume');
+  const link = (useLocation().state ?? null) as HistoryLinkState | null;
+  const [tab, setTab] = useState<Tab>(link?.tab ?? 'volume');
   const [weekly, setWeekly] = useState<WeeklyPoint[] | null>(null);
   // Lifetime totals, counted by the server over every completed order. The
   // tiles summed the orders the queue had loaded (its newest page), so a busy
@@ -81,7 +88,7 @@ const HistoryViews: React.FC = () => {
           options={[
             { value: 'volume', label: 'Volume' },
             { value: 'earnings', label: 'Earnings' },
-            { value: 'report', label: 'Report' },
+            { value: 'ledger', label: 'Ledger' },
           ]}
         />
       </div>
@@ -115,7 +122,7 @@ const HistoryViews: React.FC = () => {
         </div>
       </div>
 
-      {state === 'loading' && tab !== 'report' && <Skeleton height={230} />}
+      {state === 'loading' && tab !== 'ledger' && <Skeleton height={230} />}
 
       {state === 'ready' && tab === 'volume' && (
         <Card>
@@ -180,7 +187,12 @@ const HistoryViews: React.FC = () => {
         </Card>
       )}
 
-      {tab === 'report' && <OrderReportTable />}
+      {tab === 'ledger' && (
+        <>
+          <BusinessLedger />
+          <OrderReportTable />
+        </>
+      )}
     </div>
   );
 };

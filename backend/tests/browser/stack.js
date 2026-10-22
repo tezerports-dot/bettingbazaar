@@ -395,7 +395,7 @@ export async function seedActors() {
       'admin-panel': {
         id: theAdmin.userId, _id: theAdmin.userId, userId: theAdmin.userId,
         username: theAdmin.username ?? theAdmin.userId, mobile: theAdmin.mobile,
-        isAdmin: true, isSubAdmin: false, isQueueManager: true, permissions: {},
+        isAdmin: true, isSubAdmin: false, permissions: {},
       },
       'merchant-panel': {
         id: theMerchant.merchantId, merchantId: theMerchant.merchantId,

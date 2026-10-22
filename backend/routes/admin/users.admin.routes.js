@@ -1,7 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-/** users.admin.routes.js — User management, balance adjust, block/unblock, phantom, queue managers */
+/** users.admin.routes.js — User management, balance adjust, block/unblock, phantom */
+import { seesContact } from '../../domains/identity/staffContactShield.js';
 import {
-  authenticate, express, hasPermission, isAdmin,
+  authenticate, express, hasPermission,
 } from './_adminShared.js';
 import { db } from '#db';
 // Cycle-type vocabulary — phantom access is scoped to one type, or BOTH.
@@ -15,7 +16,7 @@ import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 import { getRiskRules } from '../../domains/risk/riskValidation.service.js';
 import { notify } from '../../domains/communication/communication.service.js';
 import { respondError } from '../../shared/httpError.js';
-import { toCsv } from '../../domains/reporting/csv.util.js';
+import { sendXlsx, oneTable, columnsOf, istText } from '../../domains/reporting/xlsx.util.js';
 import { paiseToRupees } from '../../shared/money.js';
 
 const router = express.Router();
@@ -66,6 +67,7 @@ router.get('/users', authenticate, hasPermission('canManageUsers'), async (req, 
     const { status, search, sort, dir, page = 1, limit = 50 } = req.query;
     const size = Math.min(Number(limit) || 50, 200);
     const { rows, total } = await db.adminDirectory.listPlayers({
+      byMobile: seesContact(req.user),
       status: status && status !== 'ALL' && status !== 'all' ? String(status) : null,
       search: search ? String(search) : null,
       sort: sort ? String(sort) : undefined,
@@ -89,11 +91,12 @@ router.get('/users', authenticate, hasPermission('canManageUsers'), async (req, 
   }
 });
 
-/** GET /api/admin/users.csv — every player the table's filters match, as CSV (rupees). */
-router.get('/users.csv', authenticate, hasPermission('canManageUsers'), async (req, res) => {
+/** GET /api/admin/users.xlsx — every player the table's filters match, as a workbook (rupees). */
+router.get('/users.xlsx', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { status, search, sort, dir } = req.query;
     const { rows } = await db.adminDirectory.listPlayers({
+      byMobile: seesContact(req.user),
       status: status && status !== 'ALL' && status !== 'all' ? String(status) : null,
       search: search ? String(search) : null,
       sort: sort ? String(sort) : undefined,
@@ -101,7 +104,7 @@ router.get('/users.csv', authenticate, hasPermission('canManageUsers'), async (r
       exportAll: true,
     });
     const iso = (d) => (d ? new Date(d).toISOString() : '');
-    const csv = toCsv(rows.map((u) => ({
+    const table = rows.map((u) => ({
       user_id: u.userId,
       username: u.username,
       mobile: u.mobile,
@@ -118,12 +121,13 @@ router.get('/users.csv', authenticate, hasPermission('canManageUsers'), async (r
       net_win_loss: paiseToRupees(u.totals.netPaise),
       lost_disputes: u.lostDisputes,
       payment_flagged: u.paymentFlagged ? 'yes' : 'no',
-    })));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="players.csv"');
-    res.send(csv);
+    }));
+    sendXlsx(res, 'players.xlsx', oneTable({
+      name: 'Players', title: 'Players', subtitle: `Downloaded ${istText(new Date())}`, accent: 'blue',
+      rows: table, columns: columnsOf(table, { money: ['vip_balance', 'general_balance', 'locked_in_bets', 'deposits', 'withdrawals', 'net_win_loss'] }),
+    }));
   } catch (error) {
-    return respondError(res, error, 'GET /admin/users.csv', { message: 'Could not build the export.' });
+    return respondError(res, error, 'GET /admin/users.xlsx', { message: 'Could not build the export.' });
   }
 });
 
@@ -250,8 +254,8 @@ router.get('/users/:userId', authenticate, hasPermission('canManageUsers'), asyn
 // it was a second way to grant staff authority beside the Sub-admins screen —
 // one that asked nothing about the account it was handed, so it would set
 // `is_admin` on a PLAYER row (`users_staff_flags_need_staff` now refuses that
-// in the data). Sub-admins are created and revoked on `/sub-admins`, queue
-// managers on `/users/:userId/queue-manager`, and the one full admin is seeded.
+// in the data). Sub-admins are created and revoked on `/sub-admins`, and the
+// one full admin is seeded.
 
 // Block user
 router.put('/users/:userId/block', authenticate, hasPermission('canManageUsers'), async (req, res) => {
@@ -480,6 +484,50 @@ router.get('/phantom-agents', authenticate, hasPermission('canManagePhantomAgent
   }
 });
 
+// ── Maintenance testers (owner, 2026-10-20) ─────────────────────────────────
+// Players who keep the app while maintenance mode is on (auth.middleware.js
+// `maintenanceRefusal`), so the team can test a release on the live platform.
+router.get('/maintenance-testers', authenticate, hasPermission('canManageSystemSettings'), async (req, res) => {
+  try {
+    res.json({ success: true, testers: await db.users.listMaintenanceTesters() });
+  } catch (error) {
+    respondError(res, error, 'GET /admin/maintenance-testers', { message: 'Failed to fetch the maintenance testers' });
+  }
+});
+
+router.put('/users/:userId/maintenance-tester', authenticate, hasPermission('canManageUsers'), async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const on = req.body?.on;
+    if (typeof on !== 'boolean') return res.status(400).json({ success: false, message: '`on` must be true or false.' });
+    const user = await db.users.getUser(userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    // Maintenance closes the PLAYER app; a staff or merchant account is never
+    // closed by it, so a grant there would mean nothing (§32 S49). The row
+    // says the same (`users_maintenance_tester_player`).
+    if (on && user.accountType !== 'PLAYER') {
+      return res.status(409).json({
+        success: false, code: 'NOT_A_PLAYER_ACCOUNT',
+        message: 'Only a player account can be a maintenance tester: staff and merchant panels keep working during maintenance anyway.',
+      });
+    }
+    const updated = await db.users.updateUser(userId, { maintenance_tester: on });
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, performedByRole: 'admin',
+      action: 'MAINTENANCE_TESTER_SET', category: 'USER',
+      targetType: 'User', targetId: String(userId),
+      details: { on },
+    });
+    res.json({
+      success: true,
+      message: on ? 'This player can use the app during maintenance.' : 'This player sees the maintenance screen like everyone else.',
+      maintenanceTester: updated?.maintenanceTester === true,
+    });
+  } catch (error) {
+    respondError(res, error, 'PUT /admin/users/:userId/maintenance-tester', { message: 'Failed to change maintenance testing' });
+  }
+});
+
 // Assign phantom agent role
 router.post('/users/:userId/phantom-access', authenticate, hasPermission('canManagePhantomAgents'), async (req, res) => {
   try {
@@ -551,67 +599,8 @@ router.get('/analytics/real-volume', authenticate, hasPermission('canManagePhant
   }
 });
 
-/**
- * ════════════════════════════════════════════════════════════════════════════
- * 📋 QUEUE MANAGER OPERATIONS
- * ════════════════════════════════════════════════════════════════════════════
- */
-
-// Queue managers are listed on the staff table (`GET /staff?role=QUEUE_MANAGER`,
-// subadmins.admin.routes.js); the grant stays here.
-
-// Assign queue manager role
-router.post('/users/:userId/queue-manager', authenticate, isAdmin, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { enable } = req.body; // true or false
-    if (typeof enable !== 'boolean') {
-      return res.status(400).json({ success: false, message: 'enable must be true or false' });
-    }
-
-    // A STAFF account only. A queue manager routes players' payments, and the
-    // flag is read off whatever row a SESSION belongs to — so set on a PLAYER
-    // row it hands that player's own session the payment queue. The screen
-    // takes a typed user id, so this is the question that has to be asked.
-    // `users_staff_flags_need_staff` refuses it in the data too; this is the
-    // refusal that tells the admin what to do instead.
-    if (enable) {
-      const target = await db.users.getUser(userId);
-      if (!target) return res.status(404).json({ success: false, message: 'User not found' });
-      if (target.accountType !== 'STAFF') {
-        return res.status(409).json({
-          success: false,
-          message: 'Only a staff account can be a queue manager. Create a sub-admin for this person first, then grant it to that account.',
-        });
-      }
-    }
-
-    // One UPDATE. The handler this replaced read the account, set the property
-    // on the plain object the repository returned and called `.save()` on it —
-    // a TypeError, so no queue manager has been assignable since the accounts
-    // moved to PostgreSQL.
-    const user = await db.users.updateUser(userId, { isQueueManager: enable });
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    await db.audit.recordDetailed({
-      performedBy: req.user.userId, performedByRole: 'admin',
-      action: enable ? 'QUEUE_MANAGER_ASSIGNED' : 'QUEUE_MANAGER_REMOVED',
-      category: 'USER', targetType: 'User', targetId: String(userId),
-      details: { enable },
-    });
-
-    res.json({
-      success: true,
-      message: enable ? 'Queue manager role assigned' : 'Queue manager role removed',
-      user
-    });
-  } catch (error) {
-    console.error('Assign queue manager error:', error);
-    res.status(500).json({ success: false, message: 'Failed to assign queue manager role' });
-  }
-});
+// There is no queue manager role (owner, 2026-10-21): orders route themselves,
+// and a staff account with the merchants area works the payment queue.
 
 // ─── GET /api/admin/payment-queue ──────────────────────────────────────────────
 // Returns ALL orders grouped by status with summary stats — different from

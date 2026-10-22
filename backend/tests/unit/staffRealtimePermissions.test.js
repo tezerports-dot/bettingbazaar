@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 import SSEManager from '../../domains/notification/sseManager.service.js';
 import {
   STAFF_EVENT_AREAS, staffMayReceive, roomsForEvent, roomsForViewer, staffRoom,
-  FULL_ADMIN_ROOM, QUEUE_ROOM, personalStaffRoom, emitToStaff,
+  FULL_ADMIN_ROOM, personalStaffRoom, emitToStaff,
 } from '../../domains/notification/staffEventAreas.js';
 import { PERMISSION_KEYS } from '../../domains/identity/staffPermissions.js';
 
@@ -31,6 +31,8 @@ const admin = { userId: 'a1', isAdmin: true };
 const merchants = { userId: 's1', isSubAdmin: true, subAdminPermissions: { canManageMerchants: true } };
 const contentOnly = { userId: 's2', isSubAdmin: true, subAdminPermissions: { canManageContent: true } };
 const disputes = { userId: 's3', isSubAdmin: true, subAdminPermissions: { canResolveDisputes: true } };
+// The queue manager role is gone (owner, 2026-10-21): a viewer whose old
+// session still says it holds nothing by it.
 const queueManager = { userId: 'q1', isQueueManager: true };
 
 describe('who may receive a live staff event', () => {
@@ -48,9 +50,10 @@ describe('who may receive a live staff event', () => {
     expect(staffMayReceive(contentOnly, 'order_disputed')).toBe(false);
   });
 
-  it('a full admin gets everything; a queue manager gets the queue', () => {
+  it('a full admin gets everything; the merchants area gets the queue; an old queue-manager flag gets nothing', () => {
     for (const event of Object.keys(STAFF_EVENT_AREAS)) expect(staffMayReceive(admin, event)).toBe(true);
-    expect(staffMayReceive(queueManager, 'queue_order_update')).toBe(true);
+    expect(staffMayReceive(merchants, 'queue_order_update')).toBe(true);
+    expect(staffMayReceive(queueManager, 'queue_order_update')).toBe(false);
     expect(staffMayReceive(queueManager, 'order_disputed')).toBe(false);
   });
 
@@ -106,16 +109,23 @@ describe('the socket admin room', () => {
   it('a staff socket joins one room per area it holds, plus its own', () => {
     expect(roomsForViewer(merchants, PERMISSION_KEYS)).toEqual([personalStaffRoom('s1'), staffRoom('canManageMerchants')]);
     expect(roomsForViewer(admin, PERMISSION_KEYS)).toEqual([personalStaffRoom('a1'), FULL_ADMIN_ROOM]);
-    expect(roomsForViewer(queueManager, PERMISSION_KEYS)).toEqual([personalStaffRoom('q1'), QUEUE_ROOM]);
+    expect(roomsForViewer(queueManager, PERMISSION_KEYS)).toEqual([personalStaffRoom('q1')]);
   });
 
   it('an event is emitted to the rooms of its areas, and full admins', () => {
     expect(roomsForEvent('order_disputed')).toEqual([FULL_ADMIN_ROOM, staffRoom('canResolveDisputes')]);
     expect(roomsForEvent('undeclared_event')).toEqual([FULL_ADMIN_ROOM]);
     const sent = [];
-    const io = { to: (rooms) => ({ emit: (event, data) => sent.push({ rooms, event, data }) }) };
-    emitToStaff(io, 'admin_cycle_result', { x: 1 });
-    expect(sent[0].rooms).toEqual([FULL_ADMIN_ROOM, staffRoom('canViewAnalytics'), staffRoom('canManageCycles')]);
+    const target = (rooms, except = null) => ({
+      except: (r) => target(rooms, r),
+      emit: (event, data) => sent.push({ rooms, except, event, data }),
+    });
+    const io = { to: (rooms) => target(rooms) };
+    emitToStaff(io, 'admin_cycle_result', { x: 1, user: { username: 'p', mobile: '9876543210' } });
+    // Full admins whole; the areas' rooms without the contact (staffContactShield.js).
+    expect(sent[0]).toMatchObject({ rooms: FULL_ADMIN_ROOM, data: { user: { mobile: '9876543210' } } });
+    expect(sent[1]).toMatchObject({ rooms: [staffRoom('canViewAnalytics'), staffRoom('canManageCycles')], except: FULL_ADMIN_ROOM });
+    expect(sent[1].data).toEqual({ x: 1, user: { username: 'p' } });
   });
 
   it('the live split of an open round reaches full admins only', () => {

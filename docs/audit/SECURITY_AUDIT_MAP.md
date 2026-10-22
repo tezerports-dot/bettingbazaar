@@ -3540,10 +3540,10 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 375 |
+| Route declarations in `backend/**` | 397 |
 | Reachable with **no auth middleware** | 49 |
-| Staff routes carrying an **area** (permission key) | 188 |
-| Staff routes a sub-admin can **never** be given (full admin only) | 10 |
+| Staff routes carrying an **area** (permission key) | 195 |
+| Staff routes a sub-admin can **never** be given (full admin only) | 11 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.
@@ -3605,13 +3605,14 @@ new route and decide. Each of the three questions is defined in §2.
 <details><summary>Staff routes only a full admin can use (each must be in ADMIN_ONLY_AREAS, with its reason)</summary>
 
 - `DELETE /sub-admins/:subAdminId  (backend/routes/admin/subadmins.admin.routes.js)`
+- `GET /cold-storage  (backend/routes/admin/coldStorage.admin.routes.js)`
+- `GET /cold-storage/:id  (backend/routes/admin/coldStorage.admin.routes.js)`
 - `GET /staff  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff-permissions  (backend/routes/admin/subadmins.admin.routes.js)`
-- `GET /staff.csv  (backend/routes/admin/subadmins.admin.routes.js)`
+- `GET /staff.xlsx  (backend/routes/admin/subadmins.admin.routes.js)`
 - `GET /staff/:userId  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /staff/:userId/reset-authenticator  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
-- `POST /users/:userId/queue-manager  (backend/routes/admin/users.admin.routes.js)`
 - `PUT /sub-admins/:subAdminId/permissions  (backend/routes/admin/subadmins.admin.routes.js)`
 - `PUT /usdt-deposits/final-wallet  (backend/domains/payment/usdtDeposit.admin.routes.js)`
 
@@ -3621,16 +3622,17 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 539 |
-| Parameters only (safe by construction) | 353 |
-| Interpolating into statement text (each needs a reading) | 177 |
-| Statement text built elsewhere and passed in (each needs a reading) | 9 |
+| `pgQuery` call sites | 573 |
+| Parameters only (safe by construction) | 371 |
+| Interpolating into statement text (each needs a reading) | 192 |
+| Statement text built elsewhere and passed in (each needs a reading) | 10 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
 
 - `database/repositories/adminTokenConsiderations.js — text`
 - `database/repositories/cricket.js — ok`
 - `database/repositories/identity.js — text`
+- `database/repositories/merchantPaymentAccounts.js — sql`
 - `database/repositories/merchants.js — text`
 - `database/repositories/rtp.js — RESERVED_SQL`
 - `database/repositories/teamOversight.js — sql`
@@ -3643,9 +3645,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 165 | 0 | 0 |
-| `admin-panel` | 146 | 0 | 0 |
-| `merchant-panel` | 66 | 0 | 0 |
+| `user-panel` | 169 | 0 | 0 |
+| `admin-panel` | 153 | 0 | 0 |
+| `merchant-panel` | 82 | 0 | 0 |
 
 <!-- END GENERATED -->
 

@@ -12,6 +12,7 @@ import { mayWorkOrder } from '../utils/actor';
 import { counterpartyOf, formatMoney, tokenColumn, PAYMENT_COPY } from '../utils/rail';
 import { formatCountdown, secondsLeft, URGENT_SECONDS } from '../hooks/useCountdown';
 import { Banner, Button, CopyInline, Panel, StatusPill } from './ui';
+import { PayoutUpiQr } from './PayoutUpiQr';
 import { accountNamed, viewOnlyReason, type OrderActions } from './OrderRow';
 
 const sectionLabel: React.CSSProperties = {
@@ -248,6 +249,9 @@ export const OrderDetail: React.FC<{
       {paymentRows.length > 0 && (
         <div>
           <div style={sectionLabel}>{paySectionLabel}</div>
+          {!isDeposit && order.payoutUpiLink && order.status === OrderStatus.PROCESSING && (
+            <PayoutUpiQr link={order.payoutUpiLink} amountText={formatMoney(order.fiatAmount)} />
+          )}
           <div style={{ background: accentBg, border: `1px solid ${accent}`, borderRadius: 13, padding: '4px 14px' }}>
             {paymentRows.map((row) => (
               <CopyInline key={row.label} label={row.label} value={row.value} tone={accent} />

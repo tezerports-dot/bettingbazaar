@@ -25,15 +25,17 @@ import toast from 'react-hot-toast';
 import { RefreshCw, Users } from 'lucide-react';
 import {
   getMyTeam, createTeam, renameTeam, deleteTeam, addTeamMember, removeTeamMember,
-  getTeamPool, requestTeamPool, cancelTeamPoolRequest,
+  getTeamPool, requestTeamPool, buyTeamPoolUsdt, cancelTeamPoolRequest, setTeamCashOut,
   getMemberLog, getTeamDisputes, getDisputeThread, postDisputeMessage,
 } from '../services/api';
 import type {
-  DisputeThreadMessage, LowActivityFlag, MemberActivity, MemberLog, MyTeam, PoolDirection, SupervisorOrder,
+  DisputeThreadMessage, LowActivityFlag, MemberActivity, MemberLog, MyTeam, SupervisorOrder,
   Team, TeamCommission, TeamMember, TeamPerformance, TeamPoolEntry, TeamPoolRequest,
 } from '../types';
 import { Banner, Button, Card, CardTitle, CopyRow, ErrorState, Skeleton, inputStyle } from '../components/ui';
 import { PoolBreakdown } from '../components/PoolBreakdown';
+import { UsdtPayCard } from '../components/UsdtPayCard';
+import { CashOutCard } from '../components/CashOutCard';
 
 const STRENGTH: Record<Team['strength'], { label: string; tone: 'ok' | 'warn' | 'danger'; body: string }> = {
   WORKING: { label: 'Working', tone: 'ok', body: 'The team takes orders. It can have up to 10 agents.' },
@@ -69,9 +71,9 @@ const POOL_KIND: Record<TeamPoolEntry['kind'], string> = {
 };
 
 /**
- * A team's commission (Step 2e): its matched volume, what has been paid into
- * the pool, anything earned and waiting, and the reader's own share of each
- * recent payment. Module level (§32 S23).
+ * A team's commission (owner, 2026-10-21): a percent of every completed buy
+ * and sell, what has been paid into the pool, anything earned and waiting, and
+ * the reader's own share of each recent payment. Module level (§32 S23).
  */
 const CommissionSection: React.FC<{ team: Team; commissions: TeamCommission[] }> = ({ team, commissions }) => {
   const c = team.commission;
@@ -83,8 +85,8 @@ const CommissionSection: React.FC<{ team: Team; commissions: TeamCommission[] }>
         <span className="bb-mono" style={{ fontSize: 14, fontWeight: 800 }}>{tokens(c.paidPaise)} tokens paid</span>
       </div>
       <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '0 0 8px' }}>
-        Matched volume {tokens(c.matchedPaise)} (completed buys {tokens(c.buysPaise)}, sells {tokens(c.sellsPaise)}).
-        Each time it passes its highest so far, {c.commissionPercent}% of the rise is paid into the pool:
+        Completed buys {tokens(c.buysPaise)}, sells {tokens(c.sellsPaise)}.
+        Every completed buy pays {c.depositPercent}% and every completed sell {c.withdrawalPercent}% of its tokens into the pool:
         {' '}{c.supervisorSharePercent}% is the supervisor&apos;s, {100 - c.supervisorSharePercent}% is shared equally by the agents.
       </p>
       {c.owedPaise > 0 && (
@@ -96,7 +98,10 @@ const CommissionSection: React.FC<{ team: Team; commissions: TeamCommission[] }>
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
           {mine.map((x) => (
             <li key={x.commissionId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '4px 0' }}>
-              <span>{new Date(x.createdAt).toLocaleString('en-IN')} · +{tokens(x.commissionPaise)} into the pool</span>
+              <span>
+                {new Date(x.createdAt).toLocaleString('en-IN')} · +{tokens(x.commissionPaise)} into the pool
+                {x.orderType ? ` for a ${x.orderType === 'DEPOSIT' ? 'buy' : 'sell'} of ${tokens(x.basePaise)}` : ''}
+              </span>
               <span className="bb-mono">your share {tokens(x.mySharePaise)}</span>
             </li>
           ))}
@@ -316,8 +321,8 @@ const TeamDisputesCard: React.FC<{ members: TeamMember[] }> = ({ members }) => {
 const TeamPoolSection: React.FC<{
   team: Team; requests: TeamPoolRequest[]; busy: string;
   run: (key: string, fn: () => Promise<unknown>, ok: string) => Promise<void>;
-}> = ({ team, requests, busy, run }) => {
-  const [direction, setDirection] = useState<PoolDirection>('BUY');
+  reload: () => Promise<void>;
+}> = ({ team, requests, busy, run, reload }) => {
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [history, setHistory] = useState<TeamPoolEntry[] | null>(null);
@@ -346,44 +351,58 @@ const TeamPoolSection: React.FC<{
         </span>
       </div>
       <div style={{ marginBottom: 12 }}><PoolBreakdown exposure={team.poolExposure} availablePaise={team.poolAvailablePaise} /></div>
+      {team.poolTrades && (
+        <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '0 0 12px' }}>
+          Bought from the platform: <strong className="bb-mono">{tokens(team.poolTrades.boughtPaise)}</strong> tokens
+          ({team.poolTrades.buys}). Tokens are never sold back to the platform.
+        </p>
+      )}
 
-      {pending.map((r) => (
+      {pending.map((r) => (r.usdt ? (
+        <div key={r.requestId} style={{ marginBottom: 8 }}>
+          <UsdtPayCard tokensText={tokens(r.tokenAmountPaise)} payment={r.usdt}
+            action={r.usdt.received === 0 ? (
+              <Button variant="ghost" tone="danger" disabled={!!busy}
+                onClick={() => void run(`pc-${r.requestId}`, () => cancelTeamPoolRequest(r.requestId), 'Request cancelled')}>
+                Cancel this request
+              </Button>
+            ) : null} />
+        </div>
+      ) : (
         <Banner key={r.requestId} tone="warn" style={{ marginBottom: 8 }}>
-          {r.direction === 'BUY' ? 'Buying' : 'Selling back'} {tokens(r.tokenAmountPaise)} tokens — waiting for an admin.{' '}
+          Buying {tokens(r.tokenAmountPaise)} tokens — waiting for an admin.{' '}
           <Button variant="ghost" tone="danger" disabled={!!busy}
             onClick={() => void run(`pc-${r.requestId}`, () => cancelTeamPoolRequest(r.requestId), 'Request cancelled')}>
             Cancel this request
           </Button>
         </Banner>
-      ))}
+      )))}
       {decided.map((r) => (
         <Banner key={r.requestId} tone="danger" style={{ marginBottom: 8 }}>
-          An admin turned down {r.direction === 'BUY' ? 'buying' : 'selling back'} {tokens(r.tokenAmountPaise)} tokens
+          An admin turned down buying {tokens(r.tokenAmountPaise)} tokens
           {r.decisionNote ? `: ${r.decisionNote}` : '.'}
         </Banner>
       ))}
 
-      <form
+      <div style={{ marginBottom: 12 }}>
+        <CashOutCard cashOut={team.cashOut} canAct change={(start) => setTeamCashOut(team.teamId, start)} onChanged={reload} />
+      </div>
+
+      {/* A pool cashing out, or paused after one, buys no tokens (teamCashOut.js). */}
+      {!team.cashOut.active && !team.cashOut.pausedUntil && <form
         style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}
         onSubmit={(e) => {
           e.preventDefault();
           if (!valid) return;
           void run(`pr-${team.teamId}`, async () => {
-            const message = await requestTeamPool(team.teamId, direction, whole, note.trim());
+            const message = await requestTeamPool(team.teamId, whole, note.trim());
             setAmount(''); setNote('');
             return message;
-          }, direction === 'BUY' ? 'Requested. Pay the platform; an admin adds the tokens.' : 'Requested. An admin will pay you and take the tokens.');
+          }, 'Requested. Pay the platform; an admin adds the tokens.');
         }}
       >
         <div>
-          <label htmlFor={`pd-${team.teamId}`} style={labelStyle}>Request for {team.name}</label>
-          <select id={`pd-${team.teamId}`} value={direction} onChange={(e) => setDirection(e.target.value as PoolDirection)} style={inputStyle}>
-            <option value="BUY">Buy tokens</option>
-            <option value="SELL">Sell tokens back</option>
-          </select>
-        </div>
-        <div>
-          <label htmlFor={`pa-${team.teamId}`} style={labelStyle}>Tokens for {team.name}</label>
+          <label htmlFor={`pa-${team.teamId}`} style={labelStyle}>Tokens to buy for {team.name}</label>
           <input id={`pa-${team.teamId}`} inputMode="numeric" value={amount}
             onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ''))} style={{ ...inputStyle, width: 130 }} />
         </div>
@@ -392,7 +411,14 @@ const TeamPoolSection: React.FC<{
           <input id={`pn-${team.teamId}`} value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} maxLength={200} />
         </div>
         <Button type="submit" disabled={!valid || !!busy}>Send {team.name} request</Button>
-      </form>
+        <Button type="button" variant="outline" disabled={!valid || !!busy}
+          onClick={() => void run(`pu-${team.teamId}`, async () => {
+            await buyTeamPoolUsdt(team.teamId, whole);
+            setAmount(''); setNote('');
+          }, 'Pay the USDT shown above. The tokens arrive by themselves.')}>
+          Buy in USDT now (automatic)
+        </Button>
+      </form>}
 
       <div style={{ marginTop: 10 }}>
         {history === null ? (
@@ -420,7 +446,8 @@ const SupervisorTeamCard: React.FC<{
   team: Team; members: TeamMember[]; poolRequests: TeamPoolRequest[]; commissions: TeamCommission[]; busy: string;
   today: MemberActivity[]; week: MemberActivity[]; flags: LowActivityFlag[];
   run: (key: string, fn: () => Promise<unknown>, ok: string) => Promise<void>;
-}> = ({ team, members, poolRequests, commissions, busy, today, week, flags, run }) => {
+  reload: () => Promise<void>;
+}> = ({ team, members, poolRequests, commissions, busy, today, week, flags, run, reload }) => {
   const [ref, setRef] = useState('');
   const [name, setName] = useState(team.name);
   // Which member's removal is waiting for a second press. Removing is not
@@ -433,7 +460,7 @@ const SupervisorTeamCard: React.FC<{
     <Card style={{ marginBottom: 14 }}>
       <CardTitle title={team.name} sub={`${team.approvedCount} approved · ${team.pendingCount} waiting for an admin`} action={<StrengthTag team={team} />} />
       <Banner tone={STRENGTH[team.strength].tone} style={{ marginBottom: 12 }}>{STRENGTH[team.strength].body}</Banner>
-      <TeamPoolSection team={team} requests={poolRequests} busy={busy} run={run} />
+      <TeamPoolSection team={team} requests={poolRequests} busy={busy} run={run} reload={reload} />
       <CommissionSection team={team} commissions={commissions} />
       <TeamActivitySection team={team} today={today} week={week} flags={flags} />
 
@@ -620,7 +647,7 @@ const TeamPage: React.FC = () => {
         </form>
       </Card>
       {data.teams.map((t) => (
-        <SupervisorTeamCard key={t.teamId} team={t} busy={busy} run={run}
+        <SupervisorTeamCard key={t.teamId} team={t} busy={busy} run={run} reload={load}
           members={data.members.filter((m) => m.teamId === t.teamId)}
           poolRequests={(data.poolRequests ?? []).filter((r) => r.teamId === t.teamId)}
           commissions={data.commissions ?? []}

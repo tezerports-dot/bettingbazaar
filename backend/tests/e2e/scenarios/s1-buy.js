@@ -36,7 +36,7 @@ export default async function run() {
   }
 
   // ── Create a real buy ─────────────────────────────────────────────────────
-  const created = await POST(pT, '/api/payment/deposit/create', { tokenAmount: 50000 });
+  const created = await POST(pT, '/api/payment/deposit/create', { tokenAmount: 50000, payMethod: 'BANK' });
   const order = created.body.order;
   check(A, 'player', 'create a 50,000-token buy', '200 with an order', `${created.status} ${order?.orderId ?? JSON.stringify(created.body).slice(0,120)}`,
     created.status === 200 && !!order?.orderId);
@@ -126,7 +126,7 @@ export default async function run() {
   // ── §27: that UTR now belongs to this order, for good ────────────────────
   const dupPlayer = await seedPlayer({});
   const dupT = playerToken(dupPlayer);
-  const dup = await POST(dupT, '/api/payment/deposit/create', { tokenAmount: 50000 });
+  const dup = await POST(dupT, '/api/payment/deposit/create', { tokenAmount: 50000, payMethod: 'BANK' });
   // Only a started order can be marked paid at all; a refusal of a queued
   // order would pass this check for the wrong reason.
   const dupState = dup.body.order?.orderId

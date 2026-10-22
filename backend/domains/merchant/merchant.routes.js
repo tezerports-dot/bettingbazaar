@@ -45,14 +45,16 @@ import {
 } from '../payment/orderCurrency.js';
 // The merchant's own view of their account, which sign-in answers with too.
 import { formatMerchant } from './merchantSelfView.js';
-import { toMerchantOrderView, toMerchantOrderViews, toMerchantReportRows, merchantReportCsv } from './merchantOrderView.js';
+import { toMerchantOrderView, toMerchantOrderViews, toMerchantReportRows } from './merchantOrderView.js';
+import { ledgerWorkbook, orderReportWorkbook } from './merchantLedgerWorkbook.js';
+import { sendXlsx } from '../reporting/xlsx.util.js';
 import {
   routedToMerchants, PAYMENT_MODES,
 } from '#db/repositories/teamRouting.js';
-import { listScopeFor, refuseWork, ownerOnly, merchantActorTag } from './merchantActor.js';
+import { listScopeFor, refuseWork, ownerOnly, ownerOrAudit, merchantActorTag } from './merchantActor.js';
 // What a cash buy's ATM link may be (Step 2d).
 import { checkCashLink } from '../payment/cashLink.js';
-import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
+import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE, UPI_ID_PATTERN, UPI_ID_INVALID_MESSAGE, MEMBER_UPI_ID_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
 import { recordMerchantRefusal, REFUSAL } from './merchantRefusal.service.js';
 
 const router     = express.Router();
@@ -109,7 +111,7 @@ router.get('/profile', merchantAuth, async (req, res) => {
         if (!merchant) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
         // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
         // no buy/sell spread. Shape kept for merchant-panel compatibility;
-        // merchant earnings are team commission (2e, teamCommission.js).
+        // merchant earnings are order commission (teamCommission.js).
         // A sub-member reads the merchant account's record, never the owner's
         // own contact or payout details (§24: nobody is shown another
         // person's mobile).
@@ -144,15 +146,20 @@ router.get('/profile', merchantAuth, async (req, res) => {
 
 // FIX B5-d: PUT /profile — merchant edits their own bank account.
 //
-// There is no UPI handle to edit, so `upiId` is not read from the body: a
-// UPI_BANK buy is paid into the member's bank account and nobody is shown a
-// handle (§2 "How each rail is paid", §24).
+// And the member's UPI ID (owner, 2026-10-21): a player who chose to pay a
+// UPI/bank buy by UPI is given a link built from it for the order's amount.
+// One that is a mobile is refused by the row (`merchants_upi_id_shape`, §24).
+// Only top-level `upiId`; one inside `bankDetails` is not read.
 //
 // No merchant holds a USDT address: USDT buys are paid to the platform
 // (owner, 2026-10-18), so the profile takes bank details only.
 router.put('/profile', merchantAuth, ownerOnly, async (req, res) => {
     try {
         const { bankDetails } = req.body;
+        const upiId = req.body.upiId === undefined ? undefined : String(req.body.upiId ?? '').trim().toLowerCase();
+        if (upiId && !UPI_ID_PATTERN.test(upiId)) {
+            return res.status(400).json({ success: false, code: 'UPI_ID_INVALID', message: UPI_ID_INVALID_MESSAGE });
+        }
 
         const current = await db.merchants.getMerchant(req.merchantId);
         if (!current) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
@@ -164,6 +171,7 @@ router.put('/profile', merchantAuth, ownerOnly, async (req, res) => {
             if (bankDetails.accountNo !== undefined) update['bankDetails.accountNo'] = bankDetails.accountNo;
             if (bankDetails.ifsc      !== undefined) update['bankDetails.ifsc']      = bankDetails.ifsc;
         }
+        if (upiId !== undefined) update.upiId = upiId || null;
 
         if (!Object.keys(update).length) {
             return res.status(400).json({ success: false, message: 'No valid profile fields provided.' });
@@ -184,6 +192,9 @@ router.put('/profile', merchantAuth, ownerOnly, async (req, res) => {
             }
             if (isAccountMobileRefusal(e)) {
                 return res.status(400).json({ success: false, code: 'ACCOUNT_IS_A_MOBILE', message: ACCOUNT_IS_A_MOBILE_MESSAGE });
+            }
+            if (e.code === '23514' && e.constraint === 'merchants_upi_id_shape') {
+                return res.status(400).json({ success: false, code: 'UPI_ID_IS_A_MOBILE', message: MEMBER_UPI_ID_IS_A_MOBILE_MESSAGE });
             }
             if (e.code === '23514') {
                 return res.status(400).json({ success: false, message: 'Those payment details are not in a valid format.' });
@@ -362,8 +373,8 @@ router.get('/orders', merchantAuth, async (req, res) => {
 // The order report (owner, 2026-10-16): every order this merchant was given
 // over a range of IST days, with the ✓ or ✗ pressed and who pressed it, and
 // totals over every matching row. For agents and merchant accounts alike; a
-// sub-member sees their own slice (`listScopeFor`, in the WHERE). The CSV is
-// the same rows, up to ORDER_REPORT_MAX_ROWS.
+// sub-member sees their own slice (`listScopeFor`, in the WHERE). The
+// workbook is the same rows, up to ORDER_REPORT_MAX_ROWS.
 async function loadOrderReport(req, { limit, offset }) {
     const type = req.query.type || null;
     if (type !== null && type !== 'DEPOSIT' && type !== 'WITHDRAWAL') {
@@ -392,15 +403,35 @@ router.get('/reports/orders', merchantAuth, async (req, res) => {
     }
 });
 
-router.get('/reports/orders.csv', merchantAuth, async (req, res) => {
+router.get('/reports/orders.xlsx', merchantAuth, async (req, res) => {
     try {
         const report = await loadOrderReport(req, { limit: db.merchantReports.ORDER_REPORT_MAX_ROWS, offset: 0 });
-        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-        res.setHeader('Content-Disposition',
-            `attachment; filename="merchant-orders-${report.range.from || 'last7'}-${report.range.to || 'today'}.csv"`);
-        res.send(merchantReportCsv(report.rows));
+        sendXlsx(res, `merchant-orders-${report.range.from || 'last7'}-${report.range.to || 'today'}.xlsx`, orderReportWorkbook(report));
     } catch (err) {
-        return respondError(res, err, 'GET /merchant/reports/orders.csv', { message: 'Could not build the export.' });
+        return respondError(res, err, 'GET /merchant/reports/orders.xlsx', { message: 'Could not build the export.' });
+    }
+});
+
+// The business ledger (owner, 2026-10-21): buys, sells, commission, pool
+// trades with the platform and disputes over a range of IST days, with the
+// totals (`merchantLedger.businessLedger`, read only). The business's own
+// figures: the owner's and an AUDIT sub-member's (`ownerOrAudit`).
+const ledgerRange = (req) => ({ from: req.query.from || null, to: req.query.to || null });
+
+router.get('/reports/ledger', merchantAuth, ownerOrAudit, async (req, res) => {
+    try {
+        res.json({ success: true, ...(await db.merchantLedger.businessLedger(req.merchantId, ledgerRange(req))) });
+    } catch (err) {
+        return respondError(res, err, 'GET /merchant/reports/ledger', { message: 'Could not build the ledger.' });
+    }
+});
+
+router.get('/reports/ledger.xlsx', merchantAuth, ownerOrAudit, async (req, res) => {
+    try {
+        const ledger = await db.merchantLedger.businessLedger(req.merchantId, ledgerRange(req));
+        sendXlsx(res, `business-ledger-${ledger.range.from || 'last7'}-${ledger.range.to || 'today'}.xlsx`, ledgerWorkbook(ledger));
+    } catch (err) {
+        return respondError(res, err, 'GET /merchant/reports/ledger.xlsx', { message: 'Could not build the ledger.' });
     }
 });
 
@@ -496,11 +527,11 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             ? String(req.body?.paidFromAccountId ?? '').trim() : null;
         const allowedPayFrom = req.merchantActor?.isOwner === false ? req.merchantActor.withdrawalAccountIds : null;
         if (paidFromAccountId !== null && !(await db.merchantPaymentAccounts.mayPayFrom(
-            req.merchantId, paidFromAccountId, { allowedAccountIds: allowedPayFrom }))) {
+            req.merchantId, paidFromAccountId, { allowedAccountIds: allowedPayFrom, sizeTokens: order.tokenAmount }))) {
             return res.status(400).json({
                 success: false,
                 code: 'PAID_FROM_ACCOUNT_REQUIRED',
-                message: 'Choose the account you paid this withdrawal from: an active account that pays withdrawals'
+                message: 'Choose the account you paid this withdrawal from: an active account that pays withdrawals of this size'
                     + (allowedPayFrom ? ', assigned to you.' : '.'),
             });
         }
@@ -832,6 +863,8 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         // order's requeue unsaved unless the else-branch happened to save it.
         const requeued = await requeueOrder(order.orderId, {
             expectMerchant: req.merchantId,
+            // Who declined, named in the order report (`merchantActorTag`).
+            actor: merchantActorTag(req),
             set: { merchantId: null, merchantSnapshot: null, expiresAt: null, rejectedReason: reason },
             // ── The pool's hold comes off IN the requeue's own transaction ──
             // This member's team held the player's tokens from the moment the
@@ -842,7 +875,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
             within: async (client) => {
                 await db.orders.refuseIfPayableWithin(client, order.orderId);
                 await db.teamPools.detachFromTeamWithin(client, order.orderId, {
-                    actor: `merchant:${req.merchantId}`, reason: `Declined by the member: ${reason}`,
+                    actor: merchantActorTag(req), reason: `Declined by the member: ${reason}`,
                 });
             },
         });
@@ -1003,6 +1036,8 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
         const flagged = await disputeOrder(order._id, {
             expectFrom: ['PROCESSING', 'PAID'],
             expectMerchant: req.merchantId,
+            // Who flagged it, named in the order report (`merchantActorTag`).
+            actor: merchantActorTag(req),
             set: {
                 redFlagged:      true,
                 redFlagReason:   reason.trim(),
@@ -1254,6 +1289,9 @@ router.get('/stats', merchantAuth, async (req, res) => {
             availablePaise: team.poolAvailablePaise,
             heldPaise: team.poolHeldPaise,
             exposure: team.poolExposure,
+            // Size, left, consumed and sell room (`toPoolStanding`), for the
+            // home cards' bars (owner, 2026-10-21).
+            standing: team.poolStanding,
         } : null;
 
         // The team's commission picture (`toSummary`, the one every screen

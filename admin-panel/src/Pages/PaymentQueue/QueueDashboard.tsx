@@ -7,7 +7,7 @@
  *
  * Nobody hand-picks a merchant. Every order is ROUTED to a member of a working
  * team on the order's own rail (database/repositories/teamRouting.js), and the
- * queue manager's two controls ask routing to act now instead of waiting for
+ * screen's two controls (staff with the merchants area) ask routing to act now instead of waiting for
  * the sweep:
  *
  *   Offer to teams now — POST /api/admin/queue/assign/:orderId, no body, on a
@@ -50,9 +50,9 @@ const RAIL_LABEL: Record<ReturnType<typeof orderRail>, string> = {
 
 export const QueueDashboard: React.FC = () => {
   // Approve / Reject / Cancel decide an order's money, which is the disputes
-  // area (canResolveDisputes) — a queue manager ROUTES. They were offered to
-  // every viewer and refused on press for the queue manager this screen is for
-  // (measured: the cross-area sweep of every admin screen).
+  // area (canResolveDisputes); this screen's own area (canManageMerchants)
+  // ROUTES. They were offered to every viewer and refused on press for staff
+  // without it (measured: the cross-area sweep of every admin screen).
   const { can } = usePermissions();
   const canDecide = can('canResolveDisputes');
   const [tab, setTab]                           = useState<Tab>('pending');
@@ -66,12 +66,12 @@ export const QueueDashboard: React.FC = () => {
   const [loadError, setLoadError]               = useState(false);
 
   const loadPending = useCallback(async () => {
-    const res = await api.queueManager.getPendingOrders();
+    const res = await api.paymentQueue.getPendingOrders();
     if (res.success && res.data) setPendingOrders(res.data);
   }, []);
 
   const loadGrouped = useCallback(async () => {
-    const res = await api.queueManager.getGroupedQueue();
+    const res = await api.paymentQueue.getGroupedQueue();
     if (res.success && res.grouped) { setGroupedOrders(res.grouped); setGroupedStats(res.stats||{}); }
   }, []);
 
@@ -117,8 +117,8 @@ export const QueueDashboard: React.FC = () => {
     setRoutingId(id);
     try {
       const res = order.canReassign
-        ? await api.queueManager.reassignOrder(id)
-        : await api.queueManager.assignOrder(id);
+        ? await api.paymentQueue.reassignOrder(id)
+        : await api.paymentQueue.assignOrder(id);
       if (res.success) { toast.success(res.message || 'Order assigned'); await loadData(); }
       else toast.error(res.message || 'Assignment failed');
     } catch (e: any) {

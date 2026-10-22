@@ -4,6 +4,11 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles/globals.css';
 import { applyAppearance } from './services/theme';
+import { installErrorReporter } from './services/errorReporter';
+import PanelErrorBoundary from './components/PanelErrorBoundary';
+
+// Uncaught errors and unhandled promises go to the error log.
+installErrorReporter();
 
 // Apply the persisted Command Center theme before first paint (no flash).
 try {
@@ -15,6 +20,8 @@ try {
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <PanelErrorBoundary>
+      <App />
+    </PanelErrorBoundary>
   </React.StrictMode>
 );

@@ -115,8 +115,8 @@ async function referrerFor(rawCode) {
 
 /** What a new account would be, should this approval create one. */
 async function signupFor(audience, rawCode = null) {
-  // Only a player is made by Telegram. A merchant, supervisor or agent account
-  // is made by an admin with the person's mobile (owner, 2026-10-14).
+  // A merchant's is an APPLICATION an admin approves (owner, 2026-10-21).
+  if (audience === 'MERCHANT') return { userId: db.users.newUserId() };
   if (audience !== 'PLAYER') return null;
   const { referrer } = await referrerFor(rawCode);
   return { userId: db.users.newUserId(), referralCode: generateReferralCode(), referredBy: referrer?.userId ?? null };
@@ -211,6 +211,14 @@ router.post('/mini-app/context', miniAppLimiter, async (req, res) => {
 
     const accounts = (await db.telegram.listLinksForTelegramUser(tg.id))
       .map((a) => ({ panel: a.audience, mobileHint: mobileHint(a.mobile) }));
+
+    // A player's Verify also asks to join the signup channels this Telegram
+    // account has no waiting or approved request for (owner, 2026-10-21).
+    // None switched on: an empty list and the screen is what it was.
+    if (start.panel === 'PLAYER' && (start.kind === 'CONTINUE' || start.kind === 'TELEGRAM_LOGIN')) {
+      start.channels = (await db.telegramChannels.channelsToJoin(tg.id))
+        .map((c) => ({ title: c.title, inviteLink: c.inviteLink }));
+    }
 
     return res.json({
       success: true,

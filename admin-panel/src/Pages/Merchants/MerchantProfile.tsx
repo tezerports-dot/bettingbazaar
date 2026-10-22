@@ -59,9 +59,9 @@ export const MerchantProfile: React.FC = () => {
   const [orders, setOrders] = useState<any[] | null>(null);
   const [volume, setVolume] = useState<any>(null);
 
-  // The merchant panel is served at /merchant/ on this same origin; set
-  // VITE_MERCHANT_PANEL_URL at build time only if it moves to its own host.
-  const merchantPanelUrl = (import.meta as any).env?.VITE_MERCHANT_PANEL_URL || '/merchant/';
+  // Where the merchant panel is, from the server: its own host when
+  // MERCHANT_HOST is set, else /merchant/ on this origin.
+  const [merchantPanelUrl, setMerchantPanelUrl] = useState('');
 
   const load = useCallback(async () => {
     setProblem('');
@@ -72,6 +72,7 @@ export const MerchantProfile: React.FC = () => {
       setMerchant(data);
       setSummary(res.summary ?? null);
       setChoices(res.choices ?? null);
+      setMerchantPanelUrl(res.merchantPanelUrl ?? '');
       setPriority(res.summary?.routingPriority ?? '');
       setSupervisorRail((res.summary?.role === 'SUPERVISOR' ? res.summary?.rail : '') ?? '');
     } catch (e: any) { setProblem(errorOf(e, 'Could not load this merchant.')); }
@@ -156,7 +157,12 @@ export const MerchantProfile: React.FC = () => {
         <Kpis min={160} items={[
           { label: 'Volume processed', value: formatters.paise(summary.processedPaise) },
           { label: 'Completed orders', value: summary.completedOrders.toLocaleString('en-IN') },
-          { label: 'Success rate', value: `${merchant.statistics?.successRate ?? 0}%` },
+          {
+            label: 'Success rate',
+            value: typeof merchant.statistics?.successRate === 'number'
+              ? `${merchant.statistics.successRate}% (${merchant.statistics.completedOrders} of ${merchant.statistics.totalOrders})`
+              : 'No decided orders yet',
+          },
           { label: role === 'SUPERVISOR' ? `Pool (${summary.pool.teams} team${summary.pool.teams === 1 ? '' : 's'})` : 'Pool available', value: formatters.paise(summary.pool.availablePaise) },
           { label: 'Pool held for orders', value: formatters.paise(summary.pool.heldPaise), tone: summary.pool.heldPaise > 0 ? 'var(--warning)' : undefined },
           { label: 'Commission today', value: formatters.paise(summary.commission.todayPaise), tone: 'var(--success)' },

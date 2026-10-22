@@ -19,7 +19,7 @@ const bad = (message) => Object.assign(new Error(message), { status: 400, code: 
 
 /**
  * The range as IST days, inclusive: `from` and `to` as YYYY-MM-DD, defaulting
- * to the last seven days ending today; at most 366 days.
+ * to the last seven days ending today; at most 366 days when both are given.
  */
 export function reportRange({ from = null, to = null } = {}) {
   for (const d of [from, to]) {
@@ -35,12 +35,19 @@ export function reportRange({ from = null, to = null } = {}) {
   return { from: from || null, to: to || null };
 }
 
-/** The range clause: `created_at` inside the IST days [from, to], defaults applied in SQL. */
+/**
+ * The range clause: `created_at` inside the IST days [from, to]. With one end
+ * given the other is read from it: `to` alone is the seven days ending then,
+ * `from` alone runs to today. Both were anchored on TODAY, so a `to` more than
+ * a week back made a range ending before it started and every figure read 0
+ * until the dates were cleared (owner, 2026-10-20).
+ */
 const RANGE_SQL = `
-  created_at >= ((COALESCE($2::date, (now() AT TIME ZONE 'Asia/Kolkata')::date - 6))::timestamp AT TIME ZONE 'Asia/Kolkata')
-  AND created_at < ((COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date) + 1)::timestamp AT TIME ZONE 'Asia/Kolkata')
-  AND COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date)
-      - COALESCE($2::date, (now() AT TIME ZONE 'Asia/Kolkata')::date - 6) BETWEEN 0 AND 365`;
+  created_at >= ((COALESCE($2::date, COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date) - 6))::timestamp AT TIME ZONE 'Asia/Kolkata')
+  AND created_at < ((COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date) + 1)::timestamp AT TIME ZONE 'Asia/Kolkata')`;
+
+/** The range clause on another column (`$2` from, `$3` to): the business ledger's (`merchantLedger.js`). */
+export const rangeSqlOn = (column) => RANGE_SQL.replaceAll('created_at', column);
 
 /** Per account and direction, over the range. */
 export async function accountTotals(merchantId, range) {
@@ -70,6 +77,19 @@ export async function accountTotals(merchantId, range) {
   }));
 }
 
+/**
+ * Every move a merchant's side makes on an order, by the state it moved the
+ * order to, as the report names it (owner, 2026-10-21: every action named,
+ * with who did it).
+ */
+export const REPORT_ACTIONS = Object.freeze({
+  COMPLETED: 'Confirmed the payment',
+  PAID: 'Marked the payout sent',
+  REJECTED: 'Rejected: payment not received',
+  PENDING_QUEUE: 'Declined the order',
+  DISPUTED: 'Red-flagged the order',
+});
+
 /** What a report row says was done to the order. */
 export const REPORT_RESULTS = Object.freeze({ CONFIRMED: 'CONFIRMED', REJECTED: 'REJECTED', NONE: 'NONE' });
 
@@ -97,29 +117,55 @@ export async function orderReport(merchantId, {
 } = {}) {
   const { from, to } = reportRange(range);
   const params = [String(merchantId), from, to];
-  const filters = [`o.state <> 'PENDING_QUEUE'`];
+  // An order this merchant declined stays on their report although it went
+  // back to the queue, and maybe on to someone else (owner, 2026-10-21: every
+  // action named); otherwise only the orders still theirs, never a queued one.
+  const filters = [`(o.state <> 'PENDING_QUEUE' OR o.merchant_id IS DISTINCT FROM $1)`];
   if (orderType) { params.push(String(orderType)); filters.push(`o.order_type = $${params.length}`); }
   if (scope) filters.push(staffScopeSql(scope, params, 'o.'));
   const size = Math.min(Math.max(Number(limit) || 50, 1), ORDER_REPORT_MAX_ROWS);
   const skip = Math.max(Number(offset) || 0, 0);
 
   const { rows } = await pgQuery(
-    `WITH mine AS (
-       SELECT o.order_id, o.order_type, o.user_id, o.utr, o.state,
+    `WITH ours AS (
+       -- This merchant's own presses: the member or the account's owner, or one of its sub-members.
+       SELECT 'merchant:' || $1 AS actor
+        UNION ALL SELECT 'merchant_staff:' || staff_id FROM merchant_staff WHERE merchant_id = $1
+     ), mine AS (
+       SELECT o.order_id, o.order_type, o.user_id, o.state,
+              -- The reference only on an order still theirs: a declined one's is somebody else's.
+              CASE WHEN o.merchant_id = $1 THEN o.utr END AS utr,
               o.token_amount_paise, o.created_at, o.updated_at
          FROM order_states o
-        WHERE o.merchant_id = $1 AND ${RANGE_SQL.replaceAll('created_at', 'o.created_at')}
+        WHERE (o.merchant_id = $1 OR EXISTS (
+                SELECT 1 FROM order_transitions d
+                 WHERE d.order_id = o.order_id AND d.to_state = 'PENDING_QUEUE'
+                   AND d.actor IN (SELECT actor FROM ours)))
+          AND ${RANGE_SQL.replaceAll('created_at', 'o.created_at')}
           AND ${filters.join(' AND ')}
      ), acts AS (
        SELECT DISTINCT ON (t.order_id) t.order_id, t.to_state, t.actor, t.created_at
          FROM order_transitions t
          JOIN mine m ON m.order_id = t.order_id
         WHERE t.to_state IN ('COMPLETED', 'PAID', 'REJECTED')
-          AND (starts_with(t.actor, 'merchant:') OR starts_with(t.actor, 'merchant_staff:'))
+          AND t.actor IN (SELECT actor FROM ours)
         ORDER BY t.order_id, t.id DESC
+     ), trail AS (
+       -- Every merchant-side move on the order, oldest first, each with who made it.
+       SELECT t.order_id,
+              json_agg(json_build_object('to', t.to_state, 'actor', t.actor, 'at', t.created_at, 'staffName', ts.name)
+                       ORDER BY t.id) AS moves
+         FROM order_transitions t
+         JOIN mine m ON m.order_id = t.order_id
+         LEFT JOIN merchant_staff ts
+                ON starts_with(t.actor, 'merchant_staff:') AND ts.staff_id = substr(t.actor, 16)
+               AND ts.merchant_id = $1
+        WHERE t.to_state IN (${Object.keys(REPORT_ACTIONS).map((k) => `'${k}'`).join(', ')})
+          AND t.actor IN (SELECT actor FROM ours)
+        GROUP BY t.order_id
      )
      SELECT m.*, a.to_state AS acted_to, a.actor AS acted_by, a.created_at AS acted_at,
-            ms.name AS staff_name,
+            ms.name AS staff_name, tr.moves,
             count(*) OVER () AS total_count,
             count(a.order_id) FILTER (WHERE a.to_state <> 'REJECTED') OVER () AS confirmed_count,
             count(a.order_id) FILTER (WHERE a.to_state = 'REJECTED') OVER () AS rejected_count,
@@ -129,6 +175,7 @@ export async function orderReport(merchantId, {
               WHERE a.to_state <> 'REJECTED' AND m.order_type = 'WITHDRAWAL') OVER (), 0) AS confirmed_sell_paise
        FROM mine m
        LEFT JOIN acts a ON a.order_id = m.order_id
+       LEFT JOIN trail tr ON tr.order_id = m.order_id
        LEFT JOIN merchant_staff ms
               ON starts_with(a.actor, 'merchant_staff:') AND ms.staff_id = substr(a.actor, 16)
              AND ms.merchant_id = $1
@@ -150,13 +197,22 @@ export async function orderReport(merchantId, {
   };
 }
 
+/** `merchantActorTag` read back: the member or the account's owner, or a sub-member by name. */
+function actorOfTag(tag, staffName) {
+  if (tag?.startsWith('merchant_staff:')) return { kind: 'STAFF', name: staffName ?? null };
+  if (tag?.startsWith('merchant:')) return { kind: 'MERCHANT', name: null };
+  return null;
+}
+
 function toReportRow(r) {
   let result = REPORT_RESULTS.NONE;
   if (r.acted_to === 'REJECTED') result = REPORT_RESULTS.REJECTED;
   else if (r.acted_to) result = REPORT_RESULTS.CONFIRMED;
-  let actedBy = null;
-  if (r.acted_by?.startsWith('merchant_staff:')) actedBy = { kind: 'STAFF', name: r.staff_name ?? null };
-  else if (r.acted_by?.startsWith('merchant:')) actedBy = { kind: 'MERCHANT', name: null };
+  const actedBy = actorOfTag(r.acted_by, r.staff_name);
+  // json_agg's timestamps arrive as text; every move is named and dated.
+  const actions = (r.moves ?? []).map((m) => ({
+    action: REPORT_ACTIONS[m.to], by: actorOfTag(m.actor, m.staffName), at: new Date(m.at).toISOString(),
+  }));
   return {
     orderId: r.order_id,
     type: r.order_type,
@@ -166,6 +222,7 @@ function toReportRow(r) {
     state: r.state,
     result,
     actedBy,
+    actions,
     at: r.acted_at ?? r.updated_at ?? r.created_at,
   };
 }

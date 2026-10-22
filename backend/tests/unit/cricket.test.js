@@ -280,8 +280,8 @@ describe('the EntitySport adapter', () => {
 describe('what players are told of cricket', () => {
   it('keeps the tab as coming soon while the game is off, and drops coming soon once it is on', async () => {
     const { cricketPublicSettings } = await import('../../domains/cricket/cricketSettings.js');
-    expect(cricketPublicSettings({})).toMatchObject({ enabled: false, comingSoon: true, claimHoldSec: 2 });
-    expect(cricketPublicSettings({ cricket: { comingSoon: false } }).comingSoon).toBe(false);
+    expect(cricketPublicSettings({})).toMatchObject({ enabled: false, comingSoon: false, claimHoldSec: 2 });
+    expect(cricketPublicSettings({ cricket: { comingSoon: true } }).comingSoon).toBe(true);
     expect(cricketPublicSettings({ cricket: { enabled: true, comingSoon: true } })).toMatchObject({ enabled: true, comingSoon: false });
   });
 });

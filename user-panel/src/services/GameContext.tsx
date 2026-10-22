@@ -77,8 +77,8 @@ const DEFAULT_SYS_CONFIG: SysConfig = {
   footerPages: ['home', 'results', 'wallet', 'promo'], // schema default (config.spec.js footerPages)
   // schema defaults: true / 10 / true / true / true
   boardExtras: { urgencyChips: true, closingWarnSeconds: 10, resultCelebration: true, bonusProgress: true, promoCards: true },
-  // schema defaults (config.spec.js `cricket`): off, coming soon, 10 to 50,000, 5 s, 2 s
-  cricket: { enabled: false, comingSoon: true, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimHoldSec: 2 },
+  // schema defaults (config.spec.js `cricket`): off, no coming soon, 10 to 50,000, 5 s, 2 s
+  cricket: { enabled: false, comingSoon: false, minStake: 10, maxStake: 50000, inPlayDelaySec: 5, claimHoldSec: 2 },
   winningsFeePercent: 1, // schema default: 1
   payoutMultiplier: 2, // schema default: 2
   generalPayoutMultiplier: 1.8, // schema default: 1.8
@@ -122,7 +122,7 @@ interface GameContextType {
   isAuthenticated: boolean;
   isOnline: boolean;
   /** "Continue with Telegram", the one way in: the step to open. */
-  signInWithTelegram: (opts?: { delivery?: TelegramDelivery; referralCode?: string }) => Promise<SignInStep>;
+  signInWithTelegram: (opts?: { delivery?: TelegramDelivery; referralCode?: string; captchaToken?: string | null }) => Promise<SignInStep>;
   /** The `#/tg/<ticket>` page: the ticket exchanged for the session, and the player seated. */
   signInWithTicket: (ticket: string) => Promise<void>;
   /** Ask once whether Telegram has answered; seats the player when it has. */
@@ -933,7 +933,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   // ── AUTH ──────────────────────────────────────────────────────────────────
   // The transport seats the token (realBackend's one seater); these seat the
   // PLAYER, from the user the same response carried.
-  const signInWithTelegram = async (opts?: { delivery?: TelegramDelivery; referralCode?: string }): Promise<SignInStep> =>
+  const signInWithTelegram = async (opts?: { delivery?: TelegramDelivery; referralCode?: string; captchaToken?: string | null }): Promise<SignInStep> =>
     backend.loginWithTelegram(opts);
 
   const signInWithTicket = async (ticket: string) => {

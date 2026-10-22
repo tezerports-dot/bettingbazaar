@@ -112,6 +112,18 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[team-commission] cron error:', e.message); }
   });
 
+  // ── Cash outs — every minute ────────────────────────────────────────────────
+  // A pool cashing out serves buys only; once it cannot cover the smallest buy
+  // it could be sent and none is open, the cash out ends and its 48-hour pause
+  // starts (owner, 2026-10-21; teamCashOut.js holds the test in its WHERE).
+  registerRecurring('team-cash-out', 60 * 1000, async () => {
+    try {
+      const { finishCashOuts } = await import('../domains/team/teamCashOut.service.js');
+      const ended = await finishCashOuts();
+      if (ended.length) console.log(`[cash-out] ended: ${ended.map((e) => e.teamId).join(', ')}`);
+    } catch (e) { console.error('[cash-out] cron error:', e.message); }
+  });
+
   // ── Red flags — hourly, each IST day evaluated once ────────────────────────
   // Step 2f: low activity per member, for the days that have ended. The day's row is the once-only guard, so the hourly
   // run is a catch-up after downtime rather than a repeat.
@@ -167,6 +179,28 @@ export function registerCronJobs(rebuildLeaderboard) {
       });
     } catch (e) {
       console.error('[telegram-bot-health] cron error:', e.message);
+    }
+  });
+
+  // ── Signup channels (owner, 2026-10-21) ──────────────────────────────────
+  // Join requests are read by polling (no webhook) and recorded; nothing is
+  // approved here. Telegram keeps updates for 24 hours, so a slow read loses
+  // none. The invite links are checked hourly and remade when revoked or when
+  // another bot is in use. With no channel on, both return at once.
+  registerRecurring('telegram-join-requests', 10 * 1000, async () => {
+    try {
+      const { readJoinRequests } = await import('../domains/telegram/signupChannels.service.js');
+      await readJoinRequests();
+    } catch (e) {
+      console.error('[telegram-join-requests] cron error:', e.message);
+    }
+  });
+  registerRecurring('telegram-channel-links', 60 * 60 * 1000, async () => {
+    try {
+      const { refreshInviteLinks } = await import('../domains/telegram/signupChannels.service.js');
+      await refreshInviteLinks();
+    } catch (e) {
+      console.error('[telegram-channel-links] cron error:', e.message);
     }
   });
 
@@ -346,6 +380,27 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[retention] round history error:', e.message); }
   });
 
+  // ── Cold storage: old chats and notifications — runs hourly ──────────────
+  // An ended order's chat and a player's notifications, once COLD_AFTER_DAYS
+  // old, move whole into `cold_archive`, readable only by a full admin
+  // (owner, 2026-10-20; coldArchive.js). Rounds move with cycle-history-retention.
+  registerRecurring('cold-storage', 60 * 60 * 1000, async () => {
+    try {
+      let chats = 0; let notes = 0;
+      for (let i = 0; i < 50; i += 1) {
+        const { orders } = await db.coldArchive.archiveOldChats();
+        chats += orders;
+        if (!orders) break;
+      }
+      for (let i = 0; i < 50; i += 1) {
+        const { notifications } = await db.coldArchive.archiveOldNotifications();
+        notes += notifications;
+        if (!notifications) break;
+      }
+      if (chats || notes) console.log(`[cold-storage] Moved ${chats} chat(s) and ${notes} notification(s) to cold storage`);
+    } catch (e) { console.error('[cold-storage] cron error:', e.message); }
+  });
+
   // ── Payment proof retention — runs hourly ──────────────────────────────────
   // Keeps the ORDER — it is the financial record — while dropping the
   // high-volume proof screenshot once its retention window has passed. One
@@ -356,6 +411,20 @@ export function registerCronJobs(rebuildLeaderboard) {
       const scrubbed = await db.orders.scrubExpiredProofs();
       if (scrubbed > 0) console.log(`[retention] Scrubbed ${scrubbed} expired payment proof(s)`);
     } catch (e) { console.error('[retention] payment proof scrub error:', e.message); }
+  });
+
+  // ── Referral bonuses — every minute ────────────────────────────────────────
+  // Every queued referral earning is paid into its referrer's General balance
+  // out of the platform's token holding, in joining order, a minute or less
+  // after the joiner verified (owner, 2026-10-20: "auto deducted from that
+  // total token"). Overlapping runs pay nobody twice: each credit is keyed by
+  // its earning and `markPaid` refuses a row that is no longer QUEUED.
+  registerRecurring('referral-autopay', 60 * 1000, async () => {
+    try {
+      const { payReferralQueue } = await import('../domains/referral/referral.service.js');
+      const r = await payReferralQueue();
+      if (r && (r.paid || r.blocked)) console.log(`[referral-autopay] paid ${r.paid}, blocked ${r.blocked}`);
+    } catch (e) { console.error('[referral-autopay] cron error:', e.message); }
   });
 
   // ── Spent and expired credentials — runs hourly ────────────────────────────
@@ -374,7 +443,7 @@ export function registerCronJobs(rebuildLeaderboard) {
   });
 
   // ── Automated database backup — runs daily ─────────────────────────────────
-  // pg_dump (custom format) → S3 (backups/), keeping the newest BACKUP_KEEP
+  // pg_dump (custom format) → the private BACKUP_S3_BUCKET (backups/), keeping the newest BACKUP_KEEP
   // (14). Skips loudly (log + alert) when pg_dump or S3 is unavailable; a
   // failed backup pages the alert webhook. Restore steps:
   // docs/governance/DISASTER_RECOVERY.md.

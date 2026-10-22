@@ -23,14 +23,11 @@
  * attempt and mysteriously 403 every retry after a wrong password — which is
  * exactly when a user retries most.
  *
- * ── Warmed before the tap ──────────────────────────────────────────────────
- * Loading Turnstile and solving its challenge takes seconds, and up to the
- * whole timeout on a slow line. A screen with one submit button calls
- * `warmCaptchaToken()` when it appears, so that work happens while the person
- * reads it, not after they press. The warmed token is still single-use: the
- * next `getCaptchaToken()` takes it (waiting for it if it is still being
- * solved) and clears it, and a retry fetches a fresh one. It is used only while
- * younger than WARM_TOKEN_MAX_AGE_MS, inside Cloudflare's 300 s lifetime.
+ * ── Shown, on the player's sign-in ─────────────────────────────────────────
+ * "Continue with Telegram" draws the widget itself (`mountCaptcha`): the
+ * Cloudflare box with its "Verifying…" spinner and its tick, so the wait reads
+ * as a check being done, not a slow button (owner, 2026-10-20). Its token is
+ * single-use like any other: one sign-in request spends it.
  */
 
 import { readEnv } from './originFailover';
@@ -77,47 +74,58 @@ function loadScript(): Promise<void> {
   return scriptPromise;
 }
 
-/** A warmed token is used only while younger than this (Cloudflare keeps one for 300 s). */
-export const WARM_TOKEN_MAX_AGE_MS = 240_000;
-
-interface Warm { token: Promise<string | null>; startedAt: number; settled: boolean }
-let warm: Warm | null = null;
-
-/**
- * Start solving the challenge now, in the background, for the next submit.
- * No-op with captcha off, or while a warmed token is still young enough.
- */
-export function warmCaptchaToken(): void {
-  if (!siteKey()) return;
-  if (warm && Date.now() - warm.startedAt < WARM_TOKEN_MAX_AGE_MS) return;
-  const entry: Warm = { token: solveOnce(), startedAt: Date.now(), settled: false };
-  warm = entry;
-  void entry.token.then((t) => {
-    entry.settled = true;
-    if (!t && warm === entry) warm = null;   // a failed warm-up is not kept
-  });
+/** Get a token for one submission. */
+export async function getCaptchaToken(timeoutMs = 30_000): Promise<string | null> {
+  return solveOnce(timeoutMs);
 }
 
-/** Forget any warmed token (tests). */
-export function resetWarmCaptcha(): void { warm = null; }
+/** Whether a captcha is asked at all (`VITE_TURNSTILE_SITE_KEY` set). */
+export function captchaOn(): boolean {
+  return Boolean(siteKey());
+}
+
+interface MountHandlers {
+  /** A fresh token: spend it on one request. */
+  onToken: (token: string) => void;
+  /** The box could not load or Cloudflare refused: the sentence to show. */
+  onError: (message: string) => void;
+  /** The token went unused for Cloudflare's 300 s: the box asks again on its own. */
+  onExpired?: () => void;
+}
 
 /**
- * Get a token for one submission: the warmed one if there is one young
- * enough (waiting for it if it is still being solved), else a fresh one.
+ * Draw the Turnstile box into `el` and solve it there, in view: Cloudflare's
+ * own "Verifying…" spinner, then its tick. Returns a function that removes it.
+ * With captcha off nothing is drawn and the caller is not called: ask
+ * `captchaOn()` first.
  */
-export async function getCaptchaToken(timeoutMs = 30_000): Promise<string | null> {
-  const w = warm;
-  warm = null;                                // single-use, whatever happens next
-  if (w && Date.now() - w.startedAt < WARM_TOKEN_MAX_AGE_MS) {
-    const wasSettled = w.settled;
-    const token = await w.token;
-    if (token) return token;
-    // The warm-up failed while the person was waiting on it: say why rather
-    // than make them wait a second full timeout. One that had already failed
-    // before the tap is tried once more, fresh.
-    if (!wasSettled) return null;
-  }
-  return solveOnce(timeoutMs);
+export function mountCaptcha(el: HTMLElement, h: MountHandlers): () => void {
+  const key = siteKey();
+  let widgetId: string | null = null;
+  let gone = false;
+  if (!key) return () => {};
+  loadScript().then(() => {
+    const api = turnstile();
+    if (gone) return;
+    if (!api) { h.onError('The security check could not load. Check your connection and try again.'); return; }
+    widgetId = api.render(el, {
+      sitekey: key,
+      appearance: 'always',
+      size: 'flexible',
+      theme: document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
+      callback: (token: string) => { if (!gone) h.onToken(token); },
+      'error-callback': (code: string) => {
+        if (!gone) h.onError(`The security check failed (Cloudflare code ${code}). Refresh the page and try again.`);
+        return true;
+      },
+      'expired-callback': () => { if (!gone) h.onExpired?.(); },
+      'refresh-expired': 'auto',
+    });
+  }).catch(() => { if (!gone) h.onError('The security check could not load. Check your connection and try again.'); });
+  return () => {
+    gone = true;
+    try { if (widgetId) turnstile()?.remove(widgetId); } catch { /* already gone */ }
+  };
 }
 
 /**

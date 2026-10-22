@@ -20,7 +20,7 @@ const TABLE = {
   CONTACT_MISMATCH: [403, 'Your Telegram account\'s number is not the mobile number of this account. Use the Telegram account on that number.'],
   TELEGRAM_ALREADY_LINKED: [409, 'This Telegram account already verifies another account on this panel. Use the Telegram account on this account\'s mobile number.'],
   NO_ACCOUNT: [404, 'There is no account with this mobile number on this panel.'],
-  NO_MERCHANT_ACCOUNT: [404, 'There is no merchant account for this mobile number. Ask an admin to create your account with this mobile, then Continue with Telegram again.'],
+  NO_MERCHANT_ACCOUNT: [404, 'There is no merchant account for this mobile number. Continue with Telegram again and share your contact to apply.'],
   ACCOUNT_BLOCKED: [403, 'This account is blocked. Contact support.'],
   ACCOUNT_CLOSED: [403, 'This account has been closed. Contact support.'],
   CHALLENGE_EXPIRED: [410, 'This request has expired. Go back to the website or app and start again.'],

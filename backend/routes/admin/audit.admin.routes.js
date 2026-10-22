@@ -2,7 +2,7 @@
 /** audit.admin.routes.js — Audit logs */
 import { express, authenticate, hasPermission } from './_adminShared.js';
 import { db } from '#db';
-import { toCsv } from '../../domains/reporting/csv.util.js';
+import { sendXlsx, oneTable, columnsOf, istText } from '../../domains/reporting/xlsx.util.js';
 import { respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
@@ -53,11 +53,11 @@ router.get('/audit-logs', authenticate, hasPermission('canViewAuditLogs'), async
   }
 });
 
-// GET /api/admin/audit-logs.csv?category=&action=&adminId=&startDate=&endDate=
+// GET /api/admin/audit-logs.xlsx?category=&action=&adminId=&startDate=&endDate=
 // The whole trail for the filters, from the same reads as the table (§2 "A
 // table's CSV"), newest first, at most AUDIT_CSV_MAX rows.
 const AUDIT_CSV_MAX = 50000;
-router.get('/audit-logs.csv', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
+router.get('/audit-logs.xlsx', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
   try {
     const { category, action, adminId, startDate, endDate } = req.query;
     const at = (v) => {
@@ -86,11 +86,12 @@ router.get('/audit-logs.csv', authenticate, hasPermission('canViewAuditLogs'), a
         });
       }
     }
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="audit-logs-${startDate || 'start'}-${endDate || 'now'}.csv"`);
-    res.send(toCsv(rows));
+    sendXlsx(res, `audit-logs-${startDate || 'start'}-${endDate || 'now'}.xlsx`, oneTable({
+      name: 'Audit log', title: 'Audit log', subtitle: `Newest first. Downloaded ${istText(new Date())}`, accent: 'slate',
+      rows, columns: rows.length ? columnsOf(rows) : [{ key: 'time', label: 'Time' }],
+    }));
   } catch (error) {
-    respondError(res, error, 'GET /admin/audit-logs.csv', { message: 'Could not build the export.' });
+    respondError(res, error, 'GET /admin/audit-logs.xlsx', { message: 'Could not build the export.' });
   }
 });
 

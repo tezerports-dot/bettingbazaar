@@ -512,6 +512,8 @@ const WalletPage: React.FC = () => {
 
   const [buyStep, setBuyStep]           = useState<BuyStep>('amount');
   const [buyTokens, setBuyTokens]       = useState<number | null>(null);
+  // UPI or bank transfer, for a buy on the UPI/bank rail (owner, 2026-10-21).
+  const [buyPayMethod, setBuyPayMethod] = useState<payments.BuyPayMethod | null>(null);
   // What the SERVER says is on offer. Never a list written here: the app ships
   // as an APK containing this bundle, so a client-side list is one an attacker
   // can edit — and one that drifts from the gate is a player offered an amount
@@ -729,9 +731,10 @@ const WalletPage: React.FC = () => {
   const handleBuySubmit = async () => {
     const amt = buyTokens;
     if (!amt) { setBuyError('Choose how many tokens to buy'); return; }
+    if (buyTakesPayMethod && !buyPayMethod) { setBuyError('Choose how you will pay: by UPI or by bank transfer'); return; }
     setBuyLoading(true); setBuyError('');
     try {
-      const res: any = await payments.createBuy(amt);
+      const res: any = await payments.createBuy(amt, buyTakesPayMethod ? buyPayMethod : null);
       const order = res?.order;
       if (!order) throw new Error('No order returned');
       setActiveBuyOrder(order); setBuyStep('pay_now'); loadMeta();
@@ -769,6 +772,9 @@ const WalletPage: React.FC = () => {
   // stamps the order with: nothing here decides it (§3).
   const buyAmount = buyTokens ?? 0;
   const buyRail = railOfSize(rail.buySizes, buyTokens);
+  // Every UPI/bank buy, agents' or a merchant's, is paid the way the player
+  // picks; the server refuses one without it (PAY_METHOD_REQUIRED).
+  const buyTakesPayMethod = buyRail === 'UPI_BANK' || buyRail === 'MERCHANT';
   const sellRail = railOfSize(rail.sellSizes, sellTokens);
 
   // The USDT purchase in flight, if there is one. Found by CURRENCY on the
@@ -898,15 +904,26 @@ const WalletPage: React.FC = () => {
                       <><b style={{ color: 'var(--text)' }}>Cash purchase.</b> A cash-team member at a cash machine serves it: when they send the payment link, pay it, tap “I’ve paid” straight away, then add the UTR.</>
                     )}
                     {buyRail === 'UPI_BANK' && (
-                      <><b style={{ color: 'var(--text)' }}>UPI / bank purchase.</b> Paid from your UPI or bank app to where the order shows, then you submit the UTR.</>
+                      <><b style={{ color: 'var(--text)' }}>UPI / bank purchase.</b> Choose UPI or bank transfer below, pay where the order shows, then submit the UTR.</>
                     )}
                     {buyRail === 'MERCHANT' && (
-                      <><b style={{ color: 'var(--text)' }}>Merchant purchase.</b> A merchant serves it: pay by UPI or bank transfer to where the order shows once they accept, then you submit the UTR.</>
+                      <><b style={{ color: 'var(--text)' }}>Merchant purchase.</b> A merchant serves it: choose UPI or bank transfer below, pay where the order shows, then submit the UTR.</>
                     )}
                   </div>
+                  {buyTakesPayMethod && (
+                    <div role="radiogroup" aria-label="How you will pay" style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                      {([['UPI', 'By UPI', 'Pay a link with the amount filled in'], ['BANK', 'By bank transfer', 'IMPS, NEFT or RTGS to an account']] as const).map(([m, label, sub]) => (
+                        <button key={m} type="button" role="radio" aria-checked={buyPayMethod === m} onClick={() => setBuyPayMethod(m)}
+                          style={{ flex: 1, padding: 10, borderRadius: 11, cursor: 'pointer', textAlign: 'left', background: buyPayMethod === m ? 'var(--surface3)' : 'transparent', border: `1px solid ${buyPayMethod === m ? 'var(--gold-ink)' : 'var(--line)'}` }}>
+                          <span style={{ display: 'block', fontSize: 12.5, fontWeight: 800, color: 'var(--text)' }}>{label}</span>
+                          <span style={{ display: 'block', fontSize: 10, color: 'var(--text3)' }}>{sub}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>You pay <b style={{ color: 'var(--gold-ink)' }}>{fmtINR(buyAmount)}</b> · 1 token = ₹1</div>
                   {buyError && <p role="alert" style={{ color: 'var(--red)', fontSize: 11, marginBottom: 10 }}>{buyError}</p>}
-                  <button onClick={handleBuySubmit} disabled={!buyRail || buyLoading} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: 'var(--on-gold)', background: 'var(--gold-metal)', boxShadow: '0 8px 22px -8px var(--glow)', opacity: (!buyRail || buyLoading) ? .5 : 1 }}>{buyLoading ? '⏳ Creating order…' : 'Continue to payment'}</button>
+                  <button onClick={handleBuySubmit} disabled={!buyRail || buyLoading || (buyTakesPayMethod && !buyPayMethod)} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: 'var(--on-gold)', background: 'var(--gold-metal)', boxShadow: '0 8px 22px -8px var(--glow)', opacity: (!buyRail || buyLoading || (buyTakesPayMethod && !buyPayMethod)) ? .5 : 1 }}>{buyLoading ? '⏳ Creating order…' : 'Continue to payment'}</button>
 
                   {/* The USDT rail, as its own block rather than a mode this
                       screen switches into. The two rails serve DIFFERENT

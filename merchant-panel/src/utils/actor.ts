@@ -69,12 +69,14 @@ export function mayWorkOrder(merchant: Who, order: Pick<PaymentOrder, 'type' | '
 }
 
 /** The accounts a sell may be marked paid from: active, paying withdrawals, and (sub-member) assigned to them. */
-export function payFromChoices<A extends { accountId: string; status: string; paysWithdrawals: boolean }>(
-  merchant: Who, accounts: A[],
+export function payFromChoices<A extends { accountId: string; status: string; paysWithdrawals: boolean; sellSizes?: number[] }>(
+  merchant: Who, accounts: A[], sizeTokens?: number,
 ): A[] {
   const actor = actorOf(merchant);
   const allowed = actor.isOwner ? null : (actor.withdrawalAccountIds ?? []);
+  // An account pays only the sell sizes ticked on it (owner, 2026-10-20; `mayPayFrom`).
   return accounts.filter((a) => a.status === 'ACTIVE' && a.paysWithdrawals
+    && (sizeTokens === undefined || !a.sellSizes || a.sellSizes.includes(sizeTokens))
     && (allowed === null || allowed.includes(a.accountId)));
 }
 

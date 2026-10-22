@@ -22,7 +22,7 @@ interface AuthState {
   login: (
     mobile: string,
     password: string,
-    loginType?: 'admin' | 'subadmin' | 'queue_manager',
+    loginType?: 'admin' | 'subadmin',
   ) => Promise<LoginAnswer>;
   /**
    * Hold the session a code leg answered. The sign-in screen decides when (it

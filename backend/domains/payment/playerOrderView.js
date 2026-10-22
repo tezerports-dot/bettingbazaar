@@ -66,6 +66,8 @@ export const PLAYER_ORDER_FIELDS = Object.freeze([
   // The rail this order runs on, so the screen knows which workflow to show.
   // Not the merchant's rail — the ORDER's, stamped at creation.
   'paymentMode',
+  // How they chose to pay a UPI/bank buy, UPI or BANK (owner, 2026-10-21).
+  'buyPayMethod',
 
   // Which network a USDT buy is paid on, rendered with the address everywhere:
   // USDT sent on the wrong network is lost.
@@ -250,11 +252,12 @@ function counterpartyFor(order) {
     // Nothing to pay yet: the reference and the deadline only.
   } else if (isBuy && order.paymentMode === PAYMENT_MODES.CASH_ATM) {
     if (order.cashLink) view.paymentLink = order.cashLink;
-  } else if (isBuy && snapshot.payAccountKind === 'UPI_QR' && snapshot.upiPa && snapshot.upiPn) {
-    // A merchant account's UPI QR (owner, 2026-10-11): the one place a UPI
-    // handle reaches a player, as the link they pay, built HERE from the
-    // account's payee and name with THIS order's amount and a note naming the
-    // order. The row refused a handle or name carrying a mobile (§24).
+  } else if (isBuy && snapshot.upiPa && snapshot.upiPn) {
+    // A UPI buy (owner, 2026-10-11, agents 2026-10-21): a merchant account's
+    // UPI QR account, or the agent's UPI ID when the player chose UPI. The one
+    // place a UPI handle reaches a player, as the link they pay, built HERE
+    // from the payee and name with THIS order's amount and a note naming the
+    // order. The rows refuse a handle or name carrying a mobile (§24).
     view.paymentLink = buildUpiPayLink({
       pa: snapshot.upiPa, pn: snapshot.upiPn, amountRupees: order.tokenAmount, orderId: order.orderId,
     });

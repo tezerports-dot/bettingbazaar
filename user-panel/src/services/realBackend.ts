@@ -276,11 +276,10 @@ export class RealBackend implements Backend {
     };
 
     try {
-      const response = await secureFetch(`${apiBase()}${endpoint}`, { ...options, headers, credentials: 'include' });
+      const response = await secureFetch(`${apiBase()}${endpoint}`, { ...options, headers, credentials: 'omit' });
 
       if (response.status === 401) {
         localStorage.removeItem('auth_token');
-        document.cookie = 'auth_token=; Max-Age=0; path=/';
         this.sseBridge.syncAuth();   // off the player stream: the session is gone
         // The server's own sentence and code travel with it: a sign-in form
         // reads "Wrong mobile number or password", and a Telegram poll reads
@@ -360,8 +359,11 @@ export class RealBackend implements Backend {
    * no screen can forget it. `getCaptchaToken` resolves null — never rejects —
    * when Turnstile is unconfigured or unreachable; the server then decides.
    */
-  async loginWithTelegram(opts: { delivery?: TelegramDelivery; referralCode?: string } = {}): Promise<SignInStep> {
-    const captchaToken = (await getCaptchaToken()) ?? undefined;
+  async loginWithTelegram(opts: { delivery?: TelegramDelivery; referralCode?: string; captchaToken?: string | null } = {}): Promise<SignInStep> {
+    // The sign-in screen solves the captcha in view and passes its token; a
+    // caller without one gets a fresh token here.
+    const { captchaToken: shown, ...rest } = opts;
+    const captchaToken = (shown !== undefined ? shown : await getCaptchaToken()) ?? undefined;
     // Where Verify's link would open THIS app: the server grants a HANDOFF only
     // when it is the site's own address, else MATCH (`deliveryFor`), so an app
     // left on a retired address is never waiting for a session sent elsewhere.
@@ -370,12 +372,12 @@ export class RealBackend implements Backend {
     // on, not a button that spins for minutes.
     const res = await this.request<{ challengeToken?: string; telegram?: TelegramBlock; message?: string;
       delivery?: TelegramDelivery; matchNumber?: number | null }>(
-      '/v1/auth/login/telegram', { method: 'POST', body: JSON.stringify({ ...opts, returnOrigin, captchaToken }),
+      '/v1/auth/login/telegram', { method: 'POST', body: JSON.stringify({ ...rest, returnOrigin, captchaToken }),
         signal: timeoutSignal(TELEGRAM_START_TIMEOUT_MS) })
       .catch((err: unknown) => {
         const name = (err as { name?: string })?.name;
         if (name === 'TimeoutError' || name === 'AbortError') {
-          throw new Error('The server took too long to answer. Check your connection and press Continue with Telegram again.');
+          throw new Error('The server took too long to answer. Check your connection and try again.');
         }
         return explainCaptcha(err);
       });
@@ -553,7 +555,7 @@ export class RealBackend implements Backend {
   // `/api/p2p/*` prefix. WalletPage.tsx owns this flow via apiClient.
 
   // -- BANKING ----------------------------------------------------------------
-  // The four fields of a bank account; the server keeps nothing else (§24).
+  // The bank account and UPI ID a sell is paid to; the server keeps nothing else (§24).
   async updateBankDetails(userId: string, details: User['bankDetails']) {
     return this.request<User>(`/user/${userId}/bank-details`, { method: 'PUT', body: JSON.stringify(details) });
   }

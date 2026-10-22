@@ -572,19 +572,20 @@ describePg('merchant panel routes', () => {
   // ── No UPI handle (§2 "How each rail is paid", §24) ──────────────────────
   // Profile had a UPI ID field: saved, copied into every order's snapshot, and
   // read by nothing. The bank account is what a UPI_BANK buy is paid into.
-  it('keeps no UPI handle from Profile: alone it is nothing to save, beside the account it is not kept', async () => {
+  it('keeps the UPI ID from Profile (owner, 2026-10-21), and none sent inside the bank details', async () => {
     const m = await merchantActor();
-    const alone = await as(app, m).put('/profile').send({ upiId: `rt${RUN}@okaxis` });
-    expect(alone.status).toBe(400);
-    expect(alone.body.message).toMatch(/No valid profile fields/);
+    const alone = await as(app, m).put('/profile').send({ upiId: `rt.shop@okaxis` });
+    expect(alone.status, alone.body.message).toBe(200);
+    expect(alone.body.merchant.upiId).toBe('rt.shop@okaxis');
 
     const both = await as(app, m).put('/profile')
-      .send({ upiId: `rt${RUN}@okaxis`, bankDetails: { bankName: 'Union Bank', upiId: `rt${RUN}@okicici` } });
+      .send({ bankDetails: { bankName: 'Union Bank', upiId: `rt.other@okicici` } });
     expect(both.status, both.body.message).toBe(200);
     expect(both.body.merchant.bankDetails.bankName).toBe('Union Bank');
     expect(both.body.merchant.bankDetails).not.toHaveProperty('upiId');
     const read = await as(app, m).get('/profile');
-    expect(JSON.stringify(read.body)).not.toMatch(/@ok(axis|icici)/);
+    expect(JSON.stringify(read.body)).not.toMatch(/rt\.other@okicici/);
+    expect(read.body.merchant.upiId).toBe('rt.shop@okaxis');
   });
 
   it('serves the merchant’s own profile and nobody else’s', async () => {
