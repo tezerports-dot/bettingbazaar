@@ -810,6 +810,13 @@ Promise.allSettled([
   // PM2 (`wait_ready`): this worker is serving. A rolling reload waits for it
   // before stopping the next old worker, so capacity never drops to zero.
   if (typeof process.send === 'function') process.send('ready');
+  // Players online, sampled each minute where their streams are (owner,
+  // 2026-10-22: peak concurrent users on the owner's dashboard).
+  if (runtime.acceptsRealtime) {
+    import('./domains/analytics/presenceSampler.js')
+      .then((m) => m.startPresenceSampler(() => sseManager.userClients.size))
+      .catch((e) => console.error('[presence] sampler not started:', e.message));
+  }
   if (runtime.runsSchedulers) {
     gameEngine.start();
     cycleGenerator.start();
@@ -828,6 +835,7 @@ Promise.allSettled([
 // them mid-flight on process.exit — rolling deploys dropped requests.
 async function closeResources() {
   try { cricketOddsPublisher.stop(); } catch (_) {}
+  import('./domains/analytics/presenceSampler.js').then((m) => m.stopPresenceSampler()).catch(() => {});
   try { cycleSnapshotPublisher.stop(); } catch (_) {}                            // stop the 1s snapshot timer
   await Promise.allSettled([
     import('./services/jobQueue.service.js').then(m => m.closeJobQueue()),      // 17+56: finish/close queue

@@ -5908,3 +5908,48 @@ ALTER TABLE boards DROP CONSTRAINT IF EXISTS boards_demo_results_shape;
 ALTER TABLE boards ADD CONSTRAINT boards_demo_results_shape
   CHECK (demo_vip ~ '^[BD]*$' AND demo_general ~ '^[BD]*$'
          AND length(demo_vip) <= 1440 AND length(demo_general) <= 1440);
+
+-- ── Owner profit settlement (owner, 2026-10-22) ──────────────────────────────
+-- "I want to settle the profits weekly ... I will set the start time and date
+-- for the week ... how much profit has been withdrawn by the owner." A
+-- settlement RECORDS cash the owner took out of the platform's profit for one
+-- week; it moves no tokens (the owner chose it on the ledger card). Written
+-- only by `database/repositories/ownerLedger.js`, append-only like every other
+-- money record (§19): a mistake is corrected by a new row, never an edit (a
+-- negative amount, with a note, puts back what was recorded in error).
+CREATE TABLE IF NOT EXISTS owner_settlement_schedule (
+  id             BOOLEAN PRIMARY KEY DEFAULT TRUE,
+  week_starts_at TIMESTAMPTZ NOT NULL,
+  updated_by     TEXT,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT owner_settlement_schedule_one_row CHECK (id)
+);
+CREATE TABLE IF NOT EXISTS owner_settlements (
+  settlement_id TEXT PRIMARY KEY,
+  week_start    TIMESTAMPTZ NOT NULL,
+  week_end      TIMESTAMPTZ NOT NULL,
+  amount_paise  BIGINT NOT NULL,
+  note          TEXT,
+  created_by    TEXT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT owner_settlements_amount CHECK (amount_paise <> 0),
+  CONSTRAINT owner_settlements_week CHECK (week_end = week_start + interval '7 days'),
+  CONSTRAINT owner_settlements_note CHECK (note IS NULL OR length(note) <= 500)
+);
+CREATE INDEX IF NOT EXISTS owner_settlements_week_idx ON owner_settlements (week_start, created_at);
+CREATE OR REPLACE TRIGGER owner_settlements_append_only
+  BEFORE UPDATE OR DELETE ON owner_settlements FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- ── How many players are online, sampled each minute (owner, 2026-10-22) ────
+-- Each realtime worker writes how many players hold a live stream on it, once
+-- a minute (`backend/domains/analytics/presenceSampler.js`); the minute's
+-- total is the sum over workers. Written only by `database/repositories/
+-- presence.js`, which also drops samples older than 400 days.
+CREATE TABLE IF NOT EXISTS presence_samples (
+  worker_id  TEXT NOT NULL,
+  minute     TIMESTAMPTZ NOT NULL,
+  players    INTEGER NOT NULL,
+  PRIMARY KEY (minute, worker_id),
+  CONSTRAINT presence_samples_players CHECK (players >= 0),
+  CONSTRAINT presence_samples_on_minute CHECK (minute = date_trunc('minute', minute))
+);

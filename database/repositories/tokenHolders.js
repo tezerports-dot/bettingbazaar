@@ -14,6 +14,11 @@
  *                     tokens stay in the team's pool, §26) and merchant
  *                     accounts (DIRECT teams);
  *   wallets           `bb_wallet_value_paise`, per account, by account type.
+ * Owner, 2026-10-22: General (promotional) balances and escrow are their own
+ * holders. A pool's `held_paise` (open orders) and a wallet's `locked_paise`
+ * (bets and sells) are ESCROW; a wallet's `promo_paise` is GENERAL; the rest
+ * of a wallet is its account type's. So one account can appear under more
+ * than one kind, each token still under exactly one.
  * Every token is in exactly one of these places (schema.sql, "TOKEN
  * CONSERVATION"), so the holders add up to the supply; `accountedFor` says
  * whether they do on this read.
@@ -23,7 +28,7 @@ import { paiseToRupees } from '../../backend/shared/money.js';
 
 /** Holder kinds, in the order the screen lists them. */
 export const HOLDER_KINDS = Object.freeze([
-  'PLATFORM', 'PLATFORM_ACCOUNT', 'TEAM', 'MERCHANT_ACCOUNT', 'PLAYER', 'MERCHANT_WALLET', 'STAFF_WALLET',
+  'PLATFORM', 'PLATFORM_ACCOUNT', 'TEAM', 'MERCHANT_ACCOUNT', 'PLAYER', 'GENERAL', 'ESCROW', 'MERCHANT_WALLET', 'STAFF_WALLET',
 ]);
 
 /** How many holders one CSV export may carry. */
@@ -34,28 +39,41 @@ const HOLDERS_SQL = `
          'Platform holding (not yet released)'::text AS name, NULL::text AS owner,
          bb_token_supply_paise()
            + COALESCE((SELECT balance_paise FROM treasury_accounts WHERE account = 'TOKEN_SUPPLY'), 0) AS tokens_paise,
-         0::bigint AS held_paise, NULL::int AS members
+         NULL::int AS members
   UNION ALL
-  SELECT 'PLATFORM_ACCOUNT', a.account, a.account, NULL, a.balance_paise, 0, NULL
+  SELECT 'PLATFORM_ACCOUNT', a.account, a.account, NULL, a.balance_paise, NULL
     FROM treasury_accounts a
    WHERE a.account NOT IN ('TOKEN_SUPPLY', 'USER_FLOAT', 'TEAM_FLOAT') AND a.balance_paise <> 0
   UNION ALL
   SELECT CASE t.kind WHEN 'DIRECT' THEN 'MERCHANT_ACCOUNT' ELSE 'TEAM' END,
-         t.team_id, t.name, COALESCE(sup.name, own.name),
-         tp.available_paise + tp.held_paise, tp.held_paise,
+         t.team_id, t.name, COALESCE(sup.name, own.name), tp.available_paise,
          (SELECT COUNT(*)::int FROM team_members tm WHERE tm.team_id = t.team_id AND tm.status = 'APPROVED')
     FROM team_pools tp
     JOIN teams t ON t.team_id = tp.team_id
     LEFT JOIN merchants sup ON sup.merchant_id = t.supervisor_id
     LEFT JOIN merchants own ON own.merchant_id = t.owner_merchant_id
-   WHERE tp.available_paise + tp.held_paise > 0
+   WHERE tp.available_paise > 0
+  UNION ALL
+  SELECT 'ESCROW', t.team_id, t.name, 'held for open orders', tp.held_paise, NULL
+    FROM team_pools tp JOIN teams t ON t.team_id = tp.team_id
+   WHERE tp.held_paise > 0
   UNION ALL
   SELECT CASE u.account_type WHEN 'MERCHANT' THEN 'MERCHANT_WALLET' WHEN 'STAFF' THEN 'STAFF_WALLET' ELSE 'PLAYER' END,
          w.user_id, COALESCE(u.username, w.user_id), NULL,
-         bb_wallet_value_paise(w), w.locked_paise, NULL
+         bb_wallet_value_paise(w) - w.locked_paise - w.promo_paise, NULL
     FROM wallets w
     LEFT JOIN users u ON u.user_id = w.user_id
-   WHERE bb_wallet_value_paise(w) > 0`;
+   WHERE bb_wallet_value_paise(w) - w.locked_paise - w.promo_paise > 0
+  UNION ALL
+  SELECT 'GENERAL', w.user_id, COALESCE(u.username, w.user_id), NULL, w.promo_paise, NULL
+    FROM wallets w
+    LEFT JOIN users u ON u.user_id = w.user_id
+   WHERE w.promo_paise > 0
+  UNION ALL
+  SELECT 'ESCROW', w.user_id, COALESCE(u.username, w.user_id), 'riding on bets and sells', w.locked_paise, NULL
+    FROM wallets w
+    LEFT JOIN users u ON u.user_id = w.user_id
+   WHERE w.locked_paise > 0`;
 
 const toHolder = (r, supplyPaise) => ({
   kind: r.kind,
@@ -63,8 +81,6 @@ const toHolder = (r, supplyPaise) => ({
   name: r.name,
   owner: r.owner,
   tokens: paiseToRupees(Number(r.tokens_paise)),
-  /** Of `tokens`, how many are held for open orders (a pool) or riding on bets (a wallet). */
-  held: paiseToRupees(Number(r.held_paise)),
   members: r.members == null ? null : Number(r.members),
   /** Percent of the whole supply, to 6 places. */
   sharePercent: supplyPaise > 0 ? Number(((Number(r.tokens_paise) / supplyPaise) * 100).toFixed(6)) : 0,
@@ -95,8 +111,7 @@ export async function tokenHolders({ kind = null, search = null, page = 1, limit
        SELECT bb_token_supply_paise()::text AS supply_paise,
               (SELECT COALESCE(SUM(tokens_paise), 0) FROM h)::text AS accounted_paise,
               (SELECT COALESCE(json_agg(x), '[]'::json) FROM (
-                 SELECT kind, COUNT(*)::int AS holders, SUM(tokens_paise)::text AS tokens_paise,
-                        SUM(held_paise)::text AS held_paise
+                 SELECT kind, COUNT(*)::int AS holders, SUM(tokens_paise)::text AS tokens_paise
                    FROM h GROUP BY kind) x) AS kinds,
               (SELECT COUNT(*)::int FROM h
                 WHERE ($1::text IS NULL OR kind = $1)
@@ -129,7 +144,6 @@ export async function tokenHolders({ kind = null, search = null, page = 1, limit
         kind: k,
         holders: Number(x?.holders ?? 0),
         tokens: paiseToRupees(tokensPaise),
-        held: paiseToRupees(Number(x?.held_paise ?? 0)),
         sharePercent: supplyPaise > 0 ? Number(((tokensPaise / supplyPaise) * 100).toFixed(6)) : 0,
       };
     }),

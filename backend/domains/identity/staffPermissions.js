@@ -136,6 +136,8 @@ export const ADMIN_ONLY_AREAS = Object.freeze([
     routes: ['PUT /usdt-deposits/final-wallet'] },
   { area: 'Cold storage', why: 'Old chats, notifications and rounds kept off every live screen (owner, 2026-10-20: only the admin may open them).',
     routes: ['GET /cold-storage', 'GET /cold-storage/:id'] },
+  { area: 'Owner profit settlement', why: 'It records the owner\'s own withdrawals of profit and sets the owner\'s week (owner, 2026-10-22); a holder could rewrite what the owner is shown as claimable.',
+    routes: ['GET /owner/settlements', 'PUT /owner/settlements/week-start', 'POST /owner/settlements'] },
 ]);
 
 /**
