@@ -27,3 +27,16 @@ describe('presignedPutCarriesNoChecksum', () => {
     expect(params).toContain('x-amz-signature');
   });
 });
+
+describe('presignedPutSignsItsOwner', () => {
+  it('sends the owner as signed headers, never as query parameters (R2 stores none given that way)', async () => {
+    const { uploadUrl, uploadHeaders } = await cdn.generateBrandingUploadUrl('logo.png', 'image/png', 2048, 'u1', 'logo');
+    const url = new URL(uploadUrl);
+    const params = [...url.searchParams.keys()].map((k) => k.toLowerCase());
+    expect(params.filter((k) => k.startsWith('x-amz-meta-'))).toEqual([]);
+    const signed = url.searchParams.get('X-Amz-SignedHeaders').split(';');
+    expect(signed).toEqual(expect.arrayContaining(['x-amz-meta-userid', 'x-amz-meta-declaredmime']));
+    expect(uploadHeaders).toMatchObject({ 'Content-Type': 'image/png', 'x-amz-meta-userid': 'u1' });
+    for (const name of signed.filter((h) => h.startsWith('x-amz-meta-'))) expect(uploadHeaders[name]).toBeDefined();
+  });
+});

@@ -16,6 +16,14 @@ describe('putToStorage', () => {
     await expect(putToStorage('https://s3.example/put', file)).resolves.toBeUndefined();
   });
 
+  it('sends the headers the server signed, the owner among them', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const signed = { 'Content-Type': 'image/png', 'x-amz-meta-userid': 'u1' };
+    await putToStorage('https://s3.example/put', file, signed);
+    expect(fetchMock.mock.calls[0][1].headers).toEqual(signed);
+  });
+
   it('names CORS and S3_ENDPOINT when the storage cannot be reached', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
     await expect(putToStorage('https://s3.example/put', file)).rejects.toThrow(/CORS[\s\S]*S3_ENDPOINT/);
