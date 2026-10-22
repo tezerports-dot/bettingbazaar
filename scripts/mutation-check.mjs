@@ -1284,8 +1284,14 @@ const MUTATIONS = [
     id: 'M230', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
     test: 'backend/tests/routes/staffPermissionsPg.test.js',
     why: 'an area is quietly made full-admin-only: a sub-admin holding it is refused, and the list says nothing',
-    from: `router.get('/phantom-agents', authenticate, hasPermission('canManagePhantomAgents'),`,
-    to: `router.get('/phantom-agents', authenticate, isAdmin,`,
+    // The route file no longer imports isAdmin, so the mutant imports it too
+    // (a mutant that cannot load is NOT MEASURED, never a verdict).
+    edits: [
+      [`  authenticate, express, hasPermission,\n} from './_adminShared.js';`,
+        `  authenticate, express, hasPermission, isAdmin,\n} from './_adminShared.js';`],
+      [`router.get('/phantom-agents', authenticate, hasPermission('canManagePhantomAgents'),`,
+        `router.get('/phantom-agents', authenticate, isAdmin,`],
+    ],
   },
   // ── Point 3 of the PR #198 verification (2026-10-01) ─────────────────────
   {

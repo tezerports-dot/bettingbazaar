@@ -69,8 +69,9 @@ describePg('balance adjustment — its own area, players only', () => {
   });
 
   it('lists PLAYERS only — never a staff or merchant login on the same number', async () => {
+    // By username (the harness names it after the id): a sub-admin's search never matches a mobile (byMobile).
     const staff = await actor({ isSubAdmin: true, permissions: {} });
-    const res = await as(app, adjuster).get('/admin/balance-adjust/players').query({ search: staff.mobile });
+    const res = await as(app, adjuster).get('/admin/balance-adjust/players').query({ search: staff.userId });
     expect(res.status).toBe(200);
     expect(res.body.players.map((x) => x.userId)).not.toContain(staff.userId);
   });
