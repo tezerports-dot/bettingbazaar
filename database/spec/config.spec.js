@@ -32,6 +32,7 @@ import { ORDER_SIZES, USDT_BUY_STEP } from '../../backend/domains/merchant/denom
 import { approvedApiHosts } from '../../backend/config/apiHosts.js';
 import { BRAND_PALETTES } from '../../backend/domains/branding/palettes.js';
 import { DEFAULT_PHANTOM_BETS_LABEL, PHANTOM_BETS_LABEL_LIMITS } from '../../backend/domains/markets/phantomBets.js';
+import { DEFAULT_WINNERS_DEMO_LABEL, WINNERS_DEMO_LABEL_LIMITS } from '../../backend/domains/cms/winnersDemoLabel.js';
 import { DEFAULT_DEMO_RESULTS_ON } from '../../backend/domains/markets/demoResults.js';
 
 /** A number setting: `n(default, min, max)`. Bounds are inclusive. */
@@ -77,6 +78,10 @@ export const SYSTEM_CONFIG_SPEC = group({
   // (owner, 2026-10-15). Admin-editable wording, never blank
   // (PHANTOM_BETS_LABEL_LIMITS, backend/domains/markets/phantomBets.js).
   phantomBetsLabel: { type: 'string', default: DEFAULT_PHANTOM_BETS_LABEL, trimmed: true, ...PHANTOM_BETS_LABEL_LIMITS },
+  // The tag on a curated entry of the Winners page (owner, 2026-10-22).
+  // Admin-editable wording, never blank (WINNERS_DEMO_LABEL_LIMITS,
+  // backend/domains/cms/winnersDemoLabel.js).
+  winnersDemoLabel: { type: 'string', default: DEFAULT_WINNERS_DEMO_LABEL, trimmed: true, ...WINNERS_DEMO_LABEL_LIMITS },
 
   // ── Demo results filling the analytics window ──────────────────────────────
   // (owner, 2026-10-15; backend/domains/markets/demoResults.js).

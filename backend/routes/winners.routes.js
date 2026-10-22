@@ -20,6 +20,7 @@ import {
   authenticate, hasPermission,
 } from '../domains/identity/auth.middleware.js';
 import { respondError } from '../shared/httpError.js';
+import { winnersDemoLabelOf } from '../domains/cms/winnersDemoLabel.js';
 
 const router = express.Router();
 
@@ -36,16 +37,17 @@ router.get('/v1/winners', async (req, res) => {
     const sinceHours = period === 'week' ? 168 : 24;
     const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
 
-    const [curated, real] = await Promise.all([
+    const [curated, real, config] = await Promise.all([
       db.engagement.curatedWinners({ sinceHours, limit: size }),
       db.engagement.realWinners({ sinceHours, limit: 20 }),
+      db.config.getSystemConfig(),
     ]);
 
     const merged = [...curated, ...real]
       .sort((a, b) => new Date(b.displayTime).getTime() - new Date(a.displayTime).getTime())
       .slice(0, size);
 
-    res.json({ success: true, winners: merged, total: merged.length });
+    res.json({ success: true, winners: merged, total: merged.length, demoLabel: winnersDemoLabelOf(config) });
   } catch (err) {
     console.error('GET /v1/winners error:', err);
     res.status(500).json({ success: false, message: 'Could not load winners.' });
