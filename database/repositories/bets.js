@@ -97,14 +97,14 @@ export function sourcesFromSlices(slices) {
  * renders. The Postgres row is paise and is not the thing anyone reads.
  */
 export async function placeBet({
-  betId, userId, cycleId, side, amount, slices, reason = null,
+  betId, userId, cycleId, side, amount, slices, reason = null, autoPlanId = null,
 }) {
 
   const publicId = publicIdFor(betId);
   const result = await placeBetPg({
     betId, publicId, userId: String(userId), cycleId: String(cycleId), side,
     slices: slices.map((s) => ({ field: s.field, amountPaise: rupeesToPaise(s.amount) })),
-    reason,
+    reason, autoPlanId,
   });
 
   if (!result.ok) return result;

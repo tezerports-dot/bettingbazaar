@@ -78,6 +78,7 @@ import * as referrals from './repositories/referrals.js';
 import * as promo from './repositories/promo.js';
 import * as boardRules from './repositories/boardRules.js';
 import * as phantomAutoPlans from './repositories/phantomAutoPlans.js';
+import * as playerAutoBets from './repositories/playerAutoBets.js';
 import * as boards from './repositories/boards.js';
 import * as rtp from './repositories/rtp.js';
 import * as cricket from './repositories/cricket.js';
@@ -174,6 +175,7 @@ export const db = Object.freeze({
   promo,
   boardRules,
   phantomAutoPlans,
+  playerAutoBets,
   boards,
   rtp,
   // Cricket opinion polls (owner, 2026-10-18)

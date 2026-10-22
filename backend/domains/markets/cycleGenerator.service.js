@@ -22,6 +22,10 @@ import { recordRealtimeEvent } from '../../services/metrics.service.js';
 import { planHouseBet } from './rtpHouseBet.js';
 import { getRiskRules, multiplierFor } from '../risk/riskValidation.service.js';
 import { sendAlert } from '../../services/alerting.service.js';
+import { placePlayerBet, announcePlacedBet } from './playerBet.service.js';
+import { stopBefore, stopForRefusal, autoBetId, AUTO_STOP_TEXT } from './autoBets.js';
+import { getSystemConfig } from '#db/repositories/config.js';
+import { notify } from '../communication/communication.service.js';
 
 /** A tick of the cycle manager running this long means every board has stopped (it runs every second). */
 const TICK_STALL_MS = 20_000;
@@ -50,6 +54,10 @@ class CycleGenerator {
         // In-memory cache of active cycles — updated by manageCycles() every 1s,
         // read by broadcastLiveUpdates() in the same tick with zero DB hits.
         this.liveCycleCache = {};  // { [type:audience]: cycleDoc } — see slotKey
+        // Player auto bets already tried on a round (`planId:cycleId`), so a
+        // tick does not ask again. Only a saving: the bet's id is keyed by
+        // plan and round, so a forgotten entry still places nothing twice.
+        this.autoBetsTried = new Set();
     }
 
     start() {
@@ -201,6 +209,14 @@ class CycleGenerator {
                 })
                 : [];
 
+            // Player auto bets, read at most once a tick and only when a plan
+            // has a round it has not been tried on (`runPlayerAutoBets`).
+            let autoPlayerPlans = null;
+            const playerPlansFor = async () => {
+                if (!autoPlayerPlans) autoPlayerPlans = this.loadPlayerAutoPlans(activeCycles);
+                return autoPlayerPlans;
+            };
+
             for (const cycle of activeCycles) {
                 const cycleEndMs = new Date(cycle.endTime).getTime();
 
@@ -258,6 +274,11 @@ class CycleGenerator {
                 // ─── AUTO PHANTOM BETS, until the equalizer ───────────────────
                 if (now < equalizerTime && ['OPEN', 'MERGED'].includes(cycle.status) && !cycle.phantomBetsClosed) {
                     await this.runAutoPhantomBets(cycle, autoPlans, now, equalizerTime);
+                }
+
+                // ─── PLAYER AUTO BETS, one a round, a second before the close ──
+                if (now < betsClosedTime - 1000 && ['OPEN', 'MERGED'].includes(cycle.status)) {
+                    await this.runPlayerAutoBets(cycle, await playerPlansFor());
                 }
 
                 // ─── PHASE 2: PHANTOM EQUALIZER ─────────────────────────────
@@ -610,6 +631,89 @@ class CycleGenerator {
         } catch (error) {
             console.error(`❌ Auto phantom bets on ${cycle.cycleId}:`, error.message);
         }
+    }
+
+    /**
+     * The running player auto-bets plans that still have a round to try this
+     * tick, with their standing (`playerAutoBets.runnablePlans`). A failed read
+     * places none this tick; every phase carries on.
+     */
+    async loadPlayerAutoPlans(activeCycles) {
+        try {
+            const live = new Set(activeCycles.map((c) => c.cycleId));
+            for (const key of this.autoBetsTried) {
+                if (!live.has(key.slice(key.indexOf(':') + 1))) this.autoBetsTried.delete(key);
+            }
+            const open = activeCycles.filter((c) => ['OPEN', 'MERGED'].includes(c.status));
+            const running = await db.playerAutoBets.runningPlanKeys();
+            const due = running.filter((p) => open.some((c) => c.type === p.boardKey && c.audience === p.audience
+                && !this.autoBetsTried.has(`${p.planId}:${c.cycleId}`)));
+            if (!due.length) return [];
+            let plans = await db.playerAutoBets.runnablePlans(due.map((p) => p.planId));
+            // While the platform is closed for maintenance, only its testers play.
+            const cfg = await getSystemConfig();
+            if (cfg?.maintenanceMode) plans = plans.filter((p) => p.maintenanceTester);
+            return plans;
+        } catch (e) {
+            console.error('❌ Player auto bets: plans unreadable:', e.message);
+            return [];
+        }
+    }
+
+    /**
+     * Place each due player auto bet on one round (owner, 2026-10-22;
+     * autoBets.js). One bet per plan per round, the step's stake, through the
+     * player's own admission (`placePlayerBet`), keyed by plan and round so a
+     * repeated tick or a restart never places it twice. A plan whose last bet
+     * has not settled waits; one that reaches a stop, or is refused for what a
+     * tapped bet would be refused for, stops and the player is told.
+     */
+    async runPlayerAutoBets(cycle, plans) {
+        const mine = plans.filter((p) => p.boardKey === cycle.type && p.audience === cycle.audience);
+        for (const plan of mine) {
+            const key = `${plan.planId}:${cycle.cycleId}`;
+            if (this.autoBetsTried.has(key)) continue;
+            // The last round's bet is not settled yet: its result decides the step.
+            if (plan.pending > 0) continue;
+            try {
+                const stop = stopBefore({
+                    netPaise: plan.netPaise, stakePaise: plan.nextStakePaise,
+                    stopLossPaise: plan.stopLossPaise, takeProfitPaise: plan.takeProfitPaise, budgetPaise: plan.budgetPaise,
+                });
+                if (stop) { await this.stopPlayerAutoPlan(plan, stop); continue; }
+                this.autoBetsTried.add(key);
+                const amount = plan.nextStakePaise / 100;
+                const placed = await placePlayerBet({
+                    userId: plan.userId, cycleId: cycle.cycleId, side: plan.side, amount,
+                    betId: autoBetId(plan.planId, cycle.cycleId), autoPlanId: plan.planId,
+                });
+                if (placed.kind === 'placed') {
+                    await announcePlacedBet({
+                        userId: plan.userId, cycleId: cycle.cycleId, cycle: placed.cycle,
+                        side: plan.side, amount, balances: placed.balances,
+                    });
+                } else if (placed.kind === 'refused') {
+                    const reason = stopForRefusal(placed.body?.code);
+                    if (reason) await this.stopPlayerAutoPlan(plan, reason);
+                }
+            } catch (error) {
+                console.error(`❌ Player auto bet ${plan.planId} on ${cycle.cycleId}:`, error.message);
+            }
+        }
+    }
+
+    /** Stop a plan once and tell its player why. */
+    async stopPlayerAutoPlan(plan, reason) {
+        const stopped = await db.playerAutoBets.stopPlan({ planId: plan.planId, userId: plan.userId, reason });
+        if (!stopped) return;
+        const net = plan.netPaise / 100;
+        const boardName = (await boardOf(plan.boardKey).catch(() => null))?.name ?? plan.boardKey;
+        await notify({
+            userId: plan.userId,
+            type: ['TAKE_PROFIT'].includes(reason) ? 'SUCCESS' : 'INFO',
+            title: `Auto bets stopped on ${boardName}`,
+            message: `${AUTO_STOP_TEXT[reason]} Net ${net < 0 ? '−' : '+'}₹${Math.abs(net).toLocaleString('en-IN')} over ${plan.played} round${plan.played === 1 ? '' : 's'}.`,
+        }).catch(() => {});
     }
 
     /**

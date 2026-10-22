@@ -366,7 +366,7 @@ const fundsMatchAudience = (slices, audience) => (audience === 'GENERAL'
  *   { ok: false, reason: 'cycle_closed', status }    the round no longer takes bets
  */
 export async function placeBet({
-  betId, userId, cycleId, side, slices, publicId = null, actor = null, reason = null,
+  betId, userId, cycleId, side, slices, publicId = null, actor = null, reason = null, autoPlanId = null,
 }) {
   if (!betId) throw new Error('placeBet requires a betId (idempotency key)');
   if (!Array.isArray(slices) || !slices.length) {
@@ -408,10 +408,12 @@ export async function placeBet({
       return { commit: false, value: { ok: false, reason: 'wrong_balance_for_cycle' } };
     }
 
+    // `auto_plan_id`: the player's auto-bets plan that placed it (autoBets.js),
+    // its owner held to the bet's by `bets_auto_plan_owner`.
     await ctx.client.query(
-      `INSERT INTO bets (bet_id, public_id, user_id, cycle_id, side, stake_paise, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [ctx.bid, publicId ? String(publicId) : null, ctx.uid, String(cycleId), String(side), stakePaise, BET_STATUS.PENDING],
+      `INSERT INTO bets (bet_id, public_id, user_id, cycle_id, side, stake_paise, status, auto_plan_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [ctx.bid, publicId ? String(publicId) : null, ctx.uid, String(cycleId), String(side), stakePaise, BET_STATUS.PENDING, autoPlanId],
     );
 
     if (!await recordTransition(ctx.client, ctx.bid, {
