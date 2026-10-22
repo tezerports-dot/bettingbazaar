@@ -263,19 +263,32 @@ export function winReturn(stake: number, multiplier: number, feePercent: number)
 export interface LadderStep { stake: number; atRisk: number; profitIfWins: number | null; }
 
 /**
- * A progression: start, then each stake `factor` times the last, rounded to
- * whole tokens. `atRisk` is everything staked up to and including that step;
- * `profitIfWins` what is left over if that step wins (null until the payout
- * rules are known).
+ * The stakes of a progression: start, then each stake `factor` times the
+ * last, rounded to a whole `unit` (the board's bet step, `betMultipleOf`) and
+ * never below one unit. A display mirror of `ladderStakes`
+ * (backend/domains/markets/autoBets.js), which is what auto bets actually
+ * stake; the factor is taken to the hundredth, as the server keeps it (§11).
+ */
+export function ladderStakes(start: number, factor: number, steps: number, unit = 1): number[] {
+  const f = Math.round(factor * 100) / 100;
+  const out: number[] = [];
+  for (let k = 0; k < steps; k++) out.push(Math.max(unit, Math.round((start * f ** k) / unit) * unit));
+  return out;
+}
+
+/**
+ * A progression (`ladderStakes`). `atRisk` is everything staked up to and
+ * including that step; `profitIfWins` what is left over if that step wins
+ * (null until the payout rules are known).
  */
 export function ladderPlan(
   start: number, factor: number, steps: number,
   payout: ((stake: number) => number) | null,
+  unit = 1,
 ): LadderStep[] {
   const out: LadderStep[] = [];
   let atRisk = 0;
-  for (let k = 0; k < steps; k++) {
-    const stake = Math.max(1, Math.round(start * factor ** k));
+  for (const stake of ladderStakes(start, factor, steps, unit)) {
     atRisk += stake;
     out.push({ stake, atRisk, profitIfWins: payout ? Math.round((payout(stake) - atRisk) * 100) / 100 : null });
   }
@@ -315,4 +328,64 @@ export function ladderBacktest(
     }
   }
   return { rounds: chron.length, ranOut, won, net: payout ? Math.round(net * 100) / 100 : null };
+}
+
+/** Why an auto-bets plan stops, as the server names it (autoBets.js `AUTO_STOP_REASONS`). */
+export type AutoStop = 'TAKE_PROFIT' | 'STOP_LOSS' | 'BUDGET_USED';
+
+/**
+ * Whether a plan stops before staking `stake` with `net` won or lost so far:
+ * take-profit reached, stop-loss reached, or the stake more than the budget
+ * has left (budget + net). A display mirror of `stopBefore`
+ * (backend/domains/markets/autoBets.js); 0 or null means "not set" (§11).
+ */
+export function autoStopBefore(net: number, stake: number, stops: { stopLoss?: number | null; takeProfit?: number | null; budget: number }): AutoStop | null {
+  if (stops.takeProfit && net >= stops.takeProfit) return 'TAKE_PROFIT';
+  if (stops.stopLoss && net <= -stops.stopLoss) return 'STOP_LOSS';
+  if (stake > stops.budget + net) return 'BUDGET_USED';
+  return null;
+}
+
+export interface AutoBacktest extends LadderBacktest {
+  /** Rounds the plan bet on before it stopped (all of them when it never did). */
+  played: number;
+  stoppedBy: AutoStop | null;
+  /** The lowest the plan's net went, ≤ 0. */
+  worst: number | null;
+}
+
+/**
+ * Plays an auto-bets plan through the newest `window` results, oldest first,
+ * the way the server runs it (backend/domains/markets/autoBets.js): the
+ * ladder as in `ladderBacktest`, and before each bet the stops
+ * (`autoStopBefore`). Needs the payout rules, since the stops are on money.
+ */
+export function autoBacktest(
+  seq: Side[], side: Side, stakes: number[], window: number,
+  payout: (stake: number) => number,
+  stops: { stopLoss?: number | null; takeProfit?: number | null; budget: number },
+): AutoBacktest {
+  const chron = seq.slice(0, window).reverse();
+  let step = 0, ranOut = 0, won = 0, net = 0, played = 0, worst = 0;
+  let stoppedBy: AutoStop | null = null;
+  if (stakes.length) {
+    for (const r of chron) {
+      const stake = stakes[step];
+      stoppedBy = autoStopBefore(net, stake, stops);
+      if (stoppedBy) break;
+      played += 1;
+      net -= stake;
+      worst = Math.min(worst, net);
+      if (r === side) {
+        net += payout(stake);
+        won += 1; step = 0;
+      } else if (++step === stakes.length) {
+        ranOut += 1; step = 0;
+      }
+    }
+    // Reached a stop on the last result: it would not bet the next round.
+    if (!stoppedBy) stoppedBy = autoStopBefore(net, stakes[step], stops);
+  }
+  const round2 = (v: number) => Math.round(v * 100) / 100;
+  return { rounds: chron.length, played, ranOut, won, net: round2(net), stoppedBy, worst: round2(worst) };
 }

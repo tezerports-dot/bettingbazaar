@@ -55,6 +55,7 @@ import { USDT_CHAINS, USDT_CHAIN_SPEC } from '../payment/orderCurrency.js';
 import { tokensPerUsdt } from './tokenRates.js';
 import { INR_TOKEN_RATE } from './tokenRates.js';
 import { cricketPublicSettings } from '../cricket/cricketSettings.js';
+import { betMultipleOf } from '../risk/betStep.js';
 // The legal order sizes come from the module the risk gate validates against,
 // read off the same config row, never from a list written out again here. Two
 // lists drift, and the drift is silent until a player is refused an amount the
@@ -131,6 +132,9 @@ export function systemConfigPayload(cfg) {
     // Already stated in the board rules; sent so the player app's progression
     // calculator quotes the real return (owner, 2026-10-15).
     winningsFeePercent:  cfg?.winningsFeePercent ?? 1, // schema default: 1 (config.spec.js)
+    // What every bet is a whole multiple of, so the progression calculator's
+    // ladder and the auto bets' stakes are bets the server takes (owner, 2026-10-22).
+    betMultipleOf:       betMultipleOf(cfg),
 
     // Cricket opinion polls (owner, 2026-10-18): the switch that shows the
     // Cricket tab, the stake bounds, the in-play delay and the claim margin.

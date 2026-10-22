@@ -271,6 +271,8 @@ export interface SystemConfigData {
   /** General boards' own multiple (owner, 2026-10-19). */
   generalPayoutMultiplier?: number;
   winningsFeePercent?: number;
+  /** What every bet must be a whole multiple of (betStep.js `betMultipleOf`). */
+  betMultipleOf?: number;
   /** Whether demo results fill the analytics window
    *  (SystemConfig.demoResultsOn; systemConfigPayload.js). */
   demoResultsOn?: boolean;

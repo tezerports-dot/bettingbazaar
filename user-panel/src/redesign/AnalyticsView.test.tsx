@@ -4,9 +4,10 @@
  * board shows its figures with the count beside them rather than a "not
  * enough history" card; Probability alone stays withheld below MIN_SAMPLE.
  * Runs & Gaps opens first and says the past does not predict the next round.
+ * The progression calculator sits under every tab (owner, 2026-10-22).
  */
 import React from 'react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
 vi.mock('../services/backend.service', () => ({
@@ -15,11 +16,14 @@ vi.mock('../services/backend.service', () => ({
 
 import AnalyticsView from './AnalyticsView';
 import { MIN_SAMPLE, Side } from './analytics';
+import { updateLadderSettings } from './ladderSettings';
 
 const few: Side[] = ['DELHI', 'BOMBAY', 'BOMBAY', 'DELHI', 'DELHI'];
 const lit = () => screen.getAllByRole('tab').filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.textContent);
 
 describe('the analytics page body', () => {
+  beforeEach(() => updateLadderSettings('VIP', { start: '10', factor: '3', steps: '5', side: 'DELHI' }));
+
   it('opens on Runs & Gaps, with the line that the past does not predict', () => {
     render(<AnalyticsView winners={few} />);
     expect(lit()).toEqual(['Runs & Gaps']);
@@ -27,12 +31,24 @@ describe('the analytics page body', () => {
     expect(screen.getByText('Progression calculator')).toBeTruthy();
   });
 
-  it('shows the tapped section alone', () => {
+  it('shows the tapped section alone, with the calculator under it on every tab', () => {
     render(<AnalyticsView winners={few} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Win share' }));
-    expect(lit()).toEqual(['Win share']);
-    expect(screen.getByRole('tabpanel').id).toBe('bb-an-share');
-    expect(screen.queryByText('Progression calculator')).toBeNull();
+    for (const name of ['Win share', 'Previous results', 'Probability']) {
+      fireEvent.click(screen.getByRole('tab', { name }));
+      expect(lit()).toEqual([name]);
+      expect(screen.getByText('Progression calculator')).toBeTruthy();
+    }
+    expect(screen.getByRole('tabpanel').id).toBe('bb-an-predict');
+  });
+
+  it('offers "Run as auto bets" only where a bet can be placed', () => {
+    const { unmount } = render(<AnalyticsView winners={few} />);
+    expect(screen.queryByRole('button', { name: 'Run as auto bets' })).toBeNull();
+    unmount();
+    const onAuto = vi.fn();
+    render(<AnalyticsView winners={few} onAuto={onAuto} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Run as auto bets' }));
+    expect(onAuto).toHaveBeenCalledTimes(1);
   });
 
   it('does not lock the streaks behind a minimum: a thin board shows them with its count', () => {
