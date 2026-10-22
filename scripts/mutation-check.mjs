@@ -1014,11 +1014,11 @@ const MUTATIONS = [
     to: `    refreshIpBlocklistNow().catch((error) => { list = new net.BlockList(); count = 0;`,
   },  // ── Bet placement (R6) ──────────────────────────────────────────────────
   {
-    id: 'M188', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    id: 'M188', file: 'backend/domains/markets/playerBet.service.js', config: PG,
     test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
-    why: 'the stake limits come from the type the client SENDS, so a full-day bet goes under the full-day floor by claiming to be a 30-minute bet',
-    from: `const board  = await boardOf(cycle.type);`,
-    to: `const board  = await boardOf(req.body.type ?? cycle.type);`,
+    why: 'the stake floor stops coming from the round\'s own board, so a full-day bet goes under the full-day floor',
+    from: `const minBet = board.minBet;`,
+    to: `const minBet = 10;`,
   },
   {
     id: 'M189', file: 'database/repositories/bets.core.js', config: PG,
@@ -1028,10 +1028,10 @@ const MUTATIONS = [
     to: `    if (false) {`,
   },
   {
-    id: 'M190', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    id: 'M190', file: 'backend/domains/markets/playerBet.service.js', config: PG,
     test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
     why: 'a bet refused because the round closed while it was written is told to retry a stale split, not that betting closed',
-    from: `    if (!stakeLock.ok && placed.reason === 'cycle_closed') {`,
+    from: `  if (!stakeLock.ok && placed.reason === 'cycle_closed') {`,
     to: `    if (false) {`,
   },
   {
@@ -3334,7 +3334,7 @@ const MUTATIONS = [
     to: `VALUES ($1 || clock_timestamp()::text, $2, $3, 0) ON CONFLICT (stake_ref) DO NOTHING RETURNING stake_ref\`,`,
   },
   {
-    id: 'MBR1', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    id: 'MBR1', file: 'backend/domains/markets/playerBet.service.js', config: PG,
     test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
     why: 'a player who never read the board rules can stake money on a board',
     from: `if (!(await db.boardRules.acceptsCurrent(userId))) {`,
@@ -3373,7 +3373,7 @@ const MUTATIONS = [
     to: `await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });`,
   },
   {
-    id: 'MAU4', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    id: 'MAU4', file: 'backend/domains/markets/playerBet.service.js', config: PG,
     test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
     why: 'a player on the other profile\'s board is refused only by the writer, told their profile changed instead of which profile to switch to (S14)',
     from: `if (cycle.audience !== profile) {`,
@@ -3388,14 +3388,14 @@ const MUTATIONS = [
   },
   // ── Boards as rows (owner, 2026-10-08) ──────────────────────────────────────
   {
-    id: 'MBD1', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    id: 'MBD1', file: 'backend/domains/markets/playerBet.service.js', config: PG,
     test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
     why: 'a board the admin switched off keeps taking new bets',
-    from: `    if (!board?.enabled) {`,
-    to: `    if (!board) {`,
+    from: `  if (!board?.enabled) {`,
+    to: `  if (!board) {`,
   },
   {
-    id: 'MBD2', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    id: 'MBD2', file: 'backend/domains/markets/playerBet.service.js', config: PG,
     test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
     why: 'betting closes on the board\'s result offset instead of its close offset, so stakes land after the equalizer',
     from: `if (Date.now() >= cycle.endTime - (board.phases.closeBeforeEndSec * 1000)) {`,
