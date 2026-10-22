@@ -223,7 +223,7 @@ describe('an order already in flight', () => {
     expect(screen.queryByText('Complete payment')).toBeNull();
   });
 
-  it('renders an INR order by its OWN paymentMode — a cash order asks for the tap', async () => {
+  it('renders an INR order by its OWN paymentMode — a cash order asks for the reference, then Paid', async () => {
     await open({
       orders: [{
         orderId: 'ORD-CASH-9', _id: 'ORD-CASH-9', type: 'DEPOSIT', status: 'PROCESSING', currency: 'INR',
@@ -233,7 +233,8 @@ describe('an order already in flight', () => {
       }],
     });
     expect(await screen.findByText('Complete payment')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /I've Paid — tell the merchant/ })).toBeInTheDocument();
+    // UTR first, then one Paid tap, on cash too (owner, 2026-10-22).
+    expect(screen.getByRole('button', { name: /I've Paid/ })).toBeDisabled();
   });
 });
 
