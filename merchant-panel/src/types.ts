@@ -663,6 +663,30 @@ export interface OrderReport {
 /** One order in the business ledger (`merchantLedger.businessLedger`). */
 export interface LedgerOrderRow { orderId: string; at: string; tokensPaise: number; state: 'COMPLETED' | 'PAID'; rail: string; account: string | null }
 
+/**
+ * GET /api/merchant/reports/statement (owner, 2026-10-22): `poolStatement` in
+ * database/repositories/merchantLedger.js — §5. Paise of a token. The balances
+ * are null for an agent, whose pool is the team's.
+ */
+export interface PoolStatementRow {
+  kind: 'BUY' | 'SELL' | 'TOKEN_BUY' | 'TOKEN_SELL_BACK' | string;
+  ref: string; at: string; userId: string | null; utr: string | null; state: string | null;
+  tokensPaise: number; poolChangePaise: number; commissionPaise: number;
+  balanceAfterPaise: number | null; team: string | null;
+}
+export interface PoolStatement {
+  range: { from: string | null; to: string | null };
+  pools: Array<{ teamId: string; name: string }>;
+  rows: PoolStatementRow[];
+  truncated: boolean;
+  totals: {
+    openingPaise: number | null; closingPaise: number | null;
+    buysProcessed: number; buysProcessedPaise: number;
+    sellsProcessed: number; sellsProcessedPaise: number;
+    commissionPaise: number; tokensBoughtPaise: number; netProfitPaise: number;
+  };
+}
+
 /** GET /api/merchant/reports/ledger: every figure the server's, in paise of a token. */
 export interface BusinessLedger {
   success: boolean;

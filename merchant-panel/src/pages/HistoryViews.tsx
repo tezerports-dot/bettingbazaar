@@ -1,7 +1,10 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
-// History — design handoff "BB Merchant Panel.dc.html": three totals, then one
-// of three tabs (Volume, Earnings, Report). Report is the server's order table
+// Reports (named History until 2026-10-22): the pool statement first (owner,
+// 2026-10-22: today, this week, this month or a range, opening and closing
+// balance, every order with its commission and pool change, `PoolStatement`),
+// then three totals and the Volume, Earnings (the weekly bars that left Home)
+// and Ledger tabs. Ledger is the server's order table
 // with ✓/✗ and who pressed it, and its download (`OrderReportTable`, owner 2026-10-16), under the business
 // ledger (`BusinessLedger`, owner 2026-10-21).
 //
@@ -17,8 +20,11 @@ import type { Earnings } from '../types';
 import { Card, CardTitle, SegmentedControl, Skeleton, cardStyle } from '../components/ui';
 import OrderReportTable from '../components/OrderReportTable';
 import BusinessLedger from '../components/BusinessLedger';
+import PoolStatement from '../components/PoolStatement';
+import { useAuth } from '../services/AuthContext';
+import { mayReadReports } from '../utils/actor';
 
-type Tab = 'volume' | 'earnings' | 'ledger';
+type Tab = 'statement' | 'volume' | 'earnings' | 'ledger';
 
 /** What another screen asks History to open on, as router state (a Dashboard tile). */
 export interface HistoryLinkState { tab?: Tab }
@@ -29,7 +35,10 @@ const HistoryViews: React.FC = () => {
   const { isMobile } = useViewport();
 
   const link = (useLocation().state ?? null) as HistoryLinkState | null;
-  const [tab, setTab] = useState<Tab>(link?.tab ?? 'volume');
+  // The statement is the business's own (`ownerOrAudit`): a sub-member
+  // without AUDIT starts on Volume and is not offered it.
+  const readsReports = mayReadReports(useAuth().merchant);
+  const [tab, setTab] = useState<Tab>(link?.tab ?? (readsReports ? 'statement' : 'volume'));
   const [weekly, setWeekly] = useState<WeeklyPoint[] | null>(null);
   // Lifetime totals, counted by the server over every completed order. The
   // tiles summed the orders the queue had loaded (its newest page), so a busy
@@ -86,6 +95,7 @@ const HistoryViews: React.FC = () => {
           value={tab}
           onChange={setTab}
           options={[
+            ...(readsReports ? [{ value: 'statement' as Tab, label: 'Statement' }] : []),
             { value: 'volume', label: 'Volume' },
             { value: 'earnings', label: 'Earnings' },
             { value: 'ledger', label: 'Ledger' },
@@ -93,6 +103,9 @@ const HistoryViews: React.FC = () => {
         />
       </div>
 
+      {tab === 'statement' && <PoolStatement />}
+
+      {tab !== 'statement' && (
       <div style={{ display: 'grid', gridTemplateColumns: totalsColumns, gap: 12 }}>
         <div style={{ ...cardStyle, padding: 16 }}>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--muted)' }}>Total volume</div>
@@ -121,8 +134,9 @@ const HistoryViews: React.FC = () => {
           </div>
         </div>
       </div>
+      )}
 
-      {state === 'loading' && tab !== 'ledger' && <Skeleton height={230} />}
+      {state === 'loading' && (tab === 'volume' || tab === 'earnings') && <Skeleton height={230} />}
 
       {state === 'ready' && tab === 'volume' && (
         <Card>

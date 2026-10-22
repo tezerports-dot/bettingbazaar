@@ -25,6 +25,7 @@ import {
   MerchantReport,
   OrderReport,
   BusinessLedger,
+  PoolStatement,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -818,6 +819,14 @@ export const getBusinessLedger = async (from: string, to: string): Promise<Busin
 export const downloadBusinessLedger = (from: string, to: string): Promise<void> =>
   downloadWorkbook(`${ENDPOINTS.LEDGER.XLSX}${rangeQuery(from, to)}`, `business-ledger-${from || 'last7'}-${to || 'today'}.xlsx`);
 
+/** The pool statement (owner, 2026-10-22): opening and closing balance and every order between. */
+export const getPoolStatement = async (from: string, to: string): Promise<PoolStatement> =>
+  request<PoolStatement>(`${ENDPOINTS.STATEMENT.PAGE}${rangeQuery(from, to)}`);
+
+/** The same statement as an Excel workbook. */
+export const downloadPoolStatement = (from: string, to: string): Promise<void> =>
+  downloadWorkbook(`${ENDPOINTS.STATEMENT.XLSX}${rangeQuery(from, to)}`, `pool-statement-${from || 'last7'}-${to || 'today'}.xlsx`);
+
 export const api = {
   // Auth
   isAuthenticated,
@@ -871,6 +880,8 @@ export const api = {
   getOrderReport,
   downloadOrderReport,
   getBusinessLedger,
+  getPoolStatement,
+  downloadPoolStatement,
   downloadBusinessLedger,
 
   // Red Flag

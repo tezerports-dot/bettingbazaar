@@ -112,6 +112,11 @@ export const ENDPOINTS = {
     PAGE: '/api/merchant/reports/ledger',
     XLSX: '/api/merchant/reports/ledger.xlsx',
   },
+  // The pool statement (owner, 2026-10-22): GET /reports/statement(.xlsx), same file.
+  STATEMENT: {
+    PAGE: '/api/merchant/reports/statement',
+    XLSX: '/api/merchant/reports/statement.xlsx',
+  },
 };
 
 export const APP_CONFIG = {

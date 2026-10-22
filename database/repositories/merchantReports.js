@@ -23,7 +23,11 @@ const bad = (message) => Object.assign(new Error(message), { status: 400, code: 
  */
 export function reportRange({ from = null, to = null } = {}) {
   for (const d of [from, to]) {
-    if (d !== null && d !== undefined && d !== '' && !IST_DAY.test(String(d))) {
+    if (d === null || d === undefined || d === '') continue;
+    // A day that is shaped right but does not exist (2026-13-40) is refused
+    // here, not by the database as a 500.
+    const day = new Date(`${d}T00:00:00Z`);
+    if (!IST_DAY.test(String(d)) || Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== String(d)) {
       throw bad('Dates are YYYY-MM-DD (IST days).');
     }
   }
@@ -45,6 +49,11 @@ export function reportRange({ from = null, to = null } = {}) {
 const RANGE_SQL = `
   created_at >= ((COALESCE($2::date, COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date) - 6))::timestamp AT TIME ZONE 'Asia/Kolkata')
   AND created_at < ((COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date) + 1)::timestamp AT TIME ZONE 'Asia/Kolkata')`;
+
+/** The range's two ends as instants, `lo` and `hi` (`$2` from, `$3` to), read the same way as `RANGE_SQL`. */
+export const RANGE_BOUNDS_SQL = `
+  SELECT ((COALESCE($2::date, COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date) - 6))::timestamp AT TIME ZONE 'Asia/Kolkata') AS lo,
+         ((COALESCE($3::date, (now() AT TIME ZONE 'Asia/Kolkata')::date) + 1)::timestamp AT TIME ZONE 'Asia/Kolkata') AS hi`;
 
 /** The range clause on another column (`$2` from, `$3` to): the business ledger's (`merchantLedger.js`). */
 export const rangeSqlOn = (column) => RANGE_SQL.replaceAll('created_at', column);
