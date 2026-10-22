@@ -153,6 +153,14 @@ CREATE TABLE IF NOT EXISTS utr_registry (
   registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS amount_paise BIGINT;
+-- What a reference may look like once normalised (normalizeUtr): letters,
+-- digits and the ':' of a chain reference (<hash>:<log index>), nothing else,
+-- so a zero-width or look-alike spelling can never be a second row for one
+-- transfer (review 2026-10-22). NOT VALID: rows written before it are kept;
+-- every new row is checked.
+ALTER TABLE utr_registry DROP CONSTRAINT IF EXISTS utr_registry_shape;
+ALTER TABLE utr_registry ADD CONSTRAINT utr_registry_shape
+  CHECK (utr ~ '^[A-Z0-9:]+$') NOT VALID;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- ADMIN TREASURY (domain 3)

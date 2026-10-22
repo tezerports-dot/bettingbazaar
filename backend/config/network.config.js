@@ -109,7 +109,12 @@ export const ADMIN_PATH_PREFIXES = ['/admin', '/api/admin', '/api/sse/admin'];
 /** Paths that belong to the merchant panel: its pages, its API (sign-in included), its event stream. */
 export const MERCHANT_PATH_PREFIXES = ['/merchant', '/api/merchant', '/api/sse/merchant'];
 
-const underAny = (prefixes, path) => prefixes.some((p) => path === p || path.startsWith(`${p}/`));
+// Lower-cased first: Express routes paths case-insensitively, so `/API/ADMIN/…`
+// reaches the admin router and must meet the gate too (review 2026-10-22).
+const underAny = (prefixes, rawPath) => {
+  const path = String(rawPath).toLowerCase();
+  return prefixes.some((p) => path === p || path.startsWith(`${p}/`));
+};
 
 const requestHost = (req) => String(req.headers.host || '').toLowerCase().split(':')[0];
 
