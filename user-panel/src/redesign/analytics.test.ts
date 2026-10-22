@@ -184,7 +184,7 @@ describe('streaks count at every length they reached (owner, 2026-10-10)', () =>
   });
 });
 
-import { runLengthTable, gapSummary, ladderPlan, ladderBacktest, winReturn, winnersByBoard } from './analytics';
+import { runLengthTable, gapSummary, ladderPlan, ladderBacktest, ladderStakes, autoStopBefore, autoBacktest, winReturn, winnersByBoard } from './analytics';
 
 describe('Runs & Gaps', () => {
   // Newest first: D | B B B B | D D | B
@@ -242,6 +242,38 @@ describe('the progression calculator', () => {
     expect(t).toEqual({ rounds: 5, ranOut: 1, won: 2, net: -40 + 10 + 20 });
     expect(ladderBacktest(newestFirst, 'DELHI', stakes, 100, null).net).toBeNull();
     expect(ladderBacktest(newestFirst, 'DELHI', [], 100, evenMoney).ranOut).toBe(0);
+  });
+});
+
+describe('auto bets mirror (owner, 2026-10-22)', () => {
+  const evenMoney = (stake: number) => stake * 2;
+  it('rounds the ladder to the bet step from the first stake, as autoBets.js ladderStakes does', () => {
+    expect(ladderStakes(10, 3, 5, 10)).toEqual([10, 30, 90, 270, 810]);
+    expect(ladderStakes(10, 1.5, 4, 10)).toEqual([10, 20, 20, 30]);
+    expect(ladderStakes(10, 1.5, 4, 1)).toEqual([10, 15, 23, 34]);
+  });
+
+  it('stops before the bet a stop would be crossed by, as autoBets.js stopBefore does', () => {
+    expect(autoStopBefore(500, 10, { takeProfit: 500, budget: 1000 })).toBe('TAKE_PROFIT');
+    expect(autoStopBefore(-200, 10, { stopLoss: 200, budget: 1000 })).toBe('STOP_LOSS');
+    expect(autoStopBefore(-995, 10, { budget: 1000 })).toBe('BUDGET_USED');
+    expect(autoStopBefore(-990, 10, { budget: 1000 })).toBeNull();
+  });
+
+  it('plays the plan with its stops through the results, oldest first', () => {
+    // Oldest first: B B D. Backing Delhi on 10, 20, 40.
+    const newestFirst: Side[] = ['DELHI', 'BOMBAY', 'BOMBAY'];
+    expect(autoBacktest(newestFirst, 'DELHI', [10, 20, 40], 100, evenMoney, { budget: 1000 }))
+      .toEqual({ rounds: 3, played: 3, ranOut: 0, won: 1, net: -10 - 20 + 40, stoppedBy: null, worst: -70 });
+    // A stop-loss of 30 stops it before the third bet.
+    expect(autoBacktest(newestFirst, 'DELHI', [10, 20, 40], 100, evenMoney, { budget: 1000, stopLoss: 30 }))
+      .toMatchObject({ played: 2, net: -30, stoppedBy: 'STOP_LOSS' });
+    // A budget of 50 cannot cover the 40 after losing 30.
+    expect(autoBacktest(newestFirst, 'DELHI', [10, 20, 40], 100, evenMoney, { budget: 50 }))
+      .toMatchObject({ played: 2, stoppedBy: 'BUDGET_USED' });
+    // Reaching the take-profit on the newest result says it would stop there.
+    expect(autoBacktest(['DELHI'], 'DELHI', [10], 100, evenMoney, { budget: 100, takeProfit: 10 }))
+      .toMatchObject({ played: 1, net: 10, stoppedBy: 'TAKE_PROFIT' });
   });
 });
 

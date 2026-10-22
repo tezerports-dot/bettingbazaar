@@ -29,6 +29,7 @@ import { fmt, timeStr } from './format';
 import { analyticsFor, winnersByBoard, Side } from './analytics';
 import { LATEST_RING, LatestTag } from './RunsAndGaps';
 import AnalyticsView from './AnalyticsView';
+import AutoBetsSheet from './AutoBets';
 import { BetCardFigure, BetCardFill, BlindBand, shareModeFor, sharesOf } from './BetCardShare';
 import { getAssetUrl } from '../services/backend.service';
 import { canPlaceBet } from '../GAME_CORE';
@@ -115,6 +116,9 @@ const GameScreen: React.FC = () => {
   const { addToast } = useToast();
 
   const [selectedChip, setSelectedChip] = useState<number | null>(null);
+  // The Auto bets sheet (AutoBets.tsx), for this board and profile.
+  const [autoOpen, setAutoOpen] = useState(false);
+  const openAuto = React.useCallback(() => { if (!isAuthenticated) { openAuth(); return; } setAutoOpen(true); }, [isAuthenticated, openAuth]);
   const [manualInput, setManualInput] = useState('');
   const stageRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
@@ -519,8 +523,17 @@ const GameScreen: React.FC = () => {
             )}
           </div>
           <div style={{ position: 'relative', width: '100%', maxWidth: 360, margin: mobile ? '8px auto 0' : '12px auto 0', padding: '0 8px' }}>
-            <input type="number" min={1} placeholder={`Or type amount (min ₹${minBet})`} value={manualInput} onChange={e => onManual(e.target.value)} className="font-grotesk" style={{ width: '100%', height: 42, background: 'var(--surface2)', border: `1px solid ${betAmount && manualInput !== '' ? 'var(--gold)' : 'var(--line2)'}`, borderRadius: 12, padding: '0 44px 0 15px', color: 'var(--text)', fontSize: 13, fontWeight: 700, outline: 'none' }} />
-            <span style={{ position: 'absolute', right: 20, top: '50%', transform: 'translateY(-50%)', color: 'var(--gold-ink)', fontWeight: 800, fontSize: 12, pointerEvents: 'none' }}>₹</span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+                <input type="number" min={1} placeholder={`Or type amount (min ₹${minBet})`} value={manualInput} onChange={e => onManual(e.target.value)} className="font-grotesk" style={{ width: '100%', height: 42, background: 'var(--surface2)', border: `1px solid ${betAmount && manualInput !== '' ? 'var(--gold)' : 'var(--line2)'}`, borderRadius: 12, padding: '0 44px 0 15px', color: 'var(--text)', fontSize: 13, fontWeight: 700, outline: 'none' }} />
+                <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--gold-ink)', fontWeight: 800, fontSize: 12, pointerEvents: 'none' }}>₹</span>
+              </div>
+              {!isGhostMode && currentBoard && (
+                <button type="button" onClick={openAuto} aria-haspopup="dialog" aria-label={`Auto bets on ${currentBoard.name}`} className="font-grotesk" style={{ flex: 'none', height: 42, padding: '0 16px', borderRadius: 12, border: '1px solid var(--gold)', background: 'var(--surface2)', color: 'var(--gold-ink)', fontSize: 12, fontWeight: 800, letterSpacing: '.06em', cursor: 'pointer' }}>
+                  AUTO
+                </button>
+              )}
+            </div>
             {isGhostMode && (
               <div style={{ textAlign: 'center', fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: '#c4b5fd', marginTop: 8 }}>👻 GHOST MODE ACTIVE · phantom bets balance the pool and are never paid out</div>
             )}
@@ -546,10 +559,13 @@ const GameScreen: React.FC = () => {
       {/* The analytics, part of this page under the game across its full
           width, not a card in the middle column (owner, 2026-10-15). */}
       <div style={{ gridColumn: desktop ? '1 / -1' : undefined, minWidth: 0, padding: desktop ? '6px 0 0' : '10px 0 0' }}>
-        <AnalyticsView board={currentBoard} winners={winnersByType[cycleType] ?? NO_WINNERS} loadCycleHistory={loadCycleHistory} audience={audience} />
+        <AnalyticsView board={currentBoard} winners={winnersByType[cycleType] ?? NO_WINNERS} loadCycleHistory={loadCycleHistory} audience={audience} onAuto={openAuto} />
       </div>
 
       <BoardRulesModal isAuthenticated={!!isAuthenticated} />
+      {autoOpen && currentBoard && (
+        <AutoBetsSheet board={currentBoard} audience={audience} winners={winnersByType[cycleType] ?? NO_WINNERS} onClose={() => setAutoOpen(false)} />
+      )}
     </div>
   );
 };
