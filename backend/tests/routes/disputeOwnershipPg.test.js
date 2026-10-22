@@ -121,7 +121,7 @@ describePg('a dispute belongs to the player', () => {
     if (state !== 'PROCESSING') {
       if (type === 'DEPOSIT') {
         await readyToPay(orderId);
-        await markOrderPaid(who.userId, orderId, `UTRDSP${RUN}${Date.now()}${seq}`);
+        await markOrderPaid(who.userId, orderId, `UTRDSP${String(Date.now()).slice(-10)}${seq}`);
       } else {
         // The member says they paid the player: PAID, the team's credit HELD.
         const confirmed = await as(merchantApp, merchant).post(`/confirm/${orderId}`).send({ utrNumber: payoutUtr() });

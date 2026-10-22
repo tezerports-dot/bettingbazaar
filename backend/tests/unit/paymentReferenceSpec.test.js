@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { referenceSpecFor } from '../../domains/payment/paymentReference.js';
-import { normalizeUtr } from '../../../database/repositories/utr.js';
+import { normalizeUtr } from '#db/repositories/utr.js';
 
 const inr = referenceSpecFor({ currency: 'INR' });
 const ok = (raw) => inr.valid(normalizeUtr(raw));

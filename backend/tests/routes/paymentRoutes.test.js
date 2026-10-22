@@ -264,7 +264,7 @@ describePg('payment routes', () => {
     const res = await as(app, who).post(`/order/${orderId}/mark-paid`)
       .send({ utrNumber: 'A B C D E F G' });
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/12 characters/i);
+    expect(res.body.message).toMatch(/12 to 22 letters and digits/i);
     expect((await getOrderRecord(orderId)).status).toBe('PROCESSING');
   });
 
