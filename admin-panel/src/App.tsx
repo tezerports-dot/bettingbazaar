@@ -20,6 +20,7 @@ import { DepositPolicy } from './Pages/BusinessPolicy/DepositPolicy';
 import { TransactionsList } from './Pages/Finance/TransactionsList';
 import { ProfitLoss } from './Pages/Finance/ProfitLoss';
 import { TokenFlow } from './Pages/Finance/TokenFlow';
+import { OwnerDashboard } from './Pages/Finance/OwnerDashboard';
 import { SupportAssistant } from './Pages/Support/SupportAssistant';
 import { QueueDashboard } from './Pages/PaymentQueue/QueueDashboard';
 import { TelegramBot } from './Pages/Telegram/TelegramBot';
@@ -187,6 +188,11 @@ const App: React.FC = () => {
         <Route path="/cycle-history" element={
           <PermRoute permission="canViewAnalytics">
             <Layout><CycleHistory /></Layout>
+          </PermRoute>
+        } />
+        <Route path="/owner-dashboard" element={
+          <PermRoute permission="canViewAnalytics">
+            <Layout><OwnerDashboard /></Layout>
           </PermRoute>
         } />
         <Route path="/profit-loss" element={

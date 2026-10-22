@@ -68,13 +68,11 @@ beforeEach(() => {
 const called = (fragment: string) => get.mock.calls.some(([u]) => String(u).includes(fragment));
 
 describe('Token Flow reaches every endpoint it exists for', () => {
-  it('calls all four, and the token supply, on mount', async () => {
+  it('calls all four on mount', async () => {
     render(<TokenFlow />);
-    // Four flows plus the supply (token-supply); the holder list asks the
-    // players area, which no account holds here.
-    await waitFor(() => expect(get).toHaveBeenCalledTimes(5));
-    expect(called('/api/admin/analytics/token-supply')).toBe(true);
-    expect(called('/api/admin/analytics/token-holders')).toBe(false);
+    // The supply moved to Admin › Owner Dashboard (owner, 2026-10-22).
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(4));
+    expect(called('/api/admin/analytics/token-supply')).toBe(false);
     for (const fragment of [
       '/api/admin/analytics/deposit-dashboard',
       '/api/admin/analytics/withdrawal-dashboard',
