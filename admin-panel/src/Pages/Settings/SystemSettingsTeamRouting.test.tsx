@@ -39,7 +39,7 @@ const { SystemSettings } = await import('./SystemSettings');
 const served = {
   withdrawalHoldMinutes: 90, rejectedBuyDisputeMinutes: 20,
   merchantOrderLimits: {
-    maxConsecutiveRejections: 4, paidResponseMinutes: 31, utrAfterPaidMinutes: 16,
+    maxConsecutiveRejections: 4, paidResponseMinutes: 31,
     maxConsecutivePlayerPaymentFailures: 4, playerOrderLockMinutes: 61,
     maxConsecutiveMerchantExpiries: 4,
   },
@@ -74,7 +74,6 @@ describe('System Settings — team routing', () => {
     expect(field('tr-proc-CASH').value).toBe('600');
     expect(field('tr-assignmentWaitSeconds').value).toBe('1200');
     expect(field('tr-utrSubmitSeconds').value).toBe('90');
-    expect(field('mol-utrAfterPaidMinutes').value).toBe('16');
   });
 
   it('shows and sends the served USDT deposit settings, and refuses one out of range', async () => {

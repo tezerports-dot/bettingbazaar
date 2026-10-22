@@ -36,6 +36,10 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'The line players read at the end of the board rules, saying the totals include phantom bets that are never paid out. You can change the wording but not remove it (10 to 160 characters).',
     example: '"Pool totals include phantom bets, which are never paid out."',
   },
+  winnersDemoLabel: {
+    what: 'The small tag beside every winner you added yourself (by hand or by CSV) on the players\' Winners page, so players can tell them from real wins. You can change the word but not remove it (2 to 16 characters).',
+    example: '"Demo", or "Sample".',
+  },
   demoResultsOn: {
     what: 'Whether the analytics fill each board’s 1,440-result window with demo results placed before its first real results. Each new real result replaces the oldest demo one; once a board has 1,440 real results none are shown. Demo results are never in the Results list and never affect a round.',
     example: 'On while the platform is new; off to show real results only.',
@@ -75,10 +79,6 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
   'merchantOrderLimits.paidResponseMinutes': {
     what: 'After a player taps "I have paid" on a buy, how long the merchant has to confirm or reject it. After that the order goes to the dispute queue and counts as a refusal.',
     example: '30: a buy marked paid at 2:00 and still unanswered at 2:30 goes to a dispute manager.',
-  },
-  'merchantOrderLimits.utrAfterPaidMinutes': {
-    what: 'On a cash buy, how long the player has after tapping Paid to enter the bank reference (UTR). If it never arrives, the order goes to an admin.',
-    example: '15: a player who tapped Paid at 2:00 must give the reference by 2:15.',
   },
   'merchantOrderLimits.maxConsecutivePlayerPaymentFailures': {
     what: 'How many buy orders in a row a player may leave unpaid before they are paused from opening new orders for the cool-off below.',

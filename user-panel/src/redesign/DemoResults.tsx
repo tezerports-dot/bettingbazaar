@@ -88,5 +88,5 @@ export function useDemoResults(): DemoResultsConfig | null {
   return cfg;
 }
 
-/** How a demo bead or box is drawn: faded, with a dashed edge. */
-export const DEMO_STYLE: React.CSSProperties = { opacity: 0.45, outline: '1px dashed rgba(255,255,255,.55)', outlineOffset: -2 };
+/** How a demo bead or box is drawn: a light fade, nothing more (owner, 2026-10-22: quieter). */
+export const DEMO_STYLE: React.CSSProperties = { opacity: 0.6 };

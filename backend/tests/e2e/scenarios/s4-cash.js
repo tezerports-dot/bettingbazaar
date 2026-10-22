@@ -173,18 +173,16 @@ export default async function run() {
       && unpaid.state === 'PROCESSING' && Number(unwarned.warning_count) === 0 && unwarned.payment_flagged === false,
     'REJECTED has one edge in the state machine, from PAID; the message tells the member to wait for the tap');
 
-  // ── The tap reaches PAID; the reference follows; then the member confirms ─
-  const tap = await POST(pT, `/api/payment/order/${oid}/mark-paid`, {});
-  const tapped = await stateOf(oid);
-  check(A, 'player', 'a cash buy is marked paid on the tap, with no reference yet', '200, PAID',
-    `${tap.status} ${tapped.state}`, tap.status === 200 && tapped.state === 'PAID');
-  const early = await POST(mT, `/api/merchant/confirm/${oid}`, {});
-  check(A, 'merchant', 'confirming before the player\'s reference arrives', '400 naming the missing reference',
-    `${early.status} ${early.body.message ?? ''}`,
-    early.status === 400 && /no payment reference/i.test(early.body.message ?? ''));
+  // ── The reference first, then one Paid tap; then the member confirms ────
+  // (owner, 2026-10-22: no second submission on the cash rail either).
+  const bare = await POST(pT, `/api/payment/order/${oid}/mark-paid`, {});
+  check(A, 'player', 'a Paid tap with no reference', '400 UTR_REQUIRED',
+    `${bare.status} ${bare.body.code ?? ''}`, bare.status === 400 && bare.body.code === 'UTR_REQUIRED');
   const ref = String(Date.now()).slice(-12).padStart(12, '6');
-  const sent = await POST(pT, `/api/payment/order/${oid}/payment-reference`, { utrNumber: ref });
-  check(A, 'player', 'the reference follows the tap', '200', `${sent.status} ${sent.body.message ?? ''}`, sent.status === 200);
+  const tap = await POST(pT, `/api/payment/order/${oid}/mark-paid`, { utrNumber: ref });
+  const tapped = await stateOf(oid);
+  check(A, 'player', 'a cash buy is marked paid with its reference in one tap', '200, PAID',
+    `${tap.status} ${tapped.state}`, tap.status === 200 && tapped.state === 'PAID');
   const done = await POST(mT, `/api/merchant/confirm/${oid}`, {});
   check(A, 'merchant', 'the member confirms the cash buy', '200', `${done.status} ${done.body.message ?? ''}`,
     done.status === 200);

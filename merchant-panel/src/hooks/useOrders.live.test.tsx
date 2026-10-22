@@ -77,7 +77,7 @@ describe('the merchant order list, live', () => {
   it("moves the order to PAID when the player taps Paid", async () => {
     const stream = await mount();
     act(() => stream.dispatch('order_paid', {
-      orderId: 'ord-1', _id: 'ord-1', status: 'PAID', utrNumber: null, awaitingReference: true,
+      orderId: 'ord-1', _id: 'ord-1', status: 'PAID', utrNumber: 'UTR123456789012',
     }));
     await waitFor(() => expect(screen.getByText(/ord-1 PAID DEPOSIT/)).toBeInTheDocument());
   });

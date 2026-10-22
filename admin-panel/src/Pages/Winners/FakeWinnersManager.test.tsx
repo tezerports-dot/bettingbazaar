@@ -157,4 +157,14 @@ describe('FakeWinnersManager identifies a winner by its id', () => {
     expect(put.mock.calls[0][0]).toBe('/api/admin/fake-winners/7');
     expect(post).not.toHaveBeenCalled();             // NOT a duplicate
   });
+
+  it('uploads a CSV file to the import route and reports how many were added', async () => {
+    post.mockResolvedValue({ data: { success: true, added: 2 } });
+    render(<FakeWinnersManager />);
+    const file = new File(['name,amount\nA,100\nB,200\n'], 'w.csv', { type: 'text/csv' });
+    await userEvent.upload(screen.getByLabelText('Upload winners CSV'), file);
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/admin/fake-winners/import', { text: 'name,amount\nA,100\nB,200\n' }));
+    // and the list is read again
+    await waitFor(() => expect(get.mock.calls.length).toBeGreaterThanOrEqual(2));
+  });
 });

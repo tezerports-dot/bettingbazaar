@@ -1,9 +1,18 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import React, { useEffect, useId, useState } from 'react';
-import { Plus, Trash2, Edit2, RefreshCw, Trophy, Eye, EyeOff } from 'lucide-react';
+import React, { useEffect, useId, useRef, useState } from 'react';
+import { Plus, Trash2, Edit2, RefreshCw, Trophy, Eye, EyeOff, Upload, Download } from 'lucide-react';
 import api from '../../services/api';
 import { Toolbar } from '../../components/design';
 import toast from 'react-hot-toast';
+
+/**
+ * The CSV template (§11: a UI-only example; the server owns the columns,
+ * `CURATED_WINNER_COLUMNS` in database/repositories/engagement.js, and checks
+ * every row on upload).
+ */
+const TEMPLATE = 'name,amount,game,city,badge,time,public\n'
+  + 'Rahul K.,50000,Delhi/Bombay,Mumbai,Big Win,2026-10-22 14:30,yes\n'
+  + 'Priya S.,12500,Delhi/Bombay,Pune,,,yes\n';
 
 const EMPTY = { displayName:'', profilePic:'', city:'', amount:'', game:'Delhi/Bombay', badge:'', isPublic:true, sortOrder:'0', displayTime:'' };
 
@@ -65,6 +74,8 @@ export const FakeWinnersManager: React.FC = () => {
   const [editId, setEditId]   = useState<string|null>(null);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving]   = useState(false);
+  const [importing, setImporting] = useState(false);
+  const file = useRef<HTMLInputElement | null>(null);
 
   const load = async () => {
     try { const r = await api.get('/api/admin/fake-winners'); if(r.data.success) setWinners(r.data.winners); } catch {}
@@ -84,6 +95,26 @@ export const FakeWinnersManager: React.FC = () => {
       }
       setForm(EMPTY); setEditId(null); setShowForm(false); load();
     } catch(e:any) { toast.error(e.response?.data?.message || 'Error'); } finally { setSaving(false); }
+  };
+
+  // One CSV, many winners (owner, 2026-10-22). The server checks every row
+  // before adding any and names the line it refused.
+  const upload = async (f: File | undefined) => {
+    if (!f) return;
+    setImporting(true);
+    try {
+      const r = await api.post('/api/admin/fake-winners/import', { text: await f.text() });
+      toast.success(`Added ${r.data.added} winner(s) from ${f.name}`);
+      load();
+    } catch (e: any) { toast.error(e.response?.data?.message || 'Could not read that file'); }
+    finally { setImporting(false); if (file.current) file.current.value = ''; }
+  };
+
+  const downloadTemplate = () => {
+    const url = URL.createObjectURL(new Blob([TEMPLATE], { type: 'text/csv' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = 'winners-template.csv'; a.click();
+    URL.revokeObjectURL(url);
   };
 
   const del = async (id:string) => {
@@ -107,8 +138,17 @@ export const FakeWinnersManager: React.FC = () => {
     <div className="om-fade space-y-6">
       <Toolbar actions={[
         { label: 'Refresh', icon: RefreshCw, onClick: load },
+        { label: 'CSV template', icon: Download, onClick: downloadTemplate },
+        { label: importing ? 'Uploading…' : 'Upload CSV', icon: Upload, onClick: () => file.current?.click() },
         { label: 'Add Winner', icon: Plus, primary: true, onClick: () => { setForm(EMPTY); setEditId(null); setShowForm(true); } },
       ]} />
+      <input ref={file} type="file" accept=".csv,text/csv" className="sr-only" aria-label="Upload winners CSV"
+        disabled={importing} onChange={(e) => void upload(e.target.files?.[0])} />
+      <p className="text-xs text-gray-500">
+        CSV columns: <code>name, amount</code> (required), <code>game, city, badge, time</code> (IST, e.g. 2026-10-22 14:30;
+        blank = now) and <code>public</code> (yes/no). Up to 500 rows per file; one bad row adds nothing.
+        Players see these entries marked <b>Demo</b> on the Winners page.
+      </p>
 
       {showForm && (
         <div className="card border border-yellow-500/30 space-y-4">

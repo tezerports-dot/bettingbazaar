@@ -206,14 +206,13 @@ describePg('payment routes', () => {
     // ever looked at — which is the right order: a caller who may not see the
     // order gets no feedback about what its body should have contained.
     //
-    // A UPI buy: on the CASH rail an empty reference is the Paid TAP, which
-    // reaches PAID with the reference to follow (cashPaidThenReferencePg).
+    // UTR first, then Paid, on every rail (owner, 2026-10-22).
     const { orderId, who } = await depositOrder({ state: 'PROCESSING' });
 
     for (const body of [{}, { utrNumber: '   ' }, { utrNumber: null }]) {
       const res = await as(app, who).post(`/order/${orderId}/mark-paid`).send(body);
       expect(res.status, `accepted ${JSON.stringify(body)}`).toBe(400);
-      expect(res.body.message).toMatch(/utrNumber/i);
+      expect(res.body.message).toMatch(/UTR/);
     }
     // …and nothing about the order moved.
     expect((await getOrderRecord(orderId)).status).toBe('PROCESSING');

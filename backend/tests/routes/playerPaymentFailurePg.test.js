@@ -339,11 +339,7 @@ describePg('a buy order nobody paid for', () => {
      */
     const paidAndIgnored = async (m, minutesAgo = 120) => {
       const { orderId, who } = await routedBuy(m);
-      // The reference matters to THIS test, not as decoration: the merchant's
-      // silence is a refusal only on an order they could act on, and their
-      // Confirm refuses one carrying no reference. Without it the sweep
-      // correctly skips this row — a cash buy waiting on the PLAYER, which
-      // `sweepUtrAfterPaid` owns — and the merchant is never blamed.
+      // Every Paid tap carries its reference (owner, 2026-10-22).
       const utr = String(550000000000 + (seq * 7919) + Math.floor(Math.random() * 7000));
       expect((await markOrderPaid(who.userId, orderId, utr)).status).toBe('PAID');
       // The member's silence: paid this long ago, and never answered.

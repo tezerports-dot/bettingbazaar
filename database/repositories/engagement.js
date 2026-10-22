@@ -11,9 +11,10 @@
  * Gift codes lived here too until 2026-09-10 and were removed with the feature.
  * Nothing replaced them: see the schema's DROP at the bottom of schema.sql.
  */
-import { pgQuery } from '../client.js';
+import { pgQuery, withTransaction } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
+import { parseCsv } from '../../backend/domains/reporting/csv.util.js';
 
 const newId = () => randomBytes(12).toString('hex');
 
@@ -415,6 +416,74 @@ export async function updateFakeWinner(id, patch = {}) {
     params, 'fake_winner_update',
   );
   return toFakeWinner(rows[0]);
+}
+
+/** The columns of a curated-winners file, in template order (owner, 2026-10-22). */
+export const CURATED_WINNER_COLUMNS = Object.freeze(['name', 'amount', 'game', 'city', 'badge', 'time', 'public']);
+/** Most rows one curated-winners file may add. */
+export const CURATED_WINNERS_IMPORT_MAX = 500;
+
+/**
+ * Many curated entries from one CSV file (owner, 2026-10-22: "a way that I can
+ * upload the csv file" instead of adding winners one by one).
+ *
+ * Columns by header name, any order: name and amount required; game (default
+ * Delhi/Bombay), city, badge, time (blank = now; any date the database reads,
+ * e.g. 2026-10-22 14:30, taken as IST) and public (yes/no,
+ * default yes). Every row is checked before anything is written and all are
+ * written in one transaction, so a file with one bad row adds nothing. The
+ * public feed marks every one of these as curated (`isReal: false`).
+ * @returns {Promise<number>} rows added
+ */
+export async function importFakeWinners(fileText, { createdBy = null } = {}) {
+  const rows = parseCsv(fileText);
+  if (rows.length < 2) throw Object.assign(new Error('The file has no winner rows. Start from the template.'), { status: 400, code: 'EMPTY_WINNERS_FILE' });
+  const header = rows[0].map((h) => h.toLowerCase());
+  const at = Object.fromEntries(CURATED_WINNER_COLUMNS.map((c) => [c, header.indexOf(c)]));
+  if (at.name < 0 || at.amount < 0) {
+    throw Object.assign(new Error('The first line must name the columns, with at least "name" and "amount". Start from the template.'), { status: 400, code: 'WINNERS_FILE_HEADER' });
+  }
+  const body = rows.slice(1);
+  if (body.length > CURATED_WINNERS_IMPORT_MAX) {
+    throw Object.assign(new Error(`At most ${CURATED_WINNERS_IMPORT_MAX} winners per file; this one has ${body.length}.`), { status: 400, code: 'WINNERS_FILE_TOO_BIG' });
+  }
+  const bad = (line, msg) => Object.assign(new Error(`Line ${line}: ${msg}`), { status: 400, code: 'INVALID_WINNER_ROW' });
+  const cell = (r, c) => (at[c] >= 0 ? String(r[at[c]] ?? '').trim() : '');
+  const plan = body.map((r, i) => {
+    const line = i + 2;
+    const name = cell(r, 'name');
+    if (!name || name.length > 60) throw bad(line, 'name is required, up to 60 characters.');
+    const amount = Number(cell(r, 'amount').replace(/[₹,\s]/g, ''));
+    if (!(amount > 0) || amount > 1e9) throw bad(line, `amount "${cell(r, 'amount')}" must be a positive number of rupees.`);
+    const pub = cell(r, 'public').toLowerCase();
+    if (pub && !['yes', 'no', 'y', 'n', 'true', 'false', '1', '0'].includes(pub)) throw bad(line, `public must be yes or no, not "${pub}".`);
+    for (const c of ['game', 'city', 'badge']) if (cell(r, c).length > 60) throw bad(line, `${c} is longer than 60 characters.`);
+    return {
+      line, name, amountPaise: rupeesToPaise(amount), game: cell(r, 'game') || 'Delhi/Bombay',
+      city: cell(r, 'city') || null, badge: cell(r, 'badge') || null, time: cell(r, 'time') || null,
+      isPublic: !['no', 'n', 'false', '0'].includes(pub),
+    };
+  });
+  await withTransaction(async (client) => {
+    for (const p of plan) {
+      // The time is read by the database, as IST; a value it cannot read is
+      // the row's refusal, and the transaction rolls back every row before it.
+      try {
+        await client.query(
+          `INSERT INTO fake_winners (display_name, city, amount_paise, game, badge, is_public, display_time, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6,
+                   COALESCE(CASE WHEN $7::text IS NULL THEN NULL
+                                 ELSE ($7::text::timestamp AT TIME ZONE 'Asia/Kolkata') END, now()),
+                   $8)`,
+          [p.name, p.city, p.amountPaise, p.game, p.badge, p.isPublic, p.time, createdBy],
+        );
+      } catch (e) {
+        if (e && typeof e.code === 'string' && e.code.startsWith('22')) throw bad(p.line, `time "${p.time}" is not a date and time (use 2026-10-22 14:30).`);
+        throw e;
+      }
+    }
+  });
+  return plan.length;
 }
 
 export async function deleteFakeWinner(id) {

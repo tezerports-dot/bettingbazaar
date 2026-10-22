@@ -79,7 +79,7 @@ describePg('Admin › Token Flow supply and Profit & Loss', () => {
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/spreadsheetml/);
     const t = onlyTable(book);
-    expect(t.header).toEqual(['Kind', 'Holder id', 'Name', 'Supervisor or owner', 'Approved members', 'Tokens', 'Held or riding', 'Share of supply percent']);
+    expect(t.header).toEqual(['Kind', 'Holder id', 'Name', 'Supervisor or owner', 'Approved members', 'Tokens', 'Share of supply percent']);
     expect(t.rows[0].slice(0, 2)).toEqual(['PLAYER', player.userId]);
   });
 

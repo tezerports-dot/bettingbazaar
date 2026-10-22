@@ -148,7 +148,7 @@ describePg('team token pools (PostgreSQL)', () => {
     expect((await getTeam(t.teamId)).poolAvailablePaise).toBe(T(2500));
   });
 
-  it('a USDT payment is recorded in USDT with its rate', async () => {
+  it('a USDT payment is recorded in USDT with its rate, and earns the team no commission', async () => {
     const t = await team();
     const id = await ask(t, 'BUY', 50000);
     const out = await fulfilRequest({
@@ -157,6 +157,10 @@ describePg('team token pools (PostgreSQL)', () => {
     });
     expect(out.ok).toBe(true);
     expect(out.consideration).toMatchObject({ currency: 'USDT', fiatAmountMinor: 55000 });
+    // Owner, 2026-10-22: buying pool tokens from the admin is not a player's
+    // buy or sell, so it pays no 5% (commission is per completed ORDER, §26).
+    const { rows } = await pgQuery('SELECT COUNT(*)::int AS n FROM team_commissions WHERE team_id = $1', [t.teamId]);
+    expect(rows[0].n).toBe(0);
   });
 
   // ── Once only ────────────────────────────────────────────────────────────

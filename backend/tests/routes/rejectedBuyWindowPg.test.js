@@ -121,7 +121,7 @@ describePg('the window after a member rejects a buy as unpaid', () => {
     expect((await getOrderRecord(orderId)).merchantId).toBe(member.merchantId);
     if (upTo !== 'PROCESSING') await readyToPay(orderId);
     if (upTo === 'PAID') {
-      expect((await markOrderPaid(player.userId, orderId, cash ? undefined : nextUtr())).status).toBe('PAID');
+      expect((await markOrderPaid(player.userId, orderId, nextUtr())).status).toBe('PAID');
     }
     expect((await getOrderRecord(orderId)).status, `the buy did not reach ${upTo}`).toBe(upTo);
     return { member, player, orderId, team, tokens };
@@ -391,11 +391,10 @@ describePg('the window after a member rejects a buy as unpaid', () => {
       expect((await dispute(buy)).status).toBe(200);
     });
 
-    it('a cash buy the player tapped Paid on, its reference still to come, can be rejected', async () => {
-      // The other rail, and the PAID that carries no reference yet: the rule is
-      // the Paid tap, not the UTR.
+    it('a cash buy the player tapped Paid on can be rejected', async () => {
+      // The other rail: the Paid tap carries its reference there too (owner,
+      // 2026-10-22), and the rule is the tap.
       const buy = await routedBuy({ rail: 'CASH', upTo: 'PAID' });
-      expect(String((await getOrderRecord(buy.orderId)).utrNumber ?? '')).toBe('');
       const res = await reject(buy);
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       const after = await footprint(buy);

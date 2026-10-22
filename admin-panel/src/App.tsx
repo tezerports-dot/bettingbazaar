@@ -20,6 +20,7 @@ import { DepositPolicy } from './Pages/BusinessPolicy/DepositPolicy';
 import { TransactionsList } from './Pages/Finance/TransactionsList';
 import { ProfitLoss } from './Pages/Finance/ProfitLoss';
 import { TokenFlow } from './Pages/Finance/TokenFlow';
+import { OwnerDashboard } from './Pages/Finance/OwnerDashboard';
 import { SupportAssistant } from './Pages/Support/SupportAssistant';
 import { QueueDashboard } from './Pages/PaymentQueue/QueueDashboard';
 import { TelegramBot } from './Pages/Telegram/TelegramBot';
@@ -50,6 +51,7 @@ import { BalanceAdjustment } from './Pages/Users/BalanceAdjustment';
 import { GameProviders }           from './Pages/GameProviders/GameProviders';
 import { GamesManager }            from './Pages/Games/GamesManager';
 import { BoardsManager }           from './Pages/Games/BoardsManager';
+import { DemoResultsEditor }       from './Pages/Games/DemoResultsEditor';
 import { CricketManager }          from './Pages/Games/CricketManager';
 import { FakeWinnersManager }  from './Pages/Winners/FakeWinnersManager';
 import { ChatSupport }         from './Pages/Chat/ChatSupport';
@@ -186,6 +188,11 @@ const App: React.FC = () => {
         <Route path="/cycle-history" element={
           <PermRoute permission="canViewAnalytics">
             <Layout><CycleHistory /></Layout>
+          </PermRoute>
+        } />
+        <Route path="/owner-dashboard" element={
+          <PermRoute permission="canViewAnalytics">
+            <Layout><OwnerDashboard /></Layout>
           </PermRoute>
         } />
         <Route path="/profit-loss" element={
@@ -431,6 +438,11 @@ const App: React.FC = () => {
         {/* ── BOARDS (timers, stakes, home order) — canManageGames */}
         <Route path="/boards" element={
           <PermRoute permission="canManageGames"><Layout><BoardsManager /></Layout></PermRoute>
+        } />
+        {/* Its own page so it can be found (owner, 2026-10-22: "where is the
+            demo history input for all boards"). It sat under the board list. */}
+        <Route path="/demo-results" element={
+          <PermRoute permission="canManageGames"><Layout><DemoResultsEditor /></Layout></PermRoute>
         } />
 
         {/* ── CRICKET opinion polls (owner, 2026-10-18) — canManageGames */}

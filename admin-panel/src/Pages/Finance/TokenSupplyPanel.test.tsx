@@ -43,7 +43,7 @@ describe('TokenSupplyPanel', () => {
     render(<TokenSupplyPanel />);
     expect(await screen.findByText('20,00,00,00,000 tokens')).toBeTruthy();
     expect(screen.getByText('Every token accounted for')).toBeTruthy();
-    expect(screen.getByText('Players')).toBeTruthy();
+    expect(screen.getByText('Players (VIP balances)')).toBeTruthy();
     // Without the players area, no per-player list is asked for.
     expect(get.mock.calls.some(([u]) => String(u).includes('token-holders'))).toBe(false);
   });

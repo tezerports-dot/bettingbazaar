@@ -53,21 +53,8 @@ export const OrderDetail: React.FC<{
   // A started order may be declined only while nobody can have paid on it.
   const canDecline = workable && order.canDecline === true;
   const canScan = workable && isDeposit && order.paymentMode === 'CASH_ATM' && order.status === OrderStatus.PROCESSING;
-  /**
-   * PAID, but not yet evidenced.
-   *
-   * On the CASH rail the player taps "I've paid" the moment the machine gives
-   * them the notes — that is what lets this merchant carry on at an ATM whose
-   * session is timing out — and the reference follows a minute later. The
-   * server refuses Confirm until it lands (§27: a completed deposit the
-   * registry never saw leaves a later dispute nothing to match against).
-   *
-   * So the button is not offered while it would only be refused. A control
-   * that fails when pressed reads as a broken panel, and the merchant's next
-   * move is to call support about a working guard.
-   */
-  const awaitingReference = order.status === OrderStatus.PAID && isDeposit && !order.utrNumber;
-  const canRelease = workable && order.status === OrderStatus.PAID && isDeposit && !awaitingReference;
+  // A PAID buy always carries the player's reference (owner, 2026-10-22).
+  const canRelease = workable && order.status === OrderStatus.PAID && isDeposit;
   const canPayout = workable && order.status === OrderStatus.PROCESSING && !isDeposit;
   const payAccount = accountNamed(paymentAccounts, order.payAccountId);
   const paidFrom = accountNamed(paymentAccounts, order.paidFromAccountId);
@@ -138,15 +125,6 @@ export const OrderDetail: React.FC<{
   const footer = viewOnly ? (
     <div role="status" style={{ flex: 1, fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)', textAlign: 'center', padding: 8 }}>
       {viewOnly}
-    </div>
-  ) : awaitingReference ? (
-    <div style={{
-      flex: 1, padding: 13, borderRadius: 12, textAlign: 'center',
-      background: 'var(--warn-bg)', border: '1px solid var(--warn)',
-      color: 'var(--text)', fontSize: 12.5, fontWeight: 700,
-    }}>
-      The player has reported paying. Waiting for their payment reference —
-      you can release as soon as it arrives.
     </div>
   ) : canRelease ? (
     <>
