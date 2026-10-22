@@ -5,16 +5,19 @@
 // tokens — their team's pool does (PROJECT_STATUS §3.10) — so there is no
 // wallet card here.
 //
-// The payment-details section is where a merchant edits their bank account (no
-// UPI handle: a UPI_BANK buy is paid into it, and nobody is shown a handle,
-// CLAUDE.md §2 and §24). USDT buys are paid to the platform, never to a
+// The payment-details section is where an agent edits the bank account and
+// UPI ID a UPI_BANK buy is paid into (CLAUDE.md §2 and §24). A merchant
+// account is paid into its payment accounts, kept on Account › Payment
+// accounts, so it has no such form here (owner, 2026-10-22). The figures are
+// counted from the order rows (`bb_merchant_processed`, and the success rate
+// from `bb_merchant_track_record`), so they match the orders. USDT buys are paid to the platform, never to a
 // merchant (owner, 2026-10-18, CLAUDE.md §25), so there is no USDT address.
 import React, { useEffect, useState } from 'react';
 import { Edit3, LogOut, Save } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
 import { availabilityOf } from '../utils/availability';
-import { actorOf, ROLE_LABEL } from '../utils/actor';
+import { actorOf, isMerchantAccountSession, ROLE_LABEL } from '../utils/actor';
 import { api } from '../services/api';
 import { useViewport } from '../hooks/useViewport';
 import { SUCCESS_MESSAGES } from '../constants';
@@ -59,6 +62,8 @@ const OwnerProfileSettings: React.FC = () => {
   const { isMobile } = useViewport();
   // Online, paused, or a supervisor with no switch at all: one helper (§5).
   const availability = availabilityOf(merchant);
+  // A merchant account's payment details are its payment accounts (Account).
+  const ownsPaymentDetails = !isMerchantAccountSession(merchant);
 
   const [editingPayment, setEditingPayment] = useState(false);
   const [savingPayment, setSavingPayment] = useState(false);
@@ -126,7 +131,7 @@ const OwnerProfileSettings: React.FC = () => {
     }
   };
 
-  const perfColumns = isMobile ? '1fr 1fr' : 'repeat(4, minmax(0, 1fr))';
+  const perfColumns = isMobile ? '1fr 1fr' : 'repeat(auto-fit, minmax(140px, 1fr))';
   const twoColumns = isMobile ? '1fr' : '1fr 1fr';
 
   const accountAgeDays = merchant?.createdAt
@@ -165,11 +170,20 @@ const OwnerProfileSettings: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: perfColumns, gap: 11 }}>
           {[
             { label: 'Completed orders', value: merchant?.totalOrdersCompleted !== undefined ? String(merchant.totalOrdersCompleted) : '—', tone: 'var(--text)' },
-            // TOKENS: `merchants.total_deposit_amount_paise` is fed
-            // `order.tokenAmount` by recordCompletedOrder.
+            // TOKENS, counted from the order rows (`bb_merchant_processed`).
             { label: 'Deposits processed', value: merchant?.totalDepositAmount !== undefined ? formatTokens(merchant.totalDepositAmount) : '—', tone: 'var(--dep)' },
             { label: 'Withdrawals processed', value: merchant?.totalWithdrawalAmount !== undefined ? formatTokens(merchant.totalWithdrawalAmount) : '—', tone: 'var(--wd)' },
-            { label: 'Merchant rating', value: merchant?.rating !== undefined ? `${merchant.rating.toFixed(1)} ★` : '—', tone: 'var(--text)' },
+            // Decided orders that went right (owner, 2026-10-22: it belongs here, not on Home).
+            {
+              label: 'Success rate',
+              value: typeof merchant?.successRate === 'number' ? `${(merchant.successRate * 100).toFixed(1)}%` : '—',
+              tone: 'var(--ok)',
+            },
+            {
+              label: 'Avg response',
+              value: typeof merchant?.avgResponseMinutes === 'number' ? `${merchant.avgResponseMinutes.toFixed(1)} min` : '—',
+              tone: 'var(--text)',
+            },
           ].map((tile) => (
             <div key={tile.label} style={{ background: 'var(--surface-2)', borderRadius: 13, padding: 14 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)' }}>{tile.label}</div>
@@ -195,7 +209,8 @@ const OwnerProfileSettings: React.FC = () => {
         </div>
       </Card>
 
-      {/* Payment details */}
+      {/* Payment details: an agent's own; a merchant account's are on Account. */}
+      {ownsPaymentDetails && (
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 3 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
@@ -297,6 +312,7 @@ const OwnerProfileSettings: React.FC = () => {
           </div>
         )}
       </Card>
+      )}
 
       {/* Order preferences: a member's. A supervisor takes no orders (CLAUDE.md
           §2) and the server refuses the write (SUPERVISOR_TAKES_NO_ORDERS), so

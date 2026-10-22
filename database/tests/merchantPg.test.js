@@ -188,13 +188,14 @@ describePg('the merchant record', () => {
 
     const m = await getMerchant(ID);
     expect(m.totalOrdersAll).toBe(2);
-    expect(m.totalOrdersCompleted).toBe(2);
     expect(m.totalProcessedVolume).toBe(1500);
     expect(m.earnings).toBe(30);
-    expect(m.totalDepositsProcessed).toBe(1);
-    expect(m.totalWithdrawalsProcessed).toBe(1);
-    expect(m.totalDepositAmount).toBe(1000);
-    expect(m.totalWithdrawalAmount).toBe(500);
+    // What was processed is counted from the order rows (bb_merchant_processed,
+    // owner 2026-10-22), never from these counters: this merchant has none.
+    expect(m).toMatchObject({
+      totalOrdersCompleted: 0, totalDepositsProcessed: 0, totalWithdrawalsProcessed: 0,
+      totalDepositAmount: 0, totalWithdrawalAmount: 0,
+    });
   });
 
   it('keeps the dispute rate describing the same orders total_orders_all counts; counters move no success rate', async () => {
@@ -205,7 +206,6 @@ describePg('the merchant record', () => {
 
     const m = await getMerchant(ID);
     expect(m.totalOrdersAll).toBe(3);
-    expect(m.totalOrdersCompleted).toBe(2);
     expect(m.disputeRate).toBeCloseTo(1 / 3, 6);
     // The success rate is counted from order rows (bb_merchant_track_record), and this merchant has none.
     expect(m.successRate).toBeNull();

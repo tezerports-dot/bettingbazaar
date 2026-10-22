@@ -143,6 +143,17 @@ describePg('the merchant business ledger', () => {
     expect(bad.body.code).toBe('INVALID_REPORT_RANGE');
   });
 
+  it("counts the profile's processed figures from the orders themselves (owner, 2026-10-22)", async () => {
+    const res = await as(app, member).get('/profile');
+    expect(res.status).toBe(200);
+    const m = res.body.merchant ?? res.body.data ?? res.body;
+    // One buy confirmed, one sell paid; the rejected buy is neither.
+    expect(m).toMatchObject({
+      totalDepositsProcessed: 1, totalDepositAmount: 50_000,
+      totalWithdrawalsProcessed: 1, totalWithdrawalAmount: 50_000, totalOrdersCompleted: 2,
+    });
+  });
+
   // ── The pool statement (owner, 2026-10-22) ──────────────────────────────
   const statement = (who, q = '') => as(app, who).get(`/reports/statement${q}`);
 

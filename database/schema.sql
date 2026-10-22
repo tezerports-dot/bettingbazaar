@@ -4062,6 +4062,22 @@ RETURNS INTEGER[] AS $$
    WHERE o.merchant_id = p_merchant AND o.created_at >= p_since
 $$ LANGUAGE sql STABLE;
 
+-- What a merchant has processed, counted from the order rows on every read
+-- (owner, 2026-10-22: the profile's figures did not match the orders; trap 6):
+-- {buys completed, their tokens in paise, sells paid (COMPLETED, or PAID in the
+-- hold window), their tokens in paise}, the business ledger's own definitions.
+CREATE OR REPLACE FUNCTION bb_merchant_processed(p_merchant TEXT)
+RETURNS BIGINT[] AS $$
+  SELECT ARRAY[
+    count(*) FILTER (WHERE o.order_type = 'DEPOSIT' AND o.state = 'COMPLETED'),
+    COALESCE(sum(o.token_amount_paise) FILTER (WHERE o.order_type = 'DEPOSIT' AND o.state = 'COMPLETED'), 0),
+    count(*) FILTER (WHERE o.order_type = 'WITHDRAWAL' AND o.state IN ('COMPLETED', 'PAID')),
+    COALESCE(sum(o.token_amount_paise) FILTER (WHERE o.order_type = 'WITHDRAWAL' AND o.state IN ('COMPLETED', 'PAID')), 0)
+  ]::bigint[]
+    FROM order_states o
+   WHERE o.merchant_id = p_merchant
+$$ LANGUAGE sql STABLE;
+
 -- The link is the machine the order's member is standing at. When the order
 -- changes hands (reassignment, requeue, an admin move) the next member is at a
 -- different machine, so the old link is cleared in the same UPDATE, whichever
