@@ -31,8 +31,6 @@ const MERCHANT_ORDER_RULES: Array<{
     min: 1, max: 20, fallback: 3 },   // spec default: 3,
   { key: 'paidResponseMinutes', label: 'Merchant Response Window on a PAID Buy (minutes)',
     min: 5, max: 1440, fallback: 30 },   // spec default: 30,
-  { key: 'utrAfterPaidMinutes', label: 'Cash Buy: Reference Due After Paid (minutes)',
-    min: 2, max: 60, fallback: 15 },   // spec default: 15,
   { key: 'maxConsecutivePlayerPaymentFailures', label: 'Player Unpaid Buys Before Cool-off',
     min: 1, max: 50, fallback: 3 },   // spec default: 3,
   { key: 'playerOrderLockMinutes', label: 'Player Cool-off Length (minutes)',

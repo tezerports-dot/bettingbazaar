@@ -469,7 +469,6 @@ Defects found by the measurement and fixed. Each has a test that fails without t
 | Dashboard "today" tiles showed all-time figures and counted phantom bets | `bettingStats` excludes phantoms; tiles read `finance.today` (M236) |
 | No way to lift a chat ban | Chat bans list with Lift ban |
 | Second leg of every login (3 doors) reached by nothing | `loginSecondFactorPg` 7 tests (M237–M239) |
-| Cash payment-reference route reached by nothing | `cashReferenceRoutePg` 5 tests (concurrent case serialised by `utr_registry`) |
 | Merchant 2FA enrolment reached by nothing; message named a route that does not exist | `merchantTwoFactorEnrolmentPg` 4 tests (M240, M241) |
 | Staff told to "disable 2FA first", which `/disable` refuses them | role-dependent refusal text |
 | **A queue manager's own queue screen could not load (F-047 regression)** | `/payment-queue` gated by `queueManagerOrPermission` (M242) |

@@ -114,7 +114,7 @@ describePg('every declared merchantOrderLimits field is admin-editable', () => {
     // per RAIL, `teamRouting.concurrency` (PROJECT_STATUS §3.10, 2c), asserted
     // below against the code that reads it.
     expect(Object.keys(FIELDS)).toEqual(expect.arrayContaining([
-      'maxConsecutiveRejections', 'paidResponseMinutes', 'utrAfterPaidMinutes',
+      'maxConsecutiveRejections', 'paidResponseMinutes',
       'maxConsecutivePlayerPaymentFailures', 'playerOrderLockMinutes',
       'maxConsecutiveMerchantExpiries',
     ]));

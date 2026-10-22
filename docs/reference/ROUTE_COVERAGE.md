@@ -556,7 +556,6 @@ its request as reaching a route; no person can make it. Each is either a feature
 | GET | `/api/payment/order/:orderId` | · | 13✓ 16✗ | 3✓ 2✗ | · |
 | POST | `/api/payment/order/:orderId/dispute` | · | 34✓ 25✗ | 1✓ 1✗ | · |
 | POST | `/api/payment/order/:orderId/mark-paid` | · | 7✓ 16✗ | 4✓ 4✗ | · |
-| POST | `/api/payment/order/:orderId/payment-reference` | · | 3✓ 7✗ | 1✓ | · |
 | POST | `/api/payment/order/:orderId/retry` | · | 2✓ 6✗ | · | · |
 | GET | `/api/payment/order/:orderId/status` | · | 8✓ 7✗ | 2✓ | · |
 | POST | `/api/payment/order/:orderId/utr-grace` | · | 6✓ 8✗ | · | · |

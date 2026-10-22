@@ -76,10 +76,6 @@ export const SYSTEM_CONFIG_HELP = Object.freeze({
     what: 'After a player taps "I have paid" on a buy, how long the merchant has to confirm or reject it. After that the order goes to the dispute queue and counts as a refusal.',
     example: '30: a buy marked paid at 2:00 and still unanswered at 2:30 goes to a dispute manager.',
   },
-  'merchantOrderLimits.utrAfterPaidMinutes': {
-    what: 'On a cash buy, how long the player has after tapping Paid to enter the bank reference (UTR). If it never arrives, the order goes to an admin.',
-    example: '15: a player who tapped Paid at 2:00 must give the reference by 2:15.',
-  },
   'merchantOrderLimits.maxConsecutivePlayerPaymentFailures': {
     what: 'How many buy orders in a row a player may leave unpaid before they are paused from opening new orders for the cool-off below.',
     example: '3: the third unpaid buy in a row starts the cool-off.',

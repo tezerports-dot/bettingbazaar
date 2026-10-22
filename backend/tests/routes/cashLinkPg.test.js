@@ -153,8 +153,13 @@ describePg('a cash buy is paid through the machine the member scans', () => {
     // The link travels as the payment destination and nowhere else.
     expect(seen.cashLink).toBeUndefined();
 
-    // And now the tap is accepted: PAID, the reference to follow.
-    const paid = await as(playerApp, player).post(`/order/${orderId}/mark-paid`).send({});
+    // And now the tap is accepted, carrying its reference (owner, 2026-10-22):
+    // a bare tap is refused, the tap with the UTR reaches PAID in one step.
+    const bare = await as(playerApp, player).post(`/order/${orderId}/mark-paid`).send({});
+    expect(bare.status).toBe(400);
+    expect(bare.body.code).toBe('UTR_REQUIRED');
+    expect((await getOrderRecord(orderId)).status).toBe('PROCESSING');
+    const paid = await as(playerApp, player).post(`/order/${orderId}/mark-paid`).send({ utrNumber: utr() });
     expect(paid.status, JSON.stringify(paid.body)).toBe(200);
     expect((await getOrderRecord(orderId)).status).toBe('PAID');
   });
@@ -236,7 +241,7 @@ describePg('a cash buy is paid through the machine the member scans', () => {
     expect((await getOrderRecord(orderId)).cashLink).toBeNull();
 
     expect(await setCashLink(orderId, member.merchantId, atm(1000, 'PAID'))).not.toBeNull();
-    expect((await as(playerApp, player).post(`/order/${orderId}/mark-paid`).send({})).status).toBe(200);
+    expect((await as(playerApp, player).post(`/order/${orderId}/mark-paid`).send({ utrNumber: utr() })).status).toBe(200);
     expect(await setCashLink(orderId, member.merchantId, atm(1000, 'LATE'))).toBeNull();
     expect((await getOrderRecord(orderId)).cashLink).toBe(atm(1000, 'PAID'));
   });
@@ -253,7 +258,7 @@ describePg('a cash buy is paid through the machine the member scans', () => {
     await withTransaction(async (c) => {
       const holder = (await c.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
       await c.query('SELECT 1 FROM order_states WHERE order_id = $1 FOR UPDATE', [orderId]);
-      tap = as(playerApp, player).post(`/order/${orderId}/mark-paid`).send({}).then((r) => r);
+      tap = as(playerApp, player).post(`/order/${orderId}/mark-paid`).send({ utrNumber: utr() }).then((r) => r);
       await untilBlocked('SELECT * FROM order_states WHERE order_id = $1 FOR UPDATE%', [holder]);
       await c.query('UPDATE order_states SET merchant_id = $2 WHERE order_id = $1', [orderId, next.merchantId]);
     });
