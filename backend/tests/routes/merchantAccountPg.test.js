@@ -366,8 +366,11 @@ describePg('merchant accounts', () => {
       expect(after.depositBalance - before.depositBalance).toBe(paise);
       const pool = await getPool(m.team.teamId);
       expect(pool.heldPaise).toBe(poolBefore.heldPaise);
-      expect(poolBefore.availablePaise - pool.availablePaise).toBe(paise);
-      expect(teamFloat - await float('TEAM_FLOAT')).toBe(paise);
+      // The order's commission (§26) is paid into the same pool once it completes.
+      const { rows: [paid] } = await pgQuery('SELECT COALESCE(SUM(commission_paise), 0)::bigint AS p FROM team_commissions WHERE order_id = $1', [orderId]);
+      const commission = Number(paid.p);
+      expect(poolBefore.availablePaise - pool.availablePaise).toBe(paise - commission);
+      expect(teamFloat - await float('TEAM_FLOAT')).toBe(paise - commission);
       expect(await float('USER_FLOAT') - userFloat).toBe(paise);
       expect((await getUtr(ref)).status).toBe('RELEASED');
       return view;

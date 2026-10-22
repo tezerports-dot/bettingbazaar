@@ -27,3 +27,16 @@ export const autoPhantomBets = (): Promise<any> =>
 
 export const saveAutoPhantomBets = (plan: { boardKey: string; audience: string; side: string; amounts: number[]; enabled: boolean }): Promise<any> =>
   apiClient.put('/api/bet/phantom/auto', plan);
+
+/** This player's auto-bets plans (running, then the latest stopped) and their limits (autoBets.js). */
+export const autoBets = (): Promise<any> =>
+  apiClient.get('/api/bet/auto');
+
+export const startAutoBets = (plan: {
+  boardKey: string; audience: string; side: string; start: number; factor: number; steps: number;
+  budget: number; stopLoss?: number; takeProfit?: number;
+}): Promise<any> =>
+  apiClient.post('/api/bet/auto', plan);
+
+export const stopAutoBets = (planId: string): Promise<any> =>
+  apiClient.post(`/api/bet/auto/${encodeURIComponent(planId)}/stop`, {});

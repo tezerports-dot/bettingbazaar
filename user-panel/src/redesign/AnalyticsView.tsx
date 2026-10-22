@@ -9,6 +9,9 @@
  *   Runs & Gaps · Previous results · Continuous streaks · Streak gaps ·
  *   Win share · Probability
  *
+ * and under whichever is open, the progression calculator
+ * (ProgressionCalculator.tsx; owner, 2026-10-22: "visible on every slide").
+ *
  * All figures are DESCRIPTIVE statistics of past results (analytics.ts).
  * Presentation only — never used for server-side validation (§11).
  *
@@ -30,6 +33,7 @@ import { analyticsWindowFor } from '../constants';
 import { useDemoResults, withDemoResults, DEMO_STYLE } from './DemoResults';
 import { fmt } from './format';
 import RunsAndGaps, { box, heading, LATEST_RING, LatestTag } from './RunsAndGaps';
+import ProgressionCalculator from './ProgressionCalculator';
 import { Board, CycleType } from '../types';
 
 interface Props {
@@ -41,6 +45,8 @@ interface Props {
   loadCycleHistory?: (type: CycleType) => void;
   /** The profile whose rounds these are (GameContext `audience`), for its typed demo results. */
   audience?: 'VIP' | 'GENERAL';
+  /** Opens the Auto bets sheet from the calculator; absent where no bet can be placed. */
+  onAuto?: () => void;
 }
 
 export const SECTIONS = [
@@ -55,7 +61,7 @@ export type SectionKey = typeof SECTIONS[number]['key'];
 
 const bead = (sd: Side) => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)' });
 
-const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory, audience = 'VIP' }) => {
+const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory, audience = 'VIP', onAuto }) => {
   const [active, setActive] = useState<SectionKey>('runs');
   const rootRef = useRef<HTMLDivElement | null>(null);
   const boardKey = board?.key ?? '';
@@ -179,7 +185,7 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory, audi
           </>
         );
       case 'runs':
-        return <RunsAndGaps board={board} winners={filled.winners} real={filled.real} />;
+        return <RunsAndGaps winners={filled.winners} real={filled.real} />;
       case 'streaks':
         return empty ? emptyCard : (
           <>
@@ -311,6 +317,7 @@ const AnalyticsView: React.FC<Props> = ({ board, winners, loadCycleHistory, audi
       <div id={`bb-an-${active}`} role="tabpanel" aria-labelledby={`bb-an-tab-${active}`}>
         {slide(active)}
       </div>
+      <ProgressionCalculator board={board} winners={filled.winners} audience={audience} onAuto={onAuto} />
     </div>
   );
 };

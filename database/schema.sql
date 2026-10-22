@@ -5261,6 +5261,96 @@ CREATE INDEX IF NOT EXISTS phantom_auto_plans_enabled_idx
   ON phantom_auto_plans (board_key) WHERE enabled;
 
 -- ════════════════════════════════════════════════════════════════════════════
+-- PLAYER AUTO BETS (owner, 2026-10-22)
+-- A player's auto-bets plan: one board, one profile (VIP or GENERAL) and one
+-- side, a ladder of 1 to 12 stakes (worked out once, when it starts, by
+-- backend/domains/markets/autoBets.js `ladderStakes`), a budget and an optional
+-- stop-loss and take-profit. One bet per round, placed by the cycle generator
+-- through the player's own bet admission (playerBet.service.js); each bet
+-- names its plan (`bets.auto_plan_id`), and the plan's step and net are
+-- counted from those bets on every read (trap 6). At most one running plan
+-- per player, board and profile. A plan is never edited: it is stopped once
+-- (`stopped_at`, `stop_reason`) and a new one started. Written only by
+-- database/repositories/playerAutoBets.js.
+-- ════════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS player_auto_bets (
+  plan_id           TEXT PRIMARY KEY,
+  user_id           TEXT NOT NULL REFERENCES users (user_id),
+  board_key         TEXT NOT NULL REFERENCES boards (board_key),
+  audience          TEXT NOT NULL,
+  side              TEXT NOT NULL,
+  start_paise       BIGINT NOT NULL,
+  factor_x100       INTEGER NOT NULL,
+  stakes_paise      BIGINT[] NOT NULL,
+  budget_paise      BIGINT NOT NULL,
+  stop_loss_paise   BIGINT NOT NULL DEFAULT 0,
+  take_profit_paise BIGINT NOT NULL DEFAULT 0,
+  started_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  stopped_at        TIMESTAMPTZ,
+  stop_reason       TEXT
+);
+ALTER TABLE player_auto_bets DROP CONSTRAINT IF EXISTS player_auto_bets_audience_known;
+ALTER TABLE player_auto_bets ADD CONSTRAINT player_auto_bets_audience_known
+  CHECK (audience IN ('VIP', 'GENERAL'));
+ALTER TABLE player_auto_bets DROP CONSTRAINT IF EXISTS player_auto_bets_side_known;
+ALTER TABLE player_auto_bets ADD CONSTRAINT player_auto_bets_side_known
+  CHECK (side IN ('DELHI', 'BOMBAY'));
+-- autoBets.js: AUTO_LADDER_STEPS_MAX (12), AUTO_FACTOR_*_X100 (1.00× to 10.00×),
+-- whole rupees, the first stake the plan's start.
+CREATE OR REPLACE FUNCTION bb_auto_ladder_ok(stakes BIGINT[]) RETURNS BOOLEAN AS $$
+  SELECT cardinality(stakes) BETWEEN 1 AND 12
+     AND NOT EXISTS (SELECT 1 FROM unnest(stakes) s WHERE s IS NULL OR s <= 0 OR s % 100 <> 0)
+$$ LANGUAGE sql IMMUTABLE;
+ALTER TABLE player_auto_bets DROP CONSTRAINT IF EXISTS player_auto_bets_ladder;
+ALTER TABLE player_auto_bets ADD CONSTRAINT player_auto_bets_ladder CHECK (
+  bb_auto_ladder_ok(stakes_paise)
+  AND factor_x100 BETWEEN 100 AND 1000
+  AND start_paise > 0 AND start_paise % 100 = 0
+  AND stakes_paise[1] = start_paise);
+ALTER TABLE player_auto_bets DROP CONSTRAINT IF EXISTS player_auto_bets_money;
+ALTER TABLE player_auto_bets ADD CONSTRAINT player_auto_bets_money CHECK (
+  budget_paise >= start_paise AND budget_paise % 100 = 0
+  AND stop_loss_paise >= 0 AND stop_loss_paise % 100 = 0
+  AND take_profit_paise >= 0 AND take_profit_paise % 100 = 0);
+ALTER TABLE player_auto_bets DROP CONSTRAINT IF EXISTS player_auto_bets_stop_shape;
+ALTER TABLE player_auto_bets ADD CONSTRAINT player_auto_bets_stop_shape CHECK (
+  (stopped_at IS NULL AND stop_reason IS NULL)
+  OR (stopped_at IS NOT NULL AND stop_reason IN (
+    'PLAYER', 'TAKE_PROFIT', 'STOP_LOSS', 'BUDGET_USED', 'BALANCE_SHORT',
+    'STAKE_OUT_OF_RANGE', 'BOARD_OFF', 'PROFILE_SWITCHED', 'RULES_NOT_ACCEPTED')));
+CREATE UNIQUE INDEX IF NOT EXISTS player_auto_bets_one_running
+  ON player_auto_bets (user_id, board_key, audience) WHERE stopped_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS player_auto_bets_plan_owner
+  ON player_auto_bets (plan_id, user_id);
+CREATE INDEX IF NOT EXISTS player_auto_bets_user_idx
+  ON player_auto_bets (user_id, started_at DESC);
+
+-- Stopped once, never edited, never deleted.
+CREATE OR REPLACE FUNCTION bb_auto_plan_stop_only() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'player_auto_bets rows are never deleted' USING ERRCODE = 'check_violation';
+  END IF;
+  IF OLD.stopped_at IS NOT NULL
+     OR (to_jsonb(NEW) - 'stopped_at' - 'stop_reason') <> (to_jsonb(OLD) - 'stopped_at' - 'stop_reason') THEN
+    RAISE EXCEPTION 'a player_auto_bets plan is only ever stopped, once' USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS player_auto_bets_stop_only ON player_auto_bets;
+CREATE TRIGGER player_auto_bets_stop_only
+  BEFORE UPDATE OR DELETE ON player_auto_bets FOR EACH ROW EXECUTE FUNCTION bb_auto_plan_stop_only();
+
+-- The plan that placed a bet, and only the plan's own player's bet.
+ALTER TABLE bets ADD COLUMN IF NOT EXISTS auto_plan_id TEXT;
+ALTER TABLE bets DROP CONSTRAINT IF EXISTS bets_auto_plan_owner;
+ALTER TABLE bets ADD CONSTRAINT bets_auto_plan_owner
+  FOREIGN KEY (auto_plan_id, user_id) REFERENCES player_auto_bets (plan_id, user_id);
+CREATE INDEX IF NOT EXISTS bets_auto_plan_idx
+  ON bets (auto_plan_id, placed_at) WHERE auto_plan_id IS NOT NULL;
+
+-- ════════════════════════════════════════════════════════════════════════════
 -- RTP FUND AND HOUSE BETS (owner, 2026-10-17)
 -- One fund per game and profile (VIP, GENERAL): the admin's switch and rate
 -- (`rtp_funds`), and one append-only entry per settled round (`rtp_fund_entries`)

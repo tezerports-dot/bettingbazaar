@@ -132,7 +132,8 @@ describe('the pools are blind from the merge until the result (owner, 2026-10-08
   });
 
   it('every public recordBet names the cycle\'s poolsHidden', () => {
-    const bet = src('domains/markets/bet.routes.js');
+    // The phantom bet's (bet.routes.js) and a player's bet's, tapped or auto (playerBet.service.js).
+    const bet = src('domains/markets/bet.routes.js') + src('domains/markets/playerBet.service.js');
     const calls = [...bet.matchAll(/recordBet\(\s*cycleId\s*,\s*\{([\s\S]*?)\}\s*\)/g)];
     expect(calls.length).toBe(2);
     for (const m of calls) expect(m[1]).toMatch(/poolsHidden: poolsHidden\(/);
