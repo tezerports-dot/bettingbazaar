@@ -3,8 +3,9 @@
  * SupportPage.tsx — the merchants' own support desk (CLAUDE.md §2, "Support
  * desks"; owner, 2026-10-21), apart from the players'.
  *
- * A short form opens the day's one ticket: a code and a support Telegram
- * account. The conversation then happens on the merchant's own Telegram with
+ * A button opens the desk's support account in the merchant's Telegram
+ * straight away (owner, 2026-10-22). A short form opens the day's one ticket:
+ * a code and a support Telegram account. The conversation then happens on the merchant's own Telegram with
  * that account, the code already typed in. A payment problem on an order is a
  * dispute, decided by the Dispute Managers, not a ticket.
  */
@@ -123,6 +124,16 @@ const SupportPage: React.FC = () => {
 
   return (
     <div style={{ display: 'grid', gap: 14, maxWidth: 760 }}>
+      {/* Talk to support on Telegram straight away, no ticket needed (owner, 2026-10-22). */}
+      {info?.directContact && (
+        <Card>
+          <CardTitle title="Chat with support on Telegram" sub="Opens our support account in your Telegram. No ticket needed." />
+          <a href={info.directContact.telegramLink} target="_blank" rel="noopener noreferrer"
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '13px 16px', borderRadius: 12, background: 'var(--dep)', color: '#fff', fontWeight: 800, fontSize: 14, textDecoration: 'none' }}>
+            <Send size={16} /> Message @{info.directContact.telegramUsername}
+          </a>
+        </Card>
+      )}
       {info && !info.openedToday && (
         <Card>
           <CardTitle title="Open a support ticket" sub="One ticket a day. After this, the chat continues on Telegram." />
@@ -172,7 +183,7 @@ const SupportPage: React.FC = () => {
       </Card>
 
       <div style={{ fontSize: 11.5, color: 'var(--muted)', textAlign: 'center', fontWeight: 600 }}>
-        Our support team never asks for your OTP, password, tokens or money. Only chat with the Telegram account shown on your ticket.
+        Our support team never asks for your OTP, password, tokens or money. Only chat with the Telegram account shown here or on your ticket.
       </div>
     </div>
   );

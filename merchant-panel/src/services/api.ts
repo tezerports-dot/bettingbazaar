@@ -901,6 +901,8 @@ export interface SupportTopic { key: string; label: string }
 export interface SupportDeskInfo {
   topics: SupportTopic[]; historyDays: number; descriptionMin: number; descriptionMax: number;
   referenceMax: number; openedToday: boolean; nextTicketAt: string;
+  /** The support account to message straight away (`directContact`), or null when none is set up. */
+  directContact?: { telegramUsername: string; telegramLink: string } | null;
 }
 export interface SupportTicket {
   ticketId: string; code: string; topic: string; subject: string; reference: string;

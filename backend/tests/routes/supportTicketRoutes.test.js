@@ -161,6 +161,18 @@ describePg('support desks', () => {
     expect((await as(adminApp, playerAgent).get(`/admin/support/tickets/${id}`)).status).toBe(404);
   });
 
+  it('sends a merchant the merchant desk\'s support account to message without a ticket, and a player none', async () => {
+    const m = await merchantActor();
+    const desk = await as(merchantApp, m).get('/desk');
+    expect(desk.status).toBe(200);
+    expect(desk.body.directContact).toEqual({
+      telegramUsername: `bbmerch_${tag}`,
+      telegramLink: `https://t.me/bbmerch_${tag}?text=${encodeURIComponent('Hello, I need merchant support.')}`,
+    });
+    const p = await actor({});
+    expect((await as(playerApp, p).get('/desk')).body).not.toHaveProperty('directContact');
+  });
+
   it('refuses a support account with a bad username, and a duplicate', async () => {
     const admin = await actor({ isAdmin: true });
     const bad = await as(adminApp, admin).post('/admin/support/contacts').send({ desk: 'PLAYER', telegramUsername: 'ab' });

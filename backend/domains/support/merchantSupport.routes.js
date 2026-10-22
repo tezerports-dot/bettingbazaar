@@ -19,6 +19,8 @@ const desk = accountSupportHandlers({
   // user id; its tickets are the merchant's.
   accountOf: (req) => req.userId || String(req.merchantId),
   orderOwner: (req) => ({ merchantId: String(req.merchantId) }),
+  // A merchant may message support on Telegram without a ticket (owner, 2026-10-22).
+  direct: true,
 });
 
 router.get('/desk', merchantAuth, desk.desk);

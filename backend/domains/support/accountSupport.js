@@ -7,7 +7,8 @@
  *   player    /api/support/...          (support.routes.js)
  *   merchant  /api/merchant/support/... (merchantSupport.routes.js)
  *
- *   GET  /desk                      topics, whether a ticket was opened today
+ *   GET  /desk                      topics, whether a ticket was opened today, and (merchants)
+ *                                   the support account to message without a ticket
  *   POST /tickets                   open a ticket (one per India day)
  *   GET  /tickets                   own tickets, last ACCOUNT_HISTORY_DAYS
  *   GET  /tickets/:ticketId         one, with the agent's notes
@@ -34,8 +35,9 @@ const {
  * @param {'PLAYER'|'MERCHANT'} o.desk
  * @param {(req: import('express').Request) => string} o.accountOf  the signed-in login's user id
  * @param {(req: import('express').Request) => object} o.orderOwner  `{ userId }` or `{ merchantId }`
+ * @param {boolean} [o.direct]  send the desk's support account to talk to without a ticket (merchants, owner 2026-10-22)
  */
-export function accountSupportHandlers({ desk, accountOf, orderOwner }) {
+export function accountSupportHandlers({ desk, accountOf, orderOwner, direct = false }) {
   const topics = TICKET_TOPICS[desk];
   const topicKeys = new Set(topics.map((t) => t.key));
 
@@ -53,11 +55,15 @@ export function accountSupportHandlers({ desk, accountOf, orderOwner }) {
 
   const desk_ = async (req, res) => {
     try {
-      const today = await db.supportDesk.openedToday({ userId: accountOf(req) });
+      const [today, contact] = await Promise.all([
+        db.supportDesk.openedToday({ userId: accountOf(req) }),
+        direct ? db.supportDesk.directContact({ desk }) : null,
+      ]);
       res.json({
         success: true, topics, historyDays: ACCOUNT_HISTORY_DAYS,
         descriptionMin: DESCRIPTION_MIN, descriptionMax: DESCRIPTION_MAX, referenceMax: REFERENCE_MAX,
         ...today,
+        ...(direct ? { directContact: contact } : {}),
       });
     } catch (e) { return respondError(res, e, `GET support/desk ${desk}`); }
   };
