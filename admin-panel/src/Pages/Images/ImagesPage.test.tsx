@@ -90,4 +90,18 @@ describe('Images › Game board (Branding images)', () => {
     await user.click(screen.getByRole('button', { name: 'Save 1 change' }));
     await waitFor(() => expect(api.branding.update).toHaveBeenCalledWith({ betCardBombayImageUrl: '' }));
   });
+
+  it('says at the top that an uploaded image is not saved yet, and saves it from there', async () => {
+    const user = userEvent.setup();
+    api.branding.getCurrent.mockResolvedValue({ success: true, data: { betCardDelhiImageUrl: '', betCardBombayImageUrl: '', referPromoImageUrl: '' } });
+    api.branding.update.mockResolvedValue({ success: true });
+    render(<BrandingImages fields={BOARD_IMAGES} title="Game board images" intro="" />);
+    await user.click((await screen.findAllByRole('button', { name: /Paste a CDN link/ }))[0]); // Delhi
+    await user.type(screen.getByLabelText('CDN link for Delhi betting card'), 'https://cdn.test/d.png');
+    await user.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(screen.getByText(/1 image not saved yet/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Save now' }));
+    await waitFor(() => expect(api.branding.update).toHaveBeenCalledWith({ betCardDelhiImageUrl: 'https://cdn.test/d.png' }));
+    await waitFor(() => expect(screen.queryByText(/not saved yet/)).not.toBeInTheDocument());
+  });
 });

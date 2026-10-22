@@ -128,7 +128,7 @@ export const AppAssetsPage: React.FC = () => {
     else toast.error(res.message || 'Delete failed');
   };
 
-  const ORDER = ['logo.png','logo-header.png','icon-192.png','icon-512.png','icon-apple-180.png','favicon-32.png','splash.png'];
+  const ORDER = ['logo.png','logo-header.png','icon-192.png','icon-512.png','icon-maskable-512.png','icon-apple-180.png','favicon-32.png','splash.png'];
   const sorted = [...slots].sort((a, b) => ORDER.indexOf(a.name) - ORDER.indexOf(b.name));
 
   return (
@@ -139,7 +139,7 @@ export const AppAssetsPage: React.FC = () => {
         <div className="text-xs font-semibold text-blue-300 mb-2 flex items-center gap-1.5"><Info size={13} /> Required Image Sizes — use transparent PNG</div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[10px] text-slate-400 font-mono">
           {[['logo.png','512×512'],['logo-header.png','600×120'],['icon-192.png','192×192'],
-            ['icon-512.png','512×512'],['icon-apple-180.png','180×180'],['favicon-32.png','32×32'],['splash.png','1242×2688']
+            ['icon-512.png','512×512'],['icon-maskable-512.png','512×512'],['icon-apple-180.png','180×180'],['favicon-32.png','32×32'],['splash.png','1242×2688']
           ].map(([n,s]) => <span key={n}>{n} — <b className="text-white">{s}</b></span>)}
         </div>
         <p className="text-[10px] text-slate-600 mt-2">Transparent backgrounds blend naturally with the dark app theme. Max 5 MB each. Drag & drop or click to upload.</p>
