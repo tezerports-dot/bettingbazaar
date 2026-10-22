@@ -32,6 +32,7 @@ import { analyticsWindowFor } from '../constants';
 import { platform } from './api';
 import { getBackend, setCdnBaseUrl } from './backend.service';
 import { hasStaleRound, mayReopen, HIDDEN_LONG_MS } from './realtimeWatchdog';
+import { serverNow } from './serverClock';
 import { decodeCyclePhase, decodeCycleResult } from './realtimeProtocol';
 import type { SignInStep, TelegramDelivery } from './backend.interface';
 import { applyBranding } from './branding';
@@ -154,7 +155,6 @@ interface GameContextType {
   /** Fetch one board's full analytics window of results. See the callback. */
   loadCycleHistory: (type: CycleType) => void;
   gameState: GameState;
-  serverTimeOffset: number;
   placeBet: (amount: number, side: BettingSide) => Promise<void>;
   placePhantomBet: (amount: number, side: BettingSide) => Promise<void>;
   userBets: Bet[];
@@ -282,9 +282,6 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const applySnapshotRef = useRef<((data: any) => void) | null>(null);
   /** Held stream payloads already replayed into this context (see heldPayloads). */
   const replayedRef = useRef(new WeakSet<object>());
-  // serverTimeOffset removed — cycle timing is server-authoritative.
-  // Status and timeRemaining come from cycle_update WS events, not local math.
-  const serverTimeOffset = 0; // kept for context API compat, components must not use for cycle math
   const isProcessingBet = useRef(false);
 
   const liveStatsRef = useRef<Record<CycleType, LiveStats>>({});
@@ -331,7 +328,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     };
     const check = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      if (hasStaleRound(cyclesRef.current, Date.now())) reopen();
+      if (hasStaleRound(cyclesRef.current, serverNow())) reopen();
     }, 5_000);
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
@@ -711,7 +708,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       const parseMs = (v: any): number =>
         typeof v === 'number' ? v : v ? new Date(v).getTime() : 0;
       const etMs = parseMs(data.endTime);
-      const initRemaining = etMs > 0 ? Math.max(0, Math.round((etMs - Date.now()) / 1000)) : 0;
+      const initRemaining = etMs > 0 ? Math.max(0, Math.round((etMs - serverNow()) / 1000)) : 0;
       setCycles(prev => ({
         ...prev,
         [ct]: {
@@ -1021,10 +1018,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       : `${h}:${m}:${s}`;
   };
 
-  // CLIENT TICK REMOVED.
-  // Status and timeRemaining are 100% server-authoritative.
-  // The server pushes cycle_update every second with status + timeRemaining.
-  // CycleControl smooths the display with a local decrement between pushes.
+  // CLIENT TICK REMOVED. Status comes from the server's pushes; the countdown
+  // runs to the round's `endTime` on the SERVER's clock (`serverNow`).
 
   const currentCycle = cycles[cycleType] ?? createNullCycle(cycleType);
   const currentBoard = boards.find((b) => b.key === cycleType);
@@ -1034,7 +1029,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       user, isAuthenticated: !!user, isOnline, signInWithTelegram, signInWithTicket, pollTelegramStep, logout,
       boards, currentBoard,
       cycleType, setCycleType, cycles, currentCycle,
-      pastCycles: myPastCycles, audience, setAudience, loadCycleHistory, gameState: currentCycle.status, serverTimeOffset,
+      pastCycles: myPastCycles, audience, setAudience, loadCycleHistory, gameState: currentCycle.status,
       placeBet, placePhantomBet, userBets, history, formatTime,
       updateProfile, subscribeToVolume, getCurrentVolume, refreshUserWallet,
       isGhostMode,

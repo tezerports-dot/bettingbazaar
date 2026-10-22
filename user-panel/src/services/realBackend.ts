@@ -42,6 +42,7 @@ import {
 import { getCaptchaToken, captchaFailure } from './captcha';
 import { returnOriginHere } from './nativeDeepLink';
 import { secureFetch, openEventStream, type EventStream } from './secureTransport';
+import { noteServerTime } from './serverClock';
 
 const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
@@ -169,6 +170,7 @@ class SSEEventBridge extends EventTarget {
         es.addEventListener(eventName, (e: Event) => {
           try {
             const data = JSON.parse((e as MessageEvent).data);
+            noteServerTime(data?.ts ?? data?.timestamp ?? data?.serverTime);
             this.last.set(eventName, data);
             if (REPLAYED_EVENTS.has(eventName)) {
               const key = `${data?.audience ?? 'VIP'}|${Array.isArray(data?.types) ? data.types.join(',') : ''}`;
