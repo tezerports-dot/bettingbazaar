@@ -246,6 +246,7 @@ router.post('/branding/upload-url', authenticate, hasPermission('canManageConten
     res.json({
       success: true,
       uploadUrl: result.uploadUrl,
+      uploadHeaders: result.uploadHeaders,
       fileKey:   result.fileKey,
       cdnUrl:    result.cdnUrl,
       expiresAt: result.expiresAt,

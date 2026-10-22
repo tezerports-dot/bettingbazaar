@@ -201,6 +201,12 @@ function generateSecureFileName(originalName, contentType, category) {
 // ═══════════════════════════════════════════════════════════════════════
 
 
+/** An object's metadata as the `x-amz-meta-*` headers a PUT carries. */
+function presignedMetaHeaders(metadata) {
+  return Object.fromEntries(Object.entries(metadata)
+    .map(([key, value]) => [`x-amz-meta-${key.toLowerCase()}`, String(value)]));
+}
+
 export async function generatePresignedUploadUrl({
   fileName,
   contentType,
@@ -229,6 +235,13 @@ export async function generatePresignedUploadUrl({
     // the upload with 403. This is a second enforcement layer independent
     // of our route-level check — even a MITM or script that forges the
     // contentType in the JSON body cannot upload a different file type.
+    const metadata = {
+      userId:     String(userId),
+      orderId:    orderId || 'none',
+      uploadedAt: new Date().toISOString(),
+      // Store original validated MIME so downstream code can verify
+      declaredMime: cleanMime,
+    };
     const command = new PutObjectCommand({
       Bucket: BUCKET_NAME,
       Key: fileKey,
@@ -236,17 +249,21 @@ export async function generatePresignedUploadUrl({
       // S3 condition: enforce max content length on the presigned URL itself.
       // S3 will reject any PUT that exceeds this byte count.
       ContentLength: Number(fileSize),
-      Metadata: {
-        userId:     String(userId),
-        orderId:    orderId || 'none',
-        uploadedAt: new Date().toISOString(),
-        // Store original validated MIME so downstream code can verify
-        declaredMime: cleanMime,
-      },
+      Metadata: metadata,
     });
 
-    // Generate presigned URL (5 minutes expiry)
-    const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 300 });
+    // The metadata travels as SIGNED HEADERS the browser sends, never as query
+    // parameters: by default the presigner hoists every x-amz-meta-* into the
+    // URL, and Cloudflare R2 stores no metadata given that way, so every
+    // upload came back without its owner and `verifyUploadedObject` refused it
+    // ("owner mismatch", 2026-10-22). Signed, the storage refuses a PUT that
+    // leaves one out or changes it; `uploadHeaders` is what the panel sends.
+    const metaHeaders = presignedMetaHeaders(metadata);
+    const uploadUrl = await getSignedUrl(s3Client, command, {
+      expiresIn: 300, // 5 minutes
+      unhoistableHeaders: new Set(Object.keys(metaHeaders)),
+    });
+    const uploadHeaders = { 'Content-Type': cleanMime, ...metaHeaders };
 
     // Generate CDN URL for accessing the file
     const cdnUrl = `${CDN_URL}/${fileKey}`;
@@ -262,6 +279,7 @@ export async function generatePresignedUploadUrl({
 
     return {
       uploadUrl,
+      uploadHeaders,
       fileKey,
       cdnUrl,
       expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),

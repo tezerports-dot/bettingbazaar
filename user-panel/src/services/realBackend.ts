@@ -650,7 +650,7 @@ export class RealBackend implements Backend {
       console.warn('[uploadFile] Large file (' + (file.size/1024).toFixed(0) + 'kb) — S3 required for files >800kb');
     }
     const urlRes = await this.request<{
-      success: boolean; uploadUrl: string; fileKey: string; cdnUrl: string;
+      success: boolean; uploadUrl: string; uploadHeaders?: Record<string, string>; fileKey: string; cdnUrl: string;
     }>('/user/profile/picture/upload-url', {
       method: 'POST',
       body: JSON.stringify({ fileName: file.name, contentType: file.type, fileSize: file.size })
@@ -664,7 +664,9 @@ export class RealBackend implements Backend {
     try {
       s3Res = await secureFetch(urlRes.uploadUrl, {
         method:  'PUT',
-        headers: { 'Content-Type': file.type },
+        // The headers the server signed into the URL (cdn.service.js): the
+        // owner travels in them, and the storage refuses a PUT without them.
+        headers: urlRes.uploadHeaders ?? { 'Content-Type': file.type },
         body:    file
       });
     } catch {

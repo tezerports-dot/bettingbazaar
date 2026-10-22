@@ -26,7 +26,7 @@ export async function uploadImage(file: File, kind: UploadKind, category = 'imag
   const { data: presign } = await api.post<any>(presignPath, body);
   if (!presign?.uploadUrl) throw new Error(presign?.message || 'Could not get an upload URL');
 
-  await putToStorage(presign.uploadUrl, file);
+  await putToStorage(presign.uploadUrl, file, presign.uploadHeaders);
 
   if (kind === 'branding') {
     await api.post('/api/admin/branding/confirm-upload', {
@@ -51,11 +51,16 @@ const STORAGE_CODES: Record<string, string> = {
   EntityTooLarge: 'the file is larger than the storage allows',
 };
 
-/** PUT the bytes to a presigned URL, or throw a reason someone can act on. */
-export async function putToStorage(uploadUrl: string, file: File): Promise<void> {
+/**
+ * PUT the bytes to a presigned URL, or throw a reason someone can act on.
+ * `headers` are the ones the server signed into the URL (`uploadHeaders`,
+ * cdn.service.js): the file's owner travels in them, and the storage refuses
+ * a PUT that leaves one out.
+ */
+export async function putToStorage(uploadUrl: string, file: File, headers?: Record<string, string>): Promise<void> {
   let put: Response;
   try {
-    put = await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
+    put = await fetch(uploadUrl, { method: 'PUT', body: file, headers: headers ?? { 'Content-Type': file.type } });
   } catch {
     // The browser hides the storage's answer when its CORS rules do not allow
     // this site, and a wrong storage address fails the same way.
