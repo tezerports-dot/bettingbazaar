@@ -178,20 +178,23 @@ export function toPoolExposure(row) {
 
 // ── How full a pool is, and what its holder can pay out ──────────────────────
 //
-// The owner's words (2026-10-21): a pool's SIZE is the security deposit plus
-// the bonus, and orders go by how much of it is consumed and how much is left.
-// Size = every token the pool was given, less every token taken from it for
-// good: the platform sales (and any old buyback), the commission, less the
-// dispute compensation paid out of it. What a buy spends and a sell brings
-// back moves tokens between the pool and the players, not the size. So:
-//   left      = available (the tokens a new buy can be held from);
-//   consumed  = size − available − held (sold to players for cash);
+// The owner's words (2026-10-22): a pool's SIZE is the security deposit,
+// the tokens bought from the platform, and only buying more tokens from the
+// platform makes it bigger. Commission adds tokens to the pool but not to its
+// size (it replaced "deposit plus bonus", 2026-10-21). What a buy spends, a
+// sell brings back and a dispute compensation pays out moves tokens, not the
+// size. So:
+//   left      = available (the tokens a new buy can be held from); above the
+//               size (over 100%) is profit, taken out through buy orders,
+//               which routing sends first to the pool with most left;
+//   consumed  = size − available − held (sold to players for cash), never
+//               below zero;
 //   sell room = consumed − the sells it is paying or has just paid
 //               (PROCESSING, PAID): the cash from buys not yet spent on sells.
 // A READ for ordering and display; a buy is still admitted only by its hold.
 
 /** The pool entries that change a pool's size. */
-export const POOL_SIZE_KINDS = Object.freeze(['ADMIN_SALE', 'ADMIN_BUYBACK', 'COMMISSION', 'DISPUTE_COMPENSATION']);
+export const POOL_SIZE_KINDS = Object.freeze(['ADMIN_SALE', 'ADMIN_BUYBACK']);
 /** A sell its holder is paying, or has paid inside its hold window. */
 export const SELL_OWED_STATES = Object.freeze(['PROCESSING', 'PAID']);
 

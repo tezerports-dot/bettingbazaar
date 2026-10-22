@@ -15,8 +15,9 @@ const api = vi.hoisted(() => ({
   addTeamMember: vi.fn().mockResolvedValue('Added.'),
   removeTeamMember: vi.fn().mockResolvedValue(undefined),
   getTeamPool: vi.fn(),
-  requestTeamPool: vi.fn().mockResolvedValue('Requested.'),
   cancelTeamPoolRequest: vi.fn().mockResolvedValue(undefined),
+  buyTeamPoolUsdt: vi.fn().mockResolvedValue({}),
+  setTeamCashOut: vi.fn(),
   getMemberLog: vi.fn(),
   getTeamDisputes: vi.fn().mockResolvedValue([]),
   getDisputeThread: vi.fn(),
@@ -152,18 +153,20 @@ describe('merchant Team screen', () => {
     const box = await screen.findByLabelText('Tokens to buy for Bravo');
     fireEvent.change(box, { target: { value: '5,000' } });
     expect((box as HTMLInputElement).value).toBe('5000');
-    fireEvent.click(screen.getByRole('button', { name: 'Send Bravo request' }));
-    await waitFor(() => expect(api.requestTeamPool).toHaveBeenCalledWith('t-2', 5000, ''));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Buy in USDT' })[1]);
+    await waitFor(() => expect(api.buyTeamPoolUsdt).toHaveBeenCalledWith('t-2', 5000));
   });
 
   it('offers no way to sell tokens back, and shows the server refusal verbatim', async () => {
     supervisorWith();
-    api.requestTeamPool.mockRejectedValueOnce(new Error('The platform has no tokens to sell right now.'));
+    api.buyTeamPoolUsdt.mockRejectedValueOnce(new Error('The platform has no tokens to sell right now.'));
     render(<TeamPage />);
     fireEvent.change(await screen.findByLabelText('Tokens to buy for Alpha'), { target: { value: '9000' } });
     expect(screen.queryByText(/sell tokens back/i)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Send Alpha request' }));
-    await waitFor(() => expect(api.requestTeamPool).toHaveBeenCalledWith('t-1', 9000, ''));
+    // Only USDT is offered (owner, 2026-10-22): no request for an admin to fulfil.
+    expect(screen.queryByRole('button', { name: /request/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Buy in USDT' })[0]);
+    await waitFor(() => expect(api.buyTeamPoolUsdt).toHaveBeenCalledWith('t-1', 9000));
     expect(toast.error).toHaveBeenCalledWith('The platform has no tokens to sell right now.');
   });
 

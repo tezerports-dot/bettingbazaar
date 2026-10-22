@@ -26,7 +26,7 @@ import { api } from '../../services/api';
 import { useMerchantAccount } from '../../hooks/useMerchantAccount';
 import { isOwner } from '../../utils/actor';
 import { formatTokens } from '../../utils/rail';
-import { Button, Card, CardTitle, Field, SegmentedControl, Skeleton, inputStyle } from '../../components/ui';
+import { Button, Card, CardTitle, Field, Skeleton, inputStyle } from '../../components/ui';
 import AccountShell, { Refusal } from './AccountShell';
 import { PoolBreakdown } from '../../components/PoolBreakdown';
 import { UsdtPayCard } from '../../components/UsdtPayCard';
@@ -35,12 +35,9 @@ import { CashOutCard } from '../../components/CashOutCard';
 const errorText = (err: any, fallback: string): string => err?.message || fallback;
 const tokensOf = (paise: number) => formatTokens((Number(paise) || 0) / 100);
 
-type PayWith = 'USDT' | 'ADMIN';
-
+/** Tokens are bought from the platform in USDT only (owner, 2026-10-22). */
 export const PoolRequestForm: React.FC<{ onSent: () => Promise<void> }> = ({ onSent }) => {
-  const [payWith, setPayWith] = useState<PayWith>('USDT');
   const [tokens, setTokens] = useState('');
-  const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState('');
 
@@ -48,17 +45,12 @@ export const PoolRequestForm: React.FC<{ onSent: () => Promise<void> }> = ({ onS
     setRefusal('');
     setBusy(true);
     try {
-      if (payWith === 'USDT') {
-        await api.buyMerchantPoolUsdt(Number(tokens));
-        toast.success('Pay the USDT shown below. The tokens arrive by themselves.');
-      } else {
-        await api.requestMerchantPool(Number(tokens), note.trim());
-        toast.success('Request sent. An admin fulfils it.');
-      }
-      setTokens(''); setNote('');
+      await api.buyMerchantPoolUsdt(Number(tokens));
+      toast.success('Pay the USDT shown below. The tokens arrive by themselves.');
+      setTokens('');
       await onSent();
     } catch (err) {
-      setRefusal(errorText(err, 'Could not send the request.'));
+      setRefusal(errorText(err, 'Could not start the purchase.'));
     } finally {
       setBusy(false);
     }
@@ -66,32 +58,14 @@ export const PoolRequestForm: React.FC<{ onSent: () => Promise<void> }> = ({ onS
 
   return (
     <Card>
-      <CardTitle title="Buy tokens"
-        sub={payWith === 'USDT'
-          ? 'Pay in USDT and the tokens arrive by themselves, like a player\'s buy.'
-          : 'An admin fulfils the request and records what was paid.'} />
-      <SegmentedControl<PayWith>
-        value={payWith}
-        onChange={setPayWith}
-        options={[
-          { value: 'USDT', label: 'Pay in USDT now (automatic)' },
-          { value: 'ADMIN', label: 'Pay an admin another way' },
-        ]}
-        style={{ marginBottom: 12, alignSelf: 'flex-start', width: 'fit-content' }}
-      />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-        <Field label="Tokens (whole number)" htmlFor="pool-tokens">
-          <input id="pool-tokens" value={tokens} inputMode="numeric" onChange={(e) => setTokens(e.target.value)} style={inputStyle} />
-        </Field>
-        {payWith !== 'USDT' && (
-          <Field label="Note for the admin (optional)" htmlFor="pool-note">
-            <input id="pool-note" value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} maxLength={300} />
-          </Field>
-        )}
-      </div>
+      <CardTitle title="Buy tokens from the platform"
+        sub="Pay in USDT and the tokens arrive in your pool by themselves. This is the only way your pool size grows." />
+      <Field label="Tokens (whole number)" htmlFor="pool-tokens">
+        <input id="pool-tokens" value={tokens} inputMode="numeric" onChange={(e) => setTokens(e.target.value.replace(/[^0-9]/g, ''))} style={inputStyle} />
+      </Field>
       <Refusal message={refusal} style={{ marginTop: 10 }} />
-      <Button onClick={() => void submit()} busy={busy} style={{ marginTop: 12 }}>
-        {payWith === 'USDT' ? 'Get the USDT address' : 'Send request'}
+      <Button onClick={() => void submit()} busy={busy} disabled={!(Number(tokens) > 0)} style={{ marginTop: 12 }}>
+        Get the USDT address
       </Button>
     </Card>
   );

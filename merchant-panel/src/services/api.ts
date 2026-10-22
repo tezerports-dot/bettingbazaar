@@ -625,14 +625,6 @@ export const removeTeamMember = async (teamId: string, merchantId: string): Prom
 export const getTeamPool = async (teamId: string): Promise<{ pool: TeamPool; entries: TeamPoolEntry[] }> =>
   request<{ pool: TeamPool; entries: TeamPoolEntry[] }>(ENDPOINTS.TEAM.POOL(teamId));
 
-/** Asks the platform for tokens; nothing is sold back to it (owner, 2026-10-21). Whole tokens. */
-export const requestTeamPool = async (
-  teamId: string, tokenAmount: number, note: string,
-): Promise<string> =>
-  (await request<{ message: string }>(ENDPOINTS.TEAM.POOL_REQUEST(teamId), {
-    method: 'POST', body: JSON.stringify({ tokenAmount, note: note || null }),
-  })).message;
-
 /** Start (`true`) or stop a team pool's cash out (owner, 2026-10-21). */
 export const setTeamCashOut = async (teamId: string, start: boolean): Promise<CashOut> =>
   (await request<{ cashOut: CashOut }>(ENDPOINTS.TEAM.CASH_OUT(teamId), { method: start ? 'POST' : 'DELETE' })).cashOut;
@@ -736,12 +728,6 @@ export const assignSubMemberAccount = async (staffId: string, accountId: string,
 export const unassignSubMemberAccount = async (staffId: string, accountId: string, duty: StaffDuty): Promise<SubMember> =>
   (await accountRequest<{ staff: SubMember }, [string, string, string]>(
     ENDPOINTS.ACCOUNT.UNASSIGN_ACCOUNT, [staffId, accountId, duty])).staff;
-
-/** Asks the platform to sell tokens into the pool; nothing is sold back. Whole tokens. */
-export const requestMerchantPool = async (tokens: number, note: string): Promise<string> =>
-  (await accountRequest<{ requestId: string }, []>(ENDPOINTS.ACCOUNT.REQUEST_POOL, [], {
-    tokens, note: note || null,
-  })).requestId;
 
 /** Start (`true`) or stop the merchant account's cash out (owner, 2026-10-21). */
 export const setMerchantCashOut = async (start: boolean): Promise<CashOut> =>
@@ -877,7 +863,6 @@ export const api = {
   removeSubMember,
   assignSubMemberAccount,
   unassignSubMemberAccount,
-  requestMerchantPool,
   buyMerchantPoolUsdt,
   setMerchantCashOut,
   setTeamCashOut,
