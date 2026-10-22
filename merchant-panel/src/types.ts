@@ -583,8 +583,9 @@ export interface DirectTeam {
 /**
  * How full a pool is (owner, 2026-10-21): `toPoolStanding` in
  * database/repositories/teamPools.js — §5. Paise. Size is the tokens bought
- * from the platform plus commission, less compensation paid; sell room is the
- * cash from buys not yet paid out on sells.
+ * from the platform only (owner, 2026-10-22), so `leftPercent` can pass 100
+ * once commission comes in; sell room is the cash from buys not yet paid out
+ * on sells.
  */
 export interface PoolStanding {
   sizePaise: number; leftPaise: number; heldPaise: number; consumedPaise: number;

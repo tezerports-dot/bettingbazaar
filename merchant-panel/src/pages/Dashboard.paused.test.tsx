@@ -10,7 +10,7 @@
  * say it.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 const auth = vi.hoisted(() => ({ merchant: null as Record<string, unknown> | null }));
@@ -82,57 +82,59 @@ describe('the Dashboard shows no merchant balance', () => {
 });
 
 /**
- * The pool this merchant works from, and where its tokens are (owner,
- * 2026-10-14): the server's figures (GET /merchant/stats `money`), split into
- * what is free, what open orders lock, what waits on a dispute and what sells
- * are about to add.
+ * The big pool card (owner, 2026-10-22): the pool's tokens out of its size,
+ * a bar that can pass 100%, and four small cards, every figure the server's
+ * (GET /merchant/stats `money`, GET /merchant/earnings).
  */
-describe('the Dashboard says where the tokens are (owner, 2026-10-21: swipeable cards with bars and the ledger)', () => {
+describe('the Dashboard\'s pool card', () => {
   const none = { heldOpenPaise: 0, heldDisputedPaise: 0, openBuys: 0, sellsSettlingPaise: 0, sellsDisputedPaise: 0, openSells: 0 };
   const standing = {
     sizePaise: 20_000_000, leftPaise: 9_000_000, heldPaise: 700_000, consumedPaise: 10_300_000,
     sellsOwedPaise: 300_000, sellRoomPaise: 10_000_000, leftPercent: 45,
   };
-  it('shows the pool, how full it is, and what it is locked in', async () => {
+  it('shows the tokens out of the pool size, the bar, and where the rest is', async () => {
     stats.value = { money: {
-      own: { ...none, heldOpenPaise: 500000, openBuys: 1 },
+      own: none,
       pool: { availablePaise: 9000000, heldPaise: 700000, standing,
-        exposure: { ...none, heldOpenPaise: 500000, heldDisputedPaise: 200000, openBuys: 2, sellsSettlingPaise: 100000, openSells: 1 } },
+        exposure: { ...none, heldOpenPaise: 500000, heldDisputedPaise: 200000, sellsDisputedPaise: 100000, openBuys: 2, sellsSettlingPaise: 40000, openSells: 1 } },
     } };
     show({});
-    expect(await screen.findByText('Pool status')).toBeInTheDocument();
-    expect(screen.getByText('Healthy · 45% left')).toBeInTheDocument();
-    expect(screen.getByRole('progressbar', { name: 'Pool left' })).toHaveAttribute('aria-valuenow', '45');
+    expect(await screen.findByText('/ 2,00,000 BB')).toBeInTheDocument();
+    expect(screen.getByText('90,000 BB', { exact: false })).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Pool balance against pool size' })).toHaveAttribute('aria-valuenow', '45');
+    expect(screen.getByText(/You can receive up to 1,00,000 BB in sell orders/)).toBeInTheDocument();
     expect(screen.getByText('Locked in open buys')).toBeInTheDocument();
+    expect(screen.getByText('5,000 BB')).toBeInTheDocument();
+    // Buy and sell disputes are one card.
     expect(screen.getByText('Locked in disputes')).toBeInTheDocument();
-    expect(screen.getByText('Pool size and sell capacity')).toBeInTheDocument();
-    expect(screen.getByRole('progressbar', { name: 'Sell capacity in use' })).toHaveAttribute('aria-valuenow', '2.9');
-    expect(screen.getByText(/Your own orders: 5,000 BB locked in 1 open buy/)).toBeInTheDocument();
-    // No ledger read: no profit line.
-    expect(screen.queryByText(/Net profit/)).not.toBeInTheDocument();
+    expect(screen.getByText('3,000 BB')).toBeInTheDocument();
+    expect(screen.getByText('Incoming from sells')).toBeInTheDocument();
+    expect(screen.getByText("Today's earnings")).toBeInTheDocument();
+    // The old cards are gone (owner, 2026-10-22).
+    for (const gone of [/Needs action/, /Success rate/, /Weekly earnings/, /Your record/, /Expiring soon/]) {
+      expect(screen.queryByText(gone)).not.toBeInTheDocument();
+    }
     stats.value = {};
   });
 
-  it('puts the ledger\'s profit and loss on the cards', async () => {
-    stats.value = { money: { own: none, pool: { availablePaise: 9000000, heldPaise: 700000, standing, exposure: none } } };
-    ledger.value = {
-      disputes: [{ orderId: 'o1', decision: 'COMPLETE', lostBy: 'MERCHANT' }, { orderId: 'o2', decision: 'CANCEL', lostBy: 'PLAYER' }],
-      totals: { netProfitPaise: 125_000, netUserPaise: -40_000, compensationPaise: 5_000, netCommissionPaise: 20_000 },
-    };
+  it('above 100% of the size, says buy orders come first', async () => {
+    stats.value = { money: { own: none, pool: { availablePaise: 30_000_000, heldPaise: 0, exposure: none,
+      standing: { ...standing, leftPaise: 30_000_000, consumedPaise: 0, sellRoomPaise: 0, leftPercent: 150 } } } };
     show({});
-    expect(await screen.findByText('Net profit · last 7 days')).toBeInTheDocument();
-    expect(screen.getByText('+1,250 BB')).toBeInTheDocument();
-    expect(screen.getByText('−400 BB')).toBeInTheDocument();
-    expect(screen.getByText('1 of 2 decided for you in the last 7 days.')).toBeInTheDocument();
-    stats.value = {}; ledger.value = null;
+    expect(await screen.findByText('150% of your pool size')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Pool balance against pool size' })).toHaveAttribute('aria-valuenow', '150');
+    expect(screen.getByText(/buy orders come to you first/)).toBeInTheDocument();
+    stats.value = {};
   });
 
-  it('shows no pool cards when the merchant has no pool', async () => {
+  it('offers the USDT token buy to a merchant account\'s owner, and not to an agent', async () => {
     stats.value = { money: { own: none, pool: null } };
+    show({ isMerchantAccount: true });
+    expect(await screen.findByRole('button', { name: /Buy tokens from admin \(USDT\)/ })).toBeInTheDocument();
+    cleanup();
     show({});
-    expect(await screen.findByText(/Online · Accepting orders/)).toBeInTheDocument();
-    expect(await screen.findByText('Disputes')).toBeInTheDocument();
-    expect(screen.queryByText('Pool status')).not.toBeInTheDocument();
+    expect(await screen.findByText(/You have no pool yet/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Buy tokens from admin/ })).not.toBeInTheDocument();
     stats.value = {};
   });
 });
