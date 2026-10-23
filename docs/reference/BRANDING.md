@@ -43,7 +43,7 @@ Never concatenate `cdnBase + '/' + logo` without normalising both sides (C-07 fi
 
 | Field | Consumer |
 |---|---|
-| `logo` | Header.tsx, ShareModal.tsx, admin Layout.tsx |
+| `logo` | player app `brandLogo()` (update and can't-connect screens, ShareModal.tsx, NativeUpdateGate.tsx), admin Logo.tsx. Not the player header: that is the App Assets `logo-header.png` slot (`useHeaderLogo`) |
 | `primaryColor` | `--brand-primary` CSS variable |
 | `secondaryColor` | `--brand-secondary` CSS variable |
 | `accentColor` | `--brand-accent` CSS variable |

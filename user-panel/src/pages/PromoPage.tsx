@@ -10,12 +10,13 @@ import React, { useEffect, useState } from 'react';
 import { getBackend } from '../services/backend.service';
 import { PromoContent } from '../types';
 import ScreenShell from '../redesign/Screen';
+import { useBranding } from '../services/branding';
 
 const backend = getBackend();
 
 const PromoPage: React.FC = () => {
-  const branding = (() => { try { return JSON.parse(localStorage.getItem('app_branding') || '{}'); } catch { return {}; } })();
-  const tricksBannerUrl: string = branding.tricksTipsBannerUrl || '';
+  const branding = useBranding();
+  const tricksBannerUrl = String(branding.tricksTipsBannerUrl || '');
   const [slides, setSlides] = useState<PromoContent[]>([]);
   const [loading, setLoading] = useState(true);
 

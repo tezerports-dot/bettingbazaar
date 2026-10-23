@@ -26,6 +26,8 @@
  * cannot disagree with the hex they came from (§2: one owner per value).
  */
 
+import { useEffect, useState } from 'react';
+
 /** A 3- or 6-digit hex, with or without `#`, to an `r,g,b` triplet. Null if unparseable. */
 export function hexToRgbTriplet(hex: string | null | undefined): string | null {
   if (!hex) return null;
@@ -93,7 +95,36 @@ export function applyBranding(b: BrandingDoc | null | undefined): void {
   // §13: each panel titles itself from its OWN panel-name field.
   if (b.userPanelName) document.title = String(b.userPanelName);
 
-  try { localStorage.setItem('app_branding', JSON.stringify({ ...b, palette: palette.toUpperCase() })); } catch { /* private mode */ }
+  const cached = { ...b, palette: palette.toUpperCase() };
+  try { localStorage.setItem('app_branding', JSON.stringify(cached)); } catch { /* private mode */ }
+  // Screens drawing a branding image (useBranding) redraw now, not on their
+  // next mount: a saved image used to wait for a reload.
+  window.dispatchEvent(new CustomEvent(BRANDING_APPLIED, { detail: cached }));
+}
+
+/** The window event `applyBranding` sends after it caches a document. */
+export const BRANDING_APPLIED = 'app_branding_applied';
+
+/** The cached branding document, or {} when there is none or it is unreadable. */
+export function cachedBranding(): BrandingDoc {
+  try { return JSON.parse(localStorage.getItem('app_branding') || '{}') || {}; } catch { return {}; }
+}
+
+/**
+ * The branding document for a screen: the cache now, and every document
+ * applied after (the stream's opening one, an admin's save). A screen that read
+ * the cache once kept showing the image from before the save.
+ */
+export function useBranding(): BrandingDoc {
+  const [doc, setDoc] = useState<BrandingDoc>(cachedBranding);
+  useEffect(() => {
+    const onApplied = (e: Event) => setDoc((e as CustomEvent<BrandingDoc>).detail ?? cachedBranding());
+    window.addEventListener(BRANDING_APPLIED, onApplied);
+    // A document applied between the first render and this listener.
+    setDoc(cachedBranding());
+    return () => window.removeEventListener(BRANDING_APPLIED, onApplied);
+  }, []);
+  return doc;
 }
 
 /** Apply whatever was cached, so the first paint is branded before the socket arrives. */

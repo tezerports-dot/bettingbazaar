@@ -11,6 +11,7 @@ import { getBackend } from '../services/backend.service';
 import { PromoContent } from '../types';
 import ScreenShell, { card } from '../redesign/Screen';
 import { useBoardRulesText, BoardRulesSections } from '../redesign/BoardRules';
+import { useBranding } from '../services/branding';
 
 const backend = getBackend();
 
@@ -21,8 +22,8 @@ const RULE_BLOCKS = [
 ];
 
 const RulesPage: React.FC = () => {
-  const branding = (() => { try { return JSON.parse(localStorage.getItem('app_branding') || '{}'); } catch { return {}; } })();
-  const rulesBannerUrl: string = branding.rulesPageImageUrl || '';
+  const branding = useBranding();
+  const rulesBannerUrl = String(branding.rulesPageImageUrl || '');
   const [slides, setSlides] = useState<PromoContent[]>([]);
   // How a round is won, phantom bets, payout, winners list: the server's text,
   // the same the board screen's pop-up asks players to accept.

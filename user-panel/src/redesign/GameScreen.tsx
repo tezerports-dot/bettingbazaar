@@ -32,6 +32,7 @@ import AnalyticsView from './AnalyticsView';
 import AutoBetsSheet from './AutoBets';
 import { BetCardFigure, BetCardFill, BlindBand, shareModeFor, sharesOf } from './BetCardShare';
 import { getAssetUrl } from '../services/backend.service';
+import { useBranding } from '../services/branding';
 import { canPlaceBet } from '../GAME_CORE';
 import { serverNow } from '../services/serverClock';
 import { BoardRulesModal } from './BoardRules';
@@ -95,6 +96,8 @@ const GameScreen: React.FC = () => {
   } = useGame();
   // Admin › Player Screen (SystemConfig.boardExtras).
   const extras = sysConfig.boardExtras;
+  // The bet-card and Refer & Earn images (Admin › Images), redrawn on a save.
+  const brand = useBranding();
   // What a win pays on this profile's boards, shown where "VS" was (owner, 2026-10-19).
   const payoutMultiple = audience === 'GENERAL' ? sysConfig.generalPayoutMultiplier : sysConfig.payoutMultiplier;
 
@@ -270,12 +273,10 @@ const GameScreen: React.FC = () => {
   const bigShare = cardH >= 200;
 
   // Admin-configurable bet-card backgrounds (Branding → CDN, GOVERNANCE §12).
-  // Empty ⇒ default themed gradient. Read from app_branding like the other
-  // branding consumers (PromoPage/RulesPage); getAssetUrl resolves CDN paths.
-  const brand = (() => { try { return JSON.parse(localStorage.getItem('app_branding') || '{}'); } catch { return {}; } })();
+  // Empty ⇒ default themed gradient. getAssetUrl resolves CDN paths.
   const cardImg: Record<string, string> = {
-    [BettingSide.DELHI]: getAssetUrl(brand.betCardDelhiImageUrl || ''),
-    [BettingSide.BOMBAY]: getAssetUrl(brand.betCardBombayImageUrl || ''),
+    [BettingSide.DELHI]: getAssetUrl(String(brand.betCardDelhiImageUrl || '')),
+    [BettingSide.BOMBAY]: getAssetUrl(String(brand.betCardBombayImageUrl || '')),
   };
 
   const sideStyle = (side: BettingSide): React.CSSProperties => {
@@ -314,7 +315,7 @@ const GameScreen: React.FC = () => {
   // 2026-10-10); each side's pool is on its own betting card on every screen size.
   // Its image is Branding's `referPromoImageUrl` (admin › Branding, CDN);
   // with none uploaded it is a styled card saying the same thing.
-  const referImg = getAssetUrl(brand.referPromoImageUrl || '');
+  const referImg = getAssetUrl(String(brand.referPromoImageUrl || ''));
   const openReferrals = () => { window.location.hash = '#/referrals'; };
   const leftPanel = (
     <aside className="bb-noscroll" style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
