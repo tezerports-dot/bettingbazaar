@@ -107,9 +107,8 @@ describePg('curated winners', () => {
     await add('hidden', { isPublic: false });
     const res = await request(app).get('/v1/winners').query({ limit: 200, period: 'week' });
     expect(res.status).toBe(200);
-    // The tag for curated entries is the admin's word, never blank (SystemConfig.winnersDemoLabel).
-    expect(typeof res.body.demoLabel).toBe('string');
-    expect(res.body.demoLabel.length).toBeGreaterThanOrEqual(2);
+    // Curated entries carry no tag (owner, 2026-10-23).
+    expect(res.body).not.toHaveProperty('demoLabel');
     const mine = res.body.winners.filter((w) => String(w.displayName).startsWith(RUN));
     expect(mine.map((w) => w.displayName)).toContain(`${RUN}-public`);
     expect(mine.map((w) => w.displayName)).not.toContain(`${RUN}-hidden`);

@@ -10,17 +10,6 @@ import { platform } from '../services/api';
 
 interface Winner { displayName: string; profilePic?: string; amount: number; betAmount?: number; game?: string; isReal?: boolean; }
 
-/**
- * Admin-curated entries are not real wins (`isReal: false`, routes
- * winners.routes.js), so each carries a small "Demo" chip, the same rule as
- * house bets and demo results: shown on screen while they are shown at all.
- */
-/** A curated entry's quiet tag; its word is the server's (`demoLabel`, SystemConfig.winnersDemoLabel). */
-const DemoChip: React.FC<{ w: Winner; label: string }> = ({ w, label }) => (w.isReal === false && label ? (
-  <span title="Example entry added by the platform, not a real player's win"
-    style={{ fontSize: 8, fontWeight: 600, padding: '0 4px', borderRadius: 4, color: 'var(--text3)', opacity: 0.75, marginLeft: 4, verticalAlign: 'middle' }}>{label}</span>
-) : null);
-
 const MEDAL: Record<number, { color: string; medal: string; podH: number; avSize: number }> = {
   1: { color: 'var(--brand-accent, #F5C77A)', medal: '👑', podH: 92, avSize: 62 },
   2: { color: '#C7CBD1', medal: '🥈', podH: 70, avSize: 52 },
@@ -33,12 +22,11 @@ export default function WinnersPage() {
   const [winners, setWinners] = useState<Winner[]>([]);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<'today' | 'week'>('today');
-  const [demoLabel, setDemoLabel] = useState('');
 
   useEffect(() => {
     setLoading(true);
     platform.winners(period)
-      .then((d: any) => { if (d.success) { setWinners(d.winners || d.data || []); setDemoLabel(d.demoLabel || ''); } })
+      .then((d: any) => { if (d.success) { setWinners(d.winners || d.data || []); } })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [period]);
@@ -77,7 +65,7 @@ export default function WinnersPage() {
                       {w.profilePic ? <img src={w.profilePic} alt={w.displayName} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} /> : w.displayName.slice(0, 2).toUpperCase()}
                       <span style={{ position: 'absolute', top: -10, right: -4, fontSize: 16 }}>{m.medal}</span>
                     </span>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', marginTop: 8, maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.displayName}<DemoChip w={w} label={demoLabel} /></span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', marginTop: 8, maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.displayName}</span>
                     <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 13, color: m.color, marginBottom: 8 }}>₹{fmt(w.amount)}</span>
                     <div style={{ width: '100%', borderRadius: '10px 10px 0 0', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8, height: m.podH, background: `linear-gradient(180deg,color-mix(in srgb,${m.color} 26%,transparent),color-mix(in srgb,${m.color} 8%,transparent))`, border: `1px solid color-mix(in srgb,${m.color} 30%,transparent)` }}>
                       <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 20, color: m.color }}>#{w.rank}</span>
@@ -97,7 +85,7 @@ export default function WinnersPage() {
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 0', borderTop: '1px solid var(--line)' }}>
                   <span className="font-grotesk" style={{ width: 22, textAlign: 'right', fontWeight: 700, fontSize: 13, color: 'var(--text3)' }}>#{i + 4}</span>
                   <span style={{ width: 34, height: 34, flex: 'none', borderRadius: '50%', background: 'var(--surface3)', border: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, overflow: 'hidden' }}>{w.profilePic ? <img src={w.profilePic} alt={w.displayName} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : '👤'}</span>
-                  <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.displayName}<DemoChip w={w} label={demoLabel} /></span>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.displayName}</span>
                   <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 13, color: 'var(--gold-ink)' }}>₹{fmt(w.amount)}</span>
                 </div>
               ))}

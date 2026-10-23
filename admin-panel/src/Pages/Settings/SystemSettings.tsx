@@ -329,8 +329,6 @@ export const SystemSettings: React.FC = () => {
     // The line under the board rules (owner, 2026-10-15). '' until loaded: the
     // server always sends one (phantomBetsLabelOf), and an empty save is refused.
     phantomBetsLabel: '',
-    // The tag on a curated winners entry (owner, 2026-10-22); never blank.
-    winnersDemoLabel: 'Demo', // schema default: 'Demo'
     // Demo results in the analytics (owner, 2026-10-15); schema default: true.
     demoResultsOn: true,
     // How long a sell stays in escrow after the member marks it paid.
@@ -451,7 +449,6 @@ export const SystemSettings: React.FC = () => {
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
           generalPayoutMultiplier: response.data.generalPayoutMultiplier ?? 1.8, // schema default: 1.8
           phantomBetsLabel:     response.data.phantomBetsLabel     ?? '',
-          winnersDemoLabel:     response.data.winnersDemoLabel     ?? 'Demo', // schema default: 'Demo'
           demoResultsOn:      response.data.demoResultsOn      ?? true,  // schema default: true
           riskRules: {
             enforceMultiplesOf10:     response.data.riskRules?.enforceMultiplesOf10     ?? true,
@@ -865,20 +862,6 @@ export const SystemSettings: React.FC = () => {
             </p>
           </div>
 
-          <div className="pt-4 border-t border-dark-700">
-            <label className="label" htmlFor="winners-demo-label">Winners Demo Tag (shown to players)</label>
-            <input id="winners-demo-label"
-              type="text" minLength={2} maxLength={16}
-              value={formData.winnersDemoLabel}
-              onChange={(e) => setFormData({ ...formData, winnersDemoLabel: e.target.value })}
-              className="input"
-            />
-            <SettingHelp path="winnersDemoLabel" />
-            <p className="text-xs text-gold-400/80 mt-1">
-              Shown small beside every winner you added yourself on the players' Winners page.
-              You can reword it; it cannot be removed.
-            </p>
-          </div>
 
           <div className="pt-4 border-t border-dark-700">
             <div className="flex items-center justify-between">
