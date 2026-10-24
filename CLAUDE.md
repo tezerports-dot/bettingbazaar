@@ -385,7 +385,6 @@ Held-major register (a row leaves when its blocker is gone):
 | Package | Held on | Major | Rewrite the newer major forces |
 |---|---|---|---|
 | typescript | all panels | 5.x | 7.x is a preview |
-| tailwindcss | merchant, user | 3.x | v4 stylesheet and config rewrite |
 | recharts | admin | 2.x | v3 renamed chart props |
 | framer-motion | admin, user | 11.x | v12 renamed the package and `motion` import |
 | @hookform/resolvers | admin | 3.x | v4 resolver signature |
@@ -804,8 +803,9 @@ not evidence.
 
 ## 36. Horizontal scale is a config contract
 
-Cron leader lock (`cron_locks`), settlement claim (`FOR UPDATE SKIP LOCKED` +
-lease), socket.io Redis adapter, SSE Redis relay, shared rate-limit store, and
+Cron leader lock (`cron_locks`), the round manager's `cycle-manager` lease (one
+scheduler leads, `scheduler-standby` takes over), settlement claim (`FOR UPDATE
+SKIP LOCKED` + lease), socket.io Redis adapter, SSE Redis relay, shared rate-limit store, and
 wallet row locks already make N instances safe. An operator MUST set
 `REDIS_URL` (for more than one instance), `TRUST_PROXY` (production refuses to
 boot without it) and `TURNSTILE_SECRET_KEY` (or `ALLOW_NO_CAPTCHA=true`). Pen

@@ -26,6 +26,7 @@ import { placePlayerBet, announcePlacedBet } from './playerBet.service.js';
 import { stopBefore, stopForRefusal, autoBetId, AUTO_STOP_TEXT } from './autoBets.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { notify } from '../communication/communication.service.js';
+import { holdLeadership, release as releaseLease } from '../../startup/cronLock.js';
 
 /** A tick of the cycle manager running this long means every board has stopped (it runs every second). */
 const TICK_STALL_MS = 20_000;
@@ -39,8 +40,26 @@ const TICK_STALL_MS = 20_000;
  * with no way back but a restart.
  */
 export const TICK_ABANDON_MS = 30_000;
-/** Start-up reads that have not answered by then stop holding the manager back; the ticks recover the rounds. */
-export const INIT_DEADLINE_MS = 30_000;
+
+/**
+ * ONE scheduler manages the rounds at a time; a second one stands by
+ * (deploy/vps/docker-compose.prod.yml `scheduler-standby`). The round manager
+ * keeps per-round state in memory (the live-cycle cache, the celebration lock,
+ * the auto bets tried), so two running side by side is not what its guarded
+ * writes are for — they make a LATE tick harmless, not a second manager.
+ *
+ * The active one renews a lease in `cron_locks` every LEADER_RENEW_MS; a
+ * standby is refused until that lease lapses (LEADER_LEASE_MS after the last
+ * renewal: a crash, a frozen process, a lost database), then takes over.
+ * A leader stops ticking LEADER_SAFETY_MS before its own lease could have
+ * lapsed, timed from when it ASKED for the renewal on its own clock, so it has
+ * always stopped before a standby can start. A graceful stop (a deploy)
+ * releases the lease at once, so the standby takes over within one renewal.
+ */
+export const CYCLE_MANAGER_LEASE = 'cycle-manager';
+export const LEADER_LEASE_MS = 15_000;
+export const LEADER_RENEW_MS = 3_000;
+export const LEADER_SAFETY_MS = 5_000;
 
 /**
  * Each board runs one cycle per slot for each audience (VIP, GENERAL), and the
@@ -70,31 +89,35 @@ class CycleGenerator {
         // tick does not ask again. Only a saving: the bet's id is keyed by
         // plan and round, so a forgotten entry still places nothing twice.
         this.autoBetsTried = new Set();
+        // Leadership is elected only by start(). A generator that is never
+        // started (a test driving tick()) leads, exactly as before.
+        this.isLeader = true;
+        this.leaseUntil = Infinity;
+        this.needsInit = false;
+        this.renewing = false;
+        // Who holds the lease: this process unless a test names one.
+        this.leaseHolder = undefined;
     }
 
     start() {
         console.log('🔄 Cycle Generator: Starting...');
 
-        this.isInitialized = false;
         this.isRunning     = false;
         this.tickStartedAt = 0;
         this.stallReported = false;
         this.tickSeq       = 0;   // the tick that owns `isRunning`; a tick left behind never clears it
 
-        const init = this.initializeCycles().then(() => {
-            console.log('✅ Cycle Generator: Initialization complete');
-        }).catch(e => {
-            console.error('❌ CycleGenerator init error:', e);
-        }).finally(() => { this.isInitialized = true; });
-        // A start-up read that never answers must not keep every board from
-        // ever getting a round: past the deadline the ticks start anyway.
-        const initDeadline = setTimeout(() => {
-            if (this.isInitialized) return;
-            console.error(`❌ CycleGenerator: start-up has not finished after ${INIT_DEADLINE_MS / 1000}s; starting the rounds anyway`);
-            this.isInitialized = true;
-        }, INIT_DEADLINE_MS);
-        initDeadline.unref?.();
-        void init.finally(() => clearTimeout(initDeadline));
+        // Nothing is read or written until this process LEADS: the start-up
+        // pass (`initializeCycles`) is the first tick it runs as leader, so a
+        // standby that takes over starts exactly as a fresh process would. A
+        // start-up pass that never answers is a stuck tick, and the tick's own
+        // bound leaves it behind (TICK_ABANDON_MS).
+        this.isInitialized = true;
+        this.isLeader      = false;
+        this.leaseUntil    = 0;
+        this.needsInit     = false;
+        this.leaderTimer = setInterval(() => { void this.renewLeadership(); }, LEADER_RENEW_MS);
+        void this.renewLeadership();
 
         // ── CYCLE MANAGER (1 000 ms) ────────────────────────────────────────
         // Handles phase transitions, phantom equalizer, new-cycle creation.
@@ -104,7 +127,53 @@ class CycleGenerator {
         // Timer is derived client-side from endTime, zero server push required.
         this.tickTimer = setInterval(() => { void this.tick(); }, 1000);
 
-        console.log('✅ Cycle Generator: Intervals started (waiting for init...)');
+        console.log('✅ Cycle Generator: Intervals started (waiting for the round-manager lease...)');
+    }
+
+    /**
+     * Take or keep the round-manager lease. One renewal at a time: a renewal
+     * that is slow to answer is simply late, and the leader stops ticking
+     * on its own once `leaseUntil` passes.
+     */
+    async renewLeadership() {
+        if (this.renewing) return;
+        this.renewing = true;
+        const askedAt = Date.now();
+        try {
+            const leads = await holdLeadership(CYCLE_MANAGER_LEASE, LEADER_LEASE_MS, this.leaseHolder);
+            if (leads) {
+                this.leaseUntil = askedAt + LEADER_LEASE_MS - LEADER_SAFETY_MS;
+                if (!this.isLeader) {
+                    console.log('👑 CycleGenerator: this scheduler now manages the rounds');
+                    this.needsInit = true;
+                    this.isLeader = true;
+                }
+            } else if (this.isLeader) {
+                console.warn('⏸️ CycleGenerator: another scheduler manages the rounds; standing by');
+                this.isLeader = false;
+            }
+        } finally {
+            this.renewing = false;
+        }
+    }
+
+    /** Does this process manage the rounds right now? */
+    leads() {
+        return this.isLeader && Date.now() < this.leaseUntil;
+    }
+
+    /**
+     * Stop managing rounds (shutdown). The lease is given back at once, so a
+     * standby takes over within one renewal instead of waiting it out.
+     */
+    stop() {
+        if (this.tickTimer) clearInterval(this.tickTimer);
+        if (this.leaderTimer) clearInterval(this.leaderTimer);
+        const wasLeader = this.isLeader;
+        this.isLeader = false;
+        this.leaseUntil = 0;
+        if (wasLeader) void releaseLease(CYCLE_MANAGER_LEASE, this.leaseHolder);
+        console.log('🔄 Cycle Generator: Stopped');
     }
 
     /**
@@ -115,6 +184,8 @@ class CycleGenerator {
      */
     async tick() {
         if (!this.isInitialized) return;
+        // A standby (or a leader whose lease it can no longer vouch for) does nothing.
+        if (!this.leads()) return;
         if (this.isRunning) {
             const ranMs = Date.now() - this.tickStartedAt;
             if (ranMs >= TICK_STALL_MS && !this.stallReported) {
@@ -132,7 +203,15 @@ class CycleGenerator {
         this.tickStartedAt = Date.now();
         this.stallReported = false;
         try {
-            await this.manageCycles();
+            // The first tick as leader is the start-up pass; every one after
+            // it is the ordinary second's work.
+            if (this.needsInit) {
+                this.needsInit = false;
+                await this.initializeCycles();
+                console.log('✅ Cycle Generator: Initialization complete');
+            } else {
+                await this.manageCycles();
+            }
         } catch (e) {
             console.error('❌ CycleGenerator interval error:', e);
         } finally {

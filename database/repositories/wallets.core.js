@@ -104,6 +104,31 @@ export async function getBalancesPaise(userId) {
   );
 }
 
+/**
+ * getBalancesPaiseMany — every balance for MANY users, in integer paise, in one
+ * query. The read `getBalancesPaise` makes, for a set of users at once: a
+ * round's winners were read one query each, in a loop, after every settlement
+ * (N+1), holding a pool connection per winner in turn.
+ *
+ * Returns a Map keyed by the user id as a string, with an entry for EVERY id
+ * asked for — zeros for a user with no wallet row, exactly as the single read.
+ * A DISPLAY read: nothing may gate money on it (§9; a decision read goes
+ * through the wallet lock).
+ */
+export async function getBalancesPaiseMany(userIds) {
+  const ids = [...new Set((userIds ?? []).map(String))];
+  const out = new Map(ids.map((id) => [id, rowToBalances()]));
+  if (!ids.length) return out;
+  const { rows } = await pgQuery(
+    `SELECT user_id, ${BALANCE_FIELDS.map((f) => FIELD_COLUMN[f]).join(', ')}
+       FROM wallets WHERE user_id = ANY($1::text[])`,
+    [ids],
+    'wallet_read_many',
+  );
+  for (const row of rows) out.set(String(row.user_id), rowToBalances(row));
+  return out;
+}
+
 /** The same balances in rupees, which is what routes serialise. */
 export async function getBalancesRupees(userId) {
   const paise = await getBalancesPaise(userId);

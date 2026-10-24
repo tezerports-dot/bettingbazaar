@@ -34,7 +34,7 @@ import { paiseToRupees, rupeesToPaise } from '../../backend/shared/money.js';
 import { istDay } from '../../backend/shared/istDay.js';
 import { pgQuery } from '../client.js';
 import {
-  applyMovementPaise, applyMovementWithin, getBalancesPaise, withWalletLock,
+  applyMovementPaise, applyMovementWithin, getBalancesPaise, getBalancesPaiseMany, withWalletLock,
 } from './wallets.core.js';
 import { ACCOUNTS } from './treasury.js';
 
@@ -44,6 +44,21 @@ export async function getBalances(userId) {
   return Object.fromEntries(
     Object.entries(paise).map(([field, value]) => [field, paiseToRupees(value)]),
   );
+}
+
+/**
+ * Every balance for many users, in rupees, in ONE query — `getBalances` for a
+ * set (a round's winners). An object keyed by user id, an entry for every id.
+ */
+export async function getBalancesMany(userIds) {
+  const paise = await getBalancesPaiseMany(userIds);
+  const out = {};
+  for (const [userId, balances] of paise) {
+    out[userId] = Object.fromEntries(
+      Object.entries(balances).map(([field, value]) => [field, paiseToRupees(value)]),
+    );
+  }
+  return out;
 }
 
 const rupees = paiseToRupees;

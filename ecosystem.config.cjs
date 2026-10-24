@@ -7,7 +7,9 @@
  *
  *   api        BB_WORKERS=4   pm2-runtime ecosystem.config.cjs
  *   realtime   BB_WORKERS=2   pm2-runtime ecosystem.config.cjs
- *   scheduler  plain `node backend/server.js` — EXACTLY ONE, never clustered
+ *   scheduler  plain `node backend/server.js` — one process, never clustered;
+ *              `scheduler-standby` is a second container that takes over the
+ *              rounds when the first stops renewing its lease (cycle-manager)
  *
  * = 6 backend workers on the 8-core server, leaving two cores for PostgreSQL,
  * PgBouncer, Redis, Caddy and the system (owner, 2026-10-09). Six is the
@@ -16,7 +18,8 @@
  * Why it is safe to run several (CLAUDE.md §36): sessions are tokens checked
  * against PostgreSQL, rate limits use the Redis store, socket.io uses the
  * Redis adapter and SSE the Redis relay, cron and the cycle engine are
- * leader-locked and only run in the scheduler, wallet moves hold row locks.
+ * leader-locked and only run in the scheduler (the round manager behind the
+ * `cycle-manager` lease), wallet moves hold row locks.
  * Socket.io is websocket-only (server.js `transports: ['websocket']`), so the
  * cluster's round-robin needs no sticky sessions.
  *

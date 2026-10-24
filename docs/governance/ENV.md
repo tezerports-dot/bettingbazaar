@@ -72,7 +72,9 @@ a redeploy is not an acceptable degradation.
 |---|---|
 | `S3_REGION` | Bucket region. |
 | `CDN_URL` | **Required in production.** The bucket's public https origin (an R2 `r2.dev` URL or a custom domain), no trailing slash. Every stored upload URL is `${CDN_URL}/<key>`; unset, they were saved as `undefined/<key>`. |
-| `BACKUP_S3_BUCKET` | **Advised.** A PRIVATE bucket (no public access) for the nightly `pg_dump` (`backup.service.js` `backupStorage`). Refused when it is the public `S3_BUCKET_NAME`; unset, no backup is taken and the alert webhook says so. After a good backup, old `backups/` objects are deleted from the public bucket. |
+| `BACKUP_S3_BUCKET` | **Required in production** (boot refuses it unset unless `ALLOW_NO_BACKUP=true`). A PRIVATE bucket (no public access) for the nightly `pg_dump` (`backup.service.js` `backupStorage`) and the point-in-time recovery archive under `pitr/` (pgBackRest, `deploy/vps/postgres/`). Refused when it is the public `S3_BUCKET_NAME`. After a good backup, old `backups/` objects are deleted from the public bucket. |
+| `ALLOW_NO_BACKUP` | `true` lets production boot with no `BACKUP_S3_BUCKET` — a stated decision for a throwaway box, like `ALLOW_NO_CAPTCHA`. |
+| `PITR_CIPHER_PASS` | Encrypts the point-in-time archive (pgBackRest `aes-256-cbc`). Set before the first backup; it cannot change afterwards, and the archive cannot be restored without it. Unset, the archive is unencrypted and the `pitr` log says so. |
 | `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY`, `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION` | Optional. The backup bucket's own token and address; each defaults to its `S3_*` twin. |
 | `BACKUP_KEEP` | Optional. Backups kept in the backup bucket (default 14). |
 

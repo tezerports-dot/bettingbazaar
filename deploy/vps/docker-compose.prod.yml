@@ -8,13 +8,15 @@
 #   caddy      TLS termination + reverse proxy   (ports 80/443 — the only ones open)
 #   api        BB_RUNTIME_ROLE=api        HTTP + the three panels   PM2 cluster, 4 workers
 #   realtime   BB_RUNTIME_ROLE=realtime   WebSocket + SSE           PM2 cluster, 2 workers
-#   scheduler  BB_RUNTIME_ROLE=scheduler  game cycles + cron  (EXACTLY ONE process)
+#   scheduler  BB_RUNTIME_ROLE=scheduler  game cycles + cron  (one process, leading)
+#   scheduler-standby                     the same, standing by  (takes over on a crash)
 #   migrate    applies database/schema.sql once per deploy, then exits
 #   pgbouncer  connection pooler (transaction mode) — every Node process connects HERE
 #   postgres   PostgreSQL 18, the datastore — money, identity, config, content
+#   pitr       daily base backups for point-in-time recovery (pgBackRest)
 #   redis      cache, locks, rate-limit counters, realtime fan-out
 #
-# 6 backend workers on the 8-core / 16 GB server (owner, 2026-10-09): a
+# 6 backend workers on the 12-core / 12 GB launch server (owner, 2026-10-24): a
 # starting point to confirm with the load test, not a measured optimum.
 # Tuning and its evidence: docs/governance/PGBOUNCER_AND_CLUSTER.md.
 #
@@ -34,6 +36,20 @@
 # an option until 2026-10-11: its images are no longer published, and a presigned
 # URL naming an internal hostname is one no browser can reach.
 # ══════════════════════════════════════════════════════════════════════════════
+
+# pgBackRest's settings (postgres + pitr): the SAME private bucket and token as
+# the nightly pg_dump (BACKUP_S3_*, each defaulting to its S3_* twin), under its
+# own `pitr/` prefix. PITR_CIPHER_PASS encrypts the archive; set it BEFORE the
+# first backup (a repository's cipher cannot change later).
+x-pitr-env: &pitr-env
+  PGBACKREST_REPO1_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+  PGBACKREST_REPO1_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-${S3_ENDPOINT:-}}
+  PGBACKREST_REPO1_S3_REGION: ${BACKUP_S3_REGION:-auto}
+  PGBACKREST_REPO1_S3_KEY: ${BACKUP_S3_ACCESS_KEY:-${S3_ACCESS_KEY:-}}
+  PGBACKREST_REPO1_S3_KEY_SECRET: ${BACKUP_S3_SECRET_KEY:-${S3_SECRET_KEY:-}}
+  PGBACKREST_REPO1_CIPHER_PASS: ${PITR_CIPHER_PASS:-}
+  PGBACKREST_PG1_USER: ${POSTGRES_USER:-bb}
+  PGBACKREST_PG1_DATABASE: ${POSTGRES_DB:-bettingbazaar}
 
 x-app-base: &app-base
   build:
@@ -141,10 +157,25 @@ services:
       BB_WORKERS: "2"
       PORT: "8080"
 
-  # EXACTLY ONE. It owns the game-cycle producer and the cron jobs. They are
-  # Redis leader-locked so a second would not corrupt anything, but running two
-  # is a pointless race. Never set `deploy.replicas` above 1 here.
+  # The game-cycle producer and the cron jobs. ONE process each: never set
+  # `deploy.replicas` above 1 here (ecosystem.config.cjs refuses BB_WORKERS > 1).
+  # The standby below is the second one, by design: whichever holds the
+  # `cycle-manager` lease in PostgreSQL manages the rounds, and each cron job
+  # still runs on one leader at a time (startup/cronLock.js).
   scheduler:
+    <<: *app-base
+    environment:
+      <<: *app-env
+      BB_RUNTIME_ROLE: scheduler
+      PORT: "8080"
+
+  # STANDBY scheduler. Idle while `scheduler` renews the round-manager lease;
+  # takes over within 15 s when it stops (a crash, a frozen process), and at
+  # once when it is stopped for a deploy (the lease is given back). Rounds no
+  # longer wait for a restart. It shares this machine, so it covers a failed
+  # PROCESS, not a failed server: a second VPS running only this service
+  # (pointed at the same database) covers that too — docs/governance/HIGH_AVAILABILITY.md.
+  scheduler-standby:
     <<: *app-base
     environment:
       <<: *app-env
@@ -191,12 +222,16 @@ services:
     # PostgreSQL 18 with pgvector, which the support assistant's document search
     # needs (database/schema.sql). Plain postgres:18 has no `vector` extension:
     # the schema skips it and /api/admin/support/documents answers 503.
-    image: pgvector/pgvector:pg18
+    # pgvector/pgvector:pg18 plus pgBackRest (./postgres/Dockerfile): the WAL
+    # archive for point-in-time recovery runs inside PostgreSQL itself.
+    build: ./postgres
+    image: bettingbazaar-postgres:local
     restart: unless-stopped
-    # Tuned for the 16 GB / 8-core server — see ./postgres/postgresql.conf.
+    # Tuned for the 12 GB / 12-core launch server — see ./postgres/postgresql.conf.
     command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
     shm_size: 1g
     environment:
+      <<: *pitr-env
       POSTGRES_USER: ${POSTGRES_USER:-bb}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-bettingbazaar}
@@ -205,6 +240,7 @@ services:
       # is mounted at the parent so the data lives in it (a mount at
       # …/postgresql/data is the pre-18 layout and leaves the data outside).
       - postgres-data:/var/lib/postgresql
+      - postgres-socket:/var/run/postgresql
       - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     stop_grace_period: 60s
     healthcheck:
@@ -212,6 +248,25 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+    networks: [bb]
+
+  # Point-in-time recovery: a base backup every day (full on Sundays) into the
+  # PRIVATE backup bucket, beside the WAL PostgreSQL archives there continuously.
+  # Idle, saying so in its log, while BACKUP_S3_BUCKET is unset.
+  #   docker compose -f docker-compose.prod.yml exec -u postgres pitr bb-pgbackrest --stanza=bb info
+  # Restore to a moment: docs/governance/DISASTER_RECOVERY.md §3.
+  pitr:
+    image: bettingbazaar-postgres:local
+    restart: unless-stopped
+    user: postgres
+    command: ["bb-pitr-backup-loop"]
+    environment:
+      <<: *pitr-env
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - postgres-socket:/var/run/postgresql
+    depends_on:
+      postgres: { condition: service_healthy }
     networks: [bb]
 
   redis:
@@ -234,6 +289,7 @@ networks:
 
 volumes:
   postgres-data:
+  postgres-socket:
   redis-data:
   caddy-data:
   caddy-config:

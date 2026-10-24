@@ -21,7 +21,7 @@ const created = [];
 
 const newBoard = async () => {
   const b = await boards.createBoard({
-    name: `Retention ${randomInt(0, 1e9)}`, kind: 'INTERVAL', durationMin: 5, phases: PHASES, minBet: 10, maxBet: 1000,
+    name: `Rt ${randomInt(0, 1e9)}`, kind: 'INTERVAL', durationMin: 5, phases: PHASES, minBet: 10, maxBet: 1000,
   });
   created.push(b.key);
   return b.key;

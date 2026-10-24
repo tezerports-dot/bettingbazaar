@@ -37,9 +37,9 @@ const INSTANCE_ID = `${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
 
 
 /** Free the lock, if and only if this instance still holds it. */
-export async function release(name) {
+export async function release(name, holder = INSTANCE_ID) {
   try {
-    await db.operations.releaseLock(name, INSTANCE_ID);
+    await db.operations.releaseLock(name, holder);
   } catch { /* best-effort — the lease frees it regardless */ }
 }
 
@@ -69,6 +69,32 @@ export async function withLeaderLock(name, ttlMs, fn) {
     // threw. Either way the next tick retries; a thrown error here would take
     // the whole interval down and stop every job on this instance.
     console.warn(`[cron-lock] ${name}: skipped this tick — ${e.message}`);
+    return false;
+  }
+}
+
+/**
+ * Take, or keep, the lease that makes this process THE one running `name`.
+ *
+ * For a loop that must have exactly one runner across processes — the cycle
+ * manager, which keeps per-round state in memory — called once per tick: the
+ * leader extends its lease each tick, every other process is refused until
+ * that lease lapses (`ttlMs` after the leader's last tick), then one of them
+ * takes over. That is what lets a STANDBY scheduler run beside the active one
+ * (deploy/vps/docker-compose.prod.yml `scheduler-standby`).
+ *
+ * Never throws. A lease the database cannot answer for is "not leading": a
+ * process that cannot reach PostgreSQL has no round to manage anyway.
+ * `holder` defaults to this process; tests pass one per simulated process.
+ */
+export async function holdLeadership(name, ttlMs, holder = INSTANCE_ID) {
+  try {
+    const claim = await db.operations.acquireLock(name, holder, {
+      ttlSeconds: Math.max(Math.ceil(ttlMs / 1000), 1),
+    });
+    return claim.acquired === true;
+  } catch (e) {
+    console.warn(`[cron-lock] ${name}: leadership unreadable this tick — ${e.message}`);
     return false;
   }
 }

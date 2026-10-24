@@ -56,7 +56,7 @@ export default function LeaderboardPage() {
 
   return (
     <div className="h-full overflow-y-auto bg-[#0A0F1C] text-white pb-4">
-      <div className="bg-gradient-to-b from-yellow-900/30 to-transparent px-4 pt-4 pb-5">
+      <div className="bg-linear-to-b from-yellow-900/30 to-transparent px-4 pt-4 pb-5">
         <button onClick={() => navigate(-1)} className="text-gray-500 text-xs mb-3 block">← Back</button>
         <h1 className="text-xl font-bold">🏆 Leaderboard</h1>
         <p className="text-gray-400 text-xs mt-1">Top winners by net profit · Updates every 10 min</p>
