@@ -3,18 +3,35 @@
 // Orders — the merchant's live queue: a search + type filter row, then one
 // line per order, with the detail drawer/sheet over them. The four count
 // tiles that sat on top (Needs you, Processing, Paid, Disputed) are gone
-// (owner, 2026-10-24); each line carries its own status.
+// (owner, 2026-10-24): Processing and Disputed are in the filter row instead.
 import React, { useMemo, useState } from 'react';
 import { RefreshCw, Search } from 'lucide-react';
 import { useLocation } from 'react-router';
 import { useOrders } from '../hooks/useOrders';
 import { useViewport } from '../hooks/useViewport';
 import OrderWorkList from '../components/OrderWorkList';
+import { OrderStatus, type PaymentOrder } from '../types';
 import {
   Button, EmptyState, ErrorState, SegmentedControl, Skeleton, inputStyle,
 } from '../components/ui';
 
-type TypeFilter = 'ALL' | 'DEPOSIT' | 'WITHDRAWAL';
+/**
+ * One filter row (owner, 2026-10-24): by direction, or by where the order
+ * stands. Processing is every order still being worked (PROCESSING, and PAID:
+ * the player says they paid and the merchant has yet to confirm).
+ */
+type TypeFilter = 'ALL' | 'DEPOSIT' | 'WITHDRAWAL' | 'PROCESSING' | 'DISPUTED';
+const IN_PROCESS: string[] = [OrderStatus.PROCESSING, OrderStatus.PAID];
+
+function matchesFilter(order: PaymentOrder, filter: TypeFilter): boolean {
+  switch (filter) {
+    case 'DEPOSIT':
+    case 'WITHDRAWAL': return order.type === filter;
+    case 'PROCESSING': return IN_PROCESS.includes(order.status);
+    case 'DISPUTED': return order.status === OrderStatus.DISPUTED;
+    default: return true;
+  }
+}
 
 /**
  * What another screen asks Orders to open with, as router state: one order.
@@ -34,7 +51,7 @@ const OrderManagement: React.FC = () => {
   const visible = useMemo(() => {
     const query = search.trim().toLowerCase();
     return orders.filter((order) => {
-      if (typeFilter !== 'ALL' && order.type !== typeFilter) return false;
+      if (!matchesFilter(order, typeFilter)) return false;
       if (query) {
         const haystack = [order.orderId, order._id]
           .filter(Boolean).join(' ').toLowerCase();
@@ -62,10 +79,13 @@ const OrderManagement: React.FC = () => {
         <SegmentedControl<TypeFilter>
           value={typeFilter}
           onChange={setTypeFilter}
+          style={{ flexWrap: 'wrap' }}
           options={[
             { value: 'ALL', label: 'All' },
             { value: 'DEPOSIT', label: 'Deposits' },
             { value: 'WITHDRAWAL', label: 'Withdrawals' },
+            { value: 'PROCESSING', label: 'Processing' },
+            { value: 'DISPUTED', label: 'Disputed' },
           ]}
         />
         <Button variant="outline" tone="neutral" onClick={() => void reload()} style={{ borderColor: 'var(--border)', padding: '10px 14px', fontSize: 12.5 }}>
