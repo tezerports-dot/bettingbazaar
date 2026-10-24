@@ -131,6 +131,7 @@ import { getSystemConfig } from '#db/repositories/config.js';
 import { db } from '#db';
 import { isDatabaseReachable } from '#db/client.js';
 import { mountSpaFallbacks } from './startup/spaFallbacks.js';
+import { retryTransientDbStart } from './startup/dbStartRetry.js';
 import { isServableOrigin } from './config/servedHosts.js';
 import { installServerErrorCapture, flushErrorLog, logError } from './services/errorLog.service.js';
 
@@ -777,8 +778,10 @@ Promise.allSettled([
   // fails startup, which is the only honest outcome — the alternative is a
   // process that binds a port, passes nothing, and serves every request an
   // error about a table that was never created.
+  // A database that is briefly unreachable (the pooler holding back logins
+  // during a restart) is waited for, not given up on (startup/dbStartRetry.js).
   import('#db/client.js')
-    .then((m) => m.applySchema())
+    .then((m) => retryTransientDbStart(() => m.applySchema()))
     // Once more now the tables exist. The call at the top of this file runs
     // before the schema on a fresh database and fails closed (logged); without
     // this the frame-src waited for the 60-second timer.
@@ -812,6 +815,12 @@ Promise.allSettled([
     console.error('❌ Startup failed while preparing PostgreSQL:', results[0].reason);
     process.exitCode = 1;
     try { activeListener?.close(); } catch { /* nothing to close */ }
+    // Exit for real. Setting the code alone left the process alive on its
+    // timers, serving nothing and running no rounds, so its supervisor never
+    // started a new one (owner, 2026-10-24: every board stuck at 00:00). The
+    // pause lets the error log write this line first.
+    setTimeout(() => process.exit(1), 3_000).unref?.();
+    void flushErrorLog?.().catch?.(() => {});
     return;
   }
   console.log('✅ DB services initialized');

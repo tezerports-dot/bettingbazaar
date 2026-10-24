@@ -22,7 +22,7 @@
  *    filters on it, and the table's CHECK makes the state unreachable anyway —
  *    two layers, because this one silently paid nobody for an entire release.
  */
-import { pgQuery, withTransaction } from '../client.js';
+import { pgQuery, pgQueryBounded, withTransaction } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 import { PLAY_PROFILES } from './promo.js';
 import { recordRoundWithin } from './rtp.js';
@@ -393,7 +393,7 @@ export async function currentCycleWithPools(cycleType, audience, {
  */
 export async function setCycleStatus(cycleId, to, { from = [] } = {}) {
   if (!from.length) throw new Error('setCycleStatus requires the statuses it may move from');
-  const { rows } = await pgQuery(
+  const { rows } = await pgQueryBounded(
     `UPDATE cycles SET status = $2, updated_at = now()
       WHERE cycle_id = $1 AND status = ANY($3::text[])
       RETURNING ${COLUMNS}`,
@@ -537,7 +537,7 @@ export async function closeCycle(cycleId) {
  */
 export async function declareWinner(cycleId, winner, { by = 'engine', confidence = null } = {}) {
   if (!SIDES.includes(winner)) throw new Error(`declareWinner: unknown side '${winner}'`);
-  const { rows } = await pgQuery(
+  const { rows } = await pgQueryBounded(
     `UPDATE cycles SET
        winner = $2, winner_determined_at = now(), winner_determined_by = $3,
        winner_confidence = $4, status = 'RESULT_DECLARED', updated_at = now()
@@ -827,7 +827,7 @@ export async function cancelCycle(cycleId, { by = null } = {}) {
  * @returns {ok:true, cycle} | {ok:false, reason:'NOT_FOUND'|'ALREADY_DECLARED'|'PHANTOM_CLOSED'}
  */
 export async function equalizePhantomPools(cycleId) {
-  const { rows } = await pgQuery(
+  const { rows } = await pgQueryBounded(
     `UPDATE cycles SET
        phantom_delhi_paise  = GREATEST(phantom_delhi_paise, phantom_bombay_paise),
        phantom_bombay_paise = GREATEST(phantom_delhi_paise, phantom_bombay_paise),

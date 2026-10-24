@@ -5,10 +5,14 @@ import App from './App';
 import './styles/globals.css';
 import { applyAppearance } from './services/theme';
 import { installErrorReporter } from './services/errorReporter';
+import { installNumberInputGuard } from './services/numberInputGuard';
 import PanelErrorBoundary from './components/PanelErrorBoundary';
 
 // Uncaught errors and unhandled promises go to the error log.
 installErrorReporter();
+
+// A scroll past a number field must not change what the admin typed.
+installNumberInputGuard();
 
 // Apply the persisted Command Center theme before first paint (no flash).
 try {

@@ -50,6 +50,12 @@ export function resolvePgSsl(env = process.env) {
   return { rejectUnauthorized: true };
 }
 
+/** How long a caller may wait for a free pool connection (`PG_CONNECT_TIMEOUT_MS`, default 15 s). */
+export function pgConnectTimeoutMs(env = process.env) {
+  const n = Number(env.PG_CONNECT_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 15_000;
+}
+
 export async function getPool() {
   if (!pgConfigured()) return null;
   if (pool) return pool;
@@ -57,6 +63,17 @@ export async function getPool() {
   pool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
     max: Number(process.env.PG_POOL_SIZE || 10),
+    // A caller waits at most this long for a free connection, then gets an
+    // error (owner, 2026-10-24: board timers stuck at 00:00). Without it a
+    // pool with no free connection made every waiter hang for good: the
+    // round manager's one-second tick never returned and every board froze
+    // until a restart. An error is retried by the next tick; a hang is not.
+    connectionTimeoutMillis: pgConnectTimeoutMs(),
+    // A connection whose far end vanished (a network drop with no reset)
+    // is found by TCP keepalive and fails its query, instead of leaving it
+    // waiting for an answer that never comes.
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
     ssl: resolvePgSsl(),
   });
   pool.on('error', (e) => console.error('[pg] pool error:', e.message));
@@ -165,6 +182,40 @@ export async function withTransaction(fn) {
   } finally {
     client.release();
   }
+}
+
+/**
+ * One statement that may wait on a row lock only so long (owner, 2026-10-24).
+ *
+ * The round manager's writes to a `cycles` row (a phase, the equalizer, the
+ * winner) wait for every bet still holding its share lock on that row. A bet
+ * transaction that never finished would make that UPDATE wait for ever, and
+ * with it the one-second tick and every board: timers at 00:00, no next round.
+ * Here the wait is bounded: past `lockTimeoutMs` (or `statementTimeoutMs` in
+ * all) the statement fails with 55P03 / 57014 and nothing is written, so the
+ * caller retries on its next tick. `SET LOCAL` lives and dies with this
+ * transaction, so it is safe behind PgBouncer's transaction pooling.
+ */
+export async function pgQueryBounded(text, params, operation = 'query', { lockTimeoutMs = 5_000, statementTimeoutMs = 15_000 } = {}) {
+  const end = pgQueryDuration.startTimer({ operation: String(operation).slice(0, 48) || 'query' });
+  try {
+    const result = await withTransaction(async (client) => {
+      await client.query(`SELECT set_config('lock_timeout', $1, true), set_config('statement_timeout', $2, true)`,
+        [`${Math.max(1, Math.round(lockTimeoutMs))}ms`, `${Math.max(1, Math.round(statementTimeoutMs))}ms`]);
+      return client.query(text, params);
+    });
+    end({ outcome: 'success' });
+    return result;
+  } catch (error) {
+    end({ outcome: 'error' });
+    throw error;
+  }
+}
+
+/** True for the errors a bounded wait ends in: a lock or statement timeout, or no free connection. */
+export function isBoundedWaitError(error) {
+  return error?.code === '55P03' || error?.code === '57014'
+    || /timeout exceeded when trying to connect/i.test(String(error?.message ?? ''));
 }
 
 /**

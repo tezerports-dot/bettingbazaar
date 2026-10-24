@@ -29,6 +29,18 @@ import { notify } from '../communication/communication.service.js';
 
 /** A tick of the cycle manager running this long means every board has stopped (it runs every second). */
 const TICK_STALL_MS = 20_000;
+/**
+ * A tick still running this long is left behind and a fresh one starts
+ * (owner, 2026-10-24: "the users' timers never get stuck"). Every write a tick
+ * makes is guarded in its own statement (a phase only from the statuses it
+ * may leave, the winner only while none is set, a round only once per block,
+ * phantom bets keyed by their second), so a late tick finishing beside a new
+ * one changes nothing twice. Waiting on it for ever froze every board at 00:00
+ * with no way back but a restart.
+ */
+export const TICK_ABANDON_MS = 30_000;
+/** Start-up reads that have not answered by then stop holding the manager back; the ticks recover the rounds. */
+export const INIT_DEADLINE_MS = 30_000;
 
 /**
  * Each board runs one cycle per slot for each audience (VIP, GENERAL), and the
@@ -67,14 +79,22 @@ class CycleGenerator {
         this.isRunning     = false;
         this.tickStartedAt = 0;
         this.stallReported = false;
+        this.tickSeq       = 0;   // the tick that owns `isRunning`; a tick left behind never clears it
 
-        this.initializeCycles().then(() => {
-            this.isInitialized = true;
+        const init = this.initializeCycles().then(() => {
             console.log('✅ Cycle Generator: Initialization complete');
         }).catch(e => {
             console.error('❌ CycleGenerator init error:', e);
-            this.isInitialized = true; // unblock even on error
-        });
+        }).finally(() => { this.isInitialized = true; });
+        // A start-up read that never answers must not keep every board from
+        // ever getting a round: past the deadline the ticks start anyway.
+        const initDeadline = setTimeout(() => {
+            if (this.isInitialized) return;
+            console.error(`❌ CycleGenerator: start-up has not finished after ${INIT_DEADLINE_MS / 1000}s; starting the rounds anyway`);
+            this.isInitialized = true;
+        }, INIT_DEADLINE_MS);
+        initDeadline.unref?.();
+        void init.finally(() => clearTimeout(initDeadline));
 
         // ── CYCLE MANAGER (1 000 ms) ────────────────────────────────────────
         // Handles phase transitions, phantom equalizer, new-cycle creation.
@@ -82,42 +102,46 @@ class CycleGenerator {
         // event-driven SSE: cycle_snapshot (connect), cycle_phase (transitions),
         // bet_placed (pools), new_cycle + cycle_result (lifecycle).
         // Timer is derived client-side from endTime, zero server push required.
-        setInterval(async () => {
-            if (!this.isInitialized) return;
-            if (this.isRunning) {
-                // One tick at a time, so a tick that never returns (a query
-                // waiting on a lock or on a pool with no free connection)
-                // freezes every board: timers reach 00:00 and nothing moves
-                // until the scheduler restarts. Say so, once per stall, rather
-                // than skipping in silence. Starting a second tick beside it
-                // would phase and settle the same rounds twice, so this only
-                // reports.
-                const ranMs = Date.now() - this.tickStartedAt;
-                if (ranMs >= TICK_STALL_MS && !this.stallReported) {
-                    this.stallReported = true;
-                    console.error(`❌ CycleGenerator: one tick has run for ${Math.round(ranMs / 1000)}s; every board is waiting on it`);
-                    sendAlert('cycle-manager-stalled', 'Board rounds are not moving: the cycle manager is stuck on one tick', {
-                        runningForSeconds: Math.round(ranMs / 1000),
-                    }).catch(() => {});
-                }
-                return;
-            }
-            this.isRunning = true;
-            this.tickStartedAt = Date.now();
-            try {
-                await this.manageCycles();
-            } catch (e) {
-                console.error('❌ CycleGenerator interval error:', e);
-            } finally {
-                if (this.stallReported) {
-                    console.warn(`⚠️  CycleGenerator: the stuck tick finished after ${Math.round((Date.now() - this.tickStartedAt) / 1000)}s`);
-                }
-                this.stallReported = false;
-                this.isRunning = false;
-            }
-        }, 1000);
+        this.tickTimer = setInterval(() => { void this.tick(); }, 1000);
 
         console.log('✅ Cycle Generator: Intervals started (waiting for init...)');
+    }
+
+    /**
+     * One second's work, one tick at a time. A tick that has not returned
+     * (a query waiting on a lock, or on a pool with no free connection) is
+     * reported at TICK_STALL_MS and left behind at TICK_ABANDON_MS, so the
+     * next second starts a fresh one and the boards move again.
+     */
+    async tick() {
+        if (!this.isInitialized) return;
+        if (this.isRunning) {
+            const ranMs = Date.now() - this.tickStartedAt;
+            if (ranMs >= TICK_STALL_MS && !this.stallReported) {
+                this.stallReported = true;
+                console.error(`❌ CycleGenerator: one tick has run for ${Math.round(ranMs / 1000)}s; every board is waiting on it`);
+                sendAlert('cycle-manager-stalled', 'Board rounds are not moving: the cycle manager is stuck on one tick', {
+                    runningForSeconds: Math.round(ranMs / 1000),
+                }).catch(() => {});
+            }
+            if (ranMs < TICK_ABANDON_MS) return;
+            console.error(`❌ CycleGenerator: leaving a tick stuck for ${Math.round(ranMs / 1000)}s behind and starting a fresh one`);
+        }
+        const seq = ++this.tickSeq;
+        this.isRunning = true;
+        this.tickStartedAt = Date.now();
+        this.stallReported = false;
+        try {
+            await this.manageCycles();
+        } catch (e) {
+            console.error('❌ CycleGenerator interval error:', e);
+        } finally {
+            if (seq === this.tickSeq) {
+                this.isRunning = false;
+            } else {
+                console.warn(`⚠️  CycleGenerator: a tick left behind finished after ${Math.round((Date.now() - this.tickStartedAt) / 1000)}s`);
+            }
+        }
     }
 
     async initializeCycles() {
@@ -218,6 +242,22 @@ class CycleGenerator {
             };
 
             for (const cycle of activeCycles) {
+                // One round's failure (a lock it waited on too long, a read
+                // that failed) costs that round this tick only: the next round
+                // and every other board carry on, and it is retried next second.
+                try {
+                    await this.advanceCycle(cycle, { now, autoPlans, playerPlansFor });
+                } catch (error) {
+                    console.error(`❌ Advancing ${cycle.cycleId} (${cycle.type}):`, error.message);
+                }
+            }
+        } catch (error) {
+            console.error('❌ Error updating cycle statuses:', error);
+        }
+    }
+
+    /** One live round's phase for this tick (`updateCycleStatuses`). */
+    async advanceCycle(cycle, { now, autoPlans, playerPlansFor }) {
                 const cycleEndMs = new Date(cycle.endTime).getTime();
 
                 // ── STALE CYCLE FAST-PATH ─────────────────────────────────────
@@ -237,7 +277,7 @@ class CycleGenerator {
                 if (cycleEndMs <= now - 10000 && cycle.status === 'CLOSED') {
                     // endTime passed + 10s grace → declare result now
                     await this.completeCycle(cycle);
-                    continue;
+                    return;
                 }
                 // A cycle whose board cannot be read cannot be phased safely,
                 // and throwing here would abandon every OTHER cycle in this tick,
@@ -246,7 +286,7 @@ class CycleGenerator {
                 const board = await boardOf(cycle.type);
                 if (!board) {
                     console.error(`❌ updateCycleStatuses: no board '${cycle.type}' for ${cycle.cycleId} — skipping`);
-                    continue;
+                    return;
                 }
 
                 // The board's phase offsets, seconds before endTime. The schema
@@ -262,7 +302,7 @@ class CycleGenerator {
                     const merged = await db.markets.setCycleStatus(cycle.cycleId, 'MERGED', { from: ['OPEN'] });
                     // Another tick got there first. Not an error — but the
                     // announcement below must not fire twice, so skip it.
-                    if (!merged.ok) continue;
+                    if (!merged.ok) return;
                     cycle.status = 'MERGED';
                     // Compact v2 wire format (realtimeProtocol.js).
                     emitCyclePhase({
@@ -300,7 +340,7 @@ class CycleGenerator {
                     const closed = await db.markets.setCycleStatus(cycle.cycleId, 'CLOSED', {
                         from: ['OPEN', 'MERGED'],
                     });
-                    if (!closed.ok) continue;
+                    if (!closed.ok) return;
                     cycle.status = 'CLOSED';
                     emitCyclePhase({
                         cycleId: cycle.cycleId, type: cycle.type, audience: cycle.audience, phase: 'CLOSED',
@@ -319,16 +359,12 @@ class CycleGenerator {
                 // that cycle_result just set on the frontend → celebration never renders.
                 if (now >= fireworksTime && ['OPEN', 'MERGED', 'CLOSED'].includes(cycle.status)) {
                     await this.completeCycle(cycle);
-                    continue; // ← CRITICAL: skip cache-update, cache was evicted inside completeCycle
+                    return; // ← CRITICAL: skip cache-update, cache was evicted inside completeCycle
                 }
 
                 // Only reached for cycles that did NOT complete this tick.
                 // Refresh cache with latest values so 100ms broadcast is accurate.
                 this.liveCycleCache[slotOf(cycle)] = cycle;
-            }
-        } catch (error) {
-            console.error('❌ Error updating cycle statuses:', error);
-        }
     }
 
     /**
