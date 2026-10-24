@@ -22,7 +22,7 @@
     "@capacitor/status-bar": "^8.0.3",
     "@noble/ed25519": "3.2.0",
     "@twa-dev/sdk": "^8.0.2",
-    "framer-motion": "11.18.2",
+    "framer-motion": "14.5.0",
     "lucide-react": "^1.48.0",
     "qrcode": "1.5.4",
     "react": "^19.3.0",
