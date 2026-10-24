@@ -143,7 +143,30 @@ const MENU_SECTIONS = [
 
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '';
 
+/**
+ * The header's two side groups, measured, so both side columns can be the
+ * wider one's width and the logo between them sits in the true centre of the
+ * bar (owner, 2026-10-24). The columns still come from what the sides need,
+ * so the logo never grows under them on a phone.
+ */
+function useEqualSides(): [React.RefObject<HTMLDivElement | null>, React.RefObject<HTMLDivElement | null>, number] {
+  const left = useRef<HTMLDivElement | null>(null);
+  const right = useRef<HTMLDivElement | null>(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const measure = () => setWidth(Math.ceil(Math.max(left.current?.offsetWidth ?? 0, right.current?.offsetWidth ?? 0)));
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    if (left.current) observer.observe(left.current);
+    if (right.current) observer.observe(right.current);
+    return () => observer.disconnect();
+  }, []);
+  return [left, right, width];
+}
+
 const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
+  const [headerLeft, headerRight, headerSide] = useEqualSides();
   const { user, isAuthenticated, logout, setAudience } = useGame();
   const footerPages = useFooterPages();
   const { theme, toggleTheme } = useTheme();
@@ -320,18 +343,21 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
         {/* ░░ TOP BAR ░░ */}
         {/*
           Three columns, not an absolutely-centred logo: the wordmark gets
-          exactly the room the pill and the buttons leave, and scales down
-          into it. Centred over the whole bar it was sized in pixels, so on a
-          phone it grew under the buttons on both sides.
+          exactly the room the sides leave, and scales down into it. Centred
+          over the whole bar it was sized in pixels, so on a phone it grew
+          under the buttons on both sides. The two side columns are the same
+          width (the wider side's, useEqualSides), so the logo is centred.
         */}
         <header style={{
-          flex: 'none', height: 60, display: 'grid', gridTemplateColumns: laptop ? 'auto auto minmax(0,1fr) auto' : 'auto minmax(0,1fr) auto', alignItems: 'center',
+          flex: 'none', height: 60, display: 'grid',
+          gridTemplateColumns: headerSide ? `${headerSide}px minmax(0,1fr) ${headerSide}px` : 'max-content minmax(0,1fr) max-content',
+          alignItems: 'center',
           gap: compact ? 8 : 12, padding: compact ? '0 10px' : '0 14px', background: 'color-mix(in srgb, var(--bg) 82%, transparent)', backdropFilter: 'blur(14px)',
           borderBottom: '1px solid var(--line)', position: 'relative', zIndex: 60,
         }}>
           {/*
-            Signed in, this is the wallet. Signed OUT it reads "Sign in / TO
-            PLAY", so it OPENS THE SIGN-IN DOOR.
+            Signed in, this is the wallet. Signed OUT it reads "Sign in", so it
+            OPENS THE SIGN-IN DOOR.
 
             It used to be `go(isAuthenticated ? '/wallet' : '/wallet')` — a
             ternary with two identical branches, which is the shape of an
@@ -348,6 +374,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
           */}
           {/* A laptop's menu is the side rail, so its one menu button sits on
               the same (left) side and folds the rail (owner, 2026-10-10). */}
+          <div ref={headerLeft} style={{ display: 'flex', alignItems: 'center', gap: compact ? 8 : 12, justifySelf: 'start', width: 'max-content' }}>
           {laptop && (
             <button onClick={toggleRail} aria-label={railOpen ? 'Collapse menu' : 'Expand menu'} aria-expanded={railOpen} style={{ ...iconBtn, color: 'var(--text)' }}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
@@ -357,24 +384,21 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
           )}
           <button onClick={() => (isAuthenticated ? go('/wallet') : openAuth())} style={{
             display: 'flex', alignItems: 'center', gap: compact ? 6 : 9, background: 'var(--pill)', border: '1px solid var(--pill-line)',
-            padding: compact ? '6px 10px 6px 6px' : '7px 13px 7px 8px', borderRadius: 999, cursor: 'pointer', boxShadow: 'var(--shadow-sm)',
+            padding: compact ? '6px 12px' : '7px 15px', borderRadius: 999, cursor: 'pointer', boxShadow: 'var(--shadow-sm)',
           }}>
-            {!compact && (
-              <span style={{
-                flex: 'none', width: 26, height: 26, borderRadius: '50%',
-                background: 'var(--gold-metal)', display: 'flex', alignItems: 'center',
-                justifyContent: 'center', color: 'var(--on-gold)', fontWeight: 900, fontSize: 13, border: '1px solid rgba(255,255,255,.2)',
-              }}>₹</span>
-            )}
+            {/* No coin badge (owner, 2026-10-24); signed out it says only "Sign in". */}
             <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.05, textAlign: 'left' }}>
               <span className="font-grotesk" style={{ fontWeight: 700, fontSize: compact ? 13 : 15, color: 'var(--text)', letterSpacing: '.01em', whiteSpace: 'nowrap' }}>
                 {totalBal !== null ? `₹${fmt(totalBal)}` : 'Sign in'}
               </span>
-              <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--green)' }}>
-                {totalBal !== null ? (onGeneral ? 'General' : 'Wallet') : 'to play'}
-              </span>
+              {totalBal !== null && (
+                <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--green)' }}>
+                  {onGeneral ? 'General' : 'Wallet'}
+                </span>
+              )}
             </span>
           </button>
+          </div>
 
           <button onClick={() => go('/')} aria-label="Home" style={{
             minWidth: 0, width: '100%', height: '100%', background: 'none', border: 'none', cursor: 'pointer',
@@ -392,7 +416,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             )}
           </button>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: compact ? 6 : 8 }}>
+          <div ref={headerRight} style={{ display: 'flex', alignItems: 'center', gap: compact ? 6 : 8, justifySelf: 'end', width: 'max-content' }}>
             {general && <ProfileSwitch general={general} choose={choose} error={profileError} />}
             {!compact && (
               <button onClick={toggleTheme} aria-label="Toggle theme" style={{ ...iconBtn, color: 'var(--gold-ink)', fontSize: 17 }}>

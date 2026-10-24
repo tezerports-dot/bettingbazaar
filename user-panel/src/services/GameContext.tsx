@@ -831,8 +831,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       // already drifted: it titled the tab from `appName` while App.tsx used
       // `userPanelName`, so which name the tab showed depended on which of the
       // two fired last (§5, §13).
+      // It also tells every screen drawing a branding image (useBranding).
       applyBranding(b);
-      window.dispatchEvent(new CustomEvent('branding_updated', { detail: b }));
     };
 
     // system_config: server pushes this on every connect and on request_system_config.

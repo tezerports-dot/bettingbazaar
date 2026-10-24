@@ -390,7 +390,15 @@ app.get('/app-assets/:name', async (req, res, next) => {
     // answered 404 for every uploaded slot in production (S3 is mandatory
     // there). Send the reader to where the bytes are. The URL is the one
     // uploadBufferToS3 returned — derived by the server, never from a request.
-    if (asset.storage !== 'LOCAL') return res.redirect(302, asset.url);
+    // The stored key never changes across re-uploads (`app-assets/<slot>`), and
+    // the storage tells browsers to keep it an hour, so the redirect names the
+    // upload's time: a new upload is a new address and shows at once.
+    if (asset.storage !== 'LOCAL') {
+      res.set('Cache-Control', 'no-cache');
+      const version = new Date(asset.updatedAt).getTime();
+      const sep = asset.url.includes('?') ? '&' : '?';
+      return res.redirect(302, Number.isFinite(version) ? `${asset.url}${sep}t=${version}` : asset.url);
+    }
     if (!asset.contentType) return next();
     res.type(asset.contentType);
     return res.sendFile(filePath, (error) => {

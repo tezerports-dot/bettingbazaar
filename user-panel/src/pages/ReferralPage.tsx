@@ -35,6 +35,7 @@ import ScreenShell, { card, capLabel } from '../redesign/Screen';
 import BonusPlayPrompt from '../redesign/BonusPlayPrompt';
 import { player } from '../services/api';
 import { getAssetUrl, getBackend } from '../services/backend.service';
+import { useBranding } from '../services/branding';
 
 /** One level of the invite chain (referral.service.js `levels`), level 1 first. */
 interface LevelTotals {
@@ -70,6 +71,8 @@ function rowState(r: Row): { label: string; tone: string } {
 }
 
 const ReferralPage: React.FC = () => {
+  // The page banner (Admin › Images), redrawn on a save.
+  const branding = useBranding();
   const [data, setData] = useState<Summary | null>(null);
   const [bot, setBot] = useState<string>('');
   const [error, setError] = useState('');
@@ -143,8 +146,7 @@ const ReferralPage: React.FC = () => {
   }
 
   const t = data.totals;
-  const branding = (() => { try { return JSON.parse(localStorage.getItem('app_branding') || '{}'); } catch { return {}; } })();
-  const banner = getAssetUrl(branding.referPageBannerUrl || '');
+  const banner = getAssetUrl(String(branding.referPageBannerUrl || ''));
   const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
   const shareText = `Join me on ${branding.appName || 'Bazaar'}: ${link}`;
   const nativeShare = async () => {

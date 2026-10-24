@@ -91,8 +91,20 @@ const DISPUTE_EXTRA_MIME_TYPES = {
   'video/webm':      { exts: ['.webm'], maxSize: 50 * 1024 * 1024 },
 };
 
+// A Pro Tips reel (owner, 2026-10-24: "upload a 30 second video ... like
+// instagram reels"). MP4 and WebM only: what every phone browser plays inline.
+// A QuickTime file is often HEVC, which most Android browsers cannot play.
+export const REEL_VIDEO_MIME_TYPES = {
+  'video/mp4':  { exts: ['.mp4'],  maxSize: 50 * 1024 * 1024 },
+  'video/webm': { exts: ['.webm'], maxSize: 50 * 1024 * 1024 },
+};
+
+/** The object-key prefix a reel video is stored under. */
+export const REEL_CATEGORY = 'reels';
+
 export function mimeRulesForCategory(category = '') {
   const key = String(category).toLowerCase();
+  if (key === REEL_CATEGORY) return REEL_VIDEO_MIME_TYPES;
   return key.startsWith('dispute') ? { ...IMAGE_MIME_TYPES, ...DISPUTE_EXTRA_MIME_TYPES } : IMAGE_MIME_TYPES;
 }
 
