@@ -18,11 +18,21 @@ MARK_DIR="${BB_PITR_MARK_DIR:-/var/lib/postgresql/pgbackrest-spool}"
 mkdir -p "$MARK_DIR"
 until pg_isready -h "$SOCKET" -q; do echo "[pitr] waiting for PostgreSQL…"; sleep 5; done
 
-# Idempotent: a repository that exists and matches is left as it is.
-pgbackrest --stanza=bb stanza-create || echo "[pitr] ERROR: stanza-create failed — see above."
-pgbackrest --stanza=bb check || echo "[pitr] ERROR: check failed — WAL is not reaching the bucket."
-
+# Idempotent: a repository that exists and matches is left as it is. Retried
+# every loop until it works, so a bucket that was unreachable at start (or a
+# setting fixed later) needs no restart of this service.
+ready=0
 while true; do
+  if [ "$ready" = 0 ]; then
+    if pgbackrest --stanza=bb stanza-create; then
+      ready=1
+      pgbackrest --stanza=bb check || echo "[pitr] ERROR: check failed — WAL is not reaching the bucket."
+    else
+      echo "[pitr] ERROR: stanza-create failed — see above. Retrying in ${BB_PITR_LOOP_SECONDS:-3600} s."
+      sleep "${BB_PITR_LOOP_SECONDS:-3600}"
+      continue
+    fi
+  fi
   today=$(date -u +%F)
   if [ "$(cat "$MARK_DIR/last-backup" 2>/dev/null)" != "$today" ]; then
     # pgBackRest promotes a diff to a full when no full exists yet.
