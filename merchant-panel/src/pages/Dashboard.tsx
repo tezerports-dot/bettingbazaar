@@ -92,11 +92,11 @@ const Dashboard: React.FC = () => {
   const openOrders = (linkState: OrdersLinkState) => navigate(ROUTES.ORDERS, { state: linkState });
 
   // Why today's earnings may read 0 (order commission, §26): earned and
-  // waiting for the platform's commission pool, or no completed order yet.
+  // being paid (the sweep runs every few minutes), or no completed order yet.
   const commission = stats?.commission ?? null;
   const earningsNote = !commission ? null
     : commission.owedPaise > 0
-      ? `${tokensOfPaise(commission.owedPaise)} earned, waiting for the platform's commission pool`
+      ? `${tokensOfPaise(commission.owedPaise)} earned, being paid into your pool within a few minutes`
       : `${commission.depositPercent}% of each completed buy, ${commission.withdrawalPercent}% of each completed sell`;
 
   // Who buys the pool's tokens: a merchant account's owner on Pool, a

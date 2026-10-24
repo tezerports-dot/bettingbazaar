@@ -58,16 +58,7 @@ const TO_AGENTS = { merchantBuySizes: [], merchantSellSizes: [] };
 const describePg = pgConfigured() ? describe : describe.skip;
 
 const RUN = Math.random().toString(36).slice(2, 8);
-const POOL = 'MERCHANT_BONUS_POOL';
 
-/** Raw (signed) balance of a ledger account. */
-async function raw(account) {
-  const { rows } = await pgQuery(
-    `SELECT COALESCE(SUM((p->>'amountPaise')::BIGINT), 0) AS v
-       FROM accounting_events, jsonb_array_elements(postings) p WHERE p->>'account' = $1`, [account]);
-  return Number(rows[0].v);
-}
-const bonusPoolPaise = async () => 0 - (await raw(POOL));
 const float = async (name) => (await getTreasuryBalances())[ACCOUNTS[name]] ?? 0;
 
 describePg('merchant accounts', () => {
@@ -79,7 +70,6 @@ describePg('merchant accounts', () => {
   const owners = [];
   const directTeams = [];
   const staffUsers = [];
-  const posted = [];
   let prior;
 
   const oid = () => `mac-${RUN}-${seq += 1}`;
@@ -104,12 +94,12 @@ describePg('merchant accounts', () => {
 
   afterAll(async () => {
     await config(prior);
-    // The ledger is append-only: everything this suite posted for the
-    // commission pool, and the commission paid to its own teams, is reversed.
+    // The ledger is append-only: the commission paid to the suite's own
+    // teams is reversed.
     const { rows: caused } = await pgQuery(
       `SELECT postings FROM accounting_events WHERE ref_model = 'Team' AND ref_id = ANY($1)`, [directTeams]);
     const net = {};
-    for (const p of [...posted, ...caused.flatMap((r) => r.postings)]) {
+    for (const p of caused.flatMap((r) => r.postings)) {
       net[p.account] = (net[p.account] ?? 0) + Number(p.amountPaise);
     }
     const legs = Object.entries(net).filter(([, v]) => v).map(([account, v]) => ({ account, amountPaise: 0 - v }));
@@ -799,16 +789,7 @@ describePg('merchant accounts', () => {
     it('pays the admin\'s percent of each completed order into the account\'s own pool, all of it the owner\'s', async () => {
       await config({ ...TO_MERCHANTS, orderCommission: { depositPercent: 7, withdrawalPercent: 3 } });
       const m = await merchantAccount({ poolTokens: 200_000 });
-      // The platform's commission pool, funded from revenue for this case.
-      const need = 10_000_000 - await bonusPoolPaise();
-      if (need) {
-        const postings = [{ account: POOL, amountPaise: -need }, { account: 'PLATFORM_REVENUE', amountPaise: need }];
-        posted.push(...postings);
-        await recordEvent({
-          eventType: 'ADJUSTMENT', idempotencyKey: `mac-test-adj-${RUN}`, postings,
-          refModel: 'Test', refId: 'merchantAccountPg', description: 'merchantAccountPg: fund the commission pool',
-        });
-      }
+      // Paid straight out of platform revenue: nothing to fund first.
       const { order, orderId, player: p } = await queuedBuy(50_000);
       await onlyDirectOnline(m.merchantId);
       expect(await tryAssignMerchant(order)).toBe(true);

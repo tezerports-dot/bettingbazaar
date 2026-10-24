@@ -83,8 +83,7 @@ export function registerCronJobs(rebuildLeaderboard) {
 
   // ── Team commission sweep — runs every 5 minutes ───────────────────────────
   // Commission is paid the moment an order completes (Step 2e); this pays what
-  // that missed: a payment that failed after the completion committed, or one
-  // the commission pool could not cover until an admin topped it up.
+  // that missed: a payment that failed after the completion committed.
   registerRecurring('team-commission-sweep', 5 * 60 * 1000, async () => {
     try {
       const { payOwedCommissions } = await import('../domains/team/teamCommission.service.js');

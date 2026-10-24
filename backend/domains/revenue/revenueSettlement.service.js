@@ -4,15 +4,14 @@
 // THE SINGLE FINANCIAL AUTHORITY. This service is the ONLY writer of
 // AccountingEvent documents (CLAUDE.md §1/§2). It owns:
 //   completed bets · completed payouts · platform revenue · the settlement
-//   ledger · reserve deductions · payout fees · accounting events · merchant
-//   bonus funding.
+//   ledger · reserve deductions · payout fees · accounting events.
 //
 // WHAT IT DELIBERATELY DOES NOT DO:
 //   - It never mutates wallet balances — walletAuthority.service.js remains
 //     the sole wallet writer (§7). This ledger is the ACCOUNTING view.
 //   - It owns no configurable percentages or business rules — those belong
 //     to the Business Policy Platform (domains/configuration). When a
-//     MerchantBonusPolicy / payout-fee policy exists, this service READS it.
+//     payout-fee policy exists, this service READS it.
 //   - It does not orchestrate. The Operations Platform (admin routes, cron)
 //     calls in; this service enforces the invariants.
 //
@@ -27,10 +26,9 @@
 // flow was modified to produce ledger entries — completion code paths stay
 // untouched, the ledger self-heals, and history backfills automatically.
 
-import { createHash } from 'node:crypto';
 import {
   recordEventOnPostgres, trialBalanceOnPostgres,
-  accountBalanceOnPostgres, getLedgerOnPostgres, recordSpendCoveredOnPostgres,
+  accountBalanceOnPostgres, getLedgerOnPostgres,
   findCasinoRoundsUnbooked, findPromoGrantsUnbooked, findCompensationsUnbooked, findCricketPollsUnbooked,
 } from '#db/repositories/ledger.js';
 import { ACCOUNTS, ACCOUNT_CODES, EVENT_TYPES, toMinor } from './chartOfAccounts.js';
@@ -161,49 +159,9 @@ export function buildCyclePostings(cycle) {
   ];
 }
 
-/** Postings for funding the merchant bonus pool from distributable revenue. */
-export function buildBonusFundingPostings(amountMinor) {
-  if (!Number.isInteger(amountMinor) || amountMinor <= 0) {
-    throw new Error('Bonus pool funding amount must be a positive integer minor-unit amount.');
-  }
-  return [
-    { account: ACCOUNTS.PLATFORM_REVENUE.code,    amountMinor: amountMinor },
-    { account: ACCOUNTS.MERCHANT_BONUS_POOL.code, amountMinor: -amountMinor },
-  ];
-}
-
 // ═════════════════════════════════════════════════════════════════════════════
 // The write path
 // ═════════════════════════════════════════════════════════════════════════════
-
-/**
- * An idempotency key for an operation that did not bring one.
- *
- * ══════════════════════════════════════════════════════════════════════════
- * A GENERATED KEY IS NOT AN IDEMPOTENCY KEY
- * ══════════════════════════════════════════════════════════════════════════
- * `fundMerchantBonusPool` defaulted its key to a freshly generated id. That
- * looks guarded — the column is UNIQUE, the gate is right there — and the gate
- * could never fire, because a value invented per call never collides with
- * anything. An admin double-clicking "fund the pool" funded it TWICE, out of
- * platform revenue, and the ledger recorded both as legitimate distinct events.
- * A duplicate on a ledger is the one duplicate that cannot be netted out later.
- *
- * This derives the key from what actually makes the operation unique: who, how
- * much, why, and WHICH MINUTE. The minute bucket is the deliberate part — two
- * deliveries of one click land in the same bucket and collide, while a genuine
- * second funding an hour later is a different key and goes through. It is a
- * fallback, not a substitute: a caller that supplies its own key gets exact
- * semantics, and the admin route passes one through when the client sends it.
- */
-function derivedIdempotencyKey(kind, parts) {
-  const minuteBucket = Math.floor(Date.now() / 60_000);
-  const digest = createHash('sha256')
-    .update([kind, ...parts.map(String), minuteBucket].join('\u0000'))
-    .digest('hex')
-    .slice(0, 32);
-  return `acct_${kind}_${digest}`;
-}
 
 /**
  * recordAccountingEvent — the ONLY way an entry enters the ledger.
@@ -266,8 +224,8 @@ export async function getAccountBalanceMinor(accountCode) {
 
 /**
  * Distributable platform revenue = the reported PLATFORM_REVENUE balance.
- * Bonus funding debits this account, so already-funded amounts are naturally
- * excluded — no separate bookkeeping to drift. Floored at 0 for consumers.
+ * Bonuses and team commission are booked against this account as costs, so
+ * what was paid out is already excluded. Floored at 0 for consumers.
  */
 export async function getDistributableRevenueMinor() {
   const bal = await getAccountBalanceMinor(ACCOUNTS.PLATFORM_REVENUE.code);
@@ -277,61 +235,6 @@ export async function getDistributableRevenueMinor() {
 /** Paginated ledger read (newest first), optional eventType filter. */
 export async function getLedger({ page = 1, limit = 50, eventType } = {}) {
   return getLedgerOnPostgres({ page, limit, eventType: eventType ?? null });
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Merchant bonus funding
-// ═════════════════════════════════════════════════════════════════════════════
-
-/**
- * fundMerchantBonusPool — move distributable platform revenue into the
- * merchant bonus pool.
- *
- * HARD BUSINESS RULES (2026-07-08 decision, enforced here):
- *   - Funded ONLY from PLATFORM_REVENUE. There is no code path from
- *     USER_FUNDS / PLATFORM_RESERVE / deposits / withdrawals to the pool.
- *   - Never derived from buyRate/sellRate (which no longer exist).
- *   - The amount cannot exceed current distributable revenue.
- *
- * The percentage/cadence that AUTOMATES funding belongs to the Business
- * Policy Platform (future MerchantBonusPolicy) — this function takes an
- * explicit amount so no configurable rule lives here.
- *
- * The distributable check and the posting are one transaction under a lock
- * on PLATFORM_REVENUE (`recordSpendCoveredOnPostgres`), so two fundings at
- * once cannot jointly exceed distributable revenue (§32 S6).
- */
-export async function fundMerchantBonusPool({ amountMinor, actor, justification, idempotencyKey }) {
-  if (!justification || !justification.trim()) {
-    throw new Error('businessJustification is required to fund the team commission pool.');
-  }
-  if (!actor?.userId) {
-    throw new Error('An acting admin is required to fund the team commission pool.');
-  }
-  const postings = buildBonusFundingPostings(amountMinor); // validates amount
-  validatePostings(postings);
-
-  const recorded = await recordSpendCoveredOnPostgres({
-    spendAccount: ACCOUNTS.PLATFORM_REVENUE.code,
-    spendMinor: amountMinor,
-    eventType: EVENT_TYPES.MERCHANT_BONUS_FUNDED,
-    idempotencyKey: idempotencyKey || derivedIdempotencyKey('bonusfund', [
-      actor.userId, amountMinor, justification.trim(),
-    ]),
-    postings,
-    refModel: 'Manual',
-    refId: String(actor.userId),
-    occurredAt: new Date(),
-    description: `Team commission pool funded from distributable platform revenue: ${justification.trim()}`,
-  });
-  if (recorded.refused) {
-    const distributable = recorded.refused.availableMinor;
-    throw new Error(
-      `Cannot fund ₹${(amountMinor / 100).toFixed(2)} — distributable platform revenue is ₹${(distributable / 100).toFixed(2)}. ` +
-      'Merchant bonuses are platform-funded only; the pool can never draw beyond earned revenue.'
-    );
-  }
-  return { idempotent: recorded.idempotent, event: recorded.event };
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

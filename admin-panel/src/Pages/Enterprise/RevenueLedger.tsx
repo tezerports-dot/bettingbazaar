@@ -2,11 +2,12 @@
 /**
  * RevenueLedger.tsx — admin console for the Revenue & Settlement Platform
  * (Phase 007 APIs, UI shipped Phase C 2026-07-10).
- * Trial balance + distributable revenue + append-only journal + bonus-pool
- * funding (admin-only; capped at distributable revenue by the backend).
+ * Trial balance + distributable revenue + append-only journal. Team
+ * commission is a cost booked straight against platform revenue; there is no
+ * pool to fund (owner, 2026-10-24).
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { RefreshCw, ShieldCheck, ShieldAlert, PiggyBank } from 'lucide-react';
+import { RefreshCw, ShieldCheck, ShieldAlert } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api, { downloadFile } from '../../services/api';
 import { usePermissions } from '../../hooks/usePermission';
@@ -44,7 +45,7 @@ interface LedgerEntry {
 
 const EVENT_TYPES = [
   'DEPOSIT_COMPLETED', 'WITHDRAWAL_COMPLETED', 'BET_CYCLE_SETTLED',
-  'PAYOUT_FEE_CHARGED', 'MERCHANT_BONUS_FUNDED', 'MERCHANT_BONUS_ISSUED',
+  'PAYOUT_FEE_CHARGED', 'MERCHANT_BONUS_ISSUED',
   'CASINO_ROUND_NET', 'PROMO_BONUS_PAID', 'DISPUTE_COMPENSATION', 'ADJUSTMENT',
 ];
 
@@ -53,21 +54,16 @@ const inr = (n: number) =>
 
 export const RevenueLedger: React.FC = () => {
   const { can } = usePermissions();
-  // Funding the pool moves platform money: the commission area, not analytics.
-  const canFundPool = can('canManageCommission');
   const canExportLedger = can('canExportLedger');
   const [summary, setSummary] = useState<{
     accounts: LedgerAccount[]; integrityOk: boolean;
-    distributableRevenue: number; merchantBonusPool: number;
+    distributableRevenue: number;
   } | null>(null);
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
   const [eventType, setEventType] = useState('');
   const [loading, setLoading] = useState(true);
-  const [fundAmount, setFundAmount] = useState('');
-  const [fundJustification, setFundJustification] = useState('');
-  const [funding, setFunding] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -90,29 +86,6 @@ export const RevenueLedger: React.FC = () => {
 
   useEffect(() => { load(); }, [load]);
 
-  const fundPool = async () => {
-    const amount = Number(fundAmount);
-    if (!(amount > 0)) return toast.error('Enter a positive amount (₹)');
-    if (!fundJustification.trim()) return toast.error('A business justification is required');
-    setFunding(true);
-    try {
-      const res = await api.post<any>('/api/admin/revenue/bonus-pool/fund', {
-        amount, justification: fundJustification.trim(),
-      });
-      if (res.data?.success) {
-        toast.success(res.data.message);
-        setFundAmount(''); setFundJustification('');
-        load();
-      } else {
-        toast.error(res.data?.message || 'Funding failed');
-      }
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || 'Funding failed');
-    } finally {
-      setFunding(false);
-    }
-  };
-
   return (
     <div className="om-fade space-y-6">
       <Toolbar actions={[{ label: 'Refresh', icon: RefreshCw, onClick: load }]} />
@@ -130,7 +103,6 @@ export const RevenueLedger: React.FC = () => {
                 </p>
                 <p className="text-xs text-gray-400">
                   Distributable platform revenue: <span className="text-gold-400 font-semibold">{inr(summary.distributableRevenue)}</span>
-                  {' · '}Team commission pool: <span className="text-gold-400 font-semibold">{inr(summary.merchantBonusPool)}</span>
                 </p>
               </div>
             </div>
@@ -142,29 +114,6 @@ export const RevenueLedger: React.FC = () => {
             sub: `${a.postings} postings · ${a.normalBalance}-normal`,
           }))} />
         </>
-      )}
-
-      {canFundPool && (
-        <div className="card border border-gold-500/30">
-          <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
-            <PiggyBank size={18} className="text-gold-500" /> Fund Team Commission Pool
-          </h3>
-          <p className="text-xs text-gray-400 mb-3">
-            Moves distributable platform revenue into the pool order commission is paid from:
-            a percent of each completed buy and sell, as tokens into the serving team&apos;s pool. Commission
-            the pool could not cover is paid as soon as it is funded. Hard rule: never funded
-            from user money — the backend refuses anything beyond distributable revenue.
-          </p>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <input type="number" min={1} className="input" placeholder="Amount (₹)"
-              value={fundAmount} onChange={e => setFundAmount(e.target.value)} />
-            <input type="text" className="input md:col-span-2" placeholder="Business justification (required, audit-logged)"
-              value={fundJustification} onChange={e => setFundJustification(e.target.value)} />
-          </div>
-          <button onClick={fundPool} disabled={funding} className="btn-primary mt-3 disabled:opacity-50">
-            {funding ? 'Funding…' : 'Fund Pool'}
-          </button>
-        </div>
       )}
 
       <div className="card">

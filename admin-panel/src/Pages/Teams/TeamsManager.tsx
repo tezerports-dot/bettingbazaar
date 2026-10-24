@@ -265,7 +265,7 @@ export const TeamsManager: React.FC = () => {
                   </span>
                   {t.commission.owedPaise > 0 && (
                     <span className="text-xs px-2 py-0.5 rounded-lg bg-yellow-500/10 text-yellow-400">
-                      {tokens(t.commission.owedPaise)} waiting: fund the team commission pool (Revenue Ledger)
+                      {tokens(t.commission.owedPaise)} earned, not paid yet (the sweep retries)
                     </span>
                   )}
                 </div>

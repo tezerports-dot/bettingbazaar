@@ -44,12 +44,6 @@ export const ACCOUNTS = Object.freeze({
   PAYOUT_FEES: { code: 'PAYOUT_FEES', normalBalance: 'CREDIT',
     description: 'Payout fees charged on withdrawals (none charged today)' },
 
-  // The platform's commission pool: team commission is paid out of it (Step
-  // 2e). Funded ONLY from PLATFORM_REVENUE (never from users/deposits/
-  // withdrawals — hard business rule, enforced in revenueSettlement.service.js).
-  MERCHANT_BONUS_POOL: { code: 'MERCHANT_BONUS_POOL', normalBalance: 'CREDIT',
-    description: 'Platform-funded pool team commission is paid from' },
-
   // What the platform owes the teams for commission paid into their pools.
   MERCHANT_FUNDS: { code: 'MERCHANT_FUNDS', normalBalance: 'CREDIT',
     description: 'Aggregate team liability from commission paid into team pools' },
@@ -80,10 +74,8 @@ export const EVENT_TYPES = Object.freeze({
   // itself does not exist; Business Policy Platform will define it).
   PAYOUT_FEE_CHARGED: 'PAYOUT_FEE_CHARGED',
 
-  // Moving distributable platform revenue into the merchant bonus pool.
-  MERCHANT_BONUS_FUNDED: 'MERCHANT_BONUS_FUNDED',
-
-  // An order commission paid from the pool into a team's token pool, once per
+  // An order commission paid straight out of platform revenue into a team's
+  // token pool (no separate commission pool; owner, 2026-10-24), once per
   // completed order the team served (owner, 2026-10-21,
   // `database/repositories/teamCommission.js`).
   MERCHANT_BONUS_ISSUED: 'MERCHANT_BONUS_ISSUED',
@@ -117,8 +109,9 @@ export const EVENT_TYPES = Object.freeze({
 export const EVENT_TYPE_LIST = Object.freeze(Object.values(EVENT_TYPES));
 
 /**
- * Postings for a team commission paid out of the pool (Step 2e): the pool
- * shrinks, what the platform owes the teams grows. Here, beside the accounts,
+ * Postings for a team commission (§26): a cost against platform revenue, as a
+ * General bonus is (owner, 2026-10-24: no separate commission pool), and what
+ * the platform owes the teams grows. Here, beside the accounts,
  * because the commission writer is a repository and must not import a
  * service (`teamCommission.js` posts it inside its own transaction).
  */
@@ -127,8 +120,8 @@ export function buildBonusIssuePostings(amountMinor) {
     throw new Error('Bonus issue amount must be a positive integer minor-unit amount.');
   }
   return [
-    { account: ACCOUNTS.MERCHANT_BONUS_POOL.code, amountMinor: amountMinor },
-    { account: ACCOUNTS.MERCHANT_FUNDS.code,      amountMinor: -amountMinor },
+    { account: ACCOUNTS.PLATFORM_REVENUE.code, amountMinor: amountMinor },
+    { account: ACCOUNTS.MERCHANT_FUNDS.code,   amountMinor: -amountMinor },
   ];
 }
 

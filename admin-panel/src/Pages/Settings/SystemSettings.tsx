@@ -1270,7 +1270,7 @@ export const SystemSettings: React.FC = () => {
           <div className="pt-4 border-t border-dark-700">
             <h3 className="font-semibold mb-1">Merchant Commission</h3>
             <p className="text-xs text-gray-500 mb-3">
-              Paid into the merchant&apos;s pool for every completed order, from the commission pool. An agents&apos; team
+              Paid into the merchant&apos;s pool for every completed order, straight out of platform revenue. An agents&apos; team
               records 16% of it to the supervisor and the rest to its members. 0 turns it off for that direction.
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

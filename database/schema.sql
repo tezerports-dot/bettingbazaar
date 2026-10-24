@@ -4225,9 +4225,9 @@ CREATE OR REPLACE TRIGGER users_payout_details_lock
 -- Order commission (owner, 2026-10-21; it replaced the matched-volume cycle
 -- of 2026-10-02): every COMPLETED order a team served earns
 -- `orderCommission.depositPercent` (a buy) or `withdrawalPercent` (a sell) of
--- its tokens, paid as tokens into the team's pool out of the platform's
--- commission pool (MERCHANT_BONUS_POOL in the accounting ledger, which an
--- admin funds from distributable revenue). One row per order, written by
+-- its tokens, paid as tokens into the team's pool straight out of platform
+-- revenue (a cost against PLATFORM_REVENUE; no commission pool, owner
+-- 2026-10-24). One row per order, written by
 -- `teamCommission.js` alone, in the transaction that credits the pool.
 --
 -- `team_commissions_once_per_order` is the double-payment guard (§32 S6,

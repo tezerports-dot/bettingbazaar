@@ -286,12 +286,11 @@ async function cron() {
       async go() {
         const { payOwedCommissions } = await import('../../domains/team/teamCommission.service.js');
         const results = await payOwedCommissions({ actor: 'ops-harness' });
-        const failed = results.filter((r) => !r.ok && r.reason !== 'pool_short');
+        const failed = results.filter((r) => !r.ok);
         if (failed.length) {
           return ['FAIL', `${failed.length} team(s) not paid: ${failed.map((r) => `${r.teamId} ${r.reason}`).join('; ').slice(0, 160)}`];
         }
-        const short = results.filter((r) => r.reason === 'pool_short').length;
-        return ['RAN', `${results.filter((r) => r.paid).length} paid, ${short} waiting for the commission pool`];
+        return ['RAN', `${results.filter((r) => r.paid).length} paid`];
       },
     },
     {
