@@ -23,7 +23,7 @@
 
 # ── Stage 2: build the three frontends (needs devDeps: vite/tsc) ─────────────
 # 22.23.4: the first 22.x with Node's October 2026 security fixes (nodeRuntime.js MIN_NODE).
-FROM node:22.23.4-slim AS builder
+FROM node:26.12.0-slim AS builder
 WORKDIR /app
 # NOT NODE_ENV=production here: npm would skip devDependencies, and vite/tsc/
 # tailwind are devDependencies. The panels' own builds set their own mode.
@@ -64,7 +64,7 @@ RUN cd user-panel     && npm run build \
  && cd .. && find user-panel/dist admin-panel/dist merchant-panel/dist -name '*.map' -delete
 
 # ── Stage 3: lean runtime — prod deps + backend + built dist only ────────────
-FROM node:22.23.4-slim AS runtime
+FROM node:26.12.0-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
