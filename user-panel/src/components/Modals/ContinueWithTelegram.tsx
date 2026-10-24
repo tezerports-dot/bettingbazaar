@@ -32,7 +32,9 @@
  * instead of a browser tab at t.me's "Open in Telegram" page first. If this
  * page is still in front a moment later (no Telegram on the phone), the https
  * link opens instead (`openTelegram`). A laptop follows the https link in a new
- * tab, and the QR stays for a phone to scan.
+ * tab, and the QR stays for a phone to scan. The QR carries the app address
+ * too (owner, 2026-10-24): a phone's camera then hands it to Telegram at once,
+ * where the https link went through a browser tab first.
  *
  * ── One step: the check, then the button (owner, 2026-10-20) ───────────────
  * The screen shows the captcha box in view (`mountCaptcha`: Cloudflare's own
@@ -263,7 +265,7 @@ const ContinueWithTelegram: React.FC<Props> = ({ onDone }) => {
       {ready && match && waiting?.telegram?.url && !touchScreen() && (
         <>
           <p style={NOTE}>Or scan this with your phone&apos;s camera:</p>
-          <LinkQr link={waiting.telegram.url} />
+          <LinkQr link={waiting.telegram.appUrl || waiting.telegram.url} />
         </>
       )}
       {phase === 'opened' ? (

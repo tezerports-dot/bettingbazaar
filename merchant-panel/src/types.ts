@@ -292,6 +292,8 @@ export interface AuthResponse {
  */
 export interface TelegramLink {
   url: string;
+  /** The same link addressed to the Telegram app (`tg://resolve`, telegramClient.miniAppAppLink). */
+  appUrl?: string;
   botUsername: string;
   expiresAt: string;
 }

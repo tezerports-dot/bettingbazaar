@@ -13,6 +13,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
+import { qrPath } from '../utils/qrPath';
 
 const auth = vi.hoisted(() => ({
   merchant: null, loading: false, unreachable: false,
@@ -36,7 +37,7 @@ vi.mock('../services/telegramTicket', () => ({
 
 const { default: LoginPage, deliveryHere } = await import('./LoginPage');
 
-const TELEGRAM = { url: 'https://t.me/bb_bot/app?startapp=c-1', botUsername: 'bb_bot', expiresAt: '2026-10-08T10:00:00Z' };
+const TELEGRAM = { url: 'https://t.me/bb_bot/app?startapp=c-1', appUrl: 'tg://resolve?domain=bb_bot&appname=app&startapp=c-1', botUsername: 'bb_bot', expiresAt: '2026-10-08T10:00:00Z' };
 const refusal = (status: number, data: Record<string, unknown>) =>
   Object.assign(new Error(String(data.message)), { status, data: { success: false, ...data } });
 
@@ -97,7 +98,9 @@ describe('a MATCH sign-in (a laptop)', () => {
     await press();
     expect(api.startTelegramSignIn).toHaveBeenCalledWith('MATCH');
     expect(screen.getByTestId('match-number').textContent).toBe('47');
-    expect(screen.getByRole('img', { name: /QR code that opens Telegram/i })).toBeTruthy();
+    const qr = screen.getByRole('img', { name: /QR code that opens Telegram/i });
+    // Telegram's app address, so the phone's camera opens Telegram itself (owner, 2026-10-24).
+    expect(qr.querySelector('path')?.getAttribute('d')).toBe(qrPath(TELEGRAM.appUrl)!.d);
     const link = screen.getByRole('link', { name: /Open Telegram/ });
     expect(link.getAttribute('href')).toBe(TELEGRAM.url);
     expect(link.getAttribute('target')).toBe('_blank');
