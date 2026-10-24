@@ -49,6 +49,7 @@ import {
 } from '../../domains/payment/paymentProcessing.service.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
+import { commissionOffForSuite } from '../commissionOff.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -79,6 +80,9 @@ describePg('the payout reference is the MERCHANT\'s, and it is claimed', () => {
     });
     await teams.workingTeam({ rail: 'CASH', include: [cashMember.merchantId] });
   }, 120_000);
+
+  // The order's own tokens are under test; commission has its own suites.
+  commissionOffForSuite();
 
   afterAll(async () => {
     await pgQuery('SET session_replication_role = replica');

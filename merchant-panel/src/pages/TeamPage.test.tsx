@@ -197,7 +197,7 @@ describe('merchant Team screen', () => {
     render(<TeamPage />);
     expect(await screen.findByText('420 tokens')).toBeInTheDocument();
     expect(screen.getByText('your share 420')).toBeInTheDocument();
-    expect(screen.getByText(/5,000 tokens earned and waiting/)).toBeInTheDocument();
+    expect(screen.getByText(/5,000 tokens earned and being paid/)).toBeInTheDocument();
     expect(screen.getByText(/Every completed buy pays 5% and every completed sell 5%/)).toBeInTheDocument();
     expect(screen.getByText(/for a buy of 1,00,000|for a buy of 100,000/)).toBeInTheDocument();
   });

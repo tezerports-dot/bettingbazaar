@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { qrPath } from '../PayLinkQr';
 
 const signInWithTelegram = vi.fn();
 const pollTelegramStep = vi.fn();
@@ -82,7 +83,11 @@ describe('Continue with Telegram', () => {
     render(<ContinueWithTelegram onDone={onDone} />);
     expect(signInWithTelegram).toHaveBeenCalledWith({ delivery: 'MATCH', referralCode: 'ALICE1', captchaToken: null });
     expect((await screen.findByTestId('match-number')).textContent).toBe('47');
-    expect(screen.getByRole('img', { name: /qr code that opens telegram/i })).toBeTruthy();
+    const qr = screen.getByRole('img', { name: /qr code that opens telegram/i });
+    // The QR is Telegram's app address, so a phone's camera opens Telegram
+    // itself, not a browser tab first (owner, 2026-10-24).
+    expect(qr.querySelector('path')?.getAttribute('d')).toBe(qrPath(APP_URL)!.d);
+    expect(qr.querySelector('path')?.getAttribute('d')).not.toBe(qrPath('https://t.me/bb_bot?startapp=cabc')!.d);
     expect(screen.getByRole('link', { name: /login with telegram/i }).getAttribute('href')).toBe('https://t.me/bb_bot?startapp=cabc');
     await vi.waitFor(() => expect(onDone).toHaveBeenCalled(), { timeout: 5000 });
     expect(pollTelegramStep).toHaveBeenCalledWith('chal-1');

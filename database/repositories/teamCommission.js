@@ -4,7 +4,7 @@
  * 2026-10-02).
  *
  * Every COMPLETED order a team served earns a percent of its tokens, paid as
- * tokens into that team's pool out of the platform's commission pool: a buy
+ * tokens into that team's pool straight out of platform revenue: a buy
  * (a player's deposit) `orderCommission.depositPercent`, a sell (a player's
  * withdrawal) `orderCommission.withdrawalPercent` — 5 and 5 by default, both
  * the admin's (Admin › Settings). Rounded down to the paisa. An agents' team
@@ -19,23 +19,24 @@
  * the rate it was paid at, in basis points, and its CHECK holds the sum to
  * them, so every writer pays exactly that.
  *
- * ── Never partial ────────────────────────────────────────────────────────────
- * The platform's commission pool is `MERCHANT_BONUS_POOL` in the accounting
- * ledger, which an admin funds from distributable revenue. A commission it
- * cannot cover in full is not paid; the order stays owed, and the sweep (or
- * the admin's next top-up) pays it whole (§26).
+ * ── Paid from platform revenue ───────────────────────────────────────────────
+ * There is no commission pool to fund (owner, 2026-10-24: it was never topped
+ * up, so every commission waited and merchants earned nothing). A commission
+ * is a cost booked against `PLATFORM_REVENUE`, as a General bonus is; its
+ * tokens leave the platform's own holding (`TOKEN_SUPPLY` → the team's pool).
+ * Never partial: a payment the treasury refuses moves nothing, the order stays
+ * owed, and the sweep pays it whole (§26).
  *
  * ── One transaction, one payment at a time ───────────────────────────────────
  * The commission row, its shares, the ledger event, the pool credit and the
- * treasury movement commit together (§21). The commission pool's balance is a
- * gate read and then spent, so every payment takes the same advisory lock
- * first: the gate is a serialised write, not a snapshot (§32 S6, trap 18).
+ * treasury movement commit together (§21), under one advisory lock so two
+ * payments for one order are a replay, not a race (§32 S6).
  */
 import { pgQuery, withTransaction } from '../client.js';
 import { getSystemConfig } from './config.js';
 import { creditCommissionWithin, PoolRefused } from './teamPools.js';
-import { recordEvent, accountBalancePaise } from './ledger.core.js';
-import { ACCOUNTS as LEDGER, EVENT_TYPES, buildBonusIssuePostings } from '../../backend/domains/revenue/chartOfAccounts.js';
+import { recordEvent } from './ledger.core.js';
+import { EVENT_TYPES, buildBonusIssuePostings } from '../../backend/domains/revenue/chartOfAccounts.js';
 
 /** Of each payment, recorded to the supervisor; the rest to the members equally (owner). */
 export const SUPERVISOR_SHARE_PERCENT = 16;
@@ -119,9 +120,8 @@ export function toSummary(teamId, row, rates, { kind = 'AGENT' } = {}) {
     buysPaise: toNum(row?.buys_paise),
     sellsPaise: toNum(row?.sells_paise),
     paidPaise: toNum(row?.paid_paise),
-    // Earned by orders already completed and not paid yet: the commission pool
-    // could not cover it, or the payment after the completion did not run.
-    // The sweep and the admin's next top-up pay it.
+    // Earned by orders already completed and not paid yet: the payment after
+    // the completion did not run, or the treasury refused it. The sweep pays it.
     owedPaise: commissionFor(row?.unpaid_buys_paise, r.bp.DEPOSIT) + commissionFor(row?.unpaid_sells_paise, r.bp.WITHDRAWAL),
     // The rule itself, so no screen keeps its own copy of the numbers (§4).
     depositPercent: r.depositPercent,
@@ -137,7 +137,7 @@ export function toSummary(teamId, row, rates, { kind = 'AGENT' } = {}) {
  *
  * Returns { ok: true, paid: true, commission, shares, pool }
  *       | { ok: true, paid: false, reason: 'not_completed' | 'no_team' | 'rate_zero' | 'too_small' | 'already_paid' }
- *       | { ok: false, reason: 'order_not_found' | 'pool_short' | <treasury reason>, … }
+ *       | { ok: false, reason: 'order_not_found' | <treasury reason>, … }
  */
 export async function payOrderCommission(orderId, { actor = 'system' } = {}) {
   const oid = String(orderId);
@@ -161,9 +161,6 @@ export async function payOrderCommission(orderId, { actor = 'system' } = {}) {
       const base = toNum(order.token_amount_paise);
       const amount = commissionFor(base, bp);
       if (amount <= 0) return { ok: true, paid: false, reason: 'too_small' };
-
-      const poolPaise = await accountBalancePaise(LEDGER.MERCHANT_BONUS_POOL.code, { client });
-      if (poolPaise < amount) return { ok: false, reason: 'pool_short', owedPaise: amount, poolPaise };
 
       const teamId = order.team_id;
       const direct = order.kind === 'DIRECT';
@@ -246,9 +243,6 @@ export async function payOwedCommissions({ actor = 'system:commission-sweep' } =
     try {
       const out = await payOrderCommission(orderId, { actor });
       results.push({ orderId, teamId, ...out });
-      // The commission pool is short: every later order would be refused the
-      // same way. Wait for the admin's top-up.
-      if (out.reason === 'pool_short') break;
     } catch (e) {
       results.push({ orderId, teamId, ok: false, reason: 'error', error: e.message });
     }

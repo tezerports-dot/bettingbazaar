@@ -2291,11 +2291,11 @@ const MUTATIONS = [
   },
   // ── Order commission (owner, 2026-10-21) ─────────────────────────────────────
   {
-    id: 'M383', file: 'database/repositories/teamCommission.js', config: PG,
+    id: 'M383', file: 'backend/domains/revenue/chartOfAccounts.js', config: PG,
     test: 'backend/tests/routes/teamCommissionPg.test.js',
-    why: 'a commission the platform pool cannot cover is paid anyway: the pool is overdrawn, and the platform pays more than it set aside (§26: never partial)',
-    from: `      if (poolPaise < amount) return { ok: false, reason: 'pool_short', owedPaise: amount, poolPaise };\n`,
-    to: '',
+    why: 'a commission is booked against what players are owed instead of platform revenue, so the P&L never shows what commission cost (owner, 2026-10-24)',
+    from: `    { account: ACCOUNTS.PLATFORM_REVENUE.code, amountMinor: amountMinor },\n    { account: ACCOUNTS.MERCHANT_FUNDS.code,   amountMinor: -amountMinor },`,
+    to: `    { account: ACCOUNTS.USER_FUNDS.code, amountMinor: amountMinor },\n    { account: ACCOUNTS.MERCHANT_FUNDS.code,   amountMinor: -amountMinor },`,
   },
   {
     id: 'M384', file: 'database/repositories/teamCommission.js', config: PG,
@@ -2345,13 +2345,6 @@ const MUTATIONS = [
     why: 'a member is shown the largest share of each payment — the supervisor\'s — instead of their own',
     from: `                       WHERE s.commission_id = c.commission_id AND s.merchant_id = $2), 0) AS my_share_paise`,
     to: `                       WHERE s.commission_id = c.commission_id AND $2::text IS NOT NULL ORDER BY s.share_paise DESC LIMIT 1), 0) AS my_share_paise`,
-  },
-  {
-    id: 'M391', file: 'backend/domains/revenue/revenue.admin.routes.js', config: PG,
-    test: 'backend/tests/routes/teamCommissionPg.test.js',
-    why: 'funding the commission pool leaves the commission it was waiting on unpaid until the next sweep',
-    from: `    const paidNow = result.idempotent ? [] : (await payOwedCommissions({ actor: \`admin:\${req.user.userId}\` })`,
-    to: `    const paidNow = true ? [] : (await payOwedCommissions({ actor: \`admin:\${req.user.userId}\` })`,
   },
   // ── Step 2f: red flags and oversight ─────────────────────────────────────
   {

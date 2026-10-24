@@ -1316,9 +1316,8 @@ router.get('/stats', merchantAuth, async (req, res) => {
         } : null;
 
         // The team's commission picture (`toSummary`, the one every screen
-        // reads): what is paid, and what is earned but waiting for the
-        // platform's commission pool, so the dashboard can say why today's
-        // earnings are 0. Team-level, as Team already shows a member.
+        // reads): what is paid, and what is earned but not yet paid (the
+        // sweep pays it within minutes). Team-level, as Team already shows a member.
         const commission = team?.commission ?? null;
 
         res.json({ success: true, stats: { pending, processing, completedToday, paidPendingReview }, money: { own, pool }, commission });

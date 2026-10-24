@@ -42,7 +42,7 @@ import {
   recordEvent as pgRecordEvent, getEvent as pgGetEvent, getLedger as pgGetLedger,
   trialBalance as pgTrialBalance, accountBalancePaise as pgAccountBalance,
 } from './ledger.core.js';
-import { withTransaction, pgQuery } from '../client.js';
+import { pgQuery } from '../client.js';
 
 /** Is Postgres the source of truth for the accounting ledger? */
 
@@ -142,38 +142,6 @@ export async function trialBalanceOnPostgres() {
     grandTotalMinor: pg.grandTotalPaise,
     unknownAccounts: pg.unknownAccounts,
   };
-}
-
-/**
- * Record an event that spends from one account, only if that account's
- * reported balance covers it, in ONE transaction under a lock on the account
- * (§32 S6). Two admins funding the commission pool at once each read the
- * same distributable revenue and could jointly spend more than there was; the
- * second now waits for the first and reads what it left.
- *
- * Answers `{ refused: { availableMinor } }` when the balance is short, else
- * what `recordEventOnPostgres` answers.
- */
-export async function recordSpendCoveredOnPostgres({
-  spendAccount, spendMinor, eventType, idempotencyKey, postings,
-  refModel = null, refId = null, occurredAt = null, description = null,
-}) {
-  return withTransaction(async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`ledger_spend:${spendAccount}`]);
-    // A replay of the same key is answered before the balance is asked: the
-    // spend it repeats is already inside the balance.
-    const existing = await pgGetEvent(idempotencyKey, { client });
-    if (existing) return { idempotent: true, event: toCallerShape(existing) };
-    const availableMinor = Math.max(0, await pgAccountBalance(spendAccount, { client }));
-    if (spendMinor > availableMinor) return { refused: { availableMinor } };
-    const result = await pgRecordEvent({
-      eventType, idempotencyKey, postings: toPgPostings(postings),
-      refModel, refId: refId == null ? null : String(refId),
-      description, createdAt: occurredAt, client,
-    });
-    const stored = result.event ?? await pgGetEvent(idempotencyKey, { client });
-    return { idempotent: Boolean(result.idempotent), event: toCallerShape(stored) };
-  });
 }
 
 /**

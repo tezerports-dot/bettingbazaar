@@ -54,6 +54,7 @@ import { moveDepositMoney } from '../../domains/payment/depositCredit.js';
 import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
 import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
+import { commissionOffForSuite } from '../commissionOff.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -67,6 +68,9 @@ describePg('admin force-action on a payment order', () => {
     const mod = await import('../../domains/payment/paymentOrder.routes.js');
     app = mountRouter(mod.default);
   }, 60_000);
+
+  // The order's own tokens are under test; commission has its own suites.
+  commissionOffForSuite();
 
   afterAll(async () => {
     // Trap 10: this run's orders, then its teams. The transitions table is

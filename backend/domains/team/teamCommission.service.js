@@ -8,8 +8,9 @@
  * the withdrawal settlement (sells). Asking can never fail the completion that
  * asked: the order has already completed, and a payment that did not run is
  * not lost, because an order stays owed until its row exists. The sweep
- * (`payOwedCommissions`, every few minutes) and an admin's top-up of the
- * commission pool pay whatever is still owed.
+ * (`payOwedCommissions`, every few minutes) pays whatever is still owed.
+ * Commission comes straight out of platform revenue, so nothing waits on a
+ * pool being funded (owner, 2026-10-24).
  */
 import { db } from '#db';
 import { sendAlert } from '../../services/alerting.service.js';
@@ -20,9 +21,7 @@ export async function payCommissionFor(order, { actor = 'system' } = {}) {
   if (!orderId || !order?.teamId) return null;
   try {
     const out = await db.teamCommission.payOrderCommission(orderId, { actor });
-    // A short pool is the platform's state, not the team's: an admin tops it
-    // up and the sweep pays. Said once per ask, never per order per minute.
-    if (!out.ok && out.reason !== 'pool_short') {
+    if (!out.ok) {
       console.error(`[team-commission] ${orderId} not paid:`, out.reason);
     }
     return out;
@@ -35,14 +34,14 @@ export async function payCommissionFor(order, { actor = 'system' } = {}) {
   }
 }
 
-/** Every order owed its commission, paid now: the sweep, and right after an admin funds the pool. */
+/** Every order owed its commission, paid now: the sweep. */
 export async function payOwedCommissions({ actor = 'system:commission-sweep' } = {}) {
   const results = await db.teamCommission.payOwedCommissions({ actor });
-  const short = results.filter((r) => r.reason === 'pool_short');
-  if (short.length) {
-    sendAlert('team-commission-pool-short', 'Team commission is waiting: the commission pool cannot cover it', {
-      teams: [...new Set(short.map((r) => r.teamId))],
-      owedPaise: short.reduce((sum, r) => sum + (r.owedPaise ?? 0), 0),
+  const refused = results.filter((r) => !r.ok);
+  if (refused.length) {
+    sendAlert('team-commission-refused', 'Some order commission could not be paid; the sweep will retry', {
+      teams: [...new Set(refused.map((r) => r.teamId))],
+      reasons: [...new Set(refused.map((r) => r.reason))],
     }).catch(() => {});
   }
   return results;

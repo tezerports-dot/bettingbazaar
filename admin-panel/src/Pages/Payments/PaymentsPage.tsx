@@ -82,7 +82,7 @@ const TeamPools: React.FC<{ reloadKey: number }> = ({ reloadKey }) => {
         <div>
           <Money value={tokens(t.commission.paidPaise)} />
           {t.commission.owedPaise > 0 && (
-            <p className="text-xs text-yellow-400">{tokens(t.commission.owedPaise)} waiting for the commission pool</p>
+            <p className="text-xs text-yellow-400">{tokens(t.commission.owedPaise)} earned, not paid yet (the sweep retries)</p>
           )}
         </div>
       ),

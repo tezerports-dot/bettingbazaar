@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   validatePostings, buildDepositPostings, buildWithdrawalPostings,
-  buildCyclePostings, buildBonusFundingPostings,
+  buildCyclePostings,
 } from '../../domains/revenue/revenueSettlement.service.js';
 import { toMinor, toRupees, buildBonusIssuePostings } from '../../domains/revenue/chartOfAccounts.js';
 
@@ -123,35 +123,30 @@ describe('cycle settlement postings', () => {
   });
 });
 
-describe('merchant bonus postings', () => {
-  it('funding moves revenue -> pool only', () => {
-    const p = buildBonusFundingPostings(50000);
-    expect(sum(p)).toBe(0);
-    expect(leg(p, 'PLATFORM_REVENUE')).toBe(50000);
-    expect(leg(p, 'MERCHANT_BONUS_POOL')).toBe(-50000);
-  });
-  it('issuing moves pool -> merchant liability only', () => {
+describe('team commission postings', () => {
+  it('a commission is a cost against platform revenue, owed to the teams (no commission pool)', () => {
     const p = buildBonusIssuePostings(5000);
     expect(sum(p)).toBe(0);
-    expect(leg(p, 'MERCHANT_BONUS_POOL')).toBe(5000);
+    expect(leg(p, 'PLATFORM_REVENUE')).toBe(5000);
     expect(leg(p, 'MERCHANT_FUNDS')).toBe(-5000);
+    expect(p.map((x) => x.account).sort()).toEqual(['MERCHANT_FUNDS', 'PLATFORM_REVENUE']);
   });
-  it('rejects non-positive / fractional funding', () => {
-    expect(() => buildBonusFundingPostings(-5)).toThrow();
-    expect(() => buildBonusFundingPostings(10.5)).toThrow();
+  it('rejects non-positive / fractional amounts', () => {
+    expect(() => buildBonusIssuePostings(-5)).toThrow();
+    expect(() => buildBonusIssuePostings(10.5)).toThrow();
   });
 });
 
 describe('full-lifecycle conservation', () => {
-  it('deposit -> cycle -> withdrawal -> bonus funding conserves to zero', () => {
+  it('deposit -> cycle -> withdrawal -> commission conserves to zero', () => {
     const all = [
       ...buildDepositPostings({ fiatAmount: 1000, tokenAmount: 1000, depositAllocation: 900, reserveAllocation: 100 }),
       ...buildCyclePostings({ netProfit: 300 }),
       ...buildWithdrawalPostings({ tokenAmount: 600, fiatAmount: 600 }),
-      ...buildBonusFundingPostings(toMinor(100)),
+      ...buildBonusIssuePostings(toMinor(100)),
     ];
     expect(sum(all)).toBe(0);
     const revenueNet = -all.filter(p => p.account === 'PLATFORM_REVENUE').reduce((s, p) => s + p.amountMinor, 0);
-    expect(revenueNet).toBe(toMinor(200)); // +300 profit - 100 funded
+    expect(revenueNet).toBe(toMinor(200)); // +300 profit - 100 commission
   });
 });

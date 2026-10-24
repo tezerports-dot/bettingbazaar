@@ -94,7 +94,7 @@ function toTeam(row, rates) {
     poolStanding: standingOf(row),
     cashOut: toCashOut(row),
     // Order commission (owner, 2026-10-21): completed volume, what has been
-    // paid, and what is earned but waiting for the commission pool.
+    // paid, and what is earned but not paid yet (the sweep pays it).
     commission: toSummary(row.team_id, row, rates),
     createdAt: row.created_at,
   };

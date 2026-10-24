@@ -39,6 +39,7 @@ import { setCashReady } from '#db/repositories/teamRouting.js';
 import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
 import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
+import { commissionOffForSuite } from '../commissionOff.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -61,6 +62,9 @@ describePg('disputes are raised and resolved, not half-written', () => {
     adminApp = mountRouter((await import('../../domains/payment/paymentOrder.routes.js')).default);
     admin = await actor({ isAdmin: true });
   }, 60_000);
+
+  // The order's own tokens are under test; commission has its own suites.
+  commissionOffForSuite();
 
   afterAll(async () => {
     // Trap 10: this run's orders, then its teams (append-only transitions, so

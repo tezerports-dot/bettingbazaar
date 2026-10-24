@@ -91,7 +91,7 @@ const CommissionSection: React.FC<{ team: Team; commissions: TeamCommission[] }>
       </p>
       {c.owedPaise > 0 && (
         <Banner tone="warn" style={{ marginBottom: 8 }}>
-          {tokens(c.owedPaise)} tokens earned and waiting for the platform&apos;s commission pool. They are paid automatically once it is topped up.
+          {tokens(c.owedPaise)} tokens earned and being paid into the pool within a few minutes.
         </Banner>
       )}
       {mine.length > 0 && (

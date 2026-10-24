@@ -131,6 +131,9 @@ import { getSystemConfig } from '#db/repositories/config.js';
 import { db } from '#db';
 import { isDatabaseReachable } from '#db/client.js';
 import { mountSpaFallbacks } from './startup/spaFallbacks.js';
+import { retryTransientDbStart } from './startup/dbStartRetry.js';
+import { warnIfNodeUnpatched } from './startup/nodeRuntime.js';
+import { jsonBody } from './middleware/bodyParsers.js';
 import { isServableOrigin } from './config/servedHosts.js';
 import { installServerErrorCapture, flushErrorLog, logError } from './services/errorLog.service.js';
 
@@ -266,8 +269,10 @@ app.use(cors(corsOptions));
 // legitimately posts a big JSON body. The one exception is the admin base64
 // app-asset upload, which gets a scoped larger parser; everything else is tight.
 const JSON_LIMIT = process.env.JSON_BODY_LIMIT || '1mb';
-const _tightJson = express.json({ limit: JSON_LIMIT });
-const _assetJson = express.json({ limit: process.env.ASSET_JSON_LIMIT || '8mb' });
+// No compressed request bodies, on any route (owner, 2026-10-24): every parser
+// is `bodyParsers.js`'s, which refuses a Content-Encoding 415 before decoding.
+const _tightJson = jsonBody({ limit: JSON_LIMIT });
+const _assetJson = jsonBody({ limit: process.env.ASSET_JSON_LIMIT || '8mb' });
 const _ASSET_UPLOAD_PATHS = new Set(['/api/admin/app-assets/upload']);
 // ── The provider wallet callback needs the bytes it was signed over ────────
 // Its HMAC is computed over the request BODY, and a digest taken over a
@@ -279,7 +284,7 @@ const _ASSET_UPLOAD_PATHS = new Set(['/api/admin/app-assets/upload']);
 // SCOPED to that path on purpose. Keeping a raw copy of every request body
 // doubles what a 1 MB upload holds in memory, for a check only one route makes.
 const _RAW_BODY_PREFIX = '/api/game/wallet/';
-const _rawJson = express.json({
+const _rawJson = jsonBody({
   limit: JSON_LIMIT,
   verify: (req, _res, buf) => { req.rawBody = buf; },
 });
@@ -390,7 +395,15 @@ app.get('/app-assets/:name', async (req, res, next) => {
     // answered 404 for every uploaded slot in production (S3 is mandatory
     // there). Send the reader to where the bytes are. The URL is the one
     // uploadBufferToS3 returned — derived by the server, never from a request.
-    if (asset.storage !== 'LOCAL') return res.redirect(302, asset.url);
+    // The stored key never changes across re-uploads (`app-assets/<slot>`), and
+    // the storage tells browsers to keep it an hour, so the redirect names the
+    // upload's time: a new upload is a new address and shows at once.
+    if (asset.storage !== 'LOCAL') {
+      res.set('Cache-Control', 'no-cache');
+      const version = new Date(asset.updatedAt).getTime();
+      const sep = asset.url.includes('?') ? '&' : '?';
+      return res.redirect(302, Number.isFinite(version) ? `${asset.url}${sep}t=${version}` : asset.url);
+    }
     if (!asset.contentType) return next();
     res.type(asset.contentType);
     return res.sendFile(filePath, (error) => {
@@ -422,6 +435,8 @@ registerService('storage', _s3Store.isAvailable() ? _s3Store : _localStore);
 // Cross-cutting services — look up by name where hard-coupling is undesirable.
 registerService('metrics',  { handler: metricsHandler });
 registerService('alerting', { send: (...a) => import('./services/alerting.service.js').then(m => m.sendAlert(...a)) });
+// An unpatched Node is said once at boot, in the error log and to the alert channel (nodeRuntime.js).
+warnIfNodeUnpatched({ alert: (...a) => import('./services/alerting.service.js').then(m => m.sendAlert(...a)) });
 // §14 GOVERNANCE: user panel static must NOT bleed into /admin or /merchant.
 // Serving dist/ at root '/' caused user panel index.css (which @imports
 // glassmorphism.css with .glass-overlay { position:fixed; inset:0 }) to load
@@ -769,8 +784,10 @@ Promise.allSettled([
   // fails startup, which is the only honest outcome — the alternative is a
   // process that binds a port, passes nothing, and serves every request an
   // error about a table that was never created.
+  // A database that is briefly unreachable (the pooler holding back logins
+  // during a restart) is waited for, not given up on (startup/dbStartRetry.js).
   import('#db/client.js')
-    .then((m) => m.applySchema())
+    .then((m) => retryTransientDbStart(() => m.applySchema()))
     // Once more now the tables exist. The call at the top of this file runs
     // before the schema on a fresh database and fails closed (logged); without
     // this the frame-src waited for the 60-second timer.
@@ -804,6 +821,12 @@ Promise.allSettled([
     console.error('❌ Startup failed while preparing PostgreSQL:', results[0].reason);
     process.exitCode = 1;
     try { activeListener?.close(); } catch { /* nothing to close */ }
+    // Exit for real. Setting the code alone left the process alive on its
+    // timers, serving nothing and running no rounds, so its supervisor never
+    // started a new one (owner, 2026-10-24: every board stuck at 00:00). The
+    // pause lets the error log write this line first.
+    setTimeout(() => process.exit(1), 3_000).unref?.();
+    void flushErrorLog?.().catch?.(() => {});
     return;
   }
   console.log('✅ DB services initialized');

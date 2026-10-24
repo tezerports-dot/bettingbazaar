@@ -110,6 +110,35 @@ describe('the merchant order list, live', () => {
     expect(screen.getByText(/ord-3 DISPUTED/)).toBeInTheDocument();
   });
 
+  it('re-reads the list for a partial push about an order it does not hold, instead of adding a blank card', async () => {
+    const stream = await mount();
+    api.getOrders.mockResolvedValue({
+      orders: [
+        { _id: 'ord-1', orderId: 'ord-1', type: 'DEPOSIT', status: 'PROCESSING', expiresAt: 'x', createdAt: '2026-10-01T09:30:00.000Z' },
+        { _id: 'ord-9', orderId: 'ord-9', type: 'WITHDRAWAL', status: 'DISPUTED', fiatAmount: 700, expiresAt: 'x', createdAt: '2026-10-01T09:40:00.000Z' },
+      ],
+    });
+    act(() => stream.dispatch('order_update', { orderId: 'ord-9', status: 'DISPUTED' }));
+    // Never the half order (no type) on screen.
+    expect(screen.queryByText(/ord-9 DISPUTED undefined/)).toBeNull();
+    await waitFor(() => expect(screen.getByText(/ord-9 DISPUTED WITHDRAWAL/)).toBeInTheDocument());
+  });
+
+  it('drops an order put back in the queue: it is no longer this member\'s', async () => {
+    const stream = await mount();
+    act(() => stream.dispatch('order_update', { orderId: 'ord-1', status: 'PENDING_QUEUE' }));
+    await waitFor(() => expect(screen.queryByText(/ord-1/)).toBeNull());
+  });
+
+  it('re-reads the list when the snapshot is missing an order the list still holds as open', async () => {
+    const stream = await mount();
+    api.getOrders.mockResolvedValue({
+      orders: [{ _id: 'ord-1', orderId: 'ord-1', type: 'DEPOSIT', status: 'COMPLETED', expiresAt: 'x', createdAt: '2026-10-01T09:30:00.000Z' }],
+    });
+    act(() => stream.dispatch('merchant_orders_snapshot', { orders: [], hasMore: false }));
+    await waitFor(() => expect(screen.getByText(/ord-1 COMPLETED DEPOSIT/)).toBeInTheDocument());
+  });
+
   it('registers every name the order list subscribes to on the merchant stream', async () => {
     const stream = await mount();
     for (const name of ['merchant_orders_snapshot', 'new_order', 'order_update', 'order_paid']) {

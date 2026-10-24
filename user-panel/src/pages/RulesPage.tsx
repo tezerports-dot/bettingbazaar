@@ -11,6 +11,7 @@ import { getBackend } from '../services/backend.service';
 import { PromoContent } from '../types';
 import ScreenShell, { card } from '../redesign/Screen';
 import { useBoardRulesText, BoardRulesSections } from '../redesign/BoardRules';
+import { useBranding } from '../services/branding';
 
 const backend = getBackend();
 
@@ -21,8 +22,8 @@ const RULE_BLOCKS = [
 ];
 
 const RulesPage: React.FC = () => {
-  const branding = (() => { try { return JSON.parse(localStorage.getItem('app_branding') || '{}'); } catch { return {}; } })();
-  const rulesBannerUrl: string = branding.rulesPageImageUrl || '';
+  const branding = useBranding();
+  const rulesBannerUrl = String(branding.rulesPageImageUrl || '');
   const [slides, setSlides] = useState<PromoContent[]>([]);
   // How a round is won, phantom bets, payout, winners list: the server's text,
   // the same the board screen's pop-up asks players to accept.
@@ -57,7 +58,6 @@ const RulesPage: React.FC = () => {
 
         {slides.length > 0 && (
           <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center', margin: '4px 0 12px', fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}><span>🖼️</span><span>Steps published from Admin → RULES_PAGE</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {slides.map((s, i) => (
                 <div key={s.id || i} style={{ position: 'relative', width: '100%', aspectRatio: '4 / 5', borderRadius: 18, overflow: 'hidden', border: '1px solid var(--line)', boxShadow: 'var(--shadow-sm)', background: 'var(--surface3)' }}>

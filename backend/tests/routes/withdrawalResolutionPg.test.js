@@ -56,6 +56,7 @@ import { toPlayerOrderView } from '../../domains/payment/playerOrderView.js';
 import { approveMerchant } from '#db/repositories/merchants.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
+import { commissionOffForSuite } from '../commissionOff.js';
 
 // Every sell is paid by bank transfer, so the member gives its UTR (2d).
 let payoutSeq = 0;
@@ -95,6 +96,9 @@ describePg('ending a withdrawal, in every state its money can be in', () => {
     restoreHold = (await getSystemConfig({ fresh: true }))?.withdrawalHoldMinutes ?? null;
     await applySystemConfig({ withdrawalHoldMinutes: 60 });
   }, 120_000);
+
+  // The order's own tokens are under test; commission has its own suites.
+  commissionOffForSuite();
 
   afterAll(async () => {
     if (restoreHold !== null) await applySystemConfig({ withdrawalHoldMinutes: restoreHold });

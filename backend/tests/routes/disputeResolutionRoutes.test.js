@@ -32,6 +32,7 @@ import {
 import { settleHold } from '../../domains/payment/withdrawalHold.service.js';
 import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
+import { commissionOffForSuite } from '../commissionOff.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -48,6 +49,9 @@ describePg('dispute resolution routes', () => {
     app = mountRouter(mod.default);
     admin = await actor({ isAdmin: true, roles: ['admin'] });
   }, 60_000);
+
+  // The order's own tokens are under test; commission has its own suites.
+  commissionOffForSuite();
 
   afterAll(async () => {
     // Trap 10: this run's orders, then its teams. The transitions table is

@@ -34,6 +34,7 @@ import { useShell } from '../redesign/RedesignShell';
 import { useToast } from '../components/ui/Toast';
 import { betOddsX100, positionValuePaise } from '../redesign/cricketValue';
 import { useHeaderLogo } from '../services/brandAssets';
+import { useBranding } from '../services/branding';
 
 const tokens = (paise: number) => (paise / 100).toLocaleString('en-IN', paise % 100 === 0 ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const odds = (x100: number) => (x100 / 100).toFixed(2);
@@ -705,14 +706,14 @@ const COMING_POLLS = ['Toss', 'Match result', 'Next ball', 'Every over', 'Powerp
 const ComingSoon: React.FC = () => {
   const navigate = useNavigate();
   const headerLogo = useHeaderLogo();
-  const imageUrl: string = (() => {
-    try { return String(JSON.parse(localStorage.getItem('app_branding') || '{}').cricketComingSoonImageUrl || ''); } catch { return ''; }
-  })();
-  const [broken, setBroken] = useState(false);
+  const imageUrl = String(useBranding().cricketComingSoonImageUrl || '');
+  // Which image failed: a new one saved after it gets its own chance.
+  const [brokenUrl, setBrokenUrl] = useState('');
+  const broken = brokenUrl === imageUrl;
   if (imageUrl && !broken) {
     return (
       <section aria-label="Cricket is coming soon" style={{ position: 'relative', flex: 1, minHeight: 'min(70vh, 640px)', background: 'var(--bg)' }}>
-        <img src={imageUrl} alt="Cricket is coming soon" onError={() => setBroken(true)}
+        <img src={imageUrl} alt="Cricket is coming soon" onError={() => setBrokenUrl(imageUrl)}
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
       </section>
     );

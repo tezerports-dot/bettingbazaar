@@ -917,8 +917,8 @@ export async function compensationFor(orderId) {
  * that records it (`teamCommission.js`), so the commission row, its shares,
  * the ledger event and these tokens commit together or not at all (§21). The
  * tokens come from the platform's own holding, TOKEN_SUPPLY → TEAM_FLOAT: a
- * transfer, never a creation (§2); the accounting ledger's commission pool is
- * what pays for them. Throws `PoolRefused` to unwind the caller.
+ * transfer, never a creation (§2); the accounting ledger books them as a cost
+ * against platform revenue. Throws `PoolRefused` to unwind the caller.
  */
 export async function creditCommissionWithin(client, { teamId, commissionId, amountPaise, actor = 'system' }) {
   const paise = Number(amountPaise);

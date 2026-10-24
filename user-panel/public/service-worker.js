@@ -125,6 +125,16 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
+  // Admin-uploaded app images (/app-assets/) — network first, the cached copy
+  // only offline. An uploaded slot answers with a redirect to the file storage,
+  // so the browser gets an opaque response this worker cannot cache; under
+  // stale-while-revalidate the precached built-in icon was served for ever and
+  // an upload never showed until the next deploy.
+  if (url.origin === self.location.origin && url.pathname.startsWith('/app-assets/')) {
+    e.respondWith(fetch(e.request).catch(async () => (await caches.match(e.request)) || Response.error()));
+    return;
+  }
+
   // Images — stale-while-revalidate
   if (IS_IMAGE(url)) {
     e.respondWith(caches.open(CACHE_SHELL).then(async cache => {

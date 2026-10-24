@@ -9,6 +9,7 @@ import { generateBrandingUploadUrl, isS3Configured, uploadBufferToS3, deleteFile
 import path_node from 'path';
 import fs_node from 'fs';
 import { serverError, respondError } from '../../shared/httpError.js';
+import { jsonBody } from '../../middleware/bodyParsers.js';
 
 const router = express.Router();
 
@@ -356,10 +357,10 @@ router.get('/app-assets', authenticate, hasPermission('canManageContent'), async
 
 // POST body (JSON): { slot: "logo.png", data: "data:image/png;base64,..." }
 // Uploads to S3 when configured (shared across instances) or local disk otherwise.
-// Uses inline express.json with 6MB limit — no new npm dependencies needed.
+// Uses its own 6MB JSON parser (jsonBody, no compressed bodies) — no new npm dependencies needed.
 router.post('/app-assets/upload',
   authenticate, hasPermission('canManageContent'),
-  express.json({ limit: '6mb' }),
+  jsonBody({ limit: '6mb' }),
   async (req, res) => {
     try {
       const { slot, data } = req.body;

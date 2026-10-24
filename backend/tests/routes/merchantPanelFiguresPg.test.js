@@ -14,7 +14,7 @@
  *     direction, over every completed order;
  *   · "today" is the IST day, the one the weekly chart already used;
  *   · GET /stats says what the team's commission is: paid, or earned and
- *     waiting for the platform's commission pool.
+ *     not paid yet.
  *
  * Rows are written straight into `order_states`, as merchantEarningsPg does:
  * these are read paths, and the reads are what is under test.
@@ -127,7 +127,7 @@ describePg('merchant panel figures', () => {
     expect(s.body.stats.completedToday).toBe(1);
   });
 
-  it('tells the dashboard what the team\'s commission is, including what waits for the pool', async () => {
+  it('tells the dashboard what the team\'s commission is, including what is not paid yet', async () => {
     await pgQuery('DELETE FROM order_states WHERE user_id = $1', [user]);
     await order({ type: 'DEPOSIT', tokens: 10_000 });
     await order({ type: 'WITHDRAWAL', tokens: 4_000 });
@@ -138,8 +138,8 @@ describePg('merchant panel figures', () => {
     expect(c.teamId).toBe(String(team.teamId));
     expect(c.buysPaise).toBe(10_000_00);
     expect(c.sellsPaise).toBe(4_000_00);
-    // Nothing paid (the commission pool is not funded in this suite), so 5%
-    // of each completed order is owed: the figure the dashboard shows beside a 0.
+    // Nothing paid (these rows are written straight in, so no completion
+    // asked for a payment), so 5% of each completed order is owed: the figure the dashboard shows beside a 0.
     expect(c.paidPaise).toBe(0);
     expect(c.owedPaise).toBe(500_00 + 200_00);
     expect(c).toMatchObject({ depositPercent: 5, withdrawalPercent: 5 });

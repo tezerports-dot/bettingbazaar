@@ -38,6 +38,7 @@ import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentP
 import { disputeOrder } from '../../domains/payment/orderLifecycle.service.js';
 import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
+import { commissionOffForSuite } from '../commissionOff.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -86,6 +87,9 @@ describePg('a confirmed buy moves the tokens once', () => {
     await applySchema();
     app = mountRouter((await import('../../domains/merchant/merchant.routes.js')).default);
   }, 60_000);
+
+  // The order's own tokens are under test; commission has its own suites.
+  commissionOffForSuite();
 
   afterAll(async () => {
     // Trap 10: this run's orders go, then its teams (and their pool entries).

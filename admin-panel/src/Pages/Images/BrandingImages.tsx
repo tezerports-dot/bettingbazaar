@@ -29,8 +29,11 @@ export const BOARD_IMAGES: BrandingImageField[] = [
 ];
 
 export const LOGO_IMAGES: BrandingImageField[] = [
-  { key: 'logo', label: 'Main logo', where: 'Top of every panel: the player app header, the admin and merchant panels. PNG with a transparent background.',
-    ratio: null, upload: { w: 400, h: 120 }, previewWidth: 240 },
+  // Where `logo` is really drawn: admin Logo.tsx, and the player app's
+  // brandLogo() (brandAssets.ts). The player header draws the App Assets
+  // `logo-header.png` slot instead (useHeaderLogo), so this must not say header.
+  { key: 'logo', label: 'Main logo', where: 'The admin panel header, and in the player app the update screen, the can\'t-connect screen and the share card, in place of App Logo. The player app header is not this: it is the Header Banner Logo slot further down this tab. Square PNG with a transparent background.',
+    ratio: null, upload: { w: 512, h: 512 }, previewWidth: 160 },
 ];
 
 export const PAGE_IMAGES: BrandingImageField[] = [

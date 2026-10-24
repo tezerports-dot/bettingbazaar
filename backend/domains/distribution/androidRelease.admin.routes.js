@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
+import { rawBody } from '../../middleware/bodyParsers.js';
 import { db } from '#db';
 import { authenticate, hasPermission } from '../identity/auth.middleware.js';
 import { inspectApk } from './apkInspector.js';
@@ -71,7 +72,7 @@ async function discardStored({ storage, fileKey }) {
 // one route so no other path accepts a 150 MB body.
 router.post('/android/releases',
   authenticate, hasPermission('canManageAndroidApp'),
-  express.raw({ type: () => true, limit: MAX_APK_BYTES }),
+  rawBody({ type: () => true, limit: MAX_APK_BYTES }),
   async (req, res) => {
     try {
       if (!Buffer.isBuffer(req.body) || req.body.length === 0) {

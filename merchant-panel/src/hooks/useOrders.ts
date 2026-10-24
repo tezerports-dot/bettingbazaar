@@ -37,6 +37,14 @@ const orderKey = (order: PaymentOrder): string => String(order._id || order.id |
  */
 const OPEN_STATES = [OrderStatus.PENDING_QUEUE, OrderStatus.PROCESSING, OrderStatus.PAID, OrderStatus.DISPUTED];
 
+/** The open states the stream's snapshot carries (sse.routes.js). */
+const SNAPSHOT_STATES: string[] = [OrderStatus.PENDING_QUEUE, OrderStatus.PROCESSING, OrderStatus.PAID];
+
+/** A push that is a whole order (the projection), not an id and a change. */
+function isWholeOrder(order: PaymentOrder): boolean {
+  return Boolean(order.type) && Boolean(order.status) && order.fiatAmount !== undefined;
+}
+
 /** `incoming` laid over `current` by order id: a known order is merged, a new one added. */
 function mergeOrders(current: PaymentOrder[], incoming: PaymentOrder[]): PaymentOrder[] {
   const merged = [...current];
@@ -74,8 +82,10 @@ export function useOrders() {
 
   useEffect(() => () => { mounted.current = false; }, []);
 
-  const load = useCallback(async () => {
-    setState('loading');
+  // `quiet` re-reads without the loading skeleton: the stream asks for it
+  // when what it holds cannot be trusted on its own (below).
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setState('loading');
     try {
       const [recent, open] = await Promise.all([
         api.getOrders({ limit: PAGINATION.HISTORY_PER_PAGE }),
@@ -86,23 +96,50 @@ export function useOrders() {
       setState('ready');
     } catch {
       if (!mounted.current) return;
-      setState('error');
+      if (!quiet) setState('error');
     }
   }, []);
+
+  // One quiet re-read for a burst of events, not one per event.
+  const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refetchSoon = useCallback(() => {
+    if (refetchTimer.current) return;
+    refetchTimer.current = setTimeout(() => {
+      refetchTimer.current = null;
+      if (mounted.current) void load(true);
+    }, 300);
+  }, [load]);
+  useEffect(() => () => { if (refetchTimer.current) clearTimeout(refetchTimer.current); }, []);
 
   useEffect(() => { void load(); }, [load]);
 
   // Live updates. An order arriving on the stream replaces its stored copy;
   // an unknown id is prepended, so a new assignment appears without a refetch.
+  //
+  // Most pushes are partial (an id and what changed: a status, a deadline, a
+  // reference). Laid over an order the list holds, that is right. For an order
+  // the list does NOT hold, it used to be added as it came, so a card with no
+  // type, no amount and no timer appeared (a sell arrow and ₹0). Such a push
+  // now re-reads the list instead, and only a whole order (one with its type
+  // and amount) is added directly.
+  //
+  // An order put back in the queue (PENDING_QUEUE: reassigned or declined) is
+  // no longer this member's, so it leaves their list.
   useEffect(() => {
     const upsert = (incoming: any) => {
       if (!incoming) return;
       const next: PaymentOrder = incoming.order || incoming;
       const key = orderKey(next);
       if (!key || key === 'undefined') return;
+      if (next.status === OrderStatus.PENDING_QUEUE) {
+        setOrders((current) => current.filter((o) => orderKey(o) !== key));
+        return;
+      }
       setOrders((current) => {
         if (current.some((o) => orderKey(o) === key)) return mergeOrders(current, [next]);
-        return [next, ...current];
+        if (isWholeOrder(next)) return [next, ...current];
+        refetchSoon();
+        return current;
       });
     };
 
@@ -111,9 +148,21 @@ export function useOrders() {
     // the stream connected or reconnected the completed and disputed orders
     // vanished: History's totals fell to what was open and the Disputed tile
     // emptied. It is merged now, like every other push.
+    //
+    // An order that moved on while the stream was down (completed, rejected,
+    // cancelled) is simply missing from the snapshot, so a merge alone left it
+    // on screen as open, with its old status and timer. When the list holds
+    // an open order the snapshot does not, the list is re-read.
     const onSnapshot = (payload: any) => {
       const list: PaymentOrder[] = payload?.orders || payload;
-      if (Array.isArray(list)) setOrders((current) => mergeOrders(current, list));
+      if (!Array.isArray(list)) return;
+      const inSnapshot = new Set(list.map(orderKey));
+      setOrders((current) => {
+        const stale = !payload?.hasMore && current.some((o) =>
+          SNAPSHOT_STATES.includes(o.status) && !inSnapshot.has(orderKey(o)));
+        if (stale) refetchSoon();
+        return mergeOrders(current, list);
+      });
     };
 
     sseService.on('merchant_orders_snapshot', onSnapshot);
@@ -130,7 +179,7 @@ export function useOrders() {
       sseService.off(SOCKET_EVENTS.ORDER_UPDATE, upsert);
       sseService.off('order_paid', upsert);
     };
-  }, []);
+  }, [refetchSoon]);
 
   const sorted = useMemo(
     () => [...orders].sort((a, b) => {
@@ -148,5 +197,6 @@ export function useOrders() {
     actionable: orders.filter(needsAction).length,
   }), [orders]);
 
-  return { orders: sorted, state, counts, reload: load };
+  const reload = useCallback(() => load(), [load]);
+  return { orders: sorted, state, counts, reload };
 }

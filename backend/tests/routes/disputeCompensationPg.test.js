@@ -21,6 +21,7 @@ import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js'
 import { createWithdrawalOrder, expireOrders } from '../../domains/payment/paymentProcessing.service.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
+import { commissionOffForSuite } from '../commissionOff.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 const RUPEES = 1_000;
@@ -36,6 +37,9 @@ describePg('unpaid sells go to dispute; the losing team compensates the player',
     await applySchema();
     disputeApp = mountRouter((await import('../../domains/disputes/disputeResolution.admin.routes.js')).default);
   }, 120_000);
+
+  // The order's own tokens are under test; commission has its own suites.
+  commissionOffForSuite();
 
   afterAll(async () => {
     await pgQuery('SET session_replication_role = replica');

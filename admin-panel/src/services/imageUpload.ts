@@ -36,6 +36,49 @@ export async function uploadImage(file: File, kind: UploadKind, category = 'imag
   return presign.cdnUrl as string;
 }
 
+/** A Pro Tips reel video: MP4 or WebM (cdn.service.js REEL_VIDEO_MIME_TYPES), at most this. */
+export const MAX_REEL_VIDEO_BYTES = 50 * 1024 * 1024;
+export const MAX_REEL_SECONDS = 30;
+export const REEL_VIDEO_TYPES = ['video/mp4', 'video/webm'];
+
+/** A video file's length in seconds, read in the browser; null if it cannot be read. */
+export function videoSeconds(file: File): Promise<number | null> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    const done = (value: number | null) => { URL.revokeObjectURL(url); resolve(value); };
+    video.onloadedmetadata = () => done(Number.isFinite(video.duration) ? video.duration : null);
+    video.onerror = () => done(null);
+    video.src = url;
+  });
+}
+
+/**
+ * One Pro Tips reel: an image (the same rules as uploadImage) or a video of at
+ * most 30 seconds (owner, 2026-10-24). Both go through the promo presign; the
+ * server stores a video under `reels/`.
+ */
+export async function uploadReelMedia(file: File): Promise<{ url: string; mediaType: 'IMAGE' | 'VIDEO' }> {
+  if (file.type.startsWith('image/')) return { url: await uploadImage(file, 'promo'), mediaType: 'IMAGE' };
+  if (!REEL_VIDEO_TYPES.includes(file.type)) throw new Error('A reel is an image, or a video in MP4 or WebM.');
+  if (file.size > MAX_REEL_VIDEO_BYTES) throw new Error('A video can be at most 50 MB.');
+  const seconds = await videoSeconds(file);
+  if (seconds === null) throw new Error('This video could not be read. Save it as MP4 (H.264) and try again.');
+  if (seconds > MAX_REEL_SECONDS + 0.5) throw new Error(`A reel video can be at most ${MAX_REEL_SECONDS} seconds; this one is ${Math.round(seconds)}.`);
+  const body = { fileName: file.name, contentType: file.type, fileSize: file.size, category: 'reel' };
+  const { data: presign } = await api.post<any>('/api/admin/promo/upload-url', body);
+  if (!presign?.uploadUrl) throw new Error(presign?.message || 'Could not get an upload URL');
+  await putToStorage(presign.uploadUrl, file, presign.uploadHeaders);
+  return { url: presign.cdnUrl as string, mediaType: 'VIDEO' };
+}
+
+/** IMAGE or VIDEO for a pasted link, by its file ending. */
+export function mediaTypeOfUrl(url: string): 'IMAGE' | 'VIDEO' {
+  const path = (() => { try { return new URL(url).pathname; } catch { return url; } })();
+  return /\.(mp4|webm)$/i.test(path) ? 'VIDEO' : 'IMAGE';
+}
+
 /**
  * What an S3 error code means for the person who has to fix it. The storage
  * answers in XML (`<Code>`, `<Message>`); these are the codes a wrong setting

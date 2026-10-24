@@ -3,7 +3,9 @@
 // "Continue with Telegram", waiting: the link the server opened, what to do
 // there, and what the wait has come to (LoginPage). A MATCH shows the number
 // to choose in Telegram and, on a wide screen, the link as a QR for the phone
-// to scan. The polling itself is `useTelegramPoll`; this only shows it.
+// to scan. The QR carries Telegram's app address (`appUrl`, `tg://resolve`) so a
+// phone's camera opens Telegram at once, not a browser tab first (owner,
+// 2026-10-24). The polling itself is `useTelegramPoll`; this only shows it.
 import React, { useMemo } from 'react';
 import { Send } from 'lucide-react';
 import type { TelegramLink } from '../types';
@@ -74,7 +76,7 @@ export const TelegramStep: React.FC<TelegramStepProps> = ({
     {telegram?.url && !error && typeof matchNumber === 'number' && (
       <>
         <div style={{ fontSize: 12.5, color: 'var(--text-2)', textAlign: 'center' }}>Or scan this with your phone&apos;s camera:</div>
-        <LinkQr link={telegram.url} />
+        <LinkQr link={telegram.appUrl || telegram.url} />
       </>
     )}
 

@@ -4,7 +4,8 @@ import {
   authenticate, express, hasPermission,
 } from '../../routes/admin/_adminShared.js';
 import contentService from './content.service.js';
-import { generatePresignedUploadUrl } from '../../services/cdn.service.js';
+import { generatePresignedUploadUrl, REEL_CATEGORY, REEL_VIDEO_MIME_TYPES } from '../../services/cdn.service.js';
+import { promoMediaFor } from './promoMedia.js';
 import { db } from '#db';
 import { assertCdnAssetUrl } from '../../shared/storedUrl.js';
 import { promoLinkUrl } from './promoLink.js';
@@ -217,9 +218,11 @@ const promoStatus = (value) => PROMO_STATUS[String(value || '').toUpperCase()] ?
  *
  * Shaped like every other presign here — same validator, same response — so
  * the client's two-step (presign, then PUT to S3) needs no special case.
- * Images only: mimeRulesForCategory() falls through to the image allowlist for
- * this category, and the extension blocklist independently refuses SVG and
- * HTML, which would otherwise be stored XSS served from the CDN origin.
+ * An image (5 MB), or an MP4/WebM video for a Pro Tips reel (50 MB, owner
+ * 2026-10-24), stored under `reels/`: mimeRulesForCategory() allows only
+ * those types for each prefix, and the extension blocklist independently
+ * refuses SVG and HTML, which would otherwise be stored XSS served from the
+ * CDN origin.
  */
 // A promo slide is published to every player: the Content area, like every
 // other route in this file. `canManageSupport` used to be accepted alongside it
@@ -233,13 +236,15 @@ router.post('/promo/upload-url', authenticate, hasPermission('canManageContent')
       || !Number.isFinite(fileSize) || fileSize <= 0) {
       return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
     }
-    if (fileSize > 5 * 1024 * 1024) {
-      return res.status(400).json({ success: false, message: 'Max file size is 5 MB' });
+    const video = Boolean(REEL_VIDEO_MIME_TYPES[contentType.toLowerCase().split(';')[0].trim()]);
+    const maxMb = video ? 50 : 5;
+    if (fileSize > maxMb * 1024 * 1024) {
+      return res.status(400).json({ success: false, message: `Max file size is ${maxMb} MB for ${video ? 'a video' : 'an image'}` });
     }
 
     const uploadData = await generatePresignedUploadUrl({
       fileName, contentType, fileSize,
-      category: 'promo', userId: String(req.user.userId),
+      category: video ? REEL_CATEGORY : 'promo', userId: String(req.user.userId),
     });
     res.json({ success: true, ...uploadData });
   } catch (error) {
@@ -303,8 +308,10 @@ router.post('/promo', authenticate, hasPermission('canManageContent'), async (re
     const { title, description, location, mediaType, fileUrl, priority, status } = req.body;
     if (promoDetailsTooLong(description)) return res.status(400).json({ success: false, message: PROMO_DETAILS_REFUSAL });
     const resolved = promoStatus(status) ?? 'DRAFT';
-    const media = String(mediaType || 'IMAGE').toUpperCase();
     const where = String(location || 'HOME').toUpperCase();
+    let media;
+    try { media = promoMediaFor(mediaType, where); }
+    catch (e) { return res.status(400).json({ success: false, message: e.message }); }
     const home = where === 'HOME';
 
     let images;
@@ -329,7 +336,7 @@ router.post('/promo', authenticate, hasPermission('canManageContent'), async (re
     // about, and the create path is the one an attacker would reach for.
     let safeFileUrl = null;
     if (String(fileUrl ?? '').trim()) {
-      try { safeFileUrl = assertCdnAssetUrl(fileUrl, 'slide image'); }
+      try { safeFileUrl = assertCdnAssetUrl(fileUrl, 'slide file'); }
       catch (e) { return res.status(400).json({ success: false, message: e.message }); }
     }
 
@@ -373,7 +380,7 @@ router.put('/promo/:id', authenticate, hasPermission('canManageContent'), async 
     }
     if (fileUrl !== undefined) {
       try {
-        patch.fileUrl = String(fileUrl ?? '').trim() ? assertCdnAssetUrl(fileUrl, 'slide image') : null;
+        patch.fileUrl = String(fileUrl ?? '').trim() ? assertCdnAssetUrl(fileUrl, 'slide file') : null;
       } catch (e) { return res.status(400).json({ success: false, message: e.message }); }
     }
     if (req.body.linkUrl !== undefined) {
@@ -382,7 +389,16 @@ router.put('/promo/:id', authenticate, hasPermission('canManageContent'), async 
     }
     if (priority !== undefined)    patch.priority = Number(priority) || 0;
     if (location !== undefined)    patch.location = String(location).toUpperCase();
-    if (mediaType !== undefined)   patch.mediaType = String(mediaType).toUpperCase();
+    if (mediaType !== undefined || location !== undefined) {
+      // Asked of the slide as it will be, so moving a video off Pro Tips is
+      // refused as surely as making one elsewhere.
+      const current = await db.content.getPromo(req.params.id);
+      if (!current) return res.status(404).json({ success: false, message: 'Promo not found' });
+      try {
+        const media = promoMediaFor(mediaType ?? current?.mediaType, location ?? current?.location);
+        if (mediaType !== undefined) patch.mediaType = media;
+      } catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    }
     if (status !== undefined) {
       const resolved = promoStatus(status);
       if (!resolved) {

@@ -97,7 +97,8 @@ for a container. Each should print 65535.
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
-node -v   # v22.x
+node -v   # v22.23.4 or newer (the October 2026 security release; the server warns at boot below it)
+# Later security releases: sudo apt update && sudo apt upgrade -y nodejs, then pm2 restart all
 
 sudo npm install -g pm2
 ```

@@ -946,7 +946,7 @@ export async function platformFinance({ from = null, to = null } = {}) {
  *                out) minus wins and claims paid, fees inside (`cricket_polls`).
  * Costs are what the platform paid out of its own holding:
  *   referral and first-deposit bonuses (`promo_grants`), and team commission
- *   (`team_commissions`, paid from MERCHANT_BONUS_POOL into team pools).
+ *   (`team_commissions`, paid from platform revenue into team pools).
  * Deposits and withdrawals are money moving in and out, shown beside it and
  * never counted as revenue: the screen this feeds once called deposits revenue.
  *
