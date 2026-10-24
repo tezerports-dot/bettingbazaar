@@ -6,7 +6,7 @@
  *   • `PromoCard`   — one published HOME card (Admin › Images), opening its
  *                      own page (`/card/:promoId`: image, title, details, and
  *                      its optional link as a button; owner, 2026-10-14)
- *   • `CitiesArt`   — Delhi's India Gate against Bombay's Gateway of India
+ *   • `CitiesArt`   — Delhi's India Gate against Bombay's Taj hotel
  *   • `HowToPlayArt`— chip, tap, trophy: the three moves of a round
  *
  * The art is drawn, not uploaded, in the theme's own colours (`--delhi`,
@@ -80,7 +80,7 @@ const svgFill: React.CSSProperties = { display: 'block', width: '100%', height: 
 
 // ── Delhi vs Bombay ──────────────────────────────────────────────────────────
 export const CitiesArt: React.FC = () => (
-  <ArtFrame label="Delhi's India Gate and Bombay's Gateway of India" title="Two cities. One winner." sub="Back Delhi or Bombay. The side with fewer real bets wins 2×." align="end"
+  <ArtFrame label="Delhi's India Gate and Bombay's Taj hotel" title="Two cities. One winner." sub="Back Delhi or Bombay. The side with fewer real bets wins 2×." align="end"
     backdrop="linear-gradient(90deg, color-mix(in srgb, var(--delhi) 22%, transparent) 50%, color-mix(in srgb, var(--bombay) 22%, transparent) 50%)">
     <svg viewBox="0 0 300 200" style={svgFill} aria-hidden="true">
       <defs>
@@ -113,17 +113,22 @@ export const CitiesArt: React.FC = () => (
         <rect x="58" y="58" width="28" height="9" rx="1.5" />
         <path d="M42 85 H102 V170 H86 V122 A14 14 0 0 0 58 122 V170 H42 Z" />
       </g>
-      {/* Gateway of India */}
+      {/* The Taj hotel: a wide front, its great central dome and a domed turret at each end */}
       <g style={{ fill: 'var(--bombay)' }}>
-        <path d="M182 104 H274 V170 H244 V134 A16 16 0 0 0 212 134 V170 H182 Z" />
-        <rect x="178" y="96" width="100" height="9" rx="1.5" />
-        <rect x="182" y="84" width="14" height="13" />
-        <rect x="260" y="84" width="14" height="13" />
-        <path d="M182 84 Q189 70 196 84 Z" />
-        <path d="M260 84 Q267 70 274 84 Z" />
-        <path d="M214 96 Q228 64 242 96 Z" />
-        <rect x="226" y="62" width="4" height="8" />
+        <rect x="172" y="112" width="112" height="58" rx="1.5" />
+        <rect x="168" y="106" width="120" height="8" rx="1.5" />
+        <rect x="214" y="86" width="28" height="22" />
+        <path d="M210 88 Q228 50 246 88 Z" />
+        <rect x="226" y="46" width="4" height="10" />
+        <rect x="172" y="90" width="16" height="18" />
+        <path d="M170 92 Q180 76 190 92 Z" />
+        <rect x="268" y="90" width="16" height="18" />
+        <path d="M266 92 Q276 76 286 92 Z" />
       </g>
+      {/* rows of arched windows */}
+      {[124, 146].map((y) => [182, 196, 210, 224, 238, 252, 266].map((x) => (
+        <path key={`${x}-${y}`} d={`M${x} ${y + 12} V${y + 4} A3 3 0 0 1 ${x + 6} ${y + 4} V${y + 12} Z`} style={{ fill: 'var(--bg)', opacity: 0.55 }} />
+      )))}
       {/* ground and water */}
       <rect x="0" y="170" width="150" height="30" style={{ fill: 'var(--delhi)', opacity: 0.25 }} />
       <rect x="150" y="170" width="150" height="30" style={{ fill: 'var(--bombay)', opacity: 0.25 }} />

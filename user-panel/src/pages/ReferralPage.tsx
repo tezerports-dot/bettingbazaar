@@ -34,7 +34,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import ScreenShell, { card, capLabel } from '../redesign/Screen';
 import BonusPlayPrompt from '../redesign/BonusPlayPrompt';
 import { player } from '../services/api';
-import { getAssetUrl, getBackend } from '../services/backend.service';
+import { getAssetUrl } from '../services/backend.service';
 import { useBranding } from '../services/branding';
 
 /** One level of the invite chain (referral.service.js `levels`), level 1 first. */
@@ -74,7 +74,6 @@ const ReferralPage: React.FC = () => {
   // The page banner (Admin › Images), redrawn on a save.
   const branding = useBranding();
   const [data, setData] = useState<Summary | null>(null);
-  const [bot, setBot] = useState<string>('');
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
 
@@ -86,12 +85,8 @@ const ReferralPage: React.FC = () => {
     } catch (e: any) {
       setError(e?.message || 'Could not load your referral report.');
     }
-    // Only to SHOW which bot the link currently opens. It is deliberately not
-    // part of the link itself — see below.
-    try {
-      const d = await getBackend().getTelegramSetup();
-      setBot(d.available ? d.botUsername : '');
-    } catch { /* the report and the link both work without this */ }
+    // The bot's username is never shown to players (owner, 2026-10-24): it is
+    // an internal name, and the link below never names it either.
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -258,7 +253,7 @@ const ReferralPage: React.FC = () => {
             ))}
           </ol>
           <p style={{ margin: '14px 0 0', paddingTop: 12, borderTop: '1px solid var(--line)', fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>
-            Your link is permanent{bot ? <> and opens <strong style={{ color: 'var(--text2)' }}>@{bot}</strong> today</> : ''}. If we ever switch to a different sign-up bot it keeps working and sends people to the new one, so anything you have already shared stays good.
+            Your link is permanent. If we ever switch to a different sign-up bot it keeps working and sends people to the new one, so anything you have already shared stays good.
           </p>
         </section>
       </div>

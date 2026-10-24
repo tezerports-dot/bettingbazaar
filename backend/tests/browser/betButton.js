@@ -117,7 +117,7 @@ async function main() {
     // not.
     const betButton = page.getByRole('button', { name: /India Gate/i }).first();
     if (await betButton.count() === 0) {
-      record('the bet control is on screen', false, 'no India Gate / Gateway of India card found');
+      record('the bet control is on screen', false, 'no India Gate / Taj Hotel card found');
     } else {
       record('the bet control is on screen', true);
       await betButton.click();

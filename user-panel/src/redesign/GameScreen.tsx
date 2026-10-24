@@ -455,7 +455,7 @@ const GameScreen: React.FC = () => {
                 <BetCardFill side="BOMBAY" mode={shareMode} pct={shares.BOMBAY} />
                 {isResult && winner === BettingSide.BOMBAY && <div className="bb-shimmer" style={{ zIndex: 1 }} />}
                 <span style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', color: 'rgba(255,255,255,.55)' }}>Gateway of India</span>
+                <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', color: 'rgba(255,255,255,.55)' }}>Taj Hotel</span>
                 <span className="font-grotesk" style={{ fontWeight: 700, fontSize: sideFont, letterSpacing: '.08em', textTransform: 'uppercase', color: isResult && winner === BettingSide.BOMBAY ? '#FFD700' : 'var(--bombay)', textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>{isResult && winner === BettingSide.BOMBAY ? '🏆 BOMBAY' : 'Bombay'}</span>
                 </span>
                 <BetCardFigure side="BOMBAY" mode={shareMode} pct={shares.BOMBAY} pool={poolBombay} big={bigShare} />
