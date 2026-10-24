@@ -16,7 +16,7 @@
 #   pitr       daily base backups for point-in-time recovery (pgBackRest)
 #   redis      cache, locks, rate-limit counters, realtime fan-out
 #
-# 6 backend workers on the 8-core / 16 GB server (owner, 2026-10-09): a
+# 6 backend workers on the 12-core / 12 GB launch server (owner, 2026-10-24): a
 # starting point to confirm with the load test, not a measured optimum.
 # Tuning and its evidence: docs/governance/PGBOUNCER_AND_CLUSTER.md.
 #
@@ -227,7 +227,7 @@ services:
     build: ./postgres
     image: bettingbazaar-postgres:local
     restart: unless-stopped
-    # Tuned for the 16 GB / 8-core server — see ./postgres/postgresql.conf.
+    # Tuned for the 12 GB / 12-core launch server — see ./postgres/postgresql.conf.
     command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
     shm_size: 1g
     environment:

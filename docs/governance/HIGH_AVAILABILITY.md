@@ -23,7 +23,7 @@ it automatically, and keeps its own point-in-time backups. Nothing to operate.
 standby replica** switched on, **point-in-time recovery** switched on, the
 **`vector` extension** available (the support assistant's search), a
 **transaction-mode connection pooler**, and a region close to the app server.
-Size to start: 4 vCPU / 16 GB, matching `deploy/vps/postgres/postgresql.conf`.
+Size to start: 4 vCPU / 16 GB (then move the memory settings in `deploy/vps/postgres/postgresql.conf` to the database server's size).
 
 **Move (the platform is not live yet, so this is a copy, not a migration):**
 
