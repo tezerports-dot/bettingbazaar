@@ -38,6 +38,10 @@ updates:
       minor-and-patch:
         update-types: [minor, patch]
 
+  # The Node base image, so a Node security release arrives as a PR (owner, 2026-10-24).
+  - package-ecosystem: docker
+    directory: "/"
+    schedule: { interval: weekly }
   - package-ecosystem: github-actions
     directory: "/"
     schedule: { interval: weekly }

@@ -132,6 +132,8 @@ import { db } from '#db';
 import { isDatabaseReachable } from '#db/client.js';
 import { mountSpaFallbacks } from './startup/spaFallbacks.js';
 import { retryTransientDbStart } from './startup/dbStartRetry.js';
+import { warnIfNodeUnpatched } from './startup/nodeRuntime.js';
+import { jsonBody } from './middleware/bodyParsers.js';
 import { isServableOrigin } from './config/servedHosts.js';
 import { installServerErrorCapture, flushErrorLog, logError } from './services/errorLog.service.js';
 
@@ -267,8 +269,10 @@ app.use(cors(corsOptions));
 // legitimately posts a big JSON body. The one exception is the admin base64
 // app-asset upload, which gets a scoped larger parser; everything else is tight.
 const JSON_LIMIT = process.env.JSON_BODY_LIMIT || '1mb';
-const _tightJson = express.json({ limit: JSON_LIMIT });
-const _assetJson = express.json({ limit: process.env.ASSET_JSON_LIMIT || '8mb' });
+// No compressed request bodies, on any route (owner, 2026-10-24): every parser
+// is `bodyParsers.js`'s, which refuses a Content-Encoding 415 before decoding.
+const _tightJson = jsonBody({ limit: JSON_LIMIT });
+const _assetJson = jsonBody({ limit: process.env.ASSET_JSON_LIMIT || '8mb' });
 const _ASSET_UPLOAD_PATHS = new Set(['/api/admin/app-assets/upload']);
 // ── The provider wallet callback needs the bytes it was signed over ────────
 // Its HMAC is computed over the request BODY, and a digest taken over a
@@ -280,7 +284,7 @@ const _ASSET_UPLOAD_PATHS = new Set(['/api/admin/app-assets/upload']);
 // SCOPED to that path on purpose. Keeping a raw copy of every request body
 // doubles what a 1 MB upload holds in memory, for a check only one route makes.
 const _RAW_BODY_PREFIX = '/api/game/wallet/';
-const _rawJson = express.json({
+const _rawJson = jsonBody({
   limit: JSON_LIMIT,
   verify: (req, _res, buf) => { req.rawBody = buf; },
 });
@@ -431,6 +435,8 @@ registerService('storage', _s3Store.isAvailable() ? _s3Store : _localStore);
 // Cross-cutting services — look up by name where hard-coupling is undesirable.
 registerService('metrics',  { handler: metricsHandler });
 registerService('alerting', { send: (...a) => import('./services/alerting.service.js').then(m => m.sendAlert(...a)) });
+// An unpatched Node is said once at boot, in the error log and to the alert channel (nodeRuntime.js).
+warnIfNodeUnpatched({ alert: (...a) => import('./services/alerting.service.js').then(m => m.sendAlert(...a)) });
 // §14 GOVERNANCE: user panel static must NOT bleed into /admin or /merchant.
 // Serving dist/ at root '/' caused user panel index.css (which @imports
 // glassmorphism.css with .glass-overlay { position:fixed; inset:0 }) to load
