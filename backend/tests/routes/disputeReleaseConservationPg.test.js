@@ -119,6 +119,15 @@ describePg('a released dispute moves tokens between two parties', () => {
     return { orderId, player, merchant, team };
   };
 
+  /**
+   * The order commission paid into the team's pool when the release completed
+   * the buy (§26: paid straight from platform revenue, owner 2026-10-24). It is
+   * a separate movement (TOKEN_SUPPLY → TEAM_FLOAT, keyed by the commission),
+   * so the release's own transfer is the pool's change less it.
+   */
+  const commissionFor = async (orderId) => Number((await pgQuery(
+    'SELECT COALESCE(SUM(commission_paise), 0)::bigint AS p FROM team_commissions WHERE order_id = $1', [orderId])).rows[0].p);
+
   const resolve = (orderId, body) =>
     as(app, admin).post(`/dispute-orders/${orderId}/resolve`).send(body);
 
@@ -137,7 +146,9 @@ describePg('a released dispute moves tokens between two parties', () => {
 
     const credited = (playerAfter.depositBalance + playerAfter.reserveBalance)
                    - (playerBefore.depositBalance + playerBefore.reserveBalance);
-    const taken = poolBefore.totalPaise - poolAfter.totalPaise;
+    const commission = await commissionFor(orderId);
+    expect(commission, 'the completed buy earns its team the order commission').toBe(5_000);
+    const taken = poolBefore.totalPaise - poolAfter.totalPaise + commission;
 
     expect(credited).toBe(100_000);
     // THE assertion. This route credited the player and debited NOBODY, so the
@@ -145,7 +156,7 @@ describePg('a released dispute moves tokens between two parties', () => {
     expect(taken, 'a released dispute must move tokens, never create them').toBe(credited);
     // From the HOLD, not from what the team still has free.
     expect(poolBefore.heldPaise - poolAfter.heldPaise).toBe(100_000);
-    expect(poolAfter.availablePaise).toBe(poolBefore.availablePaise);
+    expect(poolAfter.availablePaise).toBe(poolBefore.availablePaise + commission);
     // And the books agree, for this order alone: out of the teams, into the players.
     expect(await legsFor(orderId)).toEqual({ TEAM_FLOAT: -100_000, USER_FLOAT: 100_000 });
   });
@@ -181,7 +192,8 @@ describePg('a released dispute moves tokens between two parties', () => {
     const poolAfter = await getPool(team.teamId);
     expect((playerAfter.depositBalance + playerAfter.reserveBalance)
          - (playerBefore.depositBalance + playerBefore.reserveBalance)).toBe(100_000);
-    expect(poolBefore.totalPaise - poolAfter.totalPaise).toBe(100_000);
+    // Taken once; the commission joins once (one row per order, §26.2).
+    expect(poolBefore.totalPaise - poolAfter.totalPaise + await commissionFor(orderId)).toBe(100_000);
     expect(await legsFor(orderId)).toEqual({ TEAM_FLOAT: -100_000, USER_FLOAT: 100_000 });
     expect((await getOrderRecord(orderId)).status).toBe('COMPLETED');
   });

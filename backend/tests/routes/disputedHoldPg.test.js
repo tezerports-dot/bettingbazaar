@@ -39,6 +39,7 @@ import { createWithdrawalOrder } from '../../domains/payment/paymentProcessing.s
 import { settleDueHolds, settleHold } from '../../domains/payment/withdrawalHold.service.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
+import { commissionOffForSuite } from '../commissionOff.js';
 
 // Every sell is paid by bank transfer, so the member gives its UTR (2d).
 let payoutSeq = 0;
@@ -58,6 +59,9 @@ describePg('a disputed withdrawal hold', () => {
     playerApp = mountRouter((await import('../../domains/payment/payment.routes.js')).default);
     merchantApp = mountRouter((await import('../../domains/merchant/merchant.routes.js')).default);
   }, 60_000);
+
+  // The order's own tokens are under test; commission has its own suites.
+  commissionOffForSuite();
 
   afterAll(async () => {
     // Trap 10: this run's orders, then its teams (append-only transitions, so

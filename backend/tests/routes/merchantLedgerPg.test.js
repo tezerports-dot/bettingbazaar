@@ -19,6 +19,7 @@ import { createDepositOrder, createWithdrawalOrder, markOrderPaid } from '../../
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 import { binary, readXlsx } from '../_xlsx.js';
+import { commissionOffForSuite } from '../commissionOff.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -30,6 +31,9 @@ describePg('the merchant business ledger', () => {
   let member; let other; let supervisor;
   const ids = {};
   const utr = () => `${String(Date.now()).slice(-8)}${String((seq += 1) + 7000).slice(-4)}`;
+
+  // The order's own tokens are under test; commission has its own suites.
+  commissionOffForSuite();
 
   beforeAll(async () => {
     await applySchema();
