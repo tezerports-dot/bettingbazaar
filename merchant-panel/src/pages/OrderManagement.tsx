@@ -1,34 +1,33 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
-// Orders — the merchant's live queue. Design handoff "BB Merchant Panel.dc.html":
-// four status tiles that double as filters, a search + type filter row, then
-// one line per order, with the detail drawer/sheet over them.
+// Orders — the merchant's live queue: a search + type filter row, then one
+// line per order, with the detail drawer/sheet over them. The four count
+// tiles that sat on top (Needs you, Processing, Paid, Disputed) are gone
+// (owner, 2026-10-24); each line carries its own status.
 import React, { useMemo, useState } from 'react';
 import { RefreshCw, Search } from 'lucide-react';
 import { useLocation } from 'react-router';
-import { needsAction, useOrders } from '../hooks/useOrders';
+import { useOrders } from '../hooks/useOrders';
 import { useViewport } from '../hooks/useViewport';
 import OrderWorkList from '../components/OrderWorkList';
 import {
   Button, EmptyState, ErrorState, SegmentedControl, Skeleton, inputStyle,
 } from '../components/ui';
 
-export type StatusFilter = 'ALL' | 'ACTION' | 'PROCESSING' | 'PAID' | 'DISPUTED';
 type TypeFilter = 'ALL' | 'DEPOSIT' | 'WITHDRAWAL';
 
 /**
- * What another screen asks Orders to open with, as router state: a tile's
- * filter, or one order. The Dashboard's tiles and rows sent the merchant here
- * with nothing, so a tap on an order landed on the whole queue.
+ * What another screen asks Orders to open with, as router state: one order.
+ * The Dashboard's rows sent the merchant here with nothing, so a tap on an
+ * order landed on the whole queue.
  */
-export interface OrdersLinkState { statusFilter?: StatusFilter; orderId?: string }
+export interface OrdersLinkState { orderId?: string }
 
 const OrderManagement: React.FC = () => {
-  const { orders, state, counts, reload } = useOrders();
+  const { orders, state, reload } = useOrders();
   const { isMobile } = useViewport();
 
   const link = (useLocation().state ?? null) as OrdersLinkState | null;
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>(link?.statusFilter ?? 'ALL');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('ALL');
   const [search, setSearch] = useState('');
 
@@ -36,8 +35,6 @@ const OrderManagement: React.FC = () => {
     const query = search.trim().toLowerCase();
     return orders.filter((order) => {
       if (typeFilter !== 'ALL' && order.type !== typeFilter) return false;
-      if (statusFilter === 'ACTION' && !needsAction(order)) return false;
-      if (statusFilter !== 'ALL' && statusFilter !== 'ACTION' && order.status !== statusFilter) return false;
       if (query) {
         const haystack = [order.orderId, order._id]
           .filter(Boolean).join(' ').toLowerCase();
@@ -45,47 +42,13 @@ const OrderManagement: React.FC = () => {
       }
       return true;
     });
-  }, [orders, statusFilter, typeFilter, search]);
+  }, [orders, typeFilter, search]);
 
-  const filtersActive = statusFilter !== 'ALL' || typeFilter !== 'ALL' || !!search.trim();
-  const clearFilters = () => { setStatusFilter('ALL'); setTypeFilter('ALL'); setSearch(''); };
-
-  const tiles: Array<{ key: StatusFilter; label: string; count: number; color: string; bg: string }> = [
-    { key: 'ACTION',     label: 'Needs you',  count: counts.actionable, color: 'var(--info)',    bg: 'var(--info-bg)' },
-    { key: 'PROCESSING', label: 'Processing', count: counts.processing, color: 'var(--warn)',    bg: 'var(--warn-bg)' },
-    { key: 'PAID',       label: 'Paid',       count: counts.paid,       color: 'var(--dep)',     bg: 'var(--dep-bg)' },
-    { key: 'DISPUTED',   label: 'Disputed',   count: counts.disputed,   color: 'var(--dispute)', bg: 'var(--dispute-bg)' },
-  ];
+  const filtersActive = typeFilter !== 'ALL' || !!search.trim();
+  const clearFilters = () => { setTypeFilter('ALL'); setSearch(''); };
 
   return (
     <div style={{ maxWidth: 1120, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: isMobile ? 14 : 16 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(4, 1fr)', gap: isMobile ? 10 : 12 }}>
-        {tiles.map((tile) => {
-          const active = statusFilter === tile.key;
-          return (
-            <button
-              key={tile.key}
-              // The filter that is ON was a border colour alone. This tile also
-              // TOGGLES (pressing the active one clears back to ALL), which is
-              // exactly what aria-pressed means.
-              aria-pressed={active}
-              onClick={() => setStatusFilter(active ? 'ALL' : tile.key)}
-              className="bb-lift"
-              style={{
-                display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'left', cursor: 'pointer',
-                padding: isMobile ? '12px 14px' : '14px 16px', borderRadius: 14,
-                border: `1.5px solid ${active ? tile.color : 'var(--border)'}`,
-                background: active ? tile.bg : 'var(--surface)',
-                color: tile.color, boxShadow: active ? 'none' : 'var(--shadow)',
-              }}
-            >
-              <span className="bb-mono" style={{ fontSize: 22, fontWeight: 700 }}>{tile.count}</span>
-              <span style={{ fontSize: 11.5, fontWeight: 700 }}>{tile.label}</span>
-            </button>
-          );
-        })}
-      </div>
-
       <div style={{ display: 'flex', gap: 9, alignItems: 'center', flexWrap: 'wrap' }}>
         <div style={{ position: 'relative', flex: 1, minWidth: 180 }}>
           <Search size={16} style={{ position: 'absolute', left: 12, top: 11, color: 'var(--muted)' }} />
@@ -140,7 +103,7 @@ const OrderManagement: React.FC = () => {
         <EmptyState
           title={filtersActive ? 'No orders match your filters' : 'Your queue is clear'}
           body={filtersActive
-            ? 'Try a different status or type, or clear filters to see everything.'
+            ? 'Try a different type or search, or clear filters to see everything.'
             : 'Nothing needs action right now. New assignments appear here instantly.'}
           action={filtersActive
             ? <Button variant="outline" tone="neutral" onClick={clearFilters} style={{ borderColor: 'var(--border)', color: 'var(--text)', display: 'inline-flex', margin: '0 auto' }}>Clear filters</Button>
