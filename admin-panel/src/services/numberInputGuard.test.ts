@@ -16,7 +16,7 @@ const numberInput = (step = '0.01') => {
 };
 
 describe('a wheel over a number field', () => {
-  afterEach(() => { document.body.innerHTML = ''; });
+  afterEach(() => { document.body.replaceChildren(); });
 
   it('takes the focus off a focused number field, so the page scrolls instead of the value changing', () => {
     const remove = installNumberInputGuard();
