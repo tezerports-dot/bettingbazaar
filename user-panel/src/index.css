@@ -1,7 +1,7 @@
-@import './glassmorphism.css';
+@import './glassmorphism.css' layer(base);
 /* Redesign theme tokens (dark/light) + bb-* animations. Must precede rule blocks
    so the @import is honored (CSS requires @import before other statements). */
-@import './redesign/theme.css';
+@import './redesign/theme.css' layer(base);
 /* ── Brand CSS variables — set at runtime from the `Branding` document ────────
    `services/branding.ts` is the ONE applier; it overwrites these for every
    connected client without a reload. CLAUDE.md §4 and §13.
@@ -22,19 +22,59 @@
 
    The triplets are DERIVED from the hex by `hexToRgbTriplet`, never stored
    independently, so the two cannot disagree (§2: one owner per value). */
-:root {
-  --brand-primary:   #D4AF37;
-  --brand-secondary-color: var(--brand-secondary);
-  --brand-secondary: #B8860B;
-  --brand-accent:    #F5C77A;
+@import 'tailwindcss';
 
-  --brand-primary-rgb:   212, 175, 55;   /* #D4AF37 */
-  --brand-secondary-rgb: 184, 134, 11;   /* #B8860B */
-  --brand-accent-rgb:    245, 199, 122;  /* #F5C77A */
+@config '../tailwind.config.js';
+
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
 }
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+
+/*
+  The rest of Tailwind v3's behaviour that v4 changed (upgrade guide), kept so
+  the panel looks and behaves exactly as before the upgrade (2026-10-24):
+  buttons show the pointer, placeholders stay gray-400, and `hover:` also
+  applies on touch screens (v4 limits it to devices that can hover).
+*/
+@layer base {
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+  input::placeholder,
+  textarea::placeholder {
+    opacity: 1;
+    color: var(--color-gray-400);
+  }
+}
+@custom-variant hover (&:hover);
+
+@layer base {
+  :root {
+    --brand-primary: #d4af37;
+    --brand-secondary-color: var(--brand-secondary);
+    --brand-secondary: #b8860b;
+    --brand-accent: #f5c77a;
+
+    --brand-primary-rgb: 212, 175, 55; /* #D4AF37 */
+    --brand-secondary-rgb: 184, 134, 11; /* #B8860B */
+    --brand-accent-rgb: 245, 199, 122; /* #F5C77A */
+  }
+}
 
 :root {
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;

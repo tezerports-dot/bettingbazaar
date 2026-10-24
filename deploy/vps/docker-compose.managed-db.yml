@@ -1,0 +1,60 @@
+# GOVERNANCE: Read CLAUDE.md before editing this file.
+# ══════════════════════════════════════════════════════════════════════════════
+# MANAGED DATABASE — run the app against a managed PostgreSQL instead of the one
+# on this server, so the database no longer dies with this machine.
+#
+#   cd deploy/vps
+#   docker compose -f docker-compose.prod.yml -f docker-compose.managed-db.yml up -d --build
+#
+# The provider keeps a standby copy in another zone, fails over to it on its
+# own, and does point-in-time recovery itself; so this file switches OFF the
+# local postgres, pitr and pgbouncer (use the provider's pooler). Which
+# provider, what to buy and the move itself: docs/governance/HIGH_AVAILABILITY.md.
+#
+# Set in .env:
+#   MANAGED_DATABASE_URL         the provider's POOLED (transaction-mode) URL
+#   MANAGED_DIRECT_DATABASE_URL  its DIRECT URL (schema apply, nightly pg_dump)
+#   PG_CA_CERT                   the provider's CA certificate (PEM), so TLS to
+#                                the money database is verified (client.js resolvePgSsl)
+#
+# Needs Docker Compose 2.24.4 or newer (`!reset` / `!override`).
+# ══════════════════════════════════════════════════════════════════════════════
+
+x-managed-db-env: &managed-db-env
+  DATABASE_URL: ${MANAGED_DATABASE_URL:?set MANAGED_DATABASE_URL in .env (the provider's pooled URL)}
+  DIRECT_DATABASE_URL: ${MANAGED_DIRECT_DATABASE_URL:?set MANAGED_DIRECT_DATABASE_URL in .env (the provider's direct URL)}
+  # Verified TLS, never off: the local stack's "false" is for a database on the
+  # same private network, not one across the internet.
+  PG_SSL: ""
+  # No local PgBouncer to read stats from.
+  PGBOUNCER_STATS_URL: ""
+
+x-managed-db-deps: &managed-db-deps
+  depends_on: !override
+    migrate: { condition: service_completed_successfully }
+    redis:   { condition: service_healthy }
+
+services:
+  # Off: the provider is the database, its pooler the pooler, its PITR the PITR.
+  postgres:  { profiles: ["local-db"] }
+  pitr:      { profiles: ["local-db"] }
+  pgbouncer: { profiles: ["local-db"] }
+
+  migrate:
+    environment:
+      DATABASE_URL: ${MANAGED_DIRECT_DATABASE_URL:?set MANAGED_DIRECT_DATABASE_URL in .env}
+      PG_SSL: ""
+    depends_on: !reset {}
+
+  api:
+    <<: *managed-db-deps
+    environment: *managed-db-env
+  realtime:
+    <<: *managed-db-deps
+    environment: *managed-db-env
+  scheduler:
+    <<: *managed-db-deps
+    environment: *managed-db-env
+  scheduler-standby:
+    <<: *managed-db-deps
+    environment: *managed-db-env

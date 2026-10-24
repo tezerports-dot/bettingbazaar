@@ -101,8 +101,8 @@ const PageSkeleton: React.FC = () => (
       <div className="h-24 rounded-xl" style={{ background: 'var(--skel)' }} />
       <div className="h-24 rounded-xl" style={{ background: 'var(--skel)' }} />
     </div>
-    <div className="h-4 w-1/3 rounded" style={{ background: 'var(--skel)' }} />
-    <div className="h-4 w-2/3 rounded" style={{ background: 'var(--skel)' }} />
+    <div className="h-4 w-1/3 rounded-sm" style={{ background: 'var(--skel)' }} />
+    <div className="h-4 w-2/3 rounded-sm" style={{ background: 'var(--skel)' }} />
   </div>
 );
 
@@ -119,7 +119,7 @@ const LoadingScreen = () => {
   const [splashShown, setSplashShown] = useState(false);
   const logo = useHeaderLogo();
   return (
-    <div role="status" aria-label="Loading" className="fixed inset-0 z-[9000] flex flex-col items-center justify-center overflow-hidden"
+    <div role="status" aria-label="Loading" className="fixed inset-0 z-9000 flex flex-col items-center justify-center overflow-hidden"
       style={{ background: 'var(--app-bg, #0A0E17)', color: 'var(--text)', minHeight: '100dvh', padding: 'env(safe-area-inset-top) 24px env(safe-area-inset-bottom)' }}>
       <div aria-hidden className="absolute inset-0 pointer-events-none"
         style={{ background: 'radial-gradient(70% 45% at 50% 42%, rgba(var(--brand-primary-rgb), 0.22), transparent 70%)' }} />

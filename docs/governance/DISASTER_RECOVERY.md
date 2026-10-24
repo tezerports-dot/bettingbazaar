@@ -5,7 +5,7 @@ backups (item 45), alerting (38), health monitoring (30/32/33), leader-locked
 jobs. Every step below refers to something real in this repo or a named owner
 action — nothing aspirational.
 
-**Targets:** RPO ≤ 24h from daily backups (≤ minutes once PITR is enabled, §3).
+**Targets:** RPO ≤ ~1 minute with the WAL archive (§3), ≤ 24h from the nightly dump alone.
 RTO ≤ 1h for app-tier failures, ≤ 4h for full database restore. Revisit after
 the first staging drill.
 
@@ -41,18 +41,31 @@ database and boot the app against it. An untested backup is not a backup — do
 this once now, then quarterly.
 
 ## 3. Point-in-time recovery (item 46)
-- **OWNER ACTION, and the highest-priority one in this document.** Enable
-  PostgreSQL **WAL archiving to off-box storage** (`archive_mode=on`,
-  `archive_command` shipping to S3, or the managed host's equivalent). That gives
-  point-in-time recovery to any second in the retention window, which is what
-  actually matters for money: an incident is discovered minutes to hours after
-  it starts, and a daily dump loses everything in between.
-- **The daily dumps remain the provider-independent floor**, not the plan. With
-  one database holding every domain, a dump-only posture means an incident at
-  23:00 costs the whole day for money *and* identity *and* content at once.
-- **Rehearse the PITR restore, not just the dump restore.** Restoring to a
-  timestamp is a different procedure with different failure modes; the first time
-  you run it should not be during an incident.
+**Built (2026-10-24):** PostgreSQL archives every WAL segment to the private
+backup bucket (`BACKUP_S3_BUCKET`, folder `pitr/`) through pgBackRest
+(`deploy/vps/postgres/`: `archive_mode = on`, `archive_timeout = 60s`), and the
+`pitr` service takes a base backup every day (full on Sundays, UTC). Two fulls
+are kept: restore to any second of the last ~2 weeks. With `BACKUP_S3_BUCKET`
+unset nothing is archived and nothing piles up on disk (`archive-wal.sh`); a
+bucket that is unreachable queues at most 4 GiB locally, then drops segments
+rather than fill the disk (`archive-push-queue-max`).
+
+Check it is working: `docker compose -f docker-compose.prod.yml exec -u postgres pitr bb-pgbackrest --stanza=bb info`
+(a recent backup, and a WAL range ending within the last minute or two).
+
+**Restore to a moment** (e.g. just before a bad admin action at 14:03:10 IST):
+1. Maintenance mode on, then stop everything that writes:
+   `docker compose -f docker-compose.prod.yml stop api realtime scheduler scheduler-standby pitr postgres`.
+2. Restore into the data volume, as the postgres user:
+   `docker compose -f docker-compose.prod.yml run --rm -u postgres --entrypoint bb-pgbackrest postgres --stanza=bb --delta --type=time "--target=2026-10-24 14:03:10+05:30" --target-action=promote restore`
+3. `docker compose -f docker-compose.prod.yml up -d` — PostgreSQL replays the
+   archive to the target and opens. Its log says `recovery stopping before …`.
+4. Ledger check as in §2 before maintenance mode goes off.
+
+**Rehearse it** on a scratch server once now, then quarterly: the first restore
+must not be during an incident. (Tested 2026-10-24 on PostgreSQL 16 with this
+config and a local repository: a row written after the target was gone, the row
+before it kept. Not yet tested against R2 or on the production image.)
 
 ## 4. Domain / DNS failover (item 30 runbook)
 Trigger: `tools/health-watch.mjs` (run OUTSIDE the primary host) pages after 3
@@ -81,7 +94,7 @@ use a maintenance window). Alert webhook + METRICS_TOKEN rotate from System
 Settings / env without redeploy.
 
 ## 6. Who does what
-- **Owner/admin:** DNS changes, Atlas PITR enablement, secret rotation,
+- **Owner/admin:** DNS changes, `BACKUP_S3_BUCKET` + `PITR_CIPHER_PASS`, the database host (HIGH_AVAILABILITY.md), secret rotation,
   maintenance-mode toggle, restore approval.
 - **Any operator:** §1 redeploys, §2 restore drill on staging, monitoring.
 - Alerts arrive at the admin-configured webhook (System Settings →

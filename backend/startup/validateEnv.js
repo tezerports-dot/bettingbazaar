@@ -56,11 +56,9 @@ const REQUIRED = [
 ];
 
 // Only meaningful in a real deployment; absence is a warning, not a failure.
-const ADVISED = [
-  // The nightly pg_dump goes here and nowhere else (services/backup.service.js
-  // backupStorage): never the public upload bucket CDN_URL serves.
-  ['BACKUP_S3_BUCKET', 'a PRIVATE bucket for the nightly database backup; unset, no backup is taken'],
-];
+// BACKUP_S3_BUCKET was here; production now refuses to boot without it unless
+// ALLOW_NO_BACKUP=true says so (validateEnv, below).
+const ADVISED = [];
 
 const METRICS_TOKEN_PLACEHOLDERS = new Set([
   'change-this-to-a-random-metrics-token',
@@ -189,6 +187,18 @@ export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'produc
     && String(env.ALLOW_NO_CAPTCHA || '').trim().toLowerCase() !== 'true';
   if (captchaOff && isProd) {
     throw new Error('FATAL: TURNSTILE_SECRET_KEY is unset, so the captcha on signup and login would pass everything. Set it, or set ALLOW_NO_CAPTCHA=true to explicitly accept running without one.');
+  }
+
+  // BACKUP_S3_BUCKET unset means NO database backup is ever taken
+  // (services/backup.service.js): every balance, bet and ledger row lives on
+  // one disk with nothing behind it. It was a warning, which a deploy can
+  // scroll past for ever (security & reliability review, 2026-10-24). A deploy
+  // may still run without one — a throwaway test box — but only as a stated
+  // decision, like ALLOW_NO_CAPTCHA.
+  const backupOff = String(env.BACKUP_S3_BUCKET || '').trim() === ''
+    && String(env.ALLOW_NO_BACKUP || '').trim().toLowerCase() !== 'true';
+  if (backupOff && isProd) {
+    throw new Error('FATAL: BACKUP_S3_BUCKET is unset, so the database is never backed up. Set it to a PRIVATE bucket (deploy/vps/.env.template), or set ALLOW_NO_BACKUP=true to explicitly accept running without backups.');
   }
 
   // ANDROID_PACKAGE_ID says this deploy ships the Android app. The app runs at

@@ -99,7 +99,7 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
     <Modal onClose={onClose} title="Invite & Play">
       <div className="text-center space-y-6">
          <div className="flex justify-center mb-4">
-            <div className="w-20 h-20 bg-gradient-to-br from-[#1E293B] to-[#0B0E14] rounded-2xl flex items-center justify-center border-2 border-[var(--brand-primary, #D4AF37)] shadow-[0_0_20px_rgba(var(--brand-primary-rgb), 0.3)]">
+            <div className="w-20 h-20 bg-linear-to-br from-[#1E293B] to-[#0B0E14] rounded-2xl flex items-center justify-center border-2 border-[var(--brand-primary, #D4AF37)] shadow-[0_0_20px_rgba(var(--brand-primary-rgb), 0.3)]">
                 {logoUrl ? (
             <img src={logoUrl} alt="Share logo" className="w-14 h-14 object-contain" onError={fallBackToMark} />
           ) : <span className="text-3xl">🚀</span>}
@@ -135,7 +135,7 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
                 <div className="text-left">
                     <div className="text-white font-bold text-sm flex items-center gap-2">
                         <span>Download App</span>
-                        <span className="bg-green-900/30 text-green-400 text-[9px] px-1.5 rounded border border-green-500/30">APK</span>
+                        <span className="bg-green-900/30 text-green-400 text-[9px] px-1.5 rounded-sm border border-green-500/30">APK</span>
                     </div>
                     <div className="text-[10px] text-slate-500">Best Experience for Android</div>
                 </div>
@@ -170,7 +170,7 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
                 <div className="text-left">
                     <div className="text-white font-bold text-sm flex items-center gap-2">
                         <span>Download App</span>
-                        <span className="bg-blue-900/30 text-blue-400 text-[9px] px-1.5 rounded border border-blue-500/30">iOS</span>
+                        <span className="bg-blue-900/30 text-blue-400 text-[9px] px-1.5 rounded-sm border border-blue-500/30">iOS</span>
                     </div>
                     <div className="text-[10px] text-slate-500">For iPhone and iPad</div>
                 </div>

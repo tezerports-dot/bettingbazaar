@@ -54,7 +54,7 @@ import { settlementRuns } from '../../services/metrics.service.js';
 // and closed after the last one — not a flag that can be written back.
 import { beginSettlement, finishSettlement, voidCancelledCycles, findIncompleteSettlements } from '#db/repositories/settlements.js';
 // Balances come from the wallet. The accounts table has none.
-import { getBalances } from '../wallet/walletAuthority.service.js';
+import { getBalancesMany } from '../wallet/walletAuthority.service.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
 
 /** How many bets one enumeration pulls at a time. */
@@ -479,10 +479,9 @@ class GameEngine {
         if (!paidWinners.length) return;
 
         try {
-            const balanceMap = {};
-            for (const uid of new Set(paidWinners.map((w) => String(w.userId)))) {
-                balanceMap[uid] = await getBalances(uid);
-            }
+            // One query for every winner — not one per winner (that was N+1:
+            // a thousand winners, a thousand round trips after every round).
+            const balanceMap = await getBalancesMany(paidWinners.map((w) => w.userId));
 
             // Chunked and yielding, so a very large settlement does not
             // monopolise the event loop while still sending per-user updates.

@@ -176,11 +176,25 @@ describe('validateEnv', () => {
     expect(r.advisedMissing).toEqual([]);
   });
 
-  it('advises a private backup bucket when none is set', () => {
+  // No backup bucket means no backup is ever taken. It was advice; production
+  // now refuses it unless the deploy says so (review, 2026-10-24).
+  it('refuses production with no backup bucket', () => {
     const { BACKUP_S3_BUCKET, ...withoutBackups } = full;
-    const r = validateEnv({ ...withoutBackups, NODE_ENV: 'production' }, true);
     expect(BACKUP_S3_BUCKET).toBeTruthy();
-    expect(r.ok).toBe(true);
-    expect(r.advisedMissing).toEqual(['BACKUP_S3_BUCKET']);
+    expect(() => validateEnv({ ...withoutBackups, NODE_ENV: 'production' }, true))
+      .toThrow(/BACKUP_S3_BUCKET is unset/);
+    expect(() => validateEnv({ ...withoutBackups, BACKUP_S3_BUCKET: '   ', NODE_ENV: 'production' }, true))
+      .toThrow(/BACKUP_S3_BUCKET is unset/);
+  });
+
+  it('admits production with no backup bucket only when ALLOW_NO_BACKUP=true says so', () => {
+    const { BACKUP_S3_BUCKET, ...withoutBackups } = full;
+    expect(() => validateEnv({ ...withoutBackups, ALLOW_NO_BACKUP: 'true', NODE_ENV: 'production' }, true)).not.toThrow();
+    expect(() => validateEnv({ ...withoutBackups, ALLOW_NO_BACKUP: 'yes', NODE_ENV: 'production' }, true)).toThrow(/BACKUP_S3_BUCKET/);
+  });
+
+  it('does not refuse a development process with no backup bucket', () => {
+    const { BACKUP_S3_BUCKET, ...withoutBackups } = full;
+    expect(() => validateEnv({ ...withoutBackups, NODE_ENV: 'development' }, false)).not.toThrow();
   });
 });

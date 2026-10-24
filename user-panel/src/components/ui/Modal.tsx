@@ -17,10 +17,10 @@ const Modal: React.FC<ModalProps> = ({ children, onClose, title }) => {
   }, []);
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6" style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))' }}>
+    <div className="fixed inset-0 z-100 flex items-center justify-center p-4 sm:p-6" style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))' }}>
       {/* Backdrop */}
       <div 
-        className="absolute inset-0 bg-black/80 backdrop-blur-sm transition-opacity cursor-pointer"
+        className="absolute inset-0 bg-black/80 backdrop-blur-xs transition-opacity cursor-pointer"
         onClick={onClose}
       ></div>
 

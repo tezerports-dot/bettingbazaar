@@ -53,7 +53,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           nothing. An error interrupts (alert); anything else waits (status).
           The browser drive found it the same way — it reads these roles, and
           the bet card's refusals read as a button that did nothing. */}
-      <div aria-live="polite" className="fixed top-4 left-1/2 transform -translate-x-1/2 z-[100] flex flex-col gap-2 w-full max-w-xs px-4 pointer-events-none">
+      <div aria-live="polite" className="fixed top-4 left-1/2 transform -translate-x-1/2 z-100 flex flex-col gap-2 w-full max-w-xs px-4 pointer-events-none">
         {toast && (
           <div
             key={toast.id}
@@ -70,7 +70,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               type="button"
               onClick={close}
               aria-label="Close"
-              className="flex-none w-6 h-6 flex items-center justify-center rounded text-sm leading-none cursor-pointer"
+              className="flex-none w-6 h-6 flex items-center justify-center rounded-sm text-sm leading-none cursor-pointer"
             >
               {toast.type === 'success' ? '✅' : toast.type === 'error' ? '❌' : 'ℹ️'}
             </button>

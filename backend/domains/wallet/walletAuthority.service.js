@@ -65,6 +65,11 @@ export async function getBalances(userId) {
   return pg.getBalances(userId);
 }
 
+/** `getBalances` for many users in one query: `{ [userId]: balances }`. Display only. */
+export async function getBalancesMany(userIds) {
+  return pg.getBalancesMany(userIds);
+}
+
 
 // ── PUBLIC API ────────────────────────────────────────────────────────────────
 

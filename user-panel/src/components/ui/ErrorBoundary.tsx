@@ -58,7 +58,7 @@ class ErrorBoundary extends Component<Props, State> {
       const { error, isAdmin, showDetails } = this.state;
 
       return (
-        <div className="flex flex-col items-center justify-center min-h-screen bg-[#0B0E14] text-[#EAEAEA] p-6 text-center font-inter z-[9999] relative">
+        <div className="flex flex-col items-center justify-center min-h-screen bg-[#0B0E14] text-[#EAEAEA] p-6 text-center font-inter z-9999 relative">
           <div className="w-24 h-24 bg-red-900/20 border-2 border-red-500 rounded-full flex items-center justify-center text-5xl mb-6 shadow-[0_0_40px_rgba(239,68,68,0.4)] animate-pulse">
             💔
           </div>

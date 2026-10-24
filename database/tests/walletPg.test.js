@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
-  getBalancesPaise, getBalancesRupees, transferPaise,
+  getBalancesPaise, getBalancesPaiseMany, getBalancesRupees, transferPaise,
   applyDeltaPaise as applyDeltaPaiseRaw, applyDeltaRupees as applyDeltaRupeesRaw,
 } from '../repositories/wallets.core.js';
 import * as users from '../repositories/users.js';
@@ -46,6 +46,38 @@ describePg('Postgres-authoritative wallet', () => {
       await applyDeltaPaise({ userId: USER, field: 'depositBalance', deltaPaise: 12345, txId: 'r1' });
       const rupees = await getBalancesRupees(USER);
       expect(rupees.depositBalance).toBe(123.45);
+    });
+
+    // The batch read a round's winners are notified from (gameEngine
+    // notifyWinners): one query for a set of users instead of one per user.
+    it('reads many users at once, each exactly as the single read reports them', async () => {
+      await applyDeltaPaise({ userId: USER, field: 'depositBalance', deltaPaise: 500, txId: 'm1' });
+      await applyDeltaPaise({ userId: 'pg-wallet-user-2', field: 'winningsBalance', deltaPaise: 700, txId: 'm2' });
+      const many = await getBalancesPaiseMany([USER, 'pg-wallet-user-2', 'pg-wallet-never']);
+      expect(many.size).toBe(3);
+      for (const id of [USER, 'pg-wallet-user-2', 'pg-wallet-never']) {
+        expect(many.get(id)).toEqual(await getBalancesPaise(id));
+      }
+      expect(many.get(USER).depositBalance).toBe(500);
+      expect(many.get('pg-wallet-user-2').winningsBalance).toBe(700);
+      // A user with no wallet row is zeros, not missing — the single read's answer.
+      expect(many.get('pg-wallet-never').depositBalance).toBe(0);
+    });
+
+    it('answers an empty set without a query, and folds duplicates and number ids', async () => {
+      expect((await getBalancesPaiseMany([])).size).toBe(0);
+      expect((await getBalancesPaiseMany(undefined)).size).toBe(0);
+      await applyDeltaPaise({ userId: '42', field: 'depositBalance', deltaPaise: 900, txId: 'm3' });
+      const many = await getBalancesPaiseMany([42, '42', 42]);
+      expect([...many.keys()]).toEqual(['42']);
+      expect(many.get('42').depositBalance).toBe(900);
+    });
+
+    it('never returns another user\'s wallet', async () => {
+      await applyDeltaPaise({ userId: 'pg-wallet-other', field: 'depositBalance', deltaPaise: 300, txId: 'm4' });
+      const many = await getBalancesPaiseMany([USER]);
+      expect([...many.keys()]).toEqual([USER]);
+      expect(many.get(USER).depositBalance).toBe(0);
     });
   });
 
