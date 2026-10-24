@@ -58,7 +58,6 @@ const RulesPage: React.FC = () => {
 
         {slides.length > 0 && (
           <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center', margin: '4px 0 12px', fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}><span>🖼️</span><span>Steps published from Admin → RULES_PAGE</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {slides.map((s, i) => (
                 <div key={s.id || i} style={{ position: 'relative', width: '100%', aspectRatio: '4 / 5', borderRadius: 18, overflow: 'hidden', border: '1px solid var(--line)', boxShadow: 'var(--shadow-sm)', background: 'var(--surface3)' }}>
